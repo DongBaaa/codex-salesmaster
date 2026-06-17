@@ -200,6 +200,198 @@ public sealed class SelectionOptionIntegrityTests
         }
     }
 
+
+    [Fact]
+    public async Task RestorePriceGradeOption_RejectsDuplicateActiveNameAndKeepsDeletedRowClean()
+    {
+        PrepareAppRoot("georaeplan-price-grade-restore-duplicate");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var activeId = Guid.NewGuid();
+            var deletedId = Guid.NewGuid();
+            db.PriceGradeOptions.AddRange(
+                new LocalPriceGradeOption
+                {
+                    Id = activeId,
+                    Name = "VIP",
+                    PriceSource = SelectionOptionDefaults.PriceSourceSales,
+                    SortOrder = 10,
+                    IsActive = true,
+                    IsDeleted = false,
+                    IsDirty = false
+                },
+                new LocalPriceGradeOption
+                {
+                    Id = deletedId,
+                    Name = "VIP",
+                    PriceSource = SelectionOptionDefaults.PriceSourceA,
+                    SortOrder = 20,
+                    IsActive = false,
+                    IsDeleted = true,
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var local = CreateLocalStateService(db);
+            var result = await local.RestoreRecycleBinEntryAsync(
+                RecycleBinEntityKind.PriceGradeOption,
+                deletedId,
+                CreateAdminSession());
+
+            Assert.False(result.Success);
+            var rows = await db.PriceGradeOptions.IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(row => row.Id);
+            Assert.False(rows[activeId].IsDeleted);
+            Assert.True(rows[activeId].IsActive);
+            Assert.False(rows[activeId].IsDirty);
+            Assert.True(rows[deletedId].IsDeleted);
+            Assert.False(rows[deletedId].IsActive);
+            Assert.False(rows[deletedId].IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RestoreItemCategoryOption_RejectsLooseKeyDuplicateAndKeepsDeletedRowClean()
+    {
+        PrepareAppRoot("georaeplan-item-category-restore-duplicate");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var activeId = Guid.NewGuid();
+            var deletedId = Guid.NewGuid();
+            db.ItemCategoryOptions.AddRange(
+                new LocalItemCategoryOption
+                {
+                    Id = activeId,
+                    Name = "A3 Copier",
+                    SortOrder = 10,
+                    IsActive = true,
+                    IsDeleted = false,
+                    IsDirty = false
+                },
+                new LocalItemCategoryOption
+                {
+                    Id = deletedId,
+                    Name = "A3Copier",
+                    SortOrder = 20,
+                    IsActive = false,
+                    IsDeleted = true,
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var local = CreateLocalStateService(db);
+            var result = await local.RestoreRecycleBinEntryAsync(
+                RecycleBinEntityKind.ItemCategoryOption,
+                deletedId,
+                CreateAdminSession());
+
+            Assert.False(result.Success);
+            var rows = await db.ItemCategoryOptions.IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(row => row.Id);
+            Assert.False(rows[activeId].IsDeleted);
+            Assert.True(rows[activeId].IsActive);
+            Assert.False(rows[activeId].IsDirty);
+            Assert.True(rows[deletedId].IsDeleted);
+            Assert.False(rows[deletedId].IsActive);
+            Assert.False(rows[deletedId].IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+
+    [Fact]
+    public async Task RestoreTradeTypeOption_RejectsDuplicateCanonicalActiveNameAndKeepsDeletedRowClean()
+    {
+        PrepareAppRoot("georaeplan-trade-type-restore-duplicate");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var activeId = Guid.NewGuid();
+            var deletedId = Guid.NewGuid();
+            db.TradeTypeOptions.AddRange(
+                new LocalTradeTypeOption
+                {
+                    Id = activeId,
+                    Name = CustomerTradeTypes.Sales,
+                    AllowsSales = true,
+                    AllowsPurchase = false,
+                    SortOrder = 0,
+                    IsActive = true,
+                    IsDeleted = false,
+                    IsDirty = false
+                },
+                new LocalTradeTypeOption
+                {
+                    Id = deletedId,
+                    Name = CustomerTradeTypes.Sales,
+                    AllowsSales = true,
+                    AllowsPurchase = false,
+                    SortOrder = 30,
+                    IsActive = false,
+                    IsDeleted = true,
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var local = CreateLocalStateService(db);
+            var result = await local.RestoreRecycleBinEntryAsync(
+                RecycleBinEntityKind.TradeTypeOption,
+                deletedId,
+                CreateAdminSession());
+
+            Assert.False(result.Success);
+            var rows = await db.TradeTypeOptions.IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(row => row.Id);
+            Assert.False(rows[activeId].IsDeleted);
+            Assert.True(rows[activeId].IsActive);
+            Assert.False(rows[activeId].IsDirty);
+            Assert.True(rows[deletedId].IsDeleted);
+            Assert.False(rows[deletedId].IsActive);
+            Assert.False(rows[deletedId].IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    private static SessionState CreateAdminSession()
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            UserId = Guid.NewGuid(),
+            Username = "selection-admin",
+            Role = DomainConstants.RoleAdmin,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin
+        });
+        return session;
+    }
+
+
     private static LocalStateService CreateLocalStateService(LocalDbContext db)
     {
         var session = new SessionState();

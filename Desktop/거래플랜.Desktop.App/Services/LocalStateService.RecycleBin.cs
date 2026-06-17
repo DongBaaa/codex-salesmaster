@@ -815,6 +815,17 @@ public sealed partial class LocalStateService
         if (!option.IsDeleted)
             return OfficeMutationResult.Ok(option.Id, "이미 활성 상태인 가격등급입니다.");
 
+        var normalizedName = (option.Name ?? string.Empty).Trim();
+        var priceGradeOptions = await _db.PriceGradeOptions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => current.Id != option.Id && !current.IsDeleted)
+            .ToListAsync(ct);
+        var hasActiveDuplicate = priceGradeOptions.Any(current =>
+            string.Equals((current.Name ?? string.Empty).Trim(), normalizedName, StringComparison.CurrentCultureIgnoreCase));
+        if (hasActiveDuplicate)
+            return OfficeMutationResult.Denied("같은 이름의 가격등급이 이미 있어 복원할 수 없습니다.");
+
         var now = DateTime.UtcNow;
         RestoreEntity(option, now);
         option.IsActive = true;
@@ -844,6 +855,19 @@ public sealed partial class LocalStateService
         if (!option.IsDeleted)
             return OfficeMutationResult.Ok(option.Id, "이미 활성 상태인 거래구분입니다.");
 
+        if (CustomerClassificationNormalizer.TradeTypeDefinition.Find(option.Name) is null)
+            return OfficeMutationResult.Denied("거래구분 기준값이 아니어서 복원할 수 없습니다.");
+
+        var tradeTypeOptions = await _db.TradeTypeOptions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => current.Id != option.Id && !current.IsDeleted)
+            .ToListAsync(ct);
+        var hasActiveDuplicate = tradeTypeOptions.Any(current =>
+            string.Equals(current.Name, option.Name, StringComparison.CurrentCultureIgnoreCase));
+        if (hasActiveDuplicate)
+            return OfficeMutationResult.Denied("같은 이름의 거래구분이 이미 있어 복원할 수 없습니다.");
+
         var now = DateTime.UtcNow;
         RestoreEntity(option, now);
         option.IsActive = true;
@@ -872,6 +896,17 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Missing("복원할 품목분류를 찾을 수 없습니다.");
         if (!option.IsDeleted)
             return OfficeMutationResult.Ok(option.Id, "이미 활성 상태인 품목분류입니다.");
+
+        var normalizedNameKey = RentalCatalogValueNormalizer.NormalizeLooseKey(option.Name);
+        var itemCategoryOptions = await _db.ItemCategoryOptions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => current.Id != option.Id && !current.IsDeleted)
+            .ToListAsync(ct);
+        var hasActiveDuplicate = itemCategoryOptions.Any(current =>
+            string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(current.Name), normalizedNameKey, StringComparison.OrdinalIgnoreCase));
+        if (hasActiveDuplicate)
+            return OfficeMutationResult.Denied("같은 이름의 품목분류가 이미 있어 복원할 수 없습니다.");
 
         var now = DateTime.UtcNow;
         RestoreEntity(option, now);
