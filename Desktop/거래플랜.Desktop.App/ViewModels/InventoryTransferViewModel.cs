@@ -39,10 +39,12 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(TransferRouteText))]
+    [NotifyPropertyChangedFor(nameof(CanDeleteTransfer))]
     private string _fromWarehouseCode = DomainConstants.WarehouseUsenetMain;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(TransferRouteText))]
+    [NotifyPropertyChangedFor(nameof(CanDeleteTransfer))]
     [NotifyPropertyChangedFor(nameof(CanConfirmReceipt))]
     [NotifyPropertyChangedFor(nameof(CanRejectTransfer))]
     private string _toWarehouseCode = DomainConstants.WarehouseYeonsuMain;
@@ -50,6 +52,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     [ObservableProperty] private string _memo = string.Empty;
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanDeleteTransfer))]
     [NotifyPropertyChangedFor(nameof(CanConfirmReceipt))]
     [NotifyPropertyChangedFor(nameof(CanRejectTransfer))]
     private string _transferStatus = "수령대기";
@@ -100,7 +103,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     public bool HasStatus => !string.IsNullOrWhiteSpace(StatusMessage);
     public bool IsAdmin => _session.HasAdministrativePrivileges;
     public bool HasSavedTransfer => TransferId != Guid.Empty;
-    public bool CanDeleteTransfer => HasSavedTransfer;
+    public bool CanDeleteTransfer => HasSavedTransfer && CanCurrentUserDelete;
     public bool CanConfirmReceipt => HasSavedTransfer && !IsFinalTransferStatus && CanCurrentUserReceive;
     public bool CanRejectTransfer => HasSavedTransfer && !IsFinalTransferStatus && CanCurrentUserReceive;
     public bool CanAddLine => !IsFinalTransferStatus && SelectedInputItem is not null && InputQty > 0m;
@@ -126,6 +129,24 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             var destinationOfficeCode = ResolveOfficeCodeFromWarehouseCode(ToWarehouseCode);
             var userOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
             return string.Equals(destinationOfficeCode, userOfficeCode, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+    public bool CanCurrentUserDelete
+    {
+        get
+        {
+            if (_session.HasAdministrativePrivileges)
+                return true;
+
+            var writableOfficeCodes = _local.GetWritableOfficeCodesForSession(_session);
+            var sourceOfficeCode = ResolveOfficeCodeFromWarehouseCode(FromWarehouseCode);
+            var destinationOfficeCode = ResolveOfficeCodeFromWarehouseCode(ToWarehouseCode);
+
+            if (IsFinalTransferStatus)
+                return writableOfficeCodes.Contains(destinationOfficeCode, StringComparer.OrdinalIgnoreCase);
+
+            return writableOfficeCodes.Contains(sourceOfficeCode, StringComparer.OrdinalIgnoreCase) ||
+                   writableOfficeCodes.Contains(destinationOfficeCode, StringComparer.OrdinalIgnoreCase);
         }
     }
 
@@ -496,11 +517,13 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     {
         UpdateAvailableStock();
         OnPropertyChanged(nameof(TransferRouteText));
+        OnPropertyChanged(nameof(CanDeleteTransfer));
     }
 
     partial void OnToWarehouseCodeChanged(string value)
     {
         OnPropertyChanged(nameof(TransferRouteText));
+        OnPropertyChanged(nameof(CanDeleteTransfer));
         OnPropertyChanged(nameof(CanConfirmReceipt));
         OnPropertyChanged(nameof(CanRejectTransfer));
     }
@@ -511,6 +534,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
         OnPropertyChanged(nameof(CanAddLine));
         OnPropertyChanged(nameof(CanUpdateLine));
         OnPropertyChanged(nameof(CanDeleteLine));
+        OnPropertyChanged(nameof(CanDeleteTransfer));
         OnPropertyChanged(nameof(CanConfirmReceipt));
         OnPropertyChanged(nameof(CanRejectTransfer));
     }

@@ -4259,6 +4259,448 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task LocalStateService_RestoreInventoryTransfer_RebuildsStockSnapshots()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-transfer-restore-stock-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var customerId = Guid.Parse("b7400000-0000-0000-0000-000000000001");
+            var itemId = Guid.Parse("b7500000-0000-0000-0000-000000000001");
+            var transferId = Guid.Parse("b7600000-0000-0000-0000-000000000001");
+            var lineId = Guid.Parse("b7700000-0000-0000-0000-000000000001");
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "재고이동 복원 거래처",
+                NameMatchKey = "재고이동복원거래처"
+            });
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "재고이동 복원 품목",
+                NameMatchKey = "재고이동복원품목",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                PurchasePrice = 1000m
+            });
+            await db.SaveChangesAsync();
+
+            await service.SaveInvoiceAsync(new LocalInvoice
+            {
+                Id = Guid.Parse("b7800000-0000-0000-0000-000000000001"),
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                VoucherType = VoucherType.Purchase,
+                PurchaseReceivingRequired = true,
+                PurchaseReceivingStatus = InvoiceReceivingStatuses.Confirmed,
+                PurchaseReceivedAtUtc = new DateTime(2026, 6, 17, 8, 50, 0, DateTimeKind.Utc),
+                PurchaseReceivedByUsername = "admin",
+                InvoiceDate = new DateOnly(2026, 6, 17),
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        ItemId = itemId,
+                        ItemNameOriginal = "재고이동 복원 품목",
+                        ItemTrackingType = ItemTrackingTypes.Stock,
+                        Unit = "EA",
+                        Quantity = 5m,
+                        UnitPrice = 1000m,
+                        LineAmount = 5000m
+                    }
+                }
+            });
+
+            var saveTransferResult = await service.SaveInventoryTransferAsync(new LocalInventoryTransfer
+            {
+                Id = transferId,
+                FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                TransferNumber = "TR-RESTORE-STOCK",
+                TransferDate = new DateOnly(2026, 6, 17),
+                TransferStatus = InventoryTransferStatusNormalizer.Pending,
+                Lines =
+                {
+                    new LocalInventoryTransferLine
+                    {
+                        Id = lineId,
+                        TransferId = transferId,
+                        ItemId = itemId,
+                        ItemNameOriginal = "재고이동 복원 품목",
+                        Unit = "EA",
+                        Quantity = 2m
+                    }
+                }
+            }, session);
+            Assert.True(saveTransferResult.Success, saveTransferResult.Message);
+            Assert.Equal(3m, await db.ItemWarehouseStocks
+                .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleAsync());
+
+            var deleteResult = await service.DeleteInventoryTransferAsync(transferId, session);
+            Assert.True(deleteResult.Success, deleteResult.Message);
+            Assert.Equal(5m, await db.ItemWarehouseStocks
+                .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleAsync());
+
+            var restoreResult = await service.RestoreRecycleBinEntryAsync(
+                RecycleBinEntityKind.InventoryTransfer,
+                transferId,
+                session);
+
+            Assert.True(restoreResult.Success, restoreResult.Message);
+            Assert.Equal(3m, await db.ItemWarehouseStocks
+                .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleAsync());
+            Assert.Equal(3m, (await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == itemId)).CurrentStock);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalStateService_RestoreInventoryTransfer_RejectsWhenSourceStockWouldBecomeNegative()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-transfer-restore-shortage-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var customerId = Guid.Parse("b7400000-0000-0000-0000-000000000002");
+            var itemId = Guid.Parse("b7500000-0000-0000-0000-000000000002");
+            var transferId = Guid.Parse("b7600000-0000-0000-0000-000000000002");
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "재고이동 복원 부족 거래처",
+                NameMatchKey = "재고이동복원부족거래처"
+            });
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "재고이동 복원 부족 품목",
+                NameMatchKey = "재고이동복원부족품목",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                PurchasePrice = 1000m
+            });
+            await db.SaveChangesAsync();
+
+            await service.SaveInvoiceAsync(new LocalInvoice
+            {
+                Id = Guid.Parse("b7800000-0000-0000-0000-000000000002"),
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                VoucherType = VoucherType.Purchase,
+                PurchaseReceivingRequired = true,
+                PurchaseReceivingStatus = InvoiceReceivingStatuses.Confirmed,
+                PurchaseReceivedAtUtc = new DateTime(2026, 6, 17, 8, 55, 0, DateTimeKind.Utc),
+                PurchaseReceivedByUsername = "admin",
+                InvoiceDate = new DateOnly(2026, 6, 17),
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        ItemId = itemId,
+                        ItemNameOriginal = "재고이동 복원 부족 품목",
+                        ItemTrackingType = ItemTrackingTypes.Stock,
+                        Unit = "EA",
+                        Quantity = 1m,
+                        UnitPrice = 1000m,
+                        LineAmount = 1000m
+                    }
+                }
+            });
+
+            var saveTransferResult = await service.SaveInventoryTransferAsync(new LocalInventoryTransfer
+            {
+                Id = transferId,
+                FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                TransferNumber = "TR-RESTORE-SHORTAGE",
+                TransferDate = new DateOnly(2026, 6, 17),
+                TransferStatus = InventoryTransferStatusNormalizer.Pending,
+                Lines =
+                {
+                    new LocalInventoryTransferLine
+                    {
+                        Id = Guid.Parse("b7700000-0000-0000-0000-000000000002"),
+                        TransferId = transferId,
+                        ItemId = itemId,
+                        ItemNameOriginal = "재고이동 복원 부족 품목",
+                        Unit = "EA",
+                        Quantity = 1m
+                    }
+                }
+            }, session);
+            Assert.True(saveTransferResult.Success, saveTransferResult.Message);
+
+            var deleteResult = await service.DeleteInventoryTransferAsync(transferId, session);
+            Assert.True(deleteResult.Success, deleteResult.Message);
+
+            await service.SaveInvoiceAsync(new LocalInvoice
+            {
+                Id = Guid.Parse("b7900000-0000-0000-0000-000000000002"),
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 18),
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        ItemId = itemId,
+                        ItemNameOriginal = "재고이동 복원 부족 품목",
+                        ItemTrackingType = ItemTrackingTypes.Stock,
+                        Unit = "EA",
+                        Quantity = 1m,
+                        UnitPrice = 1500m,
+                        LineAmount = 1500m
+                    }
+                }
+            });
+            Assert.Equal(0m, await db.ItemWarehouseStocks
+                .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleAsync());
+
+            var restoreResult = await service.RestoreRecycleBinEntryAsync(
+                RecycleBinEntityKind.InventoryTransfer,
+                transferId,
+                session);
+
+            Assert.False(restoreResult.Success);
+            Assert.Contains("재고", restoreResult.Message);
+            db.ChangeTracker.Clear();
+            var transfer = await db.InventoryTransfers.IgnoreQueryFilters().SingleAsync(current => current.Id == transferId);
+            Assert.True(transfer.IsDeleted);
+            Assert.Equal(0m, await db.ItemWarehouseStocks
+                .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalStateService_ApplyServerPurgeInventoryTransfer_RebuildsStockSnapshots()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-transfer-purge-stock-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var customerId = Guid.Parse("b7400000-0000-0000-0000-000000000003");
+            var itemId = Guid.Parse("b7500000-0000-0000-0000-000000000003");
+            var transferId = Guid.Parse("b7600000-0000-0000-0000-000000000003");
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "재고이동 purge 거래처",
+                NameMatchKey = "재고이동purge거래처"
+            });
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "재고이동 purge 품목",
+                NameMatchKey = "재고이동purge품목",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                PurchasePrice = 1000m
+            });
+            await db.SaveChangesAsync();
+
+            await service.SaveInvoiceAsync(new LocalInvoice
+            {
+                Id = Guid.Parse("b7800000-0000-0000-0000-000000000003"),
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                VoucherType = VoucherType.Purchase,
+                PurchaseReceivingRequired = true,
+                PurchaseReceivingStatus = InvoiceReceivingStatuses.Confirmed,
+                PurchaseReceivedAtUtc = new DateTime(2026, 6, 17, 9, 0, 0, DateTimeKind.Utc),
+                PurchaseReceivedByUsername = "admin",
+                InvoiceDate = new DateOnly(2026, 6, 17),
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        ItemId = itemId,
+                        ItemNameOriginal = "재고이동 purge 품목",
+                        ItemTrackingType = ItemTrackingTypes.Stock,
+                        Unit = "EA",
+                        Quantity = 5m,
+                        UnitPrice = 1000m,
+                        LineAmount = 5000m
+                    }
+                }
+            });
+
+            var saveTransferResult = await service.SaveInventoryTransferAsync(new LocalInventoryTransfer
+            {
+                Id = transferId,
+                FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                TransferNumber = "TR-PURGE-STOCK",
+                TransferDate = new DateOnly(2026, 6, 17),
+                TransferStatus = InventoryTransferStatusNormalizer.Pending,
+                Lines =
+                {
+                    new LocalInventoryTransferLine
+                    {
+                        Id = Guid.Parse("b7700000-0000-0000-0000-000000000003"),
+                        TransferId = transferId,
+                        ItemId = itemId,
+                        ItemNameOriginal = "재고이동 purge 품목",
+                        Unit = "EA",
+                        Quantity = 2m
+                    }
+                }
+            }, session);
+            Assert.True(saveTransferResult.Success, saveTransferResult.Message);
+            Assert.Equal(3m, await db.ItemWarehouseStocks
+                .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleAsync());
+
+            var purgeResult = await service.ApplyServerPurgeRecycleBinEntryAsync(
+                RecycleBinEntityKind.InventoryTransfer,
+                transferId);
+
+            Assert.True(purgeResult.Success, purgeResult.Message);
+            Assert.False(await db.InventoryTransfers.IgnoreQueryFilters().AnyAsync(transfer => transfer.Id == transferId));
+            Assert.Equal(5m, await db.ItemWarehouseStocks
+                .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleAsync());
+            Assert.Equal(5m, (await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == itemId)).CurrentStock);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task InventoryTransferViewModel_CanDeleteTransfer_RequiresTargetOfficeForFinalStatus()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-transfer-delete-ui-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var sourceSession = CreateUserSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                TenantScopeCatalog.ScopeOfficeOnly,
+                AppPermissionNames.DeliveryEdit);
+            var sourceService = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), sourceSession);
+            var sourceViewModel = new InventoryTransferViewModel(sourceService, sourceSession)
+            {
+                TransferId = Guid.Parse("b7600000-0000-0000-0000-000000000004"),
+                FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                TransferStatus = InventoryTransferStatusNormalizer.Received
+            };
+
+            Assert.False(sourceViewModel.CanDeleteTransfer);
+
+            sourceViewModel.TransferStatus = InventoryTransferStatusNormalizer.Pending;
+            Assert.True(sourceViewModel.CanDeleteTransfer);
+
+            var targetSession = CreateUserSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Yeonsu,
+                TenantScopeCatalog.ScopeOfficeOnly,
+                AppPermissionNames.DeliveryEdit);
+            var targetService = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), targetSession);
+            var targetViewModel = new InventoryTransferViewModel(targetService, targetSession)
+            {
+                TransferId = Guid.Parse("b7600000-0000-0000-0000-000000000005"),
+                FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                TransferStatus = InventoryTransferStatusNormalizer.Received
+            };
+
+            Assert.True(targetViewModel.CanDeleteTransfer);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SyncService_TryRepairRentalAssetRevisionConflictAsync_ResolvesWhenServerCanReplaceInvalidItemReference()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-rental-asset-resolve-{Guid.NewGuid():N}");

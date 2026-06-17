@@ -964,6 +964,7 @@ public sealed partial class LocalStateService
         _db.InventoryTransferLines.RemoveRange(transfer.Lines);
         _db.InventoryTransfers.Remove(transfer);
         await _db.SaveChangesAsync(ct);
+        await RebuildInventorySnapshotsAsync(CreateServerPurgeInvoiceSaveContext(), ct);
         return OfficeMutationResult.Ok(transferId, "재고이동 서버 영구삭제를 로컬에 반영했습니다.");
     }
 
@@ -2251,6 +2252,28 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Denied("권한이 없어 해당 재고이동을 복원할 수 없습니다.");
 
         var now = DateTime.UtcNow;
+        var activeLines = transfer.Lines
+            .Where(line => !line.IsDeleted)
+            .ToList();
+        var itemTrackingMap = await BuildItemTrackingMapAsync(ct);
+        var normalizedTransferStatus = InventoryTransferStatusNormalizer.Normalize(
+            transfer.TransferStatus,
+            transfer.ReceivedByUsername,
+            transfer.ReceivedAtUtc,
+            transfer.RejectedByUsername,
+            transfer.RejectedAtUtc);
+        var shortages = await FindTransferStockShortagesAsync(
+            null,
+            transfer.FromWarehouseCode,
+            transfer.ToWarehouseCode,
+            normalizedTransferStatus,
+            activeLines,
+            itemTrackingMap,
+            ct);
+        if (shortages.Count > 0)
+            return OfficeMutationResult.Denied(
+                FormatStockShortageMessage("재고가 부족하여 재고이동을 복원할 수 없습니다.", shortages));
+
         RestoreEntity(transfer, now);
         AddRestoreAudit(nameof(LocalInventoryTransfer), transfer.Id, new
         {
@@ -2261,6 +2284,13 @@ public sealed partial class LocalStateService
         }, session, now);
 
         await _db.SaveChangesAsync(ct);
+        await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
+        {
+            Username = session.User?.Username ?? "local-user",
+            Role = session.User?.Role ?? DomainConstants.RoleUser,
+            OfficeCode = session.OfficeCode,
+            ForceOverride = false
+        }, ct);
         return OfficeMutationResult.Ok(transfer.Id, "재고이동을 휴지통에서 복원했습니다.");
     }
 
