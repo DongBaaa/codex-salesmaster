@@ -53,7 +53,7 @@ function Copy-PackageWithMetadata {
     )
 
     if ($Platform -eq 'desktop') {
-        Test-DesktopUpdatePackage -PackagePath $SourcePath
+        Test-DesktopUpdatePackage -PackagePath $SourcePath -ExpectedVersion $Version
     }
 
     New-Item -ItemType Directory -Force -Path $DestinationDirectory | Out-Null
@@ -86,7 +86,8 @@ function Copy-PackageWithMetadata {
 
 function Test-DesktopUpdatePackage {
     param(
-        [Parameter(Mandatory = $true)][string]$PackagePath
+        [Parameter(Mandatory = $true)][string]$PackagePath,
+        [Parameter(Mandatory = $true)][string]$ExpectedVersion
     )
 
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -98,7 +99,9 @@ function Test-DesktopUpdatePackage {
     )
 
     $archive = [System.IO.Compression.ZipFile]::OpenRead($PackagePath)
+    $tempDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("georaeplan-desktop-package-version-" + [Guid]::NewGuid().ToString('N'))
     try {
+        New-Item -ItemType Directory -Force -Path $tempDirectory | Out-Null
         $entryNames = $archive.Entries | ForEach-Object {
             $_.FullName.Replace('\', '/').TrimStart('/')
         }
@@ -108,9 +111,35 @@ function Test-DesktopUpdatePackage {
                 throw "데스크톱 업데이트 패키지 필수 항목이 누락되었습니다: $requiredEntry"
             }
         }
+
+        $appEntry = $archive.Entries |
+            Where-Object {
+                $normalized = $_.FullName.Replace('\', '/').TrimStart('/')
+                $normalized -eq 'App/거래플랜.Desktop.App.exe' -or $normalized -eq 'App/거래플랜.exe'
+            } |
+            Select-Object -First 1
+        if ($null -eq $appEntry) {
+            throw '데스크톱 업데이트 패키지에서 실행 파일을 찾을 수 없습니다.'
+        }
+
+        $extractedAppPath = Join-Path $tempDirectory ([System.IO.Path]::GetFileName($appEntry.FullName))
+        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($appEntry, $extractedAppPath, $true)
+        $actualVersion = (Get-Item -LiteralPath $extractedAppPath).VersionInfo.ProductVersion
+        if ([string]::IsNullOrWhiteSpace($actualVersion)) {
+            $actualVersion = (Get-Item -LiteralPath $extractedAppPath).VersionInfo.FileVersion
+        }
+
+        $actualVersionText = if ($null -eq $actualVersion) { '' } else { [string]$actualVersion }
+        $actualVersionPrefix = $actualVersionText.Split('+')[0].Trim()
+        if (-not [string]::Equals($actualVersionPrefix, $ExpectedVersion.Trim(), [StringComparison]::OrdinalIgnoreCase)) {
+            throw "데스크톱 업데이트 패키지 버전이 manifest 버전과 일치하지 않습니다. 기대 버전: $ExpectedVersion, 실제 버전: $actualVersion"
+        }
     }
     finally {
         $archive.Dispose()
+        if (Test-Path -LiteralPath $tempDirectory) {
+            Remove-Item -LiteralPath $tempDirectory -Recurse -Force
+        }
     }
 }
 
