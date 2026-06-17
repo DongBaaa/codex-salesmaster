@@ -3824,11 +3824,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return LocalMutationResult.Denied("품목분류 이름을 입력하세요.");
 		}
+		string nameKey = RentalCatalogValueNormalizer.NormalizeLooseKey(name);
 		IEnumerable<LocalItemCategoryOption> local = _db.ItemCategoryOptions.Local;
 		List<LocalItemCategoryOption> options = (from localItemCategoryOption in local.Concat(await _db.ItemCategoryOptions.IgnoreQueryFilters().ToListAsync(ct))
 			group localItemCategoryOption by localItemCategoryOption.Id into @group
 			select @group.First()).ToList();
-		if (options.Any((LocalItemCategoryOption current) => current.Id != option.Id && !current.IsDeleted && string.Equals(SelectionOptionDefaults.NormalizeItemCategoryName(current.Name), name, StringComparison.CurrentCultureIgnoreCase)))
+		if (options.Any((LocalItemCategoryOption current) => current.Id != option.Id && !current.IsDeleted && string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(current.Name), nameKey, StringComparison.OrdinalIgnoreCase)))
 		{
 			return LocalMutationResult.Denied("같은 이름의 품목분류가 이미 있습니다.");
 		}
