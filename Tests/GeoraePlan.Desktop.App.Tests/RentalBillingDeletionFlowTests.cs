@@ -1136,6 +1136,129 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     [Fact]
+    public async Task RestoreInvoice_RejectsVersionGroupOutsideWritableOffice()
+    {
+        PrepareAppRoot("georaeplan-invoice-group-restore-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var visibleCustomerId = Guid.NewGuid();
+            var hiddenCustomerId = Guid.NewGuid();
+            var visibleInvoiceId = Guid.NewGuid();
+            var hiddenInvoiceId = Guid.NewGuid();
+            var versionGroupId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(visibleCustomerId, "Visible invoice group customer", OfficeCodeCatalog.Usenet));
+            db.Customers.Add(CreateCustomer(hiddenCustomerId, "Hidden invoice group customer", OfficeCodeCatalog.Yeonsu));
+            db.Invoices.Add(CreateInvoice(
+                visibleInvoiceId,
+                visibleCustomerId,
+                OfficeCodeCatalog.Usenet,
+                "LOCAL-GROUP-SCOPE-RESTORE",
+                versionGroupId,
+                versionNumber: 1,
+                isDeleted: true,
+                isLatestVersion: false));
+            db.Invoices.Add(CreateInvoice(
+                hiddenInvoiceId,
+                hiddenCustomerId,
+                OfficeCodeCatalog.Yeonsu,
+                "LOCAL-GROUP-SCOPE-RESTORE-HIDDEN",
+                versionGroupId,
+                versionNumber: 2,
+                isDeleted: true,
+                isLatestVersion: true));
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeOnlySession(OfficeCodeCatalog.Usenet);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var restore = await local.RestoreRecycleBinEntryAsync(
+                RecycleBinEntityKind.Invoice,
+                visibleInvoiceId,
+                session);
+
+            Assert.False(restore.Success);
+            Assert.Contains("전표 묶음", restore.Message);
+            db.ChangeTracker.Clear();
+            var invoices = await db.Invoices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(current => current.Id == visibleInvoiceId || current.Id == hiddenInvoiceId)
+                .ToDictionaryAsync(current => current.Id);
+            Assert.True(invoices[visibleInvoiceId].IsDeleted);
+            Assert.True(invoices[hiddenInvoiceId].IsDeleted);
+            Assert.False(invoices[visibleInvoiceId].IsDirty);
+            Assert.False(invoices[hiddenInvoiceId].IsDirty);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task PermanentlyDeleteInvoice_RejectsVersionGroupOutsideWritableOffice()
+    {
+        PrepareAppRoot("georaeplan-invoice-group-purge-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var visibleCustomerId = Guid.NewGuid();
+            var hiddenCustomerId = Guid.NewGuid();
+            var visibleInvoiceId = Guid.NewGuid();
+            var hiddenInvoiceId = Guid.NewGuid();
+            var versionGroupId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(visibleCustomerId, "Visible invoice purge customer", OfficeCodeCatalog.Usenet));
+            db.Customers.Add(CreateCustomer(hiddenCustomerId, "Hidden invoice purge customer", OfficeCodeCatalog.Yeonsu));
+            db.Invoices.Add(CreateInvoice(
+                visibleInvoiceId,
+                visibleCustomerId,
+                OfficeCodeCatalog.Usenet,
+                "LOCAL-GROUP-SCOPE-PURGE",
+                versionGroupId,
+                versionNumber: 1,
+                isDeleted: true,
+                isLatestVersion: false));
+            db.Invoices.Add(CreateInvoice(
+                hiddenInvoiceId,
+                hiddenCustomerId,
+                OfficeCodeCatalog.Yeonsu,
+                "LOCAL-GROUP-SCOPE-PURGE-HIDDEN",
+                versionGroupId,
+                versionNumber: 2,
+                isDeleted: true,
+                isLatestVersion: true));
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeOnlySession(OfficeCodeCatalog.Usenet);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var purge = await local.PermanentlyDeleteRecycleBinEntryAsync(
+                RecycleBinEntityKind.Invoice,
+                visibleInvoiceId,
+                session);
+
+            Assert.False(purge.Success);
+            Assert.Contains("전표 묶음", purge.Message);
+            db.ChangeTracker.Clear();
+            Assert.True(await db.Invoices.IgnoreQueryFilters().AnyAsync(current => current.Id == visibleInvoiceId));
+            Assert.True(await db.Invoices.IgnoreQueryFilters().AnyAsync(current => current.Id == hiddenInvoiceId));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ServerPurgeTransaction_RentalReceipt_RebuildsRunSettlementAndRemovesDerivedPayment()
     {
         PrepareAppRoot("georaeplan-rental-purge-transaction-run-settlement");
@@ -1854,16 +1977,49 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     private static LocalCustomer CreateCustomer(Guid customerId, string customerName)
+        => CreateCustomer(customerId, customerName, OfficeCodeCatalog.Usenet);
+
+    private static LocalCustomer CreateCustomer(Guid customerId, string customerName, string officeCode, bool isDeleted = false)
         => new()
         {
             Id = customerId,
-            TenantCode = TenantScopeCatalog.UsenetGroup,
-            OfficeCode = OfficeCodeCatalog.Usenet,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, officeCode),
+            OfficeCode = officeCode,
             NameOriginal = customerName,
             NameMatchKey = customerName,
             TradeType = CustomerTradeTypes.Sales,
-            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
-            IsDeleted = false,
+            ResponsibleOfficeCode = officeCode,
+            IsDeleted = isDeleted,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
+        };
+
+    private static LocalInvoice CreateInvoice(
+        Guid invoiceId,
+        Guid customerId,
+        string officeCode,
+        string invoiceNumber,
+        Guid versionGroupId,
+        int versionNumber,
+        bool isDeleted,
+        bool isLatestVersion)
+        => new()
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, officeCode),
+            OfficeCode = officeCode,
+            ResponsibleOfficeCode = officeCode,
+            InvoiceNumber = invoiceNumber,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 17),
+            TotalAmount = 1000m,
+            SupplyAmount = 1000m,
+            VersionGroupId = versionGroupId,
+            VersionNumber = versionNumber,
+            IsLatestVersion = isLatestVersion,
+            IsDeleted = isDeleted,
+            IsDirty = false,
             CreatedAtUtc = DateTime.UtcNow,
             UpdatedAtUtc = DateTime.UtcNow
         };

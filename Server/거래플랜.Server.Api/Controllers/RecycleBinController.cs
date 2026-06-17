@@ -1664,6 +1664,10 @@ public sealed class RecycleBinController : ControllerBase
             return revisionCheck;
 
         var invoiceGroup = await GetInvoiceGroupAsync(invoice, cancellationToken);
+        var invoiceGroupScopeCheck = EnsureCanWriteInvoiceGroup(invoiceGroup, "영구삭제");
+        if (!invoiceGroupScopeCheck.Success)
+            return invoiceGroupScopeCheck;
+
         var invoiceIds = invoiceGroup.Select(current => current.Id).Distinct().ToList();
 
         var hasTransactions = await _dbContext.Transactions
@@ -1992,6 +1996,11 @@ public sealed class RecycleBinController : ControllerBase
         Customer customer,
         CancellationToken cancellationToken)
     {
+        var invoiceGroup = await GetInvoiceGroupAsync(invoice, cancellationToken);
+        var invoiceGroupScopeCheck = EnsureCanWriteInvoiceGroup(invoiceGroup, "복원");
+        if (!invoiceGroupScopeCheck.Success)
+            return (false, false, invoiceGroupScopeCheck.Message);
+
         var customerRestored = false;
         if (customer.IsDeleted)
         {
@@ -2003,7 +2012,6 @@ public sealed class RecycleBinController : ControllerBase
             customerRestored = true;
         }
 
-        var invoiceGroup = await GetInvoiceGroupAsync(invoice, cancellationToken);
         var latestVersion = invoiceGroup
             .Where(current => !current.IsDeleted)
             .OrderByDescending(current => current.VersionNumber)
@@ -2029,6 +2037,17 @@ public sealed class RecycleBinController : ControllerBase
         }
 
         return (true, customerRestored, string.Empty);
+    }
+
+    private (bool Success, string Message) EnsureCanWriteInvoiceGroup(IEnumerable<Invoice> invoiceGroup, string actionText)
+    {
+        foreach (var current in invoiceGroup)
+        {
+            if (!_officeScopeService.CanWriteOfficeForInvoices(current.ResponsibleOfficeCode, current.TenantCode))
+                return (false, $"현재 계정으로 전표 묶음의 모든 버전을 {actionText}할 수 없습니다.");
+        }
+
+        return (true, string.Empty);
     }
 
     private (bool Success, string Message) EnsureCanRestoreLinkedCustomer(Customer customer)

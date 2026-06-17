@@ -311,6 +311,110 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task RestoreInvoice_RejectsVersionGroupOutsideInvoiceWriteScope()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var visibleCustomer = CreateScopedCustomer("전표 묶음 복원 거래처", OfficeCodeCatalog.Usenet);
+        var hiddenCustomer = CreateScopedCustomer("권한 외 전표 묶음 거래처", OfficeCodeCatalog.Yeonsu);
+        var versionGroupId = Guid.NewGuid();
+        var visibleInvoice = CreateScopedInvoice(visibleCustomer.Id, OfficeCodeCatalog.Usenet, "INV-GROUP-SCOPE-RESTORE");
+        visibleInvoice.IsDeleted = true;
+        visibleInvoice.VersionGroupId = versionGroupId;
+        visibleInvoice.VersionNumber = 1;
+        visibleInvoice.IsLatestVersion = false;
+        var hiddenInvoice = CreateScopedInvoice(hiddenCustomer.Id, OfficeCodeCatalog.Yeonsu, "INV-GROUP-SCOPE-HIDDEN");
+        hiddenInvoice.IsDeleted = true;
+        hiddenInvoice.VersionGroupId = versionGroupId;
+        hiddenInvoice.VersionNumber = 2;
+        hiddenInvoice.IsLatestVersion = true;
+        dbContext.Customers.AddRange(visibleCustomer, hiddenCustomer);
+        dbContext.Invoices.AddRange(visibleInvoice, hiddenInvoice);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = visibleInvoice.Id,
+                        Kind = "invoice"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("전표 묶음", item.Message);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        var invoiceStates = await dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Where(current => current.Id == visibleInvoice.Id || current.Id == hiddenInvoice.Id)
+            .ToDictionaryAsync(current => current.Id, current => current.IsDeleted);
+        Assert.True(invoiceStates[visibleInvoice.Id]);
+        Assert.True(invoiceStates[hiddenInvoice.Id]);
+    }
+
+    [Fact]
+    public async Task PurgeInvoice_RejectsVersionGroupOutsideInvoiceWriteScope()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var visibleCustomer = CreateScopedCustomer("전표 묶음 삭제 거래처", OfficeCodeCatalog.Usenet);
+        var hiddenCustomer = CreateScopedCustomer("권한 외 전표 묶음 삭제 거래처", OfficeCodeCatalog.Yeonsu);
+        var versionGroupId = Guid.NewGuid();
+        var visibleInvoice = CreateScopedInvoice(visibleCustomer.Id, OfficeCodeCatalog.Usenet, "INV-GROUP-SCOPE-PURGE");
+        visibleInvoice.IsDeleted = true;
+        visibleInvoice.VersionGroupId = versionGroupId;
+        visibleInvoice.VersionNumber = 1;
+        visibleInvoice.IsLatestVersion = false;
+        var hiddenInvoice = CreateScopedInvoice(hiddenCustomer.Id, OfficeCodeCatalog.Yeonsu, "INV-GROUP-SCOPE-PURGE-HIDDEN");
+        hiddenInvoice.IsDeleted = true;
+        hiddenInvoice.VersionGroupId = versionGroupId;
+        hiddenInvoice.VersionNumber = 2;
+        hiddenInvoice.IsLatestVersion = true;
+        dbContext.Customers.AddRange(visibleCustomer, hiddenCustomer);
+        dbContext.Invoices.AddRange(visibleInvoice, hiddenInvoice);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = visibleInvoice.Id,
+                        Kind = "invoice"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("전표 묶음", item.Message);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.True(await dbContext.Invoices.IgnoreQueryFilters().AnyAsync(current => current.Id == visibleInvoice.Id));
+        Assert.True(await dbContext.Invoices.IgnoreQueryFilters().AnyAsync(current => current.Id == hiddenInvoice.Id));
+    }
+
+    [Fact]
     public async Task RestorePayment_RejectsLinkedDeletedCustomerOutsideCustomerWriteScope()
     {
         var currentUser = CreateOfficeOnlyUser();

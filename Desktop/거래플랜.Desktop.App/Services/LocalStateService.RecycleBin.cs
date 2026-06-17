@@ -1589,13 +1589,16 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Missing("복원할 전표를 찾을 수 없습니다.");
         if (!target.IsDeleted)
             return OfficeMutationResult.Ok(invoiceId, "이미 활성 상태인 전표입니다.");
-        if (!CanAccessInvoice(target, session))
+        if (!CanWriteOfficeScope(session, target.ResponsibleOfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 전표를 복원할 수 없습니다.");
 
-        var customerRestored = await RestoreInvoiceGroupCoreAsync(target, session, ct);
+        var invoiceGroupRestore = await RestoreInvoiceGroupCoreAsync(target, session, ct);
+        if (!invoiceGroupRestore.Success)
+            return OfficeMutationResult.Denied(invoiceGroupRestore.Message);
+
         return OfficeMutationResult.Ok(
             target.Id,
-            customerRestored
+            invoiceGroupRestore.CustomerRestored
                 ? "전표를 복원하고 연결된 거래처도 함께 활성화했습니다."
                 : "전표를 휴지통에서 복원했습니다.");
     }
@@ -1612,14 +1615,14 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Missing("영구삭제할 전표를 찾을 수 없습니다.");
         if (!target.IsDeleted)
             return OfficeMutationResult.Denied("활성 상태 전표는 휴지통에서 영구삭제할 수 없습니다.");
-        if (!CanAccessInvoice(target, session))
+        if (!CanWriteOfficeScope(session, target.ResponsibleOfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 전표를 영구삭제할 수 없습니다.");
 
-        var versionGroupId = target.VersionGroupId == Guid.Empty ? target.Id : target.VersionGroupId;
-        var groupInvoices = await _db.Invoices
-            .IgnoreQueryFilters()
-            .Where(current => current.Id == target.Id || current.VersionGroupId == versionGroupId)
-            .ToListAsync(ct);
+        var groupInvoices = await LoadInvoiceGroupForRecycleBinAsync(target, ct);
+        var groupScopeFailure = EnsureCanWriteInvoiceGroupForRecycleBin(groupInvoices, session, "영구삭제");
+        if (groupScopeFailure is not null)
+            return groupScopeFailure;
+
         var invoiceIds = groupInvoices.Select(current => current.Id).Distinct().ToList();
 
         var hasTransactions = await _db.Transactions
@@ -1687,14 +1690,18 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == payment.InvoiceId, ct);
         if (invoice is null)
             return OfficeMutationResult.Missing("연결된 전표를 찾을 수 없습니다.");
-        if (!CanAccessInvoice(invoice, session))
+        if (!CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 수금/지급 기록을 복원할 수 없습니다.");
 
         var customerRestored = false;
         var invoiceRestored = false;
         if (invoice.IsDeleted)
         {
-            customerRestored = await RestoreInvoiceGroupCoreAsync(invoice, session, ct);
+            var invoiceGroupRestore = await RestoreInvoiceGroupCoreAsync(invoice, session, ct);
+            if (!invoiceGroupRestore.Success)
+                return OfficeMutationResult.Denied(invoiceGroupRestore.Message);
+
+            customerRestored = invoiceGroupRestore.CustomerRestored;
             invoiceRestored = true;
         }
 
@@ -1795,7 +1802,11 @@ public sealed partial class LocalStateService
 
             if (linkedInvoice is not null && linkedInvoice.IsDeleted)
             {
-                customerRestored = customerRestored || await RestoreInvoiceGroupCoreAsync(linkedInvoice, session, ct);
+                var invoiceGroupRestore = await RestoreInvoiceGroupCoreAsync(linkedInvoice, session, ct);
+                if (!invoiceGroupRestore.Success)
+                    return OfficeMutationResult.Denied(invoiceGroupRestore.Message);
+
+                customerRestored = customerRestored || invoiceGroupRestore.CustomerRestored;
                 invoiceRestored = true;
                 linkedInvoice = await _db.Invoices
                     .IgnoreQueryFilters()
@@ -1893,21 +1904,29 @@ public sealed partial class LocalStateService
         return OfficeMutationResult.Ok(transaction.Id, "거래내역을 휴지통에서 영구삭제했습니다.");
     }
 
-    private async Task<bool> RestoreInvoiceGroupCoreAsync(
+    private async Task<(bool Success, bool CustomerRestored, string Message)> RestoreInvoiceGroupCoreAsync(
         LocalInvoice target,
         SessionState session,
         CancellationToken ct)
     {
+        var groupInvoices = await LoadInvoiceGroupForRecycleBinAsync(target, ct);
+        var groupScopeFailure = EnsureCanWriteInvoiceGroupForRecycleBin(groupInvoices, session, "복원");
+        if (groupScopeFailure is not null)
+            return (false, false, groupScopeFailure.Message);
+
         var now = DateTime.UtcNow;
         var customer = await _db.Customers
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == target.CustomerId, ct);
         if (customer is null)
-            throw new InvalidOperationException("연결된 거래처를 찾을 수 없습니다.");
+            return (false, false, "연결된 거래처를 찾을 수 없습니다.");
 
         var customerRestored = false;
         if (customer.IsDeleted)
         {
+            if (!CanWriteOfficeScope(session, customer.ResponsibleOfficeCode))
+                return (false, false, "현재 계정으로 연결된 거래처를 복원할 수 없습니다.");
+
             RestoreCustomerCore(customer, session, now);
             AddRestoreAudit(nameof(LocalCustomer), customer.Id, new
             {
@@ -1916,12 +1935,6 @@ public sealed partial class LocalStateService
             }, session, now);
             customerRestored = true;
         }
-
-        var versionGroupId = target.VersionGroupId == Guid.Empty ? target.Id : target.VersionGroupId;
-        var groupInvoices = await _db.Invoices
-            .IgnoreQueryFilters()
-            .Where(current => current.Id == target.Id || current.VersionGroupId == versionGroupId)
-            .ToListAsync(ct);
 
         var latestVersionId = groupInvoices
             .OrderByDescending(current => current.VersionNumber)
@@ -1956,7 +1969,33 @@ public sealed partial class LocalStateService
             ForceOverride = false
         }, ct);
 
-        return customerRestored;
+        return (true, customerRestored, string.Empty);
+    }
+
+    private Task<List<LocalInvoice>> LoadInvoiceGroupForRecycleBinAsync(LocalInvoice target, CancellationToken ct)
+    {
+        var versionGroupId = target.VersionGroupId == Guid.Empty ? target.Id : target.VersionGroupId;
+        return _db.Invoices
+            .IgnoreQueryFilters()
+            .Where(current =>
+                current.Id == target.Id ||
+                current.Id == versionGroupId ||
+                current.VersionGroupId == versionGroupId)
+            .ToListAsync(ct);
+    }
+
+    private static OfficeMutationResult? EnsureCanWriteInvoiceGroupForRecycleBin(
+        IEnumerable<LocalInvoice> invoiceGroup,
+        SessionState session,
+        string actionText)
+    {
+        foreach (var invoice in invoiceGroup)
+        {
+            if (!CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode))
+                return OfficeMutationResult.Denied($"권한이 없어 전표 묶음의 모든 버전을 {actionText}할 수 없습니다.");
+        }
+
+        return null;
     }
 
     private static InvoiceSaveContext CreateServerPurgeInvoiceSaveContext() => new()
