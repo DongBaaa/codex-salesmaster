@@ -2,6 +2,7 @@ using 거래플랜.Server.Api.Controllers;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
+using 거래플랜.Server.Api.Security;
 using 거래플랜.Server.Api.Services;
 using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
@@ -895,6 +896,97 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         var conflict = Assert.IsType<ConflictObjectResult>(response);
         var payload = Assert.IsType<ExpectedRevisionConflictResponse>(conflict.Value);
         Assert.Equal(nameof(Payment), payload.EntityName);
+    }
+
+    [Fact]
+    public async Task PaymentsController_Update_ForbidsRelinkingPaymentToOutOfScopeInvoice()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "payment-editor-usenet",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = new[] { PermissionNames.PaymentEdit }
+        };
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var allowedCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Allowed payment customer",
+            NameMatchKey = "ALLOWEDPAYMENTCUSTOMER",
+            TradeType = "Sales"
+        };
+        var outOfScopeCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "Out of scope payment customer",
+            NameMatchKey = "OUTOFSCOPEPAYMENTCUSTOMER",
+            TradeType = "Sales"
+        };
+        var allowedInvoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = allowedCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "INV-PAY-SCOPE-ALLOWED",
+            InvoiceDate = new DateOnly(2026, 6, 17),
+            TotalAmount = 1000m
+        };
+        var outOfScopeInvoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = outOfScopeCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            InvoiceNumber = "INV-PAY-SCOPE-BLOCKED",
+            InvoiceDate = new DateOnly(2026, 6, 17),
+            TotalAmount = 1000m
+        };
+        var payment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = allowedInvoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 17),
+            Amount = 100m,
+            Note = "original scope"
+        };
+        dbContext.Customers.AddRange(allowedCustomer, outOfScopeCustomer);
+        dbContext.Invoices.AddRange(allowedInvoice, outOfScopeInvoice);
+        dbContext.Payments.Add(payment);
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Payments
+            .IgnoreQueryFilters()
+            .Include(row => row.Invoice)
+            .ThenInclude(invoice => invoice!.Customer)
+            .Include(row => row.Attachments)
+            .SingleAsync(row => row.Id == payment.Id);
+        var dto = stored.ToDto();
+        dto.ExpectedRevision = stored.Revision;
+        dto.InvoiceId = outOfScopeInvoice.Id;
+        dto.Note = "attempted out-of-scope relink";
+
+        var controller = new PaymentsController(dbContext, new OfficeScopeService(currentUser, dbContext), new StubCentralFileStorage());
+
+        var response = await controller.Update(payment.Id, dto, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(response.Result);
+        var persisted = await dbContext.Payments
+            .IgnoreQueryFilters()
+            .SingleAsync(row => row.Id == payment.Id);
+        Assert.Equal(allowedInvoice.Id, persisted.InvoiceId);
+        Assert.Equal("original scope", persisted.Note);
     }
 
     [Fact]

@@ -263,6 +263,17 @@ public sealed class PaymentsController : ControllerBase
             return Forbid();
         if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Payment)) is { } conflict)
             return conflict;
+
+        var targetInvoice = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == dto.InvoiceId, cancellationToken);
+        if (targetInvoice is not null &&
+            !_officeScopeService.CanWriteOfficeForPayments(targetInvoice.ResponsibleOfficeCode, targetInvoice.TenantCode))
+        {
+            return Forbid();
+        }
+
         if (await ValidatePaymentAmountAsync(dto, id, cancellationToken) is { } paymentValidationError)
             return paymentValidationError;
 
@@ -347,7 +358,6 @@ public sealed class PaymentsController : ControllerBase
     }
 
 }
-
 
 
 
