@@ -170,7 +170,7 @@ public static class DtoMappings
 
     public static void Apply(this CustomerCategory entity, CustomerCategoryDto dto)
     {
-        entity.Name = dto.Name; entity.IsSystemDefault = dto.IsSystemDefault; entity.IsDeleted = dto.IsDeleted;
+        entity.Name = DefaultCustomerCategories.NormalizeName(dto.Name); entity.IsSystemDefault = dto.IsSystemDefault; entity.IsDeleted = dto.IsDeleted;
     }
 
     public static PriceGradeOptionDto ToDto(this PriceGradeOption entity) =>

@@ -5713,6 +5713,45 @@ public sealed class SyncControllerTests : IDisposable
         Assert.True(refreshedItem.Revision > 100);
     }
 
+    [Fact]
+    public async Task Push_RejectsCustomerCategoryDuplicateNameAfterTrim()
+    {
+        var existingId = Guid.NewGuid();
+        _dbContext.CustomerCategories.Add(new CustomerCategory
+        {
+            Id = existingId,
+            Name = "관공서",
+            UpdatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc)
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var incomingId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-duplicate-customer-category",
+            CustomerCategories =
+            [
+                new CustomerCategoryDto
+                {
+                    Id = incomingId,
+                    Name = " 관공서 ",
+                    CreatedAtUtc = new DateTime(2026, 6, 17, 0, 1, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 17, 0, 1, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(CustomerCategory) &&
+            conflict.Reason.Contains("already exists", StringComparison.OrdinalIgnoreCase));
+        Assert.False(await _dbContext.CustomerCategories.IgnoreQueryFilters().AnyAsync(category => category.Id == incomingId));
+        Assert.Equal(1, await _dbContext.CustomerCategories.IgnoreQueryFilters().CountAsync(category => !category.IsDeleted));
+    }
+
     public void Dispose()
     {
         _dbContext.Dispose();

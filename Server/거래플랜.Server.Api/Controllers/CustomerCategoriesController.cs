@@ -26,7 +26,15 @@ public sealed class CustomerCategoriesController : ControllerBase
     [Authorize(Policy = PermissionNames.SettingsEdit)]
     public async Task<ActionResult<CustomerCategoryDto>> Create([FromBody] CustomerCategoryDto dto, CancellationToken cancellationToken)
     {
+        var normalizedName = DefaultCustomerCategories.NormalizeName(dto.Name);
+        if (string.IsNullOrWhiteSpace(normalizedName))
+            return BadRequest("고객분류명은 필수입니다.");
+
         var entity = new CustomerCategory { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
+        if (!dto.IsDeleted && await HasActiveDuplicateNameAsync(normalizedName, entity.Id, cancellationToken))
+            return Conflict("같은 고객분류명이 이미 존재합니다.");
+
+        dto.Name = normalizedName;
         entity.Apply(dto);
         _dbContext.CustomerCategories.Add(entity);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -41,8 +49,28 @@ public sealed class CustomerCategoriesController : ControllerBase
         if (entity is null) return NotFound();
         if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(CustomerCategory)) is { } conflict)
             return conflict;
+        var normalizedName = DefaultCustomerCategories.NormalizeName(dto.Name);
+        if (string.IsNullOrWhiteSpace(normalizedName))
+            return BadRequest("고객분류명은 필수입니다.");
+        if (!dto.IsDeleted && await HasActiveDuplicateNameAsync(normalizedName, id, cancellationToken))
+            return Conflict("같은 고객분류명이 이미 존재합니다.");
+
+        dto.Name = normalizedName;
         entity.Apply(dto);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(entity.ToDto());
+    }
+
+    private async Task<bool> HasActiveDuplicateNameAsync(string normalizedName, Guid excludeId, CancellationToken cancellationToken)
+    {
+        var candidates = await _dbContext.CustomerCategories
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(category => category.Id != excludeId && !category.IsDeleted)
+            .Select(category => category.Name)
+            .ToListAsync(cancellationToken);
+
+        return candidates.Any(name =>
+            string.Equals(DefaultCustomerCategories.NormalizeName(name), normalizedName, StringComparison.CurrentCultureIgnoreCase));
     }
 }

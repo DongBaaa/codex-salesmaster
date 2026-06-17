@@ -1766,6 +1766,72 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         Assert.IsType<ConflictObjectResult>(categoryResponse.Result);
     }
 
+    [Fact]
+    public async Task CustomerCategoriesController_Create_ReturnsConflict_WhenActiveNameAlreadyExistsAfterTrim()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var existingId = Guid.NewGuid();
+        dbContext.CustomerCategories.Add(new CustomerCategory
+        {
+            Id = existingId,
+            Name = "관공서"
+        });
+        await dbContext.SaveChangesAsync();
+
+        var incomingId = Guid.NewGuid();
+        var controller = new CustomerCategoriesController(dbContext);
+        var response = await controller.Create(new CustomerCategoryDto
+        {
+            Id = incomingId,
+            Name = " 관공서 "
+        }, CancellationToken.None);
+
+        Assert.IsType<ConflictObjectResult>(response.Result);
+        Assert.False(await dbContext.CustomerCategories.IgnoreQueryFilters().AnyAsync(category => category.Id == incomingId));
+        Assert.Equal(1, await dbContext.CustomerCategories.IgnoreQueryFilters().CountAsync(category => !category.IsDeleted));
+    }
+
+    [Fact]
+    public async Task CustomerCategoriesController_Update_ReturnsConflict_WhenActiveNameAlreadyExistsAfterTrim()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var existingId = Guid.NewGuid();
+        var targetId = Guid.NewGuid();
+        dbContext.CustomerCategories.AddRange(
+            new CustomerCategory
+            {
+                Id = existingId,
+                Name = "관공서"
+            },
+            new CustomerCategory
+            {
+                Id = targetId,
+                Name = "학교"
+            });
+        await dbContext.SaveChangesAsync();
+
+        var storedTarget = await dbContext.CustomerCategories.FirstAsync(category => category.Id == targetId);
+        var controller = new CustomerCategoriesController(dbContext);
+        var response = await controller.Update(targetId, new CustomerCategoryDto
+        {
+            Id = targetId,
+            Name = " 관공서 ",
+            ExpectedRevision = storedTarget.Revision
+        }, CancellationToken.None);
+
+        Assert.IsType<ConflictObjectResult>(response.Result);
+        Assert.Equal("학교", await dbContext.CustomerCategories
+            .IgnoreQueryFilters()
+            .Where(category => category.Id == targetId)
+            .Select(category => category.Name)
+            .SingleAsync());
+        Assert.Equal(2, await dbContext.CustomerCategories.IgnoreQueryFilters().CountAsync(category => !category.IsDeleted));
+    }
+
     private static TDto AssertOk<TDto>(ActionResult<TDto> response)
     {
         var ok = Assert.IsType<OkObjectResult>(response.Result);

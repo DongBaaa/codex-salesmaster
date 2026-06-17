@@ -306,8 +306,7 @@ public sealed class SyncController : ControllerBase
             await UpsertEntitiesAsync(request.CompanyProfiles ?? [], _dbContext.CompanyProfiles,
                 (e, d) => e.Apply(d), d => new CompanyProfile { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
             await UpsertUnitsAsync(request.Units ?? [], result, deviceId, cancellationToken);
-            await UpsertEntitiesAsync(request.CustomerCategories ?? [], _dbContext.CustomerCategories,
-                (e, d) => e.Apply(d), d => new CustomerCategory { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+            await UpsertCustomerCategoriesAsync(request.CustomerCategories ?? [], result, deviceId, cancellationToken);
             await UpsertPriceGradeOptionsAsync(request.PriceGradeOptions ?? [], result, deviceId, cancellationToken);
             await UpsertTradeTypeOptionsAsync(request.TradeTypeOptions ?? [], result, deviceId, cancellationToken);
             await UpsertItemCategoryOptionsAsync(request.ItemCategoryOptions ?? [], result, deviceId, cancellationToken);
@@ -567,6 +566,77 @@ public sealed class SyncController : ControllerBase
             result,
             deviceId,
             cancellationToken);
+    }
+
+    private async Task UpsertCustomerCategoriesAsync(
+        IEnumerable<CustomerCategoryDto> payload,
+        SyncPushResult result,
+        string deviceId,
+        CancellationToken cancellationToken)
+    {
+        var existingCategories = await _dbContext.CustomerCategories
+            .IgnoreQueryFilters()
+            .ToListAsync(cancellationToken);
+
+        foreach (var dto in payload)
+        {
+            if (await TryAcceptDuplicateMutationAsync(dto, nameof(CustomerCategory), deviceId, result, cancellationToken))
+                continue;
+
+            var normalizedName = DefaultCustomerCategories.NormalizeName(dto.Name);
+            if (string.IsNullOrWhiteSpace(normalizedName))
+            {
+                AddClientConflict(dto, nameof(CustomerCategory), "Customer category name is required.", result);
+                continue;
+            }
+
+            var entity = existingCategories.FirstOrDefault(current => current.Id == dto.Id);
+            var activeDuplicate = dto.IsDeleted
+                ? null
+                : existingCategories
+                    .Where(current => current.Id != dto.Id && !current.IsDeleted)
+                    .FirstOrDefault(current =>
+                        string.Equals(
+                            DefaultCustomerCategories.NormalizeName(current.Name),
+                            normalizedName,
+                            StringComparison.CurrentCultureIgnoreCase));
+
+            if (activeDuplicate is not null)
+            {
+                AddClientConflict(dto, nameof(CustomerCategory), "Customer category name already exists.", result);
+                continue;
+            }
+
+            dto.Name = normalizedName;
+            if (entity is null)
+            {
+                var newEntity = new CustomerCategory { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
+                newEntity.Apply(dto);
+                _dbContext.CustomerCategories.Add(newEntity);
+                existingCategories.Add(newEntity);
+                RegisterProcessedMutation(dto, nameof(CustomerCategory), deviceId);
+                await ResolveHistoricalConflictsAsync(nameof(CustomerCategory), newEntity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
+                result.AcceptedCount++;
+                continue;
+            }
+
+            if (HasExpectedRevisionConflict(entity, dto))
+            {
+                AddServerConflict(dto, entity, nameof(CustomerCategory), BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result);
+                continue;
+            }
+
+            if (IsServerEntityNewer(entity, dto))
+            {
+                AddServerConflict(dto, entity, nameof(CustomerCategory), "Server version is newer.", result);
+                continue;
+            }
+
+            entity.Apply(dto);
+            RegisterProcessedMutation(dto, nameof(CustomerCategory), deviceId);
+            await ResolveHistoricalConflictsAsync(nameof(CustomerCategory), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
+            result.AcceptedCount++;
+        }
     }
 
     private async Task UpsertTradeTypeOptionsAsync(
