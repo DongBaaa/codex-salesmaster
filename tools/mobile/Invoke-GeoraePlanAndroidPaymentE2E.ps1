@@ -1001,6 +1001,9 @@ try {
     for ($scrollAttempt = 0; $scrollAttempt -lt 5; $scrollAttempt++) {
         $paymentDump = Get-UiDump -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$voucherSlug-$timestamp-payment-save-$scrollAttempt"
         $saveButtonPoint = Get-NodeCenterByText -Content $paymentDump.Content -Text $paymentSaveText -ClassName 'android.widget.Button'
+        if (-not $saveButtonPoint) {
+            $saveButtonPoint = Get-NodeCenterByText -Content $paymentDump.Content -Text "마지막 단계 · $paymentSaveText" -ClassName 'android.widget.Button'
+        }
         if ($saveButtonPoint) { break }
         Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'shell', 'input', 'swipe', '540', '2050', '540', '900', '700') | Out-Null
         Start-Sleep -Seconds 2

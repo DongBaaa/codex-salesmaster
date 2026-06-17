@@ -1434,12 +1434,12 @@ else {
 }
 
 if (-not $SkipLinuxPcLiveDriftCheck) {
-    Invoke-Step -Name 'nas-live-drift-check' -Script {
+    Invoke-Step -Name 'linux-pc-live-drift-check' -Script {
         Invoke-LinuxPcLiveDriftCheck -ProjectRoot $ProjectRoot -LinuxPcRoot $LinuxPcRoot -ExpectedReleaseCount $ExpectedLinuxPcReleaseCount
     }
 }
 else {
-    Add-StepResult -Name 'nas-live-drift-check' -Passed $true -Detail 'SKIP'
+    Add-StepResult -Name 'linux-pc-live-drift-check' -Passed $true -Detail 'SKIP'
 }
 
 if (-not $SkipLinuxPcUpdateManifestCheck) {
