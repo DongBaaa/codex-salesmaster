@@ -1681,6 +1681,14 @@ public sealed class SyncController : ControllerBase
                     lineConflict = true;
                     break;
                 }
+
+                if (!_officeScopeService.CanReadOfficeForItems(item.OfficeCode, item.TenantCode))
+                {
+                    AddClientConflict(dto, nameof(InventoryTransfer),
+                        $"Referenced item is outside the readable office scope: {line.ItemId}.", result);
+                    lineConflict = true;
+                    break;
+                }
             }
 
             if (lineConflict)

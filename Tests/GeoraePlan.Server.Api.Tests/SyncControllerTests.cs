@@ -594,6 +594,95 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsInventoryTransferLineWithOutOfScopeItem()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "delivery-usenet",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.DeliveryEdit]
+        };
+
+        var outOfScopeItemId = Guid.NewGuid();
+        _dbContext.Items.Add(new Item
+        {
+            Id = outOfScopeItemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "Out of scope transfer item",
+            NameMatchKey = "OUTOFSCOPETRANSFERITEM",
+            Unit = "EA",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 10m
+        });
+        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = outOfScopeItemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
+            Revision = 10
+        });
+        await _dbContext.SaveChangesAsync();
+
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var transferId = Guid.NewGuid();
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-transfer-out-of-scope-item",
+            InventoryTransfers =
+            [
+                new InventoryTransferDto
+                {
+                    Id = transferId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                    TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    TransferNumber = "TR-SCOPE-ITEM-001",
+                    TransferDate = new DateOnly(2026, 6, 17),
+                    FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                    TransferStatus = InventoryTransferStatusNormalizer.Pending,
+                    MutationId = $"device-transfer-out-of-scope-item:InventoryTransfer:{transferId:N}:1",
+                    MutationCreatedAtUtc = DateTime.UtcNow,
+                    Lines =
+                    [
+                        new InventoryTransferLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            TransferId = transferId,
+                            ItemId = outOfScopeItemId,
+                            ItemNameOriginal = "Out of scope transfer item",
+                            SpecificationOriginal = string.Empty,
+                            Unit = "EA",
+                            Quantity = 1m
+                        }
+                    ]
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(InventoryTransfer), StringComparison.Ordinal) &&
+            conflict.Reason.Contains("Referenced item is outside the readable office scope", StringComparison.Ordinal));
+        scopedDb.ChangeTracker.Clear();
+        Assert.False(await scopedDb.InventoryTransfers.IgnoreQueryFilters().AnyAsync(x => x.Id == transferId));
+        Assert.False(await scopedDb.InventoryLedgerEntries.AnyAsync(entry => entry.SourceDocumentId == transferId));
+        Assert.Equal(10m, await scopedDb.Items.IgnoreQueryFilters()
+            .Where(item => item.Id == outOfScopeItemId)
+            .Select(item => item.CurrentStock)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task Push_AcceptsRejectedInventoryTransfer_WithoutInventoryLedgerRows()
     {
         var itemId = Guid.NewGuid();
