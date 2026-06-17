@@ -2975,6 +2975,96 @@ public sealed class SyncControllerTests : IDisposable
         Assert.False(await scopedDb.RentalBillingLogs.IgnoreQueryFilters().AnyAsync(log => log.Id == logId));
     }
 
+    [Fact]
+    public async Task Push_RejectsNewRentalBillingProfile_WhenLinkedCustomerResolvesToReadSharedOffice()
+    {
+        var sharedReadOnlyCustomerId = Guid.NewGuid();
+        _dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        {
+            Id = Guid.NewGuid(),
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Usenet,
+            ShareCustomers = true,
+            ShareRentals = true,
+            AllowTargetWrite = false,
+            Note = "read-only rental/customer share for profile create scope test"
+        });
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = sharedReadOnlyCustomerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "Read Shared Rental Customer",
+            NameMatchKey = "READSHAREDRENTALCUSTOMER",
+            TradeType = "매출",
+            BusinessNumber = "777-88-99990"
+        });
+        _dbContext.RentalManagementCompanies.AddRange(
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = "유즈넷 렌탈"
+            },
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Yeonsu,
+                Name = "연수 렌탈"
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-rental-profile-create",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.RentalProfileEdit]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var profileId = Guid.NewGuid();
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-profile-read-shared-customer",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = "USENET|7778899990|Read Shared Rental Customer||RS-1000",
+                    CustomerId = sharedReadOnlyCustomerId,
+                    CustomerName = "Read Shared Rental Customer",
+                    BusinessNumber = "777-88-99990",
+                    ItemName = "RS-1000",
+                    BillingDay = 10,
+                    MonthlyAmount = 50000m,
+                    CreatedAtUtc = new DateTime(2026, 6, 17, 0, 2, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 17, 0, 2, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.Reason.Contains("outside the writable office scope", StringComparison.OrdinalIgnoreCase));
+        Assert.False(await scopedDb.RentalBillingProfiles.IgnoreQueryFilters().AnyAsync(profile => profile.Id == profileId));
+    }
+
 
     [Fact]
     public async Task Pull_AdminRentalUser_KeepsCustomerMirrorScoped_ButStillReceivesCrossTenantRentalAssets()

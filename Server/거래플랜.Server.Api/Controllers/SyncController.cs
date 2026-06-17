@@ -2078,6 +2078,13 @@ public sealed class SyncController : ControllerBase
                 }
             }
 
+            if (!_officeScopeService.CanWriteOfficeForRentals(dto.ResponsibleOfficeCode, dto.TenantCode))
+            {
+                AddClientConflict(dto, nameof(RentalBillingProfile),
+                    $"Rental billing profile resolves outside the writable office scope: {dto.ResponsibleOfficeCode}.", result);
+                continue;
+            }
+
             valid.Add(dto);
         }
 
