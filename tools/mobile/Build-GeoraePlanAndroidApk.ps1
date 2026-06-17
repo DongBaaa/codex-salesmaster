@@ -23,6 +23,7 @@ param(
     [switch]$DisableTrimming,
     [switch]$SkipEnvironmentCheck,
     [switch]$SkipArtifactPrune,
+    [switch]$SkipDeploymentCopy,
     [switch]$NoRestore
 )
 
@@ -294,7 +295,7 @@ $env:ANDROID_HOME = $resolvedAndroidSdkDirectory
 $env:PATH = (Join-Path $resolvedJavaSdkDirectory 'bin') + ';' + (Join-Path $resolvedAndroidSdkDirectory 'platform-tools') + ';' + (Split-Path -Parent $resolvedDotNetPath) + ';' + $env:PATH
 
 New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
-$deploymentRoot = Resolve-DeploymentRoot -ProjectRoot $ProjectRoot
+$deploymentRoot = if ($SkipDeploymentCopy.IsPresent) { $null } else { Resolve-DeploymentRoot -ProjectRoot $ProjectRoot }
 
 $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $artifactPrefix = switch ($PackageFormat) {
@@ -468,21 +469,26 @@ if ($PackageFormat -in @('apk', 'both')) {
     }
 
     $apkHash = Write-PackageHash -File $apkFile
-    $stableApkVersion = if ([string]::IsNullOrWhiteSpace($VersionName)) { 'latest' } else { $VersionName }
-    $stableApkPrefix = Get-Utf8String '6rGw656Y7ZSM656cLeyViOuTnOuhnOydtOuTnC12'
-    $stableApkName = "$stableApkPrefix$stableApkVersion-signed.apk"
-    $stableApkFilter = Get-Utf8String '6rGw656Y7ZSM656cLeyViOuTnOuhnOydtOuTnC12Ki1zaWduZWQuYXBrKg=='
-    Get-ChildItem -LiteralPath $deploymentRoot -File -Filter $stableApkFilter -ErrorAction SilentlyContinue |
-        Remove-Item -Force -ErrorAction SilentlyContinue
-    $stableApkPath = Join-Path $deploymentRoot $stableApkName
-    Copy-Item -LiteralPath $apkFile.FullName -Destination $stableApkPath -Force
-    $stableApkHash = Write-PackageHash -File (Get-Item -LiteralPath $stableApkPath)
     Write-Host "apk_ready=$($apkFile.FullName)"
     Write-Host "apk_sha256=$($apkHash.Hash)"
     Write-Host "apk_sha256_file=$($apkHash.HashFile)"
-    Write-Host "apk_deployment_copy=$stableApkPath"
-    Write-Host "apk_deployment_sha256=$($stableApkHash.Hash)"
-    Write-Host "apk_deployment_sha256_file=$($stableApkHash.HashFile)"
+    if ($SkipDeploymentCopy.IsPresent) {
+        Write-Host "apk_deployment_copy=skipped"
+    }
+    else {
+        $stableApkVersion = if ([string]::IsNullOrWhiteSpace($VersionName)) { 'latest' } else { $VersionName }
+        $stableApkPrefix = Get-Utf8String '6rGw656Y7ZSM656cLeyViOuTnOuhnOydtOuTnC12'
+        $stableApkName = "$stableApkPrefix$stableApkVersion-signed.apk"
+        $stableApkFilter = Get-Utf8String '6rGw656Y7ZSM656cLeyViOuTnOuhnOydtOuTnC12Ki1zaWduZWQuYXBrKg=='
+        Get-ChildItem -LiteralPath $deploymentRoot -File -Filter $stableApkFilter -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+        $stableApkPath = Join-Path $deploymentRoot $stableApkName
+        Copy-Item -LiteralPath $apkFile.FullName -Destination $stableApkPath -Force
+        $stableApkHash = Write-PackageHash -File (Get-Item -LiteralPath $stableApkPath)
+        Write-Host "apk_deployment_copy=$stableApkPath"
+        Write-Host "apk_deployment_sha256=$($stableApkHash.Hash)"
+        Write-Host "apk_deployment_sha256_file=$($stableApkHash.HashFile)"
+    }
 }
 
 if ($PackageFormat -in @('aab', 'both')) {

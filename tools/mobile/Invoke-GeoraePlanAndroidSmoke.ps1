@@ -611,12 +611,14 @@ $deviceId = Get-ConnectedDeviceId -AdbPath $resolvedAdb
 $screen = Get-ScreenSize -AdbPath $resolvedAdb -DeviceId $deviceId
 
 $steps = New-Object System.Collections.Generic.List[object]
+$freshInstall = $false
 
 if (-not $SkipInstall) {
     Install-MobileApk -AdbPath $resolvedAdb -DeviceId $deviceId -ApkPath $resolvedApk -PackageName $PackageName
     $steps.Add([pscustomobject]@{ Step = 'install'; Result = 'PASS'; Detail = $resolvedApk })
     Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'shell', 'pm', 'clear', $PackageName) | Out-Null
     $steps.Add([pscustomobject]@{ Step = 'app-data-clear'; Result = 'PASS'; Detail = $PackageName })
+    $freshInstall = $true
 }
 
 # Android 런처를 강제로 종료하면 일부 에뮬레이터에서 포커스 윈도우가 사라져
@@ -630,6 +632,12 @@ Start-MobileApp -AdbPath $resolvedAdb -DeviceId $deviceId -PackageName $PackageN
 Start-Sleep -Seconds 5
 
 $dump = Wait-UiForAppReady -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Timestamp $timestamp -PackageName $PackageName
+if ($freshInstall) {
+    # Fresh installs on cold emulators can expose the login tree before MAUI/keyboard work is fully idle.
+    # Wait once more before sending text so the smoke validates the app flow instead of emulator warm-up timing.
+    Start-Sleep -Seconds 20
+    $dump = Get-UiDump -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-smoke-$timestamp-login-stable"
+}
 
 if ($dump.Content.Contains('계정 로그인') -or ($dump.Content.Contains('로그인') -and $dump.Content.Contains('비밀번호'))) {
     $userPoint = Get-NodeCenterByText -Content $dump.Content -Text '아이디' -ClassName 'android.widget.EditText'
@@ -686,8 +694,18 @@ $homeDump = Wait-UiContainsAll `
     -TimeoutSeconds 60
 $steps.Add([pscustomobject]@{ Step = 'home'; Result = 'PASS'; Detail = $homeDump.Path })
 
+$currentHomeContent = Open-HomeActionAndAssert `
+    -AdbPath $resolvedAdb `
+    -DeviceId $deviceId `
+    -EvidenceDirectory $EvidenceDirectory `
+    -Timestamp $timestamp `
+    -HomeContent $homeDump.Content `
+    -ButtonText '렌탈 조회' `
+    -StepName 'rentals-readonly' `
+    -Needles @('렌탈 조회', '청구프로필', '렌탈자산', '청구 이력', '조회 전용') `
+    -Steps $steps
+
 if ($IncludeDraftScreens) {
-    $currentHomeContent = $homeDump.Content
     $currentHomeContent = Open-HomeActionAndAssert `
         -AdbPath $resolvedAdb `
         -DeviceId $deviceId `

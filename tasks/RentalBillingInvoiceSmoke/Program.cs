@@ -139,7 +139,7 @@ internal static class Program
         var lines = invoice!.Lines.OrderBy(line => line.ItemNameOriginal).ToList();
         Ensure(lines.Count == 3, $"묶음 청구 라인 수가 3건이 아닙니다. 실제 {lines.Count}건");
 
-        var expectedMonths = new[] { "사무기기 렌탈대금[4월]", "사무기기 렌탈대금[5월]", "사무기기 렌탈대금[6월]" };
+        var expectedMonths = new[] { "사무기기 렌탈대금[6월]", "사무기기 렌탈대금[7월]", "사무기기 렌탈대금[8월]" };
         foreach (var expectedMonth in expectedMonths)
         {
             var line = lines.SingleOrDefault(current => string.Equals(current.ItemNameOriginal, expectedMonth, StringComparison.Ordinal));
@@ -199,7 +199,7 @@ internal static class Program
         var lines = invoice!.Lines.OrderBy(line => line.ItemNameOriginal).ThenBy(line => line.SpecificationOriginal).ToList();
         Ensure(lines.Count == 12, $"개별 청구 라인 수가 12건이 아닙니다. 실제 {lines.Count}건");
 
-        foreach (var month in new[] { 4, 5, 6 })
+        foreach (var month in new[] { 6, 7, 8 })
         {
             var imcLines = lines.Where(current =>
                 string.Equals(current.ItemNameOriginal, $"사무기기 렌탈대금[{month}월]", StringComparison.Ordinal) &&
@@ -965,7 +965,11 @@ internal static class Program
             TenantCode = TenantScopeCatalog.UsenetGroup,
             OfficeCode = DomainConstants.OfficeUsenet,
             ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
-            Permissions = new List<string>()
+            Permissions = new List<string>
+            {
+                AppPermissionNames.RentalProfileEdit,
+                AppPermissionNames.InvoiceEdit
+            }
         });
         return session;
     }

@@ -68,6 +68,11 @@ internal static class Program
             VoucherType = VoucherType.Purchase,
             InvoiceDate = DateOnly.FromDateTime(DateTime.Today),
             SourceWarehouseCode = DomainConstants.WarehouseUsenetMain,
+            PurchaseReceivingRequired = true,
+            PurchaseReceivingStatus = InvoiceReceivingStatuses.Confirmed,
+            PurchaseReceivedAtUtc = DateTime.UtcNow,
+            PurchaseReceivedByUsername = "admin",
+            PurchaseReceivingWarehouseCode = DomainConstants.WarehouseUsenetMain,
             Lines = new List<LocalInvoiceLine>
             {
                 new()
@@ -191,13 +196,17 @@ internal static class Program
             }
         };
         var transferSave = local.SaveInventoryTransferAsync(transfer, adminSession).GetAwaiter().GetResult();
+        Ensure(transferSave.Success, transferSave.Message);
         var pendingUsenetStock = GetStock(local, item.Id, DomainConstants.WarehouseUsenetMain);
         var pendingYeonsuStock = GetStock(local, item.Id, DomainConstants.WarehouseYeonsuMain);
-        var savedTransfer = local.GetInventoryTransferAsync(transfer.Id).GetAwaiter().GetResult()!;
+        var savedTransfer = local.GetInventoryTransferAsync(transfer.Id).GetAwaiter().GetResult()
+            ?? throw new InvalidOperationException("저장한 재고이동 문서를 다시 불러오지 못했습니다.");
         savedTransfer.Lines.First().ReceivedQuantity = 4m;
         savedTransfer.Lines.First().ReceiptRemark = "1개 누락";
         var transferConfirm = local.ConfirmInventoryTransferReceiptAsync(savedTransfer.Id, savedTransfer.Lines.ToList(), "실물 확인 완료", yeonsuSession).GetAwaiter().GetResult();
-        var transferAfterConfirm = local.GetInventoryTransferAsync(savedTransfer.Id).GetAwaiter().GetResult()!;
+        Ensure(transferConfirm.Success, transferConfirm.Message);
+        var transferAfterConfirm = local.GetInventoryTransferAsync(savedTransfer.Id).GetAwaiter().GetResult()
+            ?? throw new InvalidOperationException("수령확정한 재고이동 문서를 다시 불러오지 못했습니다.");
         var confirmedUsenetStock = GetStock(local, item.Id, DomainConstants.WarehouseUsenetMain);
         var confirmedYeonsuStock = GetStock(local, item.Id, DomainConstants.WarehouseYeonsuMain);
 
@@ -224,10 +233,13 @@ internal static class Program
             }
         };
         var rejectSave = local.SaveInventoryTransferAsync(rejectTransfer, adminSession).GetAwaiter().GetResult();
+        Ensure(rejectSave.Success, rejectSave.Message);
         var rejectPendingUsenetStock = GetStock(local, item.Id, DomainConstants.WarehouseUsenetMain);
         var rejectPendingYeonsuStock = GetStock(local, item.Id, DomainConstants.WarehouseYeonsuMain);
         var rejectResult = local.RejectInventoryTransferAsync(rejectTransfer.Id, "포장 훼손", yeonsuSession).GetAwaiter().GetResult();
-        var transferAfterReject = local.GetInventoryTransferAsync(rejectTransfer.Id).GetAwaiter().GetResult()!;
+        Ensure(rejectResult.Success, rejectResult.Message);
+        var transferAfterReject = local.GetInventoryTransferAsync(rejectTransfer.Id).GetAwaiter().GetResult()
+            ?? throw new InvalidOperationException("반려 처리한 재고이동 문서를 다시 불러오지 못했습니다.");
         var rejectedUsenetStock = GetStock(local, item.Id, DomainConstants.WarehouseUsenetMain);
         var rejectedYeonsuStock = GetStock(local, item.Id, DomainConstants.WarehouseYeonsuMain);
 
@@ -421,5 +433,11 @@ internal static class Program
             SettledAmount = settledAmount,
             RemainingAmount = Math.Max(0m, invoice.TotalAmount - settledAmount)
         };
+    }
+
+    private static void Ensure(bool condition, string message)
+    {
+        if (!condition)
+            throw new InvalidOperationException(message);
     }
 }

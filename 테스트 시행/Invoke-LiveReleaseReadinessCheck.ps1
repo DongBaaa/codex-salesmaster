@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$ProjectRoot,
     [ValidateSet('Pre','Post')][string]$Mode = 'Pre',

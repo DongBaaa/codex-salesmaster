@@ -1,0 +1,162 @@
+using System.Text.RegularExpressions;
+using Xunit;
+
+namespace GeoraePlan.Desktop.App.Tests;
+
+public sealed class WpfGlobalUiGuardTests
+{
+    [Fact]
+    public void EveryViewDatePicker_KeepsCalendarPopupButtonStyleScopedToDatePickerButton()
+    {
+        var root = FindRepositoryRoot();
+        var viewRoot = Path.Combine(root, "Desktop", "거래플랜.Desktop.App", "Views");
+        var failures = new List<string>();
+
+        foreach (var xamlPath in Directory.EnumerateFiles(viewRoot, "*.xaml", SearchOption.AllDirectories))
+        {
+            var xaml = File.ReadAllText(xamlPath);
+            foreach (Match match in Regex.Matches(
+                         xaml,
+                         "<DatePicker\\b[\\s\\S]*?</DatePicker>|<DatePicker\\b[^>]*/>",
+                         RegexOptions.CultureInvariant))
+            {
+                var datePickerBlock = match.Value;
+                if (datePickerBlock.Contains("<DatePicker.Resources>", StringComparison.Ordinal) &&
+                    datePickerBlock.Contains("TargetType=\"{x:Type Button}\"", StringComparison.Ordinal) &&
+                    datePickerBlock.Contains("BasedOn=\"{StaticResource", StringComparison.Ordinal) &&
+                    datePickerBlock.Contains("DatePickerButtonStyle", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                failures.Add($"{RelativeToRoot(root, xamlPath)}:{GetLineNumber(xaml, match.Index)} DatePicker 버튼 스타일 범위가 누락되었습니다.");
+            }
+        }
+
+        Assert.True(failures.Count == 0, string.Join(Environment.NewLine, failures));
+    }
+
+    [Fact]
+    public void DatePickerStyles_KeepCalendarPopupWideEnoughAndDoNotLeakButtonWidthIntoCalendar()
+    {
+        var root = FindRepositoryRoot();
+        var xamlFiles = Directory.EnumerateFiles(
+                Path.Combine(root, "Desktop", "거래플랜.Desktop.App"),
+                "*.xaml",
+                SearchOption.AllDirectories)
+            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) &&
+                           !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase));
+
+        var failures = new List<string>();
+        foreach (var xamlPath in xamlFiles)
+        {
+            var xaml = File.ReadAllText(xamlPath);
+            foreach (Match match in Regex.Matches(
+                         xaml,
+                         "<Style\\s+TargetType=\"(?:\\{x:Type\\s+)?DatePicker(?:\\})?\"[^>]*>[\\s\\S]*?</Style>",
+                         RegexOptions.CultureInvariant))
+            {
+                var styleBlock = match.Value;
+                if (styleBlock.Contains("BasedOn=", StringComparison.Ordinal))
+                    continue;
+
+                if (!styleBlock.Contains("CalendarStyle", StringComparison.Ordinal) ||
+                    !TryReadSetterInt(styleBlock, "MinWidth", out var minWidth) ||
+                    minWidth < 150 ||
+                    !TryReadSetterInt(styleBlock, "Width", out var width) ||
+                    width < 150 ||
+                    !TryReadSetterInt(styleBlock, "MaxWidth", out var maxWidth) ||
+                    maxWidth < 150)
+                {
+                    failures.Add($"{RelativeToRoot(root, xamlPath)}:{GetLineNumber(xaml, match.Index)} DatePicker 스타일의 달력 폭/본문 폭 기준이 부족합니다.");
+                }
+            }
+        }
+
+        var appXaml = File.ReadAllText(Path.Combine(root, "Desktop", "거래플랜.Desktop.App", "App.xaml"));
+        var calendarItemBlock = ExtractBlock(
+            appXaml,
+            "<Style TargetType=\"{x:Type CalendarItem}\">",
+            "<Style x:Key=\"UnifiedDatePickerButtonStyle\"");
+
+        Assert.Contains("<Setter Property=\"MinWidth\" Value=\"320\"/>", appXaml, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"MinHeight\" Value=\"280\"/>", appXaml, StringComparison.Ordinal);
+        Assert.Contains("<Style TargetType=\"{x:Type Button}\">", calendarItemBlock, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"MinWidth\" Value=\"0\"/>", calendarItemBlock, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"HorizontalAlignment\" Value=\"Stretch\"/>", calendarItemBlock, StringComparison.Ordinal);
+        Assert.True(failures.Count == 0, string.Join(Environment.NewLine, failures));
+    }
+
+    [Fact]
+    public void DataIntegrityAlertWindow_KeepsScrollableBodyAndWiresVisibleActionButtons()
+    {
+        var root = FindRepositoryRoot();
+        var xaml = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "DataIntegrityAlertWindow.xaml"));
+        var code = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "DataIntegrityAlertWindow.xaml.cs"));
+
+        Assert.Contains("MinWidth=\"920\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("MinHeight=\"560\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("<ScrollViewer Grid.Row=\"1\" VerticalScrollBarVisibility=\"Auto\">", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{Binding Description}\" TextWrapping=\"Wrap\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{Binding SuggestedAction}\" TextWrapping=\"Wrap\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Content=\"수정 화면 열기\" Click=\"FixButton_Click\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Content=\"닫기(F12)\" Click=\"CloseButton_Click\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("NonClosingActionRequested.Invoke", code, StringComparison.Ordinal);
+        Assert.Contains("DialogWindowCloseHelper.Close(this)", code, StringComparison.Ordinal);
+    }
+
+    private static bool TryReadSetterInt(string styleBlock, string propertyName, out int value)
+    {
+        var match = Regex.Match(
+            styleBlock,
+            $"Property=\"{Regex.Escape(propertyName)}\"\\s+Value=\"(?<value>\\d+)\"",
+            RegexOptions.CultureInvariant);
+
+        if (match.Success && int.TryParse(match.Groups["value"].Value, out value))
+            return true;
+
+        value = 0;
+        return false;
+    }
+
+    private static string ExtractBlock(string source, string startMarker, string endMarker)
+    {
+        var start = source.IndexOf(startMarker, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"시작 마커를 찾을 수 없습니다: {startMarker}");
+
+        var end = source.IndexOf(endMarker, start, StringComparison.Ordinal);
+        Assert.True(end > start, $"끝 마커를 찾을 수 없습니다: {endMarker}");
+
+        return source[start..end];
+    }
+
+    private static int GetLineNumber(string source, int index)
+        => source[..index].Count(ch => ch == '\n') + 1;
+
+    private static string RelativeToRoot(string root, string path)
+        => Path.GetRelativePath(root, path);
+
+    private static string FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "거래플랜.sln")))
+                return directory.FullName;
+
+            directory = directory.Parent;
+        }
+
+        throw new DirectoryNotFoundException("거래플랜.sln을 찾을 수 없습니다.");
+    }
+}
