@@ -110,6 +110,7 @@ public sealed class TenantSettingsController : ControllerBase
             return BadRequest(normalized.ErrorMessage);
 
         var duplicate = await _dbContext.DataSharingPolicies.IgnoreQueryFilters().AnyAsync(current =>
+            !current.IsDeleted &&
             current.SourceTenantCode == normalized.SourceTenantCode &&
             current.SourceOfficeCode == normalized.SourceOfficeCode &&
             current.TargetTenantCode == normalized.TargetTenantCode &&
@@ -144,6 +145,7 @@ public sealed class TenantSettingsController : ControllerBase
             return BadRequest(normalized.ErrorMessage);
 
         var duplicate = await _dbContext.DataSharingPolicies.IgnoreQueryFilters().AnyAsync(current =>
+            !current.IsDeleted &&
             current.Id != id &&
             current.SourceTenantCode == normalized.SourceTenantCode &&
             current.SourceOfficeCode == normalized.SourceOfficeCode &&
