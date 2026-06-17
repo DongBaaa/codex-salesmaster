@@ -322,7 +322,15 @@
                             </DockPanel>
                             <DataGrid Grid.Row="1" ItemsSource="{Binding CandidateAssets}" BorderThickness="0">
                                 <DataGrid.Columns>
-                                    <DataGridCheckBoxColumn Header="선택" Binding="{Binding IsSelected, Mode=TwoWay}" Width="60"/>
+                                    <DataGridTemplateColumn Header="선택" Width="60">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                          HorizontalAlignment="Center"
+                                                          VerticalAlignment="Center"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
                                     <DataGridTextColumn Header="관리번호" Binding="{Binding ManagementNumber}" Width="120"/>
                                     <DataGridTextColumn Header="품명" Binding="{Binding ItemName}" Width="150"/>
                                     <DataGridTextColumn Header="기계번호" Binding="{Binding MachineNumber}" Width="150"/>

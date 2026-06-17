@@ -106,7 +106,15 @@
                     </Style>
                 </DataGrid.ColumnHeaderStyle>
                 <DataGrid.Columns>
-                    <DataGridCheckBoxColumn Header="선택" Binding="{Binding IsSelected, Mode=TwoWay}" Width="58"/>
+                    <DataGridTemplateColumn Header="선택" Width="58">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"/>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
                     <DataGridTextColumn Header="일자" Binding="{Binding InvoiceDateDisplay}" Width="110" IsReadOnly="True"/>
                     <DataGridTextColumn Header="전표번호" Binding="{Binding InvoiceNumber}" Width="160" IsReadOnly="True"/>
                     <DataGridTextColumn Header="합계" Binding="{Binding TotalAmount, StringFormat=N0}" Width="110" IsReadOnly="True"/>

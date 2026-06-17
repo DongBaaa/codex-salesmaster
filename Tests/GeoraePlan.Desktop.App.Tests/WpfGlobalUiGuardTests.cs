@@ -116,6 +116,49 @@ public sealed class WpfGlobalUiGuardTests
     }
 
     [Fact]
+    public void EveryViewReferencedInteractionHandler_ExistsInCodeBehind()
+    {
+        var root = FindRepositoryRoot();
+        var viewRoot = Path.Combine(root, "Desktop", "거래플랜.Desktop.App", "Views");
+        var failures = new List<string>();
+        var eventPattern = new Regex(
+            "\\b(?:Click|MouseDoubleClick|KeyDown|TextChanged|SelectionChanged|Checked|Unchecked|Loaded|Closing)=\"(?<handler>[A-Za-z_][A-Za-z0-9_]*)\"",
+            RegexOptions.CultureInvariant);
+
+        foreach (var xamlPath in Directory.EnumerateFiles(viewRoot, "*.xaml", SearchOption.AllDirectories))
+        {
+            var xaml = File.ReadAllText(xamlPath);
+            var codePath = xamlPath + ".cs";
+            var code = File.Exists(codePath) ? File.ReadAllText(codePath) : string.Empty;
+            foreach (Match match in eventPattern.Matches(xaml))
+            {
+                var handlerName = match.Groups["handler"].Value;
+                if (code.Contains(handlerName, StringComparison.Ordinal))
+                    continue;
+
+                failures.Add($"{RelativeToRoot(root, xamlPath)}:{GetLineNumber(xaml, match.Index)} '{handlerName}' handler가 code-behind에 없습니다.");
+            }
+        }
+
+        Assert.True(failures.Count == 0, string.Join(Environment.NewLine, failures));
+    }
+
+    [Fact]
+    public void ImmediateActionSelectionCheckboxes_UpdateSourceOnFirstClick()
+    {
+        var root = FindRepositoryRoot();
+
+        AssertImmediateSelectionCheckbox(
+            root,
+            "InvoiceHistoryWindow.xaml",
+            "ConfirmButton_Click");
+        AssertImmediateSelectionCheckbox(
+            root,
+            "RentalCustomerOnboardingWindow.xaml",
+            "ApplySelectedAssetsToTemplateCommand");
+    }
+
+    [Fact]
     public void PaymentTransferVerifier_CapturesRuntimeWindowScreenshotsAndDatePickerMetrics()
     {
         var root = FindRepositoryRoot();
@@ -186,6 +229,20 @@ public sealed class WpfGlobalUiGuardTests
         Assert.True(end > start, $"끝 마커를 찾을 수 없습니다: {endMarker}");
 
         return source[start..end];
+    }
+
+    private static void AssertImmediateSelectionCheckbox(string root, string viewName, string actionMarker)
+    {
+        var xamlPath = Path.Combine(root, "Desktop", "거래플랜.Desktop.App", "Views", viewName);
+        var xaml = File.ReadAllText(xamlPath);
+
+        Assert.DoesNotContain("DataGridCheckBoxColumn Header=\"선택\" Binding=\"{Binding IsSelected", xaml, StringComparison.Ordinal);
+        Assert.Contains("<DataGridTemplateColumn Header=\"선택\"", xaml, StringComparison.Ordinal);
+        Assert.Contains(
+            "IsChecked=\"{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}\"",
+            xaml,
+            StringComparison.Ordinal);
+        Assert.Contains(actionMarker, xaml, StringComparison.Ordinal);
     }
 
     private static int GetLineNumber(string source, int index)
