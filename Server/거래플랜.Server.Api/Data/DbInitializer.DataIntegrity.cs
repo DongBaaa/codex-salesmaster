@@ -251,6 +251,27 @@ public static partial class DbInitializer
             dbContext.ItemWarehouseStocks.RemoveRange(staleWarehouseStocks);
     }
 
+    private static async Task<int> RepairDeletedItemCurrentStockResiduesAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var deletedItemsWithStock = await dbContext.Items
+            .IgnoreQueryFilters()
+            .Where(item => item.IsDeleted && item.CurrentStock != 0m)
+            .ToListAsync(cancellationToken);
+        if (deletedItemsWithStock.Count == 0)
+            return 0;
+
+        var now = DateTime.UtcNow;
+        foreach (var item in deletedItemsWithStock)
+        {
+            item.CurrentStock = 0m;
+            item.UpdatedAtUtc = now;
+        }
+
+        return deletedItemsWithStock.Count;
+    }
+
     private static async Task<int> RepairNegativeItemWarehouseStocksAsync(
         AppDbContext dbContext,
         CancellationToken cancellationToken)

@@ -232,6 +232,58 @@ public sealed class DbInitializerRegressionTests : IDisposable
     }
 
     [Fact]
+    public async Task RepairDeletedItemCurrentStockResiduesAsync_ZeroesOnlyDeletedItems()
+    {
+        var deletedItemId = Guid.NewGuid();
+        var activeItemId = Guid.NewGuid();
+        _dbContext.Items.AddRange(
+            new Item
+            {
+                Id = deletedItemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Deleted stock residue item",
+                NameMatchKey = "DELETEDSTOCKRESIDUEITEM",
+                TrackingType = ItemTrackingTypes.Stock,
+                CurrentStock = 12m,
+                IsDeleted = true
+            },
+            new Item
+            {
+                Id = activeItemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Active stock item",
+                NameMatchKey = "ACTIVESTOCKITEM",
+                TrackingType = ItemTrackingTypes.Stock,
+                CurrentStock = 8m,
+                IsDeleted = false
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var method = typeof(DbInitializer).GetMethod(
+            "RepairDeletedItemCurrentStockResiduesAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task<int>;
+        Assert.NotNull(task);
+        var repairedCount = await task!;
+        await _dbContext.SaveChangesAsync();
+
+        Assert.Equal(1, repairedCount);
+        Assert.Equal(0m, await _dbContext.Items.IgnoreQueryFilters()
+            .Where(item => item.Id == deletedItemId)
+            .Select(item => item.CurrentStock)
+            .SingleAsync());
+        Assert.Equal(8m, await _dbContext.Items.IgnoreQueryFilters()
+            .Where(item => item.Id == activeItemId)
+            .Select(item => item.CurrentStock)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task MergeBusinessDuplicateCustomersAsync_UsesResponsibleOfficeCode_ForDuplicateKey()
     {
         var duplicateA = new Customer

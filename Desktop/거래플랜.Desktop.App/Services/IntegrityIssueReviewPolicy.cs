@@ -19,6 +19,7 @@ internal static class IntegrityIssueReviewPolicy
         "out_of_scope_rental_assets",
         "inventory_current_stock_snapshot_mismatch",
         "inventory_nonstock_snapshot_residue",
+        "inventory_deleted_item_stock_residue",
         "cross_tenant_inventory_transfers",
         "orphan_item_warehouse_stock_refs",
         "orphan_stock_layer_item_refs",
@@ -29,6 +30,7 @@ internal static class IntegrityIssueReviewPolicy
     private static readonly HashSet<string> ServerRoutineRepairCandidateCodes = new(StringComparer.OrdinalIgnoreCase)
     {
         "item_stock_snapshot_mismatch",
+        "deleted_item_stock_residue",
         "cross_tenant_inventory_transfers"
     };
 

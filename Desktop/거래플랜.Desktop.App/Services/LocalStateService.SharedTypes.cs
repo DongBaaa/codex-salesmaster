@@ -64,6 +64,12 @@ public static class IntegrityIssueGuidance
             return "재고 미관리 품목에 남은 현재고/창고재고를 0으로 정리하거나 재고관리 품목으로 전환한 뒤 저장하세요.";
         }
 
+        if (normalizedCode.Contains("inventory_deleted_item_stock_residue", StringComparison.Ordinal) ||
+            normalizedCode.Contains("deleted_item_stock_residue", StringComparison.Ordinal))
+        {
+            return "삭제 품목에 남은 현재고와 창고별 재고 행을 0/없음 상태로 정리한 뒤 전체 재동기화와 무결성 점검을 다시 실행하세요.";
+        }
+
         if (normalizedCode.Contains("warehouse_stock", StringComparison.Ordinal) ||
             normalizedCode.Contains("stock_layer", StringComparison.Ordinal) ||
             normalizedCode.Contains("inventory_movement", StringComparison.Ordinal) ||

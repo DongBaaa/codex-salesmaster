@@ -224,6 +224,23 @@ public sealed partial class LocalStateService
             },
             ct);
 
+        var deletedItemsWithStockResidue = await _db.Items
+            .IgnoreQueryFilters()
+            .Where(item => item.IsDeleted && item.CurrentStock != 0m)
+            .ToListAsync(ct);
+        if (deletedItemsWithStockResidue.Count > 0)
+        {
+            var now = DateTime.UtcNow;
+            foreach (var item in deletedItemsWithStockResidue)
+            {
+                item.CurrentStock = 0m;
+                item.IsDirty = true;
+                item.UpdatedAtUtc = now;
+            }
+
+            await _db.SaveChangesAsync(ct);
+        }
+
         return new InventoryIntegrityRepairResult(crossTenantTransferIds.Count, true);
     }
 

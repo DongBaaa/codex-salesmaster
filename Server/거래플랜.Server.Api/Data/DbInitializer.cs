@@ -160,6 +160,7 @@ public static partial class DbInitializer
         await PurgeDeletedInventoryTransferDataAsync(dbContext, cancellationToken);
         await RepairNegativeItemWarehouseStocksAsync(dbContext, cancellationToken);
         await PurgeDeletedItemWarehouseStocksAsync(dbContext, cancellationToken);
+        await RepairDeletedItemCurrentStockResiduesAsync(dbContext, cancellationToken);
         if (dbContext.ChangeTracker.HasChanges())
             await dbContext.SaveChangesAsync(cancellationToken);
         await RepairItemCurrentStockSnapshotsAsync(dbContext, cancellationToken);
@@ -194,6 +195,7 @@ public static partial class DbInitializer
             await PurgeDeletedInventoryTransferDataAsync(tenantDbContext, cancellationToken);
             await RepairNegativeItemWarehouseStocksAsync(tenantDbContext, cancellationToken);
             await PurgeDeletedItemWarehouseStocksAsync(tenantDbContext, cancellationToken);
+            await RepairDeletedItemCurrentStockResiduesAsync(tenantDbContext, cancellationToken);
             if (tenantDbContext.ChangeTracker.HasChanges())
                 await tenantDbContext.SaveChangesAsync(cancellationToken);
             await RepairItemCurrentStockSnapshotsAsync(tenantDbContext, cancellationToken);

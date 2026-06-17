@@ -256,6 +256,9 @@ public sealed partial class LocalStateService
         var warehouseStockTotals = warehouseStockSnapshots
             .GroupBy(stock => stock.ItemId)
             .ToDictionary(group => group.Key, group => group.Sum(stock => stock.Quantity));
+        var warehouseStockRowCounts = warehouseStockSnapshots
+            .GroupBy(stock => stock.ItemId)
+            .ToDictionary(group => group.Key, group => group.Count());
         var inventorySnapshotMismatches = inventoryItemSnapshots
             .Where(item => ItemOperationalPolicy.SupportsInventory(item.TrackingType))
             .Select(item => new
@@ -313,6 +316,50 @@ public sealed partial class LocalStateService
             directActionKind: DataIntegrityDirectActionKind.OpenInventoryItem,
             targetEntityId: primaryNonInventorySnapshotResidue?.Item.Id,
             targetEntityName: primaryNonInventorySnapshotResidue?.Item.NameOriginal ?? string.Empty);
+
+        var deletedItemSnapshots = await integrityItemQuery
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item => item.IsDeleted)
+            .Select(item => new
+            {
+                item.Id,
+                item.NameOriginal,
+                item.SpecificationOriginal,
+                item.OfficeCode,
+                item.CurrentStock
+            })
+            .ToListAsync(ct);
+        var deletedItemSnapshotResidueRows = deletedItemSnapshots
+            .Select(item => new
+            {
+                Item = item,
+                SnapshotTotal = warehouseStockTotals.TryGetValue(item.Id, out var totalQuantity)
+                    ? totalQuantity
+                    : 0m,
+                SnapshotRowCount = warehouseStockRowCounts.TryGetValue(item.Id, out var rowCount)
+                    ? rowCount
+                    : 0
+            })
+            .Where(row => row.Item.CurrentStock != 0m || row.SnapshotTotal != 0m || row.SnapshotRowCount > 0)
+            .OrderBy(row => row.Item.NameOriginal)
+            .ThenBy(row => row.Item.SpecificationOriginal)
+            .ToList();
+        var primaryDeletedItemSnapshotResidue = deletedItemSnapshotResidueRows.FirstOrDefault();
+        AddIssueIfNeeded(
+            issues,
+            "inventory_deleted_item_stock_residue",
+            deletedItemSnapshotResidueRows.Count,
+            "삭제 품목에 현재고 또는 창고 재고 스냅샷이 남아 있습니다.",
+            severity: "Error",
+            detailRows: BuildIntegrityDetailRows(
+                deletedItemSnapshotResidueRows,
+                deletedItemSnapshotResidueRows.Count,
+                row =>
+                    $"{FormatDetailValue(row.Item.NameOriginal, "품목")} / 규격 {FormatDetailValue(row.Item.SpecificationOriginal)} / 담당지점 {FormatDetailValue(row.Item.OfficeCode)} / 품목ID {row.Item.Id:N} / 삭제품목 현재고 {row.Item.CurrentStock:N2} / 창고행 {row.SnapshotRowCount:N0}건 / 창고합계 {row.SnapshotTotal:N2}"),
+            directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics,
+            targetEntityId: primaryDeletedItemSnapshotResidue?.Item.Id,
+            targetEntityName: primaryDeletedItemSnapshotResidue?.Item.NameOriginal ?? string.Empty);
 
         var orphanWarehouseStockCount = warehouseStockSnapshots.Count(stock =>
             integrityWarehouseCodes.Contains(OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(stock.WarehouseCode, null)) &&

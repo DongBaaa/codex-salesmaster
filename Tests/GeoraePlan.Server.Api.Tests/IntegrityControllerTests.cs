@@ -45,6 +45,7 @@ public sealed class IntegrityControllerTests : IDisposable
             NameOriginal = "Deleted Item",
             NameMatchKey = "DELETEDITEM",
             TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 2m,
             IsDeleted = true
         };
         var deletedInvoice = new Invoice
@@ -237,6 +238,7 @@ public sealed class IntegrityControllerTests : IDisposable
         Assert.Contains("duplicate_customer_match_keys", issues.Keys);
         Assert.Contains("duplicate_item_name_match_keys", issues.Keys);
         Assert.Contains("duplicate_item_match_keys", issues.Keys);
+        Assert.Contains("deleted_item_stock_residue", issues.Keys);
         Assert.Contains("orphan_item_warehouse_stock_refs", issues.Keys);
         Assert.Contains("orphan_rental_asset_customer_refs", issues.Keys);
         Assert.Contains("orphan_rental_asset_item_refs", issues.Keys);
@@ -248,6 +250,7 @@ public sealed class IntegrityControllerTests : IDisposable
         Assert.Equal(2, issues["duplicate_customer_match_keys"].Count);
         Assert.Equal(4, issues["duplicate_item_name_match_keys"].Count);
         Assert.Equal(2, issues["duplicate_item_match_keys"].Count);
+        Assert.Equal(1, issues["deleted_item_stock_residue"].Count);
         Assert.Equal(1, issues["orphan_item_warehouse_stock_refs"].Count);
     }
 
@@ -899,6 +902,51 @@ public sealed class IntegrityControllerTests : IDisposable
         Assert.Contains("창고합계 3", row.DetailText, StringComparison.Ordinal);
         Assert.Contains("USENET-A:2", row.DetailText, StringComparison.Ordinal);
         Assert.Contains("USENET-B:1", row.DetailText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetReportDetails_ReturnsDeletedItemStockResidueRows()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var deletedItemId = Guid.NewGuid();
+        dbContext.Items.Add(new Item
+        {
+            Id = deletedItemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Deleted Residue Item",
+            NameMatchKey = "DELETEDRESIDUEITEM",
+            SpecificationOriginal = "A4",
+            CategoryName = "복합기",
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 4m,
+            IsDeleted = true
+        });
+        dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = deletedItemId,
+            WarehouseCode = OfficeCodeCatalog.GetMainWarehouseCode(OfficeCodeCatalog.Usenet),
+            Quantity = 4m
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = new IntegrityController(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext));
+
+        var response = await controller.GetReportDetails("deleted_item_stock_residue", CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityIssueDetailResultDto>(ok.Value);
+        var row = Assert.Single(payload.Rows);
+
+        Assert.Equal("deleted_item_stock_residue", payload.Code);
+        Assert.Equal(1, payload.DetailCount);
+        Assert.Equal("삭제 품목", row.EntityType);
+        Assert.Equal("Deleted Residue Item", row.PrimaryText);
+        Assert.Contains("삭제 품목 현재재고 4", row.DetailText, StringComparison.Ordinal);
+        Assert.Contains("창고행 1", row.DetailText, StringComparison.Ordinal);
     }
 
     public void Dispose()

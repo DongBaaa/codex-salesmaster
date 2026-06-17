@@ -121,6 +121,56 @@ public sealed class DataIntegrityIssueServicePerformanceTests
     }
 
     [Fact]
+    public async Task ScanAsync_FindsDeletedItemStockResidueOnlyInsideSessionScope()
+    {
+        PrepareAppRoot("georaeplan-integrity-deleted-item-stock-residue");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var outsideDeletedItem = CreateInventoryItem(701, OfficeCodeCatalog.Usenet);
+            outsideDeletedItem.IsDeleted = true;
+            outsideDeletedItem.CurrentStock = 7m;
+            var scopedDeletedItem = CreateInventoryItem(702, OfficeCodeCatalog.Yeonsu);
+            scopedDeletedItem.IsDeleted = true;
+            scopedDeletedItem.CurrentStock = 5m;
+            db.Items.AddRange(outsideDeletedItem, scopedDeletedItem);
+            db.ItemWarehouseStocks.Add(new LocalItemWarehouseStock
+            {
+                ItemId = outsideDeletedItem.Id,
+                WarehouseCode = OfficeCodeCatalog.GetMainWarehouseCode(OfficeCodeCatalog.Usenet),
+                Quantity = 7m,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            db.ItemWarehouseStocks.Add(new LocalItemWarehouseStock
+            {
+                ItemId = scopedDeletedItem.Id,
+                WarehouseCode = OfficeCodeCatalog.GetMainWarehouseCode(OfficeCodeCatalog.Yeonsu),
+                Quantity = 5m,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateYeonsuAdminSession());
+            var residueIssue = Assert.Single(result.Issues, issue =>
+                issue.Code == DataIntegrityIssueCodes.InventoryDeletedItemStockResidue);
+
+            Assert.Equal(scopedDeletedItem.Id, residueIssue.EntityId);
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, residueIssue.OfficeCode);
+            Assert.Equal(scopedDeletedItem.NameOriginal, residueIssue.ItemName);
+            Assert.Contains("창고행 1", residueIssue.CurrentValue, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ScanAsync_PrefiltersInvoiceSourceLoadByOperationalScope()
     {
         PrepareAppRoot("georaeplan-integrity-invoice-scope-prefilter");

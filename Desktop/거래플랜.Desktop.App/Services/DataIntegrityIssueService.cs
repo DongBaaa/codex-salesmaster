@@ -42,6 +42,7 @@ public static class DataIntegrityIssueCodes
     public const string WarehouseDuplicateCandidate = "warehouse_duplicate_candidate";
     public const string InvoiceAmountMismatch = "invoice_amount_mismatch";
     public const string InvoiceOverSettled = "invoice_over_settled";
+    public const string InventoryDeletedItemStockResidue = "inventory_deleted_item_stock_residue";
     public const string InventoryStockSnapshotMismatch = "inventory_stock_snapshot_mismatch";
     public const string InventoryWarehouseReferenceMissing = "inventory_warehouse_reference_missing";
 }
@@ -335,6 +336,13 @@ public sealed class DataIntegrityIssueService
             "회계경리",
             "전표 합계금액보다 수금 또는 지급 합계가 큽니다.",
             "수금/지급 내역 중 중복 입력이나 잘못된 금액이 있는지 확인하세요."),
+        [DataIntegrityIssueCodes.InventoryDeletedItemStockResidue] = new(
+            DataIntegrityIssueCodes.InventoryDeletedItemStockResidue,
+            "삭제 품목 재고 잔여",
+            "Error",
+            "재고",
+            "삭제된 품목에 현재재고 또는 창고별 재고 스냅샷이 남아 재고·전표 집계를 왜곡할 수 있습니다.",
+            "삭제 품목의 현재고를 0으로 정리하고 창고별 재고 행을 제거한 뒤 전체 재동기화/무결성 점검을 다시 실행하세요."),
         [DataIntegrityIssueCodes.InventoryStockSnapshotMismatch] = new(
             DataIntegrityIssueCodes.InventoryStockSnapshotMismatch,
             "품목 재고 스냅샷 불일치",
@@ -528,6 +536,14 @@ public sealed class DataIntegrityIssueService
             inventoryMovements,
             session);
         LogIntegrityScanStep("Integrity scan master/ledger issues", stepStopwatch, $"issues={details.Count:N0}");
+
+        stepStopwatch.Restart();
+        var deletedItemStockResidueIssues = await LoadDeletedItemStockResidueIssuesAsync(session, ct);
+        details.AddRange(deletedItemStockResidueIssues);
+        LogIntegrityScanStep(
+            "Integrity scan deleted item stock residues",
+            stepStopwatch,
+            $"issues={deletedItemStockResidueIssues.Count:N0}");
 
         stepStopwatch.Restart();
         foreach (var history in scopedAssignmentHistories)
@@ -1405,6 +1421,110 @@ public sealed class DataIntegrityIssueService
                     WarehouseCode = stock.WarehouseCode,
                     Quantity = stock.Quantity
                 })
+                .ToListAsync(ct));
+        }
+
+        return rows;
+    }
+
+    private async Task<List<DataIntegrityIssueDetail>> LoadDeletedItemStockResidueIssuesAsync(
+        SessionState session,
+        CancellationToken ct)
+    {
+        var deletedItemsWithCurrentStock = await SelectIntegrityItemProjection(ApplyOperationalAlertItemScopePrefilter(
+                _db.Items
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .Where(item => item.IsDeleted && item.CurrentStock != 0m),
+                session))
+            .ToListAsync(ct);
+
+        var deletedItemIdsWithWarehouseRows = await (
+                from stock in _db.ItemWarehouseStocks.AsNoTracking()
+                join item in ApplyOperationalAlertItemScopePrefilter(
+                        _db.Items
+                            .IgnoreQueryFilters()
+                            .AsNoTracking()
+                            .Where(item => item.IsDeleted),
+                        session)
+                    on stock.ItemId equals item.Id
+                select stock.ItemId)
+            .Distinct()
+            .ToListAsync(ct);
+
+        var residueItemIds = deletedItemsWithCurrentStock
+            .Select(item => item.Id)
+            .Concat(deletedItemIdsWithWarehouseRows)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (residueItemIds.Count == 0)
+            return [];
+
+        var deletedItems = (await LoadDeletedIntegrityItemsByIdsAsync(residueItemIds, session, ct))
+            .Where(item => IsInSessionScope(item.TenantCode, item.OfficeCode, session))
+            .OrderBy(item => item.NameOriginal)
+            .ThenBy(item => item.SpecificationOriginal)
+            .ThenBy(item => item.Id)
+            .ToList();
+        if (deletedItems.Count == 0)
+            return [];
+
+        var deletedItemIdSet = deletedItems.Select(item => item.Id).ToHashSet();
+        var stockRowsByItem = (await LoadItemWarehouseStocksForItemsAsync(deletedItemIdSet, ct))
+            .GroupBy(stock => stock.ItemId)
+            .ToDictionary(group => group.Key, group => group.OrderBy(stock => stock.WarehouseCode).ToList());
+
+        var issues = new List<DataIntegrityIssueDetail>();
+        foreach (var item in deletedItems)
+        {
+            var stocks = stockRowsByItem.TryGetValue(item.Id, out var rows) ? rows : [];
+            var stockTotal = stocks.Sum(stock => stock.Quantity);
+            if (item.CurrentStock == 0m && stocks.Count == 0)
+                continue;
+
+            var stockBreakdown = stocks.Count == 0
+                ? "창고 행 없음"
+                : string.Join(", ", stocks.Select(stock => $"{NormalizeDisplay(stock.WarehouseCode, "창고")}:{stock.Quantity:N2}"));
+            AddGeneralIssue(
+                issues,
+                DataIntegrityIssueCodes.InventoryDeletedItemStockResidue,
+                entityType: "삭제 품목",
+                entityId: item.Id,
+                itemName: item.NameOriginal,
+                officeCode: item.OfficeCode,
+                currentValue: $"삭제 품목 현재고 {item.CurrentStock:N2} / 창고행 {stocks.Count:N0}건 / 창고합계 {stockTotal:N2}",
+                expectedValue: "삭제 품목 현재고 0 / 창고별 재고 행 없음",
+                message: $"{NormalizeDisplay(item.NameOriginal, "품목")} 삭제 품목에 재고 잔여가 남아 있습니다. {stockBreakdown}",
+                directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
+        }
+
+        return issues;
+    }
+
+    private async Task<List<LocalItem>> LoadDeletedIntegrityItemsByIdsAsync(
+        IReadOnlyCollection<Guid> itemIds,
+        SessionState session,
+        CancellationToken ct)
+    {
+        var ids = itemIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return [];
+
+        var rows = new List<LocalItem>();
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds.ToList();
+            rows.AddRange(await SelectIntegrityItemProjection(ApplyOperationalAlertItemScopePrefilter(
+                    _db.Items
+                        .IgnoreQueryFilters()
+                        .AsNoTracking()
+                        .Where(item => item.IsDeleted && scopedBatchIds.Contains(item.Id)),
+                    session))
                 .ToListAsync(ct));
         }
 

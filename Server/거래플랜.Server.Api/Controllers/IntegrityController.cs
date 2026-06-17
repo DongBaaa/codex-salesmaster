@@ -91,6 +91,14 @@ public sealed class IntegrityController : ControllerBase
             "Warning",
             "공용(ALL) 품목 중 사용 이력이 서로 다른 업체로 섞여 tenant 자동 보정이 보류된 항목이 있습니다.");
 
+        var deletedItemStockResidueCount = (await LoadDeletedItemStockResidueSnapshotsAsync(cancellationToken)).Count;
+        AddIssue(
+            issues,
+            "deleted_item_stock_residue",
+            deletedItemStockResidueCount,
+            "Error",
+            "삭제된 품목에 현재재고 또는 창고 재고 행이 남아 있습니다.");
+
         var crossTenantInventoryTransferCount = (await _officeScopeService.ApplyInventoryTransferScope(
                 _dbContext.InventoryTransfers.IgnoreQueryFilters().AsNoTracking())
                 .Where(transfer => !transfer.IsDeleted)
@@ -269,6 +277,7 @@ public sealed class IntegrityController : ControllerBase
             "duplicate_item_name_match_keys" => await LoadDuplicateItemNameMatchKeyDetailsAsync(cancellationToken),
             "duplicate_item_match_keys" => await LoadDuplicateItemMatchKeyDetailsAsync(cancellationToken),
             "ambiguous_shared_item_tenant_scope" => await LoadSharedItemScopeConflictDetailsAsync(cancellationToken),
+            "deleted_item_stock_residue" => await LoadDeletedItemStockResidueDetailsAsync(cancellationToken),
             "cross_tenant_inventory_transfers" => await LoadCrossTenantInventoryTransferDetailsAsync(cancellationToken),
             "orphan_item_warehouse_stock_refs" => await LoadOrphanItemWarehouseStockDetailsAsync(cancellationToken),
             "item_stock_snapshot_mismatch" => await LoadItemStockSnapshotMismatchDetailsAsync(cancellationToken),
@@ -555,6 +564,74 @@ public sealed class IntegrityController : ControllerBase
                 referenceText: $"누락 품목 {FormatGuid(stock.ItemId)}",
                 scopeText: $"창고 {NormalizeCellText(stock.WarehouseCode)}",
                 detailText: $"최종갱신 {FormatUtcDateTime(stock.UpdatedAtUtc)}"))
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadDeletedItemStockResidueDetailsAsync(CancellationToken cancellationToken)
+    {
+        var residues = await LoadDeletedItemStockResidueSnapshotsAsync(cancellationToken);
+        return residues
+            .Select(row => CreateDetailRow(
+                entityType: "삭제 품목",
+                entityIdText: FormatGuid(row.Item.Id),
+                primaryText: row.Item.NameOriginal,
+                secondaryText: CombineParts(row.Item.SpecificationOriginal, row.Item.CategoryName),
+                referenceText: string.IsNullOrWhiteSpace(row.Item.NameMatchKey) ? FormatGuid(row.Item.Id) : $"품명키 {row.Item.NameMatchKey}",
+                scopeText: FormatScope(row.Item.TenantCode, row.Item.OfficeCode),
+                detailText: $"삭제 품목 현재재고 {FormatNumber(row.Item.CurrentStock)} / 창고행 {row.WarehouseRowCount:N0}건 / 창고합계 {FormatNumber(row.WarehouseSum)} / {row.WarehouseBreakdown}"))
+            .ToList();
+    }
+
+    private async Task<List<DeletedItemStockResidueSnapshot>> LoadDeletedItemStockResidueSnapshotsAsync(CancellationToken cancellationToken)
+    {
+        var deletedItems = await _officeScopeService.ApplyItemScope(_dbContext.Items.IgnoreQueryFilters().AsNoTracking())
+            .Where(item => item.IsDeleted)
+            .Select(item => new DeletedItemSnapshot(
+                item.Id,
+                item.TenantCode,
+                item.OfficeCode,
+                item.NameOriginal,
+                item.NameMatchKey,
+                item.SpecificationOriginal,
+                item.CategoryName,
+                item.CurrentStock))
+            .ToListAsync(cancellationToken);
+        if (deletedItems.Count == 0)
+            return [];
+
+        var deletedItemIds = deletedItems.Select(item => item.Id).ToHashSet();
+        var warehouseStocks = new List<ItemWarehouseStockSnapshot>();
+        foreach (var batchIds in deletedItemIds.Chunk(500))
+        {
+            var scopedBatchIds = batchIds.ToList();
+            warehouseStocks.AddRange(await _dbContext.ItemWarehouseStocks
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(stock => scopedBatchIds.Contains(stock.ItemId))
+                .Select(stock => new ItemWarehouseStockSnapshot(stock.ItemId, stock.WarehouseCode, stock.Quantity))
+                .ToListAsync(cancellationToken));
+        }
+
+        var warehouseStocksByItem = warehouseStocks
+            .GroupBy(stock => stock.ItemId)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderBy(stock => stock.WarehouseCode, StringComparer.OrdinalIgnoreCase).ToList());
+
+        return deletedItems
+            .Select(item =>
+            {
+                var itemStocks = warehouseStocksByItem.TryGetValue(item.Id, out var rows) ? rows : [];
+                var warehouseSum = itemStocks.Sum(stock => stock.Quantity);
+                var warehouseBreakdown = itemStocks.Count == 0
+                    ? "창고 행 없음"
+                    : string.Join(", ", itemStocks.Select(stock => $"{NormalizeCellText(stock.WarehouseCode)}:{FormatNumber(stock.Quantity)}"));
+                return new DeletedItemStockResidueSnapshot(item, itemStocks.Count, warehouseSum, warehouseBreakdown);
+            })
+            .Where(row => row.Item.CurrentStock != 0m || row.WarehouseRowCount > 0)
+            .OrderBy(row => row.Item.NameOriginal, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.Item.SpecificationOriginal, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.Item.Id)
             .ToList();
     }
 
@@ -1567,6 +1644,7 @@ public sealed class IntegrityController : ControllerBase
             "duplicate_item_name_match_keys" => new IntegrityIssueDefinition("duplicate_item_name_match_keys", "Info", "동일 품명 매칭키를 공유하는 품목이 있습니다. 규격/분류가 다르면 정상일 수 있습니다."),
             "duplicate_item_match_keys" => new IntegrityIssueDefinition("duplicate_item_match_keys", "Warning", "동일한 품명/규격/분류/구분/재고방식 조합이 중복됩니다."),
             "ambiguous_shared_item_tenant_scope" => new IntegrityIssueDefinition("ambiguous_shared_item_tenant_scope", "Warning", "공용(ALL) 품목 중 사용 이력이 서로 다른 업체로 섞여 tenant 자동 보정이 보류된 항목이 있습니다."),
+            "deleted_item_stock_residue" => new IntegrityIssueDefinition("deleted_item_stock_residue", "Error", "삭제된 품목에 현재재고 또는 창고 재고 행이 남아 있습니다."),
             "cross_tenant_inventory_transfers" => new IntegrityIssueDefinition("cross_tenant_inventory_transfers", "Error", "업체 간 직접 재고이동 문서가 존재합니다."),
             "orphan_item_warehouse_stock_refs" => new IntegrityIssueDefinition("orphan_item_warehouse_stock_refs", "Error", "품목이 없는 창고 재고 행이 존재합니다."),
             "item_stock_snapshot_mismatch" => new IntegrityIssueDefinition("item_stock_snapshot_mismatch", "Warning", "품목 현재재고와 창고 합계가 일치하지 않는 항목이 있습니다."),
@@ -1758,6 +1836,22 @@ public sealed class IntegrityController : ControllerBase
     private sealed record SharedItemScopeConflictSnapshot(
         Item Item,
         ItemScopeInferenceResult Inference);
+
+    private sealed record DeletedItemSnapshot(
+        Guid Id,
+        string TenantCode,
+        string OfficeCode,
+        string NameOriginal,
+        string NameMatchKey,
+        string SpecificationOriginal,
+        string CategoryName,
+        decimal CurrentStock);
+
+    private sealed record DeletedItemStockResidueSnapshot(
+        DeletedItemSnapshot Item,
+        int WarehouseRowCount,
+        decimal WarehouseSum,
+        string WarehouseBreakdown);
 
     private sealed record ItemWarehouseStockSnapshot(Guid ItemId, string WarehouseCode, decimal Quantity);
 

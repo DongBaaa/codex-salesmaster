@@ -16,6 +16,7 @@ public sealed class StartupIntegrityService
     {
         "inventory_current_stock_snapshot_mismatch",
         "inventory_nonstock_snapshot_residue",
+        "inventory_deleted_item_stock_residue",
         "cross_tenant_inventory_transfers",
         "orphan_item_warehouse_stock_refs",
         "orphan_stock_layer_item_refs",
