@@ -742,6 +742,116 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task RestorePayment_RestoresLinkedDeletedTransaction()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = CreateScopedCustomer("연동 수금 복원 거래처", OfficeCodeCatalog.Usenet);
+        var invoice = CreateScopedInvoice(customer.Id, OfficeCodeCatalog.Usenet, "INV-PAYMENT-RESTORE-LINKED-TX");
+        var transactionId = Guid.NewGuid();
+        var transaction = CreateDeletedTransaction(transactionId, customer.Id, OfficeCodeCatalog.Usenet, invoice.Id);
+        var deletedPayment = new Payment
+        {
+            Id = transactionId,
+            InvoiceId = invoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 17),
+            Amount = 1000m,
+            IsDeleted = true
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(invoice);
+        dbContext.Transactions.Add(transaction);
+        dbContext.Payments.Add(deletedPayment);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = transactionId,
+                        Kind = "payment"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success, item.Message);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.False(await dbContext.Payments.IgnoreQueryFilters()
+            .Where(current => current.Id == transactionId)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.Transactions.IgnoreQueryFilters()
+            .Where(current => current.Id == transactionId)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task RestoreTransaction_RestoresLinkedDeletedPayment()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = CreateScopedCustomer("연동 거래내역 복원 거래처", OfficeCodeCatalog.Usenet);
+        var invoice = CreateScopedInvoice(customer.Id, OfficeCodeCatalog.Usenet, "INV-TX-RESTORE-LINKED-PAYMENT");
+        var transactionId = Guid.NewGuid();
+        var transaction = CreateDeletedTransaction(transactionId, customer.Id, OfficeCodeCatalog.Usenet, invoice.Id);
+        var deletedPayment = new Payment
+        {
+            Id = transactionId,
+            InvoiceId = invoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 17),
+            Amount = 1000m,
+            IsDeleted = true
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(invoice);
+        dbContext.Transactions.Add(transaction);
+        dbContext.Payments.Add(deletedPayment);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = transactionId,
+                        Kind = "transaction"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success, item.Message);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.False(await dbContext.Transactions.IgnoreQueryFilters()
+            .Where(current => current.Id == transactionId)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.Payments.IgnoreQueryFilters()
+            .Where(current => current.Id == transactionId)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task RestoreCustomerCategory_RejectsActiveDuplicateAndKeepsDeletedRow()
     {
         var currentUser = CreateAdminUser();

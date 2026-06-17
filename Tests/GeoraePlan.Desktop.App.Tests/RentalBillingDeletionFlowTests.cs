@@ -1054,6 +1054,88 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     [Fact]
+    public async Task RestoreTransaction_RejectsLinkedInvoiceOutsideAccessibleOffice()
+    {
+        PrepareAppRoot("georaeplan-rental-restore-transaction-linked-invoice-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var transactionCustomerId = Guid.NewGuid();
+            var hiddenCustomerId = Guid.NewGuid();
+            var hiddenInvoiceId = Guid.NewGuid();
+            var transactionId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(transactionCustomerId, "Scoped transaction customer"));
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = hiddenCustomerId,
+                TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, OfficeCodeCatalog.Yeonsu),
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                NameOriginal = "Hidden invoice customer",
+                NameMatchKey = "HiddenInvoiceCustomer",
+                TradeType = CustomerTradeTypes.Sales,
+                IsDeleted = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = hiddenInvoiceId,
+                CustomerId = hiddenCustomerId,
+                TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, OfficeCodeCatalog.Yeonsu),
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                InvoiceNumber = "LOCAL-HIDDEN-INVOICE",
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 17),
+                TotalAmount = 1000m,
+                SupplyAmount = 1000m,
+                IsDeleted = false
+            });
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = transactionId,
+                CustomerId = transactionCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 17),
+                TransactionKind = PaymentFlowConstants.TransactionKindInvoiceReceipt,
+                LinkedInvoiceId = hiddenInvoiceId,
+                BankReceipt = 1000m,
+                ReceiptTotal = 1000m,
+                SettlementAmount = 1000m,
+                IsDeleted = true
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeOnlySession(OfficeCodeCatalog.Usenet);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var restore = await local.RestoreRecycleBinEntryAsync(
+                RecycleBinEntityKind.Transaction,
+                transactionId,
+                session);
+
+            Assert.False(restore.Success);
+            Assert.Contains("전표", restore.Message);
+            Assert.True(await db.Transactions.IgnoreQueryFilters()
+                .Where(current => current.Id == transactionId)
+                .Select(current => current.IsDeleted)
+                .SingleAsync());
+            Assert.False(await db.Payments.IgnoreQueryFilters().AnyAsync(current => current.Id == transactionId));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ServerPurgeTransaction_RentalReceipt_RebuildsRunSettlementAndRemovesDerivedPayment()
     {
         PrepareAppRoot("georaeplan-rental-purge-transaction-run-settlement");

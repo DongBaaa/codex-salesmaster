@@ -1788,6 +1788,11 @@ public sealed partial class LocalStateService
             linkedInvoice = await _db.Invoices
                 .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(current => current.Id == transaction.LinkedInvoiceId.Value, ct);
+            if (linkedInvoice is null)
+                return OfficeMutationResult.Missing("연결된 전표를 찾을 수 없습니다.");
+            if (!CanWriteOfficeScope(session, linkedInvoice.ResponsibleOfficeCode))
+                return OfficeMutationResult.Denied("권한이 없어 연결 전표를 복원하거나 수금/지급과 동기화할 수 없습니다.");
+
             if (linkedInvoice is not null && linkedInvoice.IsDeleted)
             {
                 customerRestored = customerRestored || await RestoreInvoiceGroupCoreAsync(linkedInvoice, session, ct);

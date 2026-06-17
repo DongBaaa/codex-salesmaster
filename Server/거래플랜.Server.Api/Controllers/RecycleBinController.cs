@@ -998,10 +998,15 @@ public sealed class RecycleBinController : ControllerBase
             customerRestored = true;
         }
 
+        var linkedTransactionRestore = await RestoreLinkedTransactionForPaymentAsync(payment, cancellationToken);
+        if (!linkedTransactionRestore.Success)
+            return (false, linkedTransactionRestore.Message);
+        customerRestored = linkedTransactionRestore.CustomerRestored || customerRestored;
+
         payment.IsDeleted = false;
         await _dbContext.SaveChangesAsync(cancellationToken);
-        return (true, customerRestored || invoiceRestored
-            ? "수금/지급 기록을 복원하고 연결 전표도 함께 활성화했습니다."
+        return (true, customerRestored || invoiceRestored || linkedTransactionRestore.TransactionRestored
+            ? "수금/지급 기록을 복원하고 연결 거래내역/전표도 함께 활성화했습니다."
             : "수금/지급 기록을 복원했습니다.");
     }
 
@@ -1063,11 +1068,80 @@ public sealed class RecycleBinController : ControllerBase
             }
         }
 
+        var linkedPaymentRestore = await RestoreLinkedPaymentForTransactionAsync(transaction, cancellationToken);
+        if (!linkedPaymentRestore.Success)
+            return (false, linkedPaymentRestore.Message);
+
         transaction.IsDeleted = false;
         await _dbContext.SaveChangesAsync(cancellationToken);
-        return (true, customerRestored || invoiceRestored
-            ? "거래내역을 복원하고 연결된 거래처/전표를 함께 활성화했습니다."
+        return (true, customerRestored || invoiceRestored || linkedPaymentRestore.PaymentRestored
+            ? "거래내역을 복원하고 연결된 거래처/전표/수금·지급 기록을 함께 활성화했습니다."
             : "거래내역을 복원했습니다.");
+    }
+
+    private async Task<(bool Success, bool TransactionRestored, bool CustomerRestored, string Message)> RestoreLinkedTransactionForPaymentAsync(
+        Payment payment,
+        CancellationToken cancellationToken)
+    {
+        var linkedTransaction = await _dbContext.Transactions
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == payment.Id, cancellationToken);
+        if (linkedTransaction is null)
+            return (true, false, false, string.Empty);
+
+        if (linkedTransaction.LinkedInvoiceId != payment.InvoiceId)
+            return (false, false, false, "연동 거래내역의 전표 연결이 수금/지급 기록과 일치하지 않아 복원할 수 없습니다.");
+        if (!_officeScopeService.CanWriteOfficeForPayments(linkedTransaction.ResponsibleOfficeCode, linkedTransaction.TenantCode))
+            return (false, false, false, "현재 계정으로 연동 거래내역을 복원할 수 없습니다.");
+        if (!linkedTransaction.IsDeleted)
+            return (true, false, false, string.Empty);
+
+        var customer = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == linkedTransaction.CustomerId, cancellationToken);
+        if (customer is null)
+            return (false, false, false, "연동 거래내역의 거래처를 찾을 수 없습니다.");
+
+        var customerRestored = false;
+        if (customer.IsDeleted)
+        {
+            var customerScopeCheck = EnsureCanRestoreLinkedCustomer(customer);
+            if (!customerScopeCheck.Success)
+                return (false, false, false, customerScopeCheck.Message);
+
+            customer.IsDeleted = false;
+            customerRestored = true;
+        }
+
+        linkedTransaction.IsDeleted = false;
+        return (true, true, customerRestored, string.Empty);
+    }
+
+    private async Task<(bool Success, bool PaymentRestored, string Message)> RestoreLinkedPaymentForTransactionAsync(
+        TransactionRecord transaction,
+        CancellationToken cancellationToken)
+    {
+        var linkedPayment = await _dbContext.Payments
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == transaction.Id, cancellationToken);
+        if (linkedPayment is null)
+            return (true, false, string.Empty);
+
+        if (!transaction.LinkedInvoiceId.HasValue || transaction.LinkedInvoiceId.Value == Guid.Empty || linkedPayment.InvoiceId != transaction.LinkedInvoiceId.Value)
+            return (false, false, "연동 수금/지급 기록의 전표 연결이 거래내역과 일치하지 않아 복원할 수 없습니다.");
+
+        var linkedPaymentInvoice = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == linkedPayment.InvoiceId, cancellationToken);
+        if (linkedPaymentInvoice is null)
+            return (false, false, "연동 수금/지급 기록의 전표를 찾을 수 없습니다.");
+        if (!_officeScopeService.CanWriteOfficeForPayments(linkedPaymentInvoice.ResponsibleOfficeCode, linkedPaymentInvoice.TenantCode))
+            return (false, false, "현재 계정으로 연동 수금/지급 기록을 복원할 수 없습니다.");
+        if (!linkedPayment.IsDeleted)
+            return (true, false, string.Empty);
+
+        linkedPayment.IsDeleted = false;
+        return (true, true, string.Empty);
     }
 
     private async Task<(bool Success, string Message)> RestoreRentalBillingProfileAsync(RecycleBinMutationTargetDto target, CancellationToken cancellationToken)
