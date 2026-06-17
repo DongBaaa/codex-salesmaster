@@ -20,12 +20,21 @@ public sealed class RecycleBinController : ControllerBase
     private readonly AppDbContext _dbContext;
     private readonly OfficeScopeService _officeScopeService;
     private readonly ICentralFileStorage _fileStorage;
+    private readonly InventoryLedgerService _inventoryLedgerService;
+    private readonly InvoiceStockSnapshotService _invoiceStockSnapshotService;
 
-    public RecycleBinController(AppDbContext dbContext, OfficeScopeService officeScopeService, ICentralFileStorage fileStorage)
+    public RecycleBinController(
+        AppDbContext dbContext,
+        OfficeScopeService officeScopeService,
+        ICentralFileStorage fileStorage,
+        InventoryLedgerService inventoryLedgerService,
+        InvoiceStockSnapshotService invoiceStockSnapshotService)
     {
         _dbContext = dbContext;
         _officeScopeService = officeScopeService;
         _fileStorage = fileStorage;
+        _inventoryLedgerService = inventoryLedgerService;
+        _invoiceStockSnapshotService = invoiceStockSnapshotService;
     }
 
     [HttpGet]
@@ -1121,11 +1130,38 @@ public sealed class RecycleBinController : ControllerBase
             return (false, "현재 계정으로 복원할 수 없는 재고이동입니다.");
         }
 
+        var originalTransferDeleted = transfer.IsDeleted;
+        var originalLineDeletedStates = transfer.Lines
+            .ToDictionary(line => line.Id, line => line.IsDeleted);
         transfer.IsDeleted = false;
         foreach (var line in transfer.Lines)
             line.IsDeleted = false;
 
+        var stockDeltas = await _invoiceStockSnapshotService.BuildInventoryTransferStockDeltasAsync(transfer, cancellationToken);
+        var stockShortages = await _invoiceStockSnapshotService.FindStockShortagesAsync(
+            new Dictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal>(),
+            stockDeltas,
+            cancellationToken);
+        if (stockShortages.Count > 0)
+        {
+            transfer.IsDeleted = originalTransferDeleted;
+            foreach (var line in transfer.Lines)
+            {
+                if (originalLineDeletedStates.TryGetValue(line.Id, out var wasDeleted))
+                    line.IsDeleted = wasDeleted;
+            }
+
+            return (false, InvoiceStockSnapshotService.FormatStockShortageMessage(stockShortages));
+        }
+
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+        await _invoiceStockSnapshotService.ApplyInvoiceStockDeltaDifferenceAsync(
+            new Dictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal>(),
+            stockDeltas,
+            cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await _inventoryLedgerService.RebuildAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return (true, "재고이동을 복원했습니다.");
     }
 

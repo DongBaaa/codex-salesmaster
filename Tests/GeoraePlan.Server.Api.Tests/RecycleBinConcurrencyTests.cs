@@ -226,8 +226,197 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         Assert.Equal(stored.Revision, deletedEntry.Revision);
     }
 
+    [Fact]
+    public async Task RestoreInventoryTransfer_AppliesStockSnapshotsAndLedgerEntries()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var itemId = Guid.NewGuid();
+        dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "복구 재고이동 품목",
+            NameMatchKey = "복구재고이동품목",
+            Unit = "개",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 10m
+        });
+        dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-10),
+            Revision = 10
+        });
+        var transferId = Guid.NewGuid();
+        dbContext.InventoryTransfers.Add(new InventoryTransfer
+        {
+            Id = transferId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            TransferNumber = "TR-RESTORE-STOCK-001",
+            TransferDate = new DateOnly(2026, 6, 17),
+            TransferStatus = InventoryTransferStatusNormalizer.Pending,
+            IsDeleted = true,
+            Lines =
+            [
+                new InventoryTransferLine
+                {
+                    Id = Guid.NewGuid(),
+                    TransferId = transferId,
+                    ItemId = itemId,
+                    ItemNameOriginal = "복구 재고이동 품목",
+                    Unit = "개",
+                    Quantity = 2m
+                }
+            ]
+        });
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.InventoryTransfers.IgnoreQueryFilters().FirstAsync(transfer => transfer.Id == transferId);
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = transferId,
+                        Kind = "inventory-transfer",
+                        ExpectedRevision = stored.Revision
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.False(await dbContext.InventoryTransfers.IgnoreQueryFilters()
+            .Where(transfer => transfer.Id == transferId)
+            .Select(transfer => transfer.IsDeleted)
+            .SingleAsync());
+        Assert.Equal(8m, await dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(8m, await dbContext.Items.IgnoreQueryFilters()
+            .Where(item => item.Id == itemId)
+            .Select(item => item.CurrentStock)
+            .SingleAsync());
+        Assert.True(await dbContext.InventoryLedgerEntries.AnyAsync(entry =>
+            entry.SourceDocumentId == transferId &&
+            entry.SourceType == "InventoryTransfer:Out" &&
+            entry.QuantityDelta == -2m));
+    }
+
+    [Fact]
+    public async Task RestoreInventoryTransfer_RejectsWhenSourceStockWouldBecomeNegative()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var itemId = Guid.NewGuid();
+        dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "복구 부족 재고이동 품목",
+            NameMatchKey = "복구부족재고이동품목",
+            Unit = "개",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 1m
+        });
+        dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 1m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-10),
+            Revision = 10
+        });
+        var transferId = Guid.NewGuid();
+        dbContext.InventoryTransfers.Add(new InventoryTransfer
+        {
+            Id = transferId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            TransferNumber = "TR-RESTORE-SHORTAGE-001",
+            TransferDate = new DateOnly(2026, 6, 17),
+            TransferStatus = InventoryTransferStatusNormalizer.Pending,
+            IsDeleted = true,
+            Lines =
+            [
+                new InventoryTransferLine
+                {
+                    Id = Guid.NewGuid(),
+                    TransferId = transferId,
+                    ItemId = itemId,
+                    ItemNameOriginal = "복구 부족 재고이동 품목",
+                    Unit = "개",
+                    Quantity = 2m
+                }
+            ]
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = transferId,
+                        Kind = "inventory-transfer"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("재고", item.Message);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.True(await dbContext.InventoryTransfers.IgnoreQueryFilters()
+            .Where(transfer => transfer.Id == transferId)
+            .Select(transfer => transfer.IsDeleted)
+            .SingleAsync());
+        Assert.Equal(1m, await dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.False(await dbContext.InventoryLedgerEntries.AnyAsync(entry => entry.SourceDocumentId == transferId));
+    }
+
     private RecycleBinController CreateController(AppDbContext dbContext, TestCurrentUserContext currentUser)
-        => new(dbContext, new OfficeScopeService(currentUser, dbContext), new StubCentralFileStorage());
+        => new(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext),
+            new StubCentralFileStorage(),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
 
     private AppDbContext CreateDbContext(TestCurrentUserContext currentUser)
     {
