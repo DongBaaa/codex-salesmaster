@@ -430,6 +430,144 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PurgeRentalBillingProfile_RejectsWhenLinkedAssetOutsideRentalWriteScope()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var profileId = Guid.NewGuid();
+        var profile = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "PURGE-PROFILE-SCOPE-001",
+            CustomerName = "영구삭제 범위 프로필",
+            IsDeleted = true,
+            IsActive = false
+        };
+        var outOfScopeAsset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            AssetKey = "PURGE-PROFILE-SCOPE-ASSET-001",
+            BillingProfileId = profileId,
+            ManagementId = "PURGE-PROFILE-SCOPE-ASSET-001",
+            ManagementNumber = "PURGE-PROFILE-SCOPE-ASSET-001",
+            ItemName = "권한 외 연결 자산",
+            AssetStatus = "설치",
+            BillingEligibilityStatus = "청구가능",
+            BillingExclusionReason = "보존",
+            IsDeleted = false
+        };
+        dbContext.RentalBillingProfiles.Add(profile);
+        dbContext.RentalAssets.Add(outOfScopeAsset);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = profileId,
+                        Kind = "rental-billing-profile"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("연결된 렌탈 자산", item.Message);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.True(await dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(current => current.Id == profileId));
+        var storedAsset = await dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == outOfScopeAsset.Id);
+        Assert.Equal(profileId, storedAsset.BillingProfileId);
+        Assert.Equal("청구가능", storedAsset.BillingEligibilityStatus);
+        Assert.Equal("보존", storedAsset.BillingExclusionReason);
+    }
+
+    [Fact]
+    public async Task PurgeRentalAsset_RejectsWhenReferencedProfileOutsideRentalWriteScope()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var assetId = Guid.NewGuid();
+        var asset = new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "PURGE-ASSET-SCOPE-001",
+            ManagementId = "PURGE-ASSET-SCOPE-001",
+            ManagementNumber = "PURGE-ASSET-SCOPE-001",
+            ItemName = "영구삭제 범위 자산",
+            IsDeleted = true
+        };
+        var outOfScopeProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ProfileKey = "PURGE-ASSET-SCOPE-PROFILE-001",
+            CustomerName = "권한 외 참조 프로필",
+            BillingTemplateJson = BuildBillingTemplateJson(assetId),
+            IsDeleted = false,
+            IsActive = true
+        };
+        dbContext.RentalAssets.Add(asset);
+        dbContext.RentalBillingProfiles.Add(outOfScopeProfile);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = assetId,
+                        Kind = "rental-asset"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("연결된 렌탈 청구프로필", item.Message);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.True(await dbContext.RentalAssets.IgnoreQueryFilters()
+            .AnyAsync(current => current.Id == assetId));
+        Assert.Equal(
+            BuildBillingTemplateJson(assetId),
+            await dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+                .Where(current => current.Id == outOfScopeProfile.Id)
+                .Select(current => current.BillingTemplateJson)
+                .SingleAsync());
+    }
+
+    [Fact]
     public async Task RestoreCustomerCategory_RejectsActiveDuplicateAndKeepsDeletedRow()
     {
         var currentUser = CreateAdminUser();
@@ -981,6 +1119,9 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
             TradeType = CustomerClassificationNormalizer.Sales,
             IsDeleted = true
         };
+
+    private static string BuildBillingTemplateJson(Guid assetId)
+        => "[{\"IncludedAssetIds\":[\"" + assetId + "\"]}]";
 
     public void Dispose()
     {

@@ -1726,6 +1726,9 @@ public sealed class RecycleBinController : ControllerBase
             .IgnoreQueryFilters()
             .Where(current => current.BillingProfileId == profileId)
             .ToListAsync(cancellationToken);
+        if (linkedAssets.Any(asset => !_officeScopeService.CanWriteOfficeForRentals(asset.ResponsibleOfficeCode, asset.TenantCode)))
+            return (false, "현재 계정으로 연결된 렌탈 자산을 변경할 수 없어 렌탈 청구프로필을 영구삭제할 수 없습니다.");
+
         foreach (var asset in linkedAssets)
         {
             asset.BillingProfileId = null;
@@ -1771,6 +1774,9 @@ public sealed class RecycleBinController : ControllerBase
                 .ToListAsync(cancellationToken))
             .Where(current => BillingTemplateContainsAssetId(current.BillingTemplateJson, assetId))
             .ToList();
+        if (profiles.Any(profile => !_officeScopeService.CanWriteOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode)))
+            return (false, "현재 계정으로 연결된 렌탈 청구프로필을 변경할 수 없어 렌탈 자산을 영구삭제할 수 없습니다.");
+
         foreach (var profile in profiles)
         {
             var normalizedJson = RemoveIncludedAssetId(profile.BillingTemplateJson, assetId);
