@@ -716,6 +716,8 @@ public sealed class SyncCoordinator
         state.LastPulledRentalAssetCount = response.RentalAssets.Count;
         state.LastPulledRentalBillingLogCount = response.RentalBillingLogs.Count;
         state.SyncedPriceGradeOptions = MergeById(state.SyncedPriceGradeOptions, response.PriceGradeOptions);
+        state.SyncedInvoices = MergeById(state.SyncedInvoices, response.Invoices);
+        state.SyncedPayments = MergeById(state.SyncedPayments, response.Payments);
         state.SyncedTransactions = MergeById(state.SyncedTransactions, response.Transactions);
         state.SyncedTransactionAttachments = MergeById(state.SyncedTransactionAttachments, response.TransactionAttachments);
         state.SyncedInventoryTransfers = MergeById(state.SyncedInventoryTransfers, response.InventoryTransfers);

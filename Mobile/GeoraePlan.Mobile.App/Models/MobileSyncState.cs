@@ -26,6 +26,8 @@ public sealed class MobileSyncState
     public int LastPulledRentalBillingProfileCount { get; set; }
     public int LastPulledRentalAssetCount { get; set; }
     public int LastPulledRentalBillingLogCount { get; set; }
+    public List<InvoiceDto> SyncedInvoices { get; set; } = new();
+    public List<PaymentDto> SyncedPayments { get; set; } = new();
     public List<TransactionDto> SyncedTransactions { get; set; } = new();
     public List<TransactionAttachmentDto> SyncedTransactionAttachments { get; set; } = new();
     public List<InventoryTransferDto> SyncedInventoryTransfers { get; set; } = new();
@@ -75,6 +77,8 @@ public sealed class MobileSyncState
         PendingPush.RentalBillingLogs ??= new List<RentalBillingLogDto>();
         PendingPush.Invoices ??= new List<InvoiceDto>();
         PendingPush.Payments ??= new List<PaymentDto>();
+        SyncedInvoices ??= new List<InvoiceDto>();
+        SyncedPayments ??= new List<PaymentDto>();
         SyncedTransactions ??= new List<TransactionDto>();
         SyncedTransactionAttachments ??= new List<TransactionAttachmentDto>();
         SyncedInventoryTransfers ??= new List<InventoryTransferDto>();

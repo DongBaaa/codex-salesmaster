@@ -237,6 +237,8 @@ public sealed class JsonSyncStateStore
         target.LastPulledRentalBillingProfileCount = source.LastPulledRentalBillingProfileCount;
         target.LastPulledRentalAssetCount = source.LastPulledRentalAssetCount;
         target.LastPulledRentalBillingLogCount = source.LastPulledRentalBillingLogCount;
+        target.SyncedInvoices = source.SyncedInvoices;
+        target.SyncedPayments = source.SyncedPayments;
         target.SyncedTransactions = source.SyncedTransactions;
         target.SyncedTransactionAttachments = source.SyncedTransactionAttachments;
         target.SyncedInventoryTransfers = source.SyncedInventoryTransfers;

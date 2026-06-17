@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Text.Json;
+using GeoraePlan.Mobile.App.Models;
 using GeoraePlan.Mobile.App.Services;
 using 거래플랜.Shared.Contracts;
 
@@ -32,7 +34,7 @@ public sealed class RentalsViewModel : ObservableObject
 
     public ObservableCollection<RentalBillingProfileDto> BillingProfiles { get; } = new();
     public ObservableCollection<RentalAssetDto> RentalAssets { get; } = new();
-    public ObservableCollection<RentalBillingLogDisplayRow> BillingLogs { get; } = new();
+    public ObservableCollection<RentalBillingHistoryDisplayRow> BillingLogs { get; } = new();
 
     public AsyncCommand RefreshCommand { get; }
     public AsyncCommand SyncNowCommand { get; }
@@ -192,11 +194,11 @@ public sealed class RentalsViewModel : ObservableObject
             .OrderBy(asset => asset.CustomerName)
             .ThenBy(asset => asset.ItemName)
             .ToList();
-        var filteredLogs = state.SyncedRentalBillingLogs
-            .Where(log => MatchesBillingLog(log, profileMap))
-            .OrderByDescending(log => log.BillingYearMonth)
-            .ThenByDescending(log => log.ScheduledDate)
-            .Select(log => RentalBillingLogDisplayRow.From(log, profileMap.TryGetValue(log.BillingProfileId, out var profile) ? profile : null))
+        var filteredLogs = BuildBillingHistoryRows(state, profileMap)
+            .Where(MatchesBillingHistory)
+            .OrderByDescending(row => row.SortDate)
+            .ThenBy(row => row.CustomerName)
+            .ThenBy(row => row.ProfileKey)
             .ToList();
 
         Replace(BillingProfiles, filteredProfiles);
@@ -251,21 +253,21 @@ public sealed class RentalsViewModel : ObservableObject
                    (Contains(profile.ProfileKey, q) || Contains(profile.CustomerName, q)));
     }
 
-    private bool MatchesBillingLog(RentalBillingLogDto log, IReadOnlyDictionary<Guid, RentalBillingProfileDto> profileMap)
+    private bool MatchesBillingHistory(RentalBillingHistoryDisplayRow row)
     {
         if (string.IsNullOrWhiteSpace(SearchText))
             return true;
 
         var q = SearchText.Trim();
-        profileMap.TryGetValue(log.BillingProfileId, out var profile);
-        return Contains(log.BillingYearMonth, q)
-               || Contains(log.Status, q)
-               || Contains(log.Note, q)
-               || Contains(log.ProcessedByUsername, q)
-               || Contains(log.ResponsibleOfficeCode, q)
-               || Contains(log.OfficeCode, q)
-               || Contains(profile?.ProfileKey, q)
-               || Contains(profile?.CustomerName, q);
+        return Contains(row.Title, q)
+               || Contains(row.Subtitle, q)
+               || Contains(row.Meta, q)
+               || Contains(row.Note, q)
+               || Contains(row.ProfileKey, q)
+               || Contains(row.CustomerName, q)
+               || Contains(row.Status, q)
+               || Contains(row.SourceLabel, q)
+               || Contains(row.OfficeCode, q);
     }
 
     private static void Replace<T>(ObservableCollection<T> target, IEnumerable<T> source)
@@ -293,6 +295,11 @@ public sealed class RentalsViewModel : ObservableObject
         => !string.IsNullOrWhiteSpace(source) &&
            source.Contains(query, StringComparison.CurrentCultureIgnoreCase);
 
+    private static string ResolveOffice(string? responsibleOfficeCode, string? ownerOfficeCode)
+        => !string.IsNullOrWhiteSpace(responsibleOfficeCode)
+            ? responsibleOfficeCode.Trim()
+            : Normalize(ownerOfficeCode, "미지정");
+
     private static double CalculateListHeight(int count, double rowHeight, double emptyHeight, int maxVisibleRows)
     {
         if (count <= 0)
@@ -301,31 +308,283 @@ public sealed class RentalsViewModel : ObservableObject
         var visibleRows = Math.Min(count, maxVisibleRows);
         return (visibleRows * rowHeight) + Math.Max(0, visibleRows - 1) * 8;
     }
+
+    private static List<RentalBillingHistoryDisplayRow> BuildBillingHistoryRows(
+        MobileSyncState state,
+        IReadOnlyDictionary<Guid, RentalBillingProfileDto> profileMap)
+    {
+        var rows = new List<RentalBillingHistoryDisplayRow>();
+        foreach (var log in state.SyncedRentalBillingLogs.Where(log => !log.IsDeleted))
+        {
+            rows.Add(RentalBillingHistoryDisplayRow.FromLog(
+                log,
+                profileMap.TryGetValue(log.BillingProfileId, out var profile) ? profile : null));
+        }
+
+        var evidenceByRun = new Dictionary<(Guid ProfileId, Guid RunId), MobileRentalBillingRunEvidence>();
+
+        MobileRentalBillingRunEvidence GetEvidence(Guid profileId, Guid runId)
+        {
+            var key = (profileId, runId);
+            if (!evidenceByRun.TryGetValue(key, out var evidence))
+            {
+                evidence = new MobileRentalBillingRunEvidence(profileId, runId);
+                evidenceByRun[key] = evidence;
+            }
+
+            return evidence;
+        }
+
+        foreach (var profile in profileMap.Values.Where(profile => !profile.IsDeleted))
+        {
+            foreach (var run in ParseBillingRuns(profile.BillingRunsJson))
+                GetEvidence(profile.Id, run.RunId).AddRun(profile, run);
+        }
+
+        foreach (var invoice in state.SyncedInvoices.Where(invoice =>
+                     !invoice.IsDeleted &&
+                     invoice.IsLatestVersion &&
+                     invoice.VoucherType == VoucherType.Sales &&
+                     invoice.LinkedRentalBillingProfileId.HasValue &&
+                     invoice.LinkedRentalBillingRunId.HasValue))
+        {
+            AddInvoiceBillingRunEvidence(
+                GetEvidence(invoice.LinkedRentalBillingProfileId!.Value, invoice.LinkedRentalBillingRunId!.Value),
+                invoice);
+        }
+
+        foreach (var transaction in state.SyncedTransactions.Where(transaction =>
+                     !transaction.IsDeleted &&
+                     transaction.LinkedRentalBillingProfileId.HasValue &&
+                     transaction.LinkedRentalBillingRunId.HasValue))
+        {
+            AddTransactionBillingRunEvidence(
+                GetEvidence(transaction.LinkedRentalBillingProfileId!.Value, transaction.LinkedRentalBillingRunId!.Value),
+                transaction);
+        }
+
+        var invoiceById = state.SyncedInvoices
+            .Where(invoice =>
+                !invoice.IsDeleted &&
+                invoice.IsLatestVersion &&
+                invoice.VoucherType == VoucherType.Sales &&
+                invoice.LinkedRentalBillingProfileId.HasValue &&
+                invoice.LinkedRentalBillingRunId.HasValue)
+            .GroupBy(invoice => invoice.Id)
+            .ToDictionary(group => group.Key, group => group.First());
+        var transactionIds = state.SyncedTransactions
+            .Where(transaction => !transaction.IsDeleted)
+            .Select(transaction => transaction.Id)
+            .ToHashSet();
+
+        foreach (var payment in state.SyncedPayments.Where(payment => !payment.IsDeleted))
+        {
+            if (!invoiceById.TryGetValue(payment.InvoiceId, out var invoice))
+                continue;
+            if (transactionIds.Contains(payment.Id))
+                continue;
+
+            AddPaymentBillingRunEvidence(
+                GetEvidence(invoice.LinkedRentalBillingProfileId!.Value, invoice.LinkedRentalBillingRunId!.Value),
+                payment);
+        }
+
+        rows.AddRange(evidenceByRun.Values
+            .Where(evidence => profileMap.ContainsKey(evidence.ProfileId))
+            .Select(evidence => RentalBillingHistoryDisplayRow.FromRunEvidence(
+                evidence,
+                profileMap[evidence.ProfileId])));
+
+        return rows
+            .GroupBy(row => row.UniqueKey, StringComparer.Ordinal)
+            .Select(group => group
+                .OrderByDescending(row => row.SourcePriority)
+                .ThenByDescending(row => row.SortDate)
+                .First())
+            .ToList();
+    }
+
+    private static void AddInvoiceBillingRunEvidence(MobileRentalBillingRunEvidence evidence, InvoiceDto invoice)
+    {
+        evidence.InvoiceAmount += Math.Max(0m, invoice.TotalAmount);
+        evidence.InvoiceDate = Max(evidence.InvoiceDate, invoice.InvoiceDate);
+        evidence.OfficeCode = ResolveOffice(invoice.ResponsibleOfficeCode, invoice.OfficeCode);
+        evidence.HasInvoice = true;
+    }
+
+    private static void AddTransactionBillingRunEvidence(MobileRentalBillingRunEvidence evidence, TransactionDto transaction)
+    {
+        evidence.SettlementAmount += Math.Max(0m, transaction.SettlementAmount);
+        evidence.SettledDate = Max(evidence.SettledDate, transaction.TransactionDate);
+        evidence.OfficeCode = ResolveOffice(transaction.ResponsibleOfficeCode, transaction.OfficeCode);
+        evidence.HasTransaction = true;
+    }
+
+    private static void AddPaymentBillingRunEvidence(MobileRentalBillingRunEvidence evidence, PaymentDto payment)
+    {
+        evidence.SettlementAmount += Math.Max(0m, payment.Amount);
+        evidence.SettledDate = Max(evidence.SettledDate, payment.PaymentDate);
+        evidence.HasPayment = true;
+    }
+
+    private static IReadOnlyList<MobileRentalRunSnapshot> ParseBillingRuns(string? billingRunsJson)
+    {
+        if (string.IsNullOrWhiteSpace(billingRunsJson))
+            return [];
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<MobileRentalRunSnapshot>>(billingRunsJson)?
+                .Where(run => run.RunId != Guid.Empty)
+                .ToList() ?? [];
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static DateOnly? Max(DateOnly? current, DateOnly candidate)
+        => !current.HasValue || candidate > current.Value ? candidate : current;
 }
 
-public sealed class RentalBillingLogDisplayRow
+public sealed class MobileRentalBillingRunEvidence
 {
-    public required RentalBillingLogDto Log { get; init; }
+    public MobileRentalBillingRunEvidence(Guid profileId, Guid runId)
+    {
+        ProfileId = profileId;
+        RunId = runId;
+    }
+
+    public Guid ProfileId { get; }
+    public Guid RunId { get; }
+    public MobileRentalRunSnapshot? Run { get; private set; }
+    public decimal RunBilledAmount { get; private set; }
+    public decimal RunSettledAmount { get; private set; }
+    public decimal InvoiceAmount { get; set; }
+    public decimal SettlementAmount { get; set; }
+    public DateOnly? InvoiceDate { get; set; }
+    public DateOnly? SettledDate { get; set; }
+    public string OfficeCode { get; set; } = string.Empty;
+    public bool HasInvoice { get; set; }
+    public bool HasTransaction { get; set; }
+    public bool HasPayment { get; set; }
+
+    public void AddRun(RentalBillingProfileDto profile, MobileRentalRunSnapshot run)
+    {
+        Run = run;
+        RunBilledAmount = Math.Max(RunBilledAmount, Math.Max(0m, run.BilledAmount));
+        RunSettledAmount = Math.Max(RunSettledAmount, Math.Max(0m, run.SettledAmount));
+        SettledDate = Max(SettledDate, run.SettledDate);
+        OfficeCode = ResolveOffice(profile.ResponsibleOfficeCode, profile.OfficeCode);
+    }
+
+    private static DateOnly? Max(DateOnly? current, DateOnly? candidate)
+        => candidate.HasValue && (!current.HasValue || candidate.Value > current.Value)
+            ? candidate
+            : current;
+
+    private static string ResolveOffice(string? responsibleOfficeCode, string? ownerOfficeCode)
+        => !string.IsNullOrWhiteSpace(responsibleOfficeCode)
+            ? responsibleOfficeCode.Trim()
+            : Normalize(ownerOfficeCode, "미지정");
+
+    private static string Normalize(string? value, string fallback)
+        => string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+}
+
+public sealed class RentalBillingHistoryDisplayRow
+{
+    public required string UniqueKey { get; init; }
+    public required string SourceLabel { get; init; }
+    public required int SourcePriority { get; init; }
     public required string ProfileKey { get; init; }
     public required string CustomerName { get; init; }
+    public required string Status { get; init; }
+    public required string OfficeCode { get; init; }
+    public required DateOnly SortDate { get; init; }
+    public required string Title { get; init; }
+    public required string Subtitle { get; init; }
+    public required string Meta { get; init; }
+    public required string Note { get; init; }
 
-    public string Title => string.IsNullOrWhiteSpace(CustomerName)
-        ? $"청구로그 {Log.BillingYearMonth}"
-        : $"{CustomerName} · {Log.BillingYearMonth}";
-
-    public string Subtitle => $"{Normalize(ProfileKey, "프로필 미지정")} · {Normalize(Log.Status, "예정")} · {Log.BilledAmount:N0}원";
-
-    public string Meta => $"예정일 {Log.ScheduledDate:yyyy-MM-dd} / 처리일 {FormatDate(Log.ProcessedDate)} / 지점 {ResolveOffice(Log.ResponsibleOfficeCode, Log.OfficeCode)}";
-
-    public string Note => Normalize(Log.Note, "메모 없음");
-
-    public static RentalBillingLogDisplayRow From(RentalBillingLogDto log, RentalBillingProfileDto? profile)
+    public static RentalBillingHistoryDisplayRow FromLog(RentalBillingLogDto log, RentalBillingProfileDto? profile)
         => new()
         {
-            Log = log,
+            UniqueKey = $"log:{log.Id:D}",
+            SourceLabel = "청구로그",
+            SourcePriority = 1,
             ProfileKey = profile?.ProfileKey ?? string.Empty,
-            CustomerName = profile?.CustomerName ?? string.Empty
+            CustomerName = profile?.CustomerName ?? string.Empty,
+            Status = Normalize(log.Status, "예정"),
+            OfficeCode = ResolveOffice(log.ResponsibleOfficeCode, log.OfficeCode),
+            SortDate = log.ProcessedDate ?? log.ScheduledDate,
+            Title = string.IsNullOrWhiteSpace(profile?.CustomerName)
+                ? $"청구로그 {log.BillingYearMonth}"
+                : $"{profile.CustomerName} · {log.BillingYearMonth}",
+            Subtitle = $"{Normalize(profile?.ProfileKey, "프로필 미지정")} · {Normalize(log.Status, "예정")} · {log.BilledAmount:N0}원",
+            Meta = $"청구로그 / 예정일 {log.ScheduledDate:yyyy-MM-dd} / 처리일 {FormatDate(log.ProcessedDate)} / 지점 {ResolveOffice(log.ResponsibleOfficeCode, log.OfficeCode)}",
+            Note = Normalize(log.Note, "메모 없음")
         };
+
+    public static RentalBillingHistoryDisplayRow FromRunEvidence(
+        MobileRentalBillingRunEvidence evidence,
+        RentalBillingProfileDto profile)
+    {
+        var run = evidence.Run;
+        var cycleMonths = Math.Max(1, run?.CycleMonths ?? profile.BillingCycleMonths);
+        var scheduledDate = run?.ScheduledDate
+                            ?? evidence.InvoiceDate
+                            ?? evidence.SettledDate
+                            ?? profile.LastSettledDate
+                            ?? profile.LastBilledDate
+                            ?? DateOnly.FromDateTime(DateTime.Today);
+        var settledAmount = evidence.SettlementAmount > 0m
+            ? evidence.SettlementAmount
+            : evidence.RunSettledAmount;
+        var billedAmount = evidence.InvoiceAmount > 0m
+            ? evidence.InvoiceAmount
+            : evidence.RunBilledAmount > 0m
+                ? evidence.RunBilledAmount
+                : Math.Max(Math.Max(0m, profile.MonthlyAmount) * cycleMonths, settledAmount);
+        var outstandingAmount = Math.Max(0m, billedAmount - settledAmount);
+        var source = ResolveEvidenceSource(evidence);
+
+        return new RentalBillingHistoryDisplayRow
+        {
+            UniqueKey = $"run:{evidence.ProfileId:D}:{evidence.RunId:D}",
+            SourceLabel = source,
+            SourcePriority = 2,
+            ProfileKey = profile.ProfileKey,
+            CustomerName = profile.CustomerName,
+            Status = Normalize(run?.Status, outstandingAmount <= 0m && billedAmount > 0m ? "완료" : "청구중"),
+            OfficeCode = Normalize(evidence.OfficeCode, ResolveOffice(profile.ResponsibleOfficeCode, profile.OfficeCode)),
+            SortDate = evidence.SettledDate ?? evidence.InvoiceDate ?? scheduledDate,
+            Title = string.IsNullOrWhiteSpace(profile.CustomerName)
+                ? $"청구회차 {scheduledDate:yyyy-MM-dd}"
+                : $"{profile.CustomerName} · {scheduledDate:yyyy-MM-dd}",
+            Subtitle = $"{Normalize(profile.ProfileKey, "프로필 미지정")} · {source} · 청구 {billedAmount:N0}원 · 수금 {settledAmount:N0}원",
+            Meta = $"기간 {Normalize(run?.PeriodLabel, "기간 미지정")} / 예정일 {scheduledDate:yyyy-MM-dd} / 미수 {outstandingAmount:N0}원 / 지점 {Normalize(evidence.OfficeCode, ResolveOffice(profile.ResponsibleOfficeCode, profile.OfficeCode))}",
+            Note = run is null
+                ? "전표/수금 근거로 복원된 청구 이력"
+                : "청구회차와 전표/수금 근거를 함께 표시합니다."
+        };
+    }
+
+    private static string ResolveEvidenceSource(MobileRentalBillingRunEvidence evidence)
+    {
+        if (evidence.HasInvoice && evidence.HasTransaction)
+            return "전표·수금";
+        if (evidence.HasInvoice && evidence.HasPayment)
+            return "전표·결제";
+        if (evidence.HasInvoice)
+            return "전표";
+        if (evidence.HasTransaction)
+            return "수금";
+        if (evidence.HasPayment)
+            return "결제";
+        return "청구회차";
+    }
 
     private static string Normalize(string? value, string fallback)
         => string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
@@ -337,4 +596,19 @@ public sealed class RentalBillingLogDisplayRow
 
     private static string FormatDate(DateOnly? value)
         => value.HasValue ? value.Value.ToString("yyyy-MM-dd") : "미처리";
+}
+
+public sealed class MobileRentalRunSnapshot
+{
+    public Guid RunId { get; set; }
+    public string RunKey { get; set; } = string.Empty;
+    public DateOnly ScheduledDate { get; set; }
+    public DateOnly PeriodStartDate { get; set; }
+    public DateOnly PeriodEndDate { get; set; }
+    public int CycleMonths { get; set; }
+    public string PeriodLabel { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public decimal BilledAmount { get; set; }
+    public decimal SettledAmount { get; set; }
+    public DateOnly? SettledDate { get; set; }
 }

@@ -251,16 +251,16 @@ if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
             {
                 var title = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 13);
                 title.FontAttributes = FontAttributes.Bold;
-                title.SetBinding(Label.TextProperty, nameof(RentalBillingLogDisplayRow.Title));
+                title.SetBinding(Label.TextProperty, nameof(RentalBillingHistoryDisplayRow.Title));
 
                 var subtitle = GeoraePlanTheme.CreateBodyText(string.Empty, true, 12);
-                subtitle.SetBinding(Label.TextProperty, nameof(RentalBillingLogDisplayRow.Subtitle));
+                subtitle.SetBinding(Label.TextProperty, nameof(RentalBillingHistoryDisplayRow.Subtitle));
 
                 var meta = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
-                meta.SetBinding(Label.TextProperty, nameof(RentalBillingLogDisplayRow.Meta));
+                meta.SetBinding(Label.TextProperty, nameof(RentalBillingHistoryDisplayRow.Meta));
 
                 var note = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
-                note.SetBinding(Label.TextProperty, nameof(RentalBillingLogDisplayRow.Note));
+                note.SetBinding(Label.TextProperty, nameof(RentalBillingHistoryDisplayRow.Note));
 
                 return new Border
                 {
