@@ -3716,6 +3716,135 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsExistingPayment_WhenExistingInvoiceIsOutOfScope()
+    {
+        var visibleCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "PAYMENT-VISIBLE-CUSTOMER",
+            NameMatchKey = "PAYMENTVISIBLECUSTOMER",
+            TradeType = "매출"
+        };
+        var hiddenCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "PAYMENT-HIDDEN-CUSTOMER",
+            NameMatchKey = "PAYMENTHIDDENCUSTOMER",
+            TradeType = "매출"
+        };
+        var visibleInvoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = visibleCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "PAY-VISIBLE-001",
+            LocalTempNumber = "PAY-VISIBLE-TMP-001",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 17),
+            TotalAmount = 1000m,
+            SupplyAmount = 909m,
+            VatAmount = 91m,
+            CreatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc)
+        };
+        var hiddenInvoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = hiddenCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            InvoiceNumber = "PAY-HIDDEN-001",
+            LocalTempNumber = "PAY-HIDDEN-TMP-001",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 17),
+            TotalAmount = 1000m,
+            SupplyAmount = 909m,
+            VatAmount = 91m,
+            CreatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc)
+        };
+        var paymentId = Guid.NewGuid();
+        _dbContext.Customers.AddRange(visibleCustomer, hiddenCustomer);
+        _dbContext.Invoices.AddRange(visibleInvoice, hiddenInvoice);
+        _dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = hiddenInvoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 17),
+            Amount = 300m,
+            Note = "hidden payment",
+            CreatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc)
+        });
+        await _dbContext.SaveChangesAsync();
+        var existingPaymentRevision = await _dbContext.Payments
+            .IgnoreQueryFilters()
+            .Where(x => x.Id == paymentId)
+            .Select(x => x.Revision)
+            .FirstAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-payment-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.PaymentEdit]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-payment-out-of-scope-existing",
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = paymentId,
+                    InvoiceId = visibleInvoice.Id,
+                    PaymentDate = new DateOnly(2026, 6, 17),
+                    Amount = 300m,
+                    Note = "attempted payment relink",
+                    CreatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 17, 0, 2, 0, DateTimeKind.Utc),
+                    Revision = existingPaymentRevision
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(Payment) &&
+            conflict.Reason.Contains("outside the writable office scope", StringComparison.OrdinalIgnoreCase));
+
+        await using var verificationDb = CreateDbContext(new TestCurrentUserContext
+        {
+            Username = "admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        });
+        var storedPayment = await verificationDb.Payments
+            .IgnoreQueryFilters()
+            .FirstAsync(x => x.Id == paymentId);
+        Assert.Equal(hiddenInvoice.Id, storedPayment.InvoiceId);
+        Assert.Equal("hidden payment", storedPayment.Note);
+        Assert.False(storedPayment.IsDeleted);
+    }
+
+    [Fact]
     public async Task Push_ResolvesInvoiceCustomerReference_FromExistingInvoiceCustomer_WhenIncomingCustomerIsMissing()
     {
         var customer = new Customer
@@ -4162,6 +4291,142 @@ public sealed class SyncControllerTests : IDisposable
             .FirstAsync(x => x.Id == attachmentId);
         Assert.Equal(transaction.Id, storedAttachment.TransactionId);
         Assert.True(storedAttachment.IsDeleted);
+    }
+
+    [Fact]
+    public async Task Push_RejectsExistingTransactionAttachment_WhenExistingTransactionIsOutOfScope()
+    {
+        var visibleCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "ATTACHMENT-VISIBLE-CUSTOMER",
+            NameMatchKey = "ATTACHMENTVISIBLECUSTOMER",
+            TradeType = "매출"
+        };
+        var hiddenCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "ATTACHMENT-HIDDEN-CUSTOMER",
+            NameMatchKey = "ATTACHMENTHIDDENCUSTOMER",
+            TradeType = "매출"
+        };
+        var visibleTransaction = new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = visibleCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 17),
+            TransactionKind = "일반수금",
+            CashReceipt = 500m,
+            ReceiptTotal = 500m,
+            SettlementAmount = 500m,
+            CreatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc)
+        };
+        var hiddenTransaction = new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = hiddenCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TransactionDate = new DateOnly(2026, 6, 17),
+            TransactionKind = "일반수금",
+            CashReceipt = 700m,
+            ReceiptTotal = 700m,
+            SettlementAmount = 700m,
+            CreatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc)
+        };
+        var attachmentId = Guid.NewGuid();
+        _dbContext.Customers.AddRange(visibleCustomer, hiddenCustomer);
+        _dbContext.Transactions.AddRange(visibleTransaction, hiddenTransaction);
+        _dbContext.TransactionAttachments.Add(new TransactionAttachment
+        {
+            Id = attachmentId,
+            TransactionId = hiddenTransaction.Id,
+            AttachmentType = "기타",
+            FileName = "hidden-receipt.pdf",
+            MimeType = "application/pdf",
+            FileSize = 10,
+            FileHash = "hidden-hash",
+            Description = "hidden attachment",
+            UploadedByUsername = "admin",
+            UploadedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc),
+            CreatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc)
+        });
+        await _dbContext.SaveChangesAsync();
+        var existingAttachmentRevision = await _dbContext.TransactionAttachments
+            .IgnoreQueryFilters()
+            .Where(x => x.Id == attachmentId)
+            .Select(x => x.Revision)
+            .FirstAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-payment-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.PaymentEdit]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-transaction-attachment-out-of-scope-existing",
+            TransactionAttachments =
+            [
+                new TransactionAttachmentDto
+                {
+                    Id = attachmentId,
+                    TransactionId = visibleTransaction.Id,
+                    AttachmentType = "기타",
+                    FileName = "moved-receipt.pdf",
+                    MimeType = "application/pdf",
+                    FileSize = 3,
+                    FileHash = "moved-hash",
+                    Description = "attempted relink",
+                    UploadedByUsername = "usenet-payment-editor",
+                    UploadedAtUtc = new DateTime(2026, 6, 17, 0, 1, 0, DateTimeKind.Utc),
+                    FileContent = [1, 2, 3],
+                    CreatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 17, 0, 2, 0, DateTimeKind.Utc),
+                    Revision = existingAttachmentRevision
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(TransactionAttachment) &&
+            conflict.Reason.Contains("outside the writable office scope", StringComparison.OrdinalIgnoreCase));
+
+        await using var verificationDb = CreateDbContext(new TestCurrentUserContext
+        {
+            Username = "admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        });
+        var storedAttachment = await verificationDb.TransactionAttachments
+            .IgnoreQueryFilters()
+            .FirstAsync(x => x.Id == attachmentId);
+        Assert.Equal(hiddenTransaction.Id, storedAttachment.TransactionId);
+        Assert.Equal("hidden-receipt.pdf", storedAttachment.FileName);
+        Assert.False(storedAttachment.IsDeleted);
     }
 
     [Fact]

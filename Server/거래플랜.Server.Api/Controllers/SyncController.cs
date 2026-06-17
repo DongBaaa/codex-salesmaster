@@ -1542,6 +1542,14 @@ public sealed class SyncController : ControllerBase
             var existing = await _dbContext.TransactionAttachments.IgnoreQueryFilters()
                 .Include(current => current.Transaction)
                 .FirstOrDefaultAsync(current => current.Id == dto.Id, cancellationToken);
+            if (existing?.Transaction is not null &&
+                !_officeScopeService.CanWriteOfficeForPayments(existing.Transaction.ResponsibleOfficeCode, existing.Transaction.TenantCode))
+            {
+                AddClientConflict(dto, nameof(TransactionAttachment),
+                    $"Existing transaction is outside the writable office scope: {existing.TransactionId}.", result);
+                continue;
+            }
+
             var transaction = await _dbContext.Transactions.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.TransactionId, cancellationToken);
             if (dto.TransactionId == Guid.Empty || transaction is null || transaction.IsDeleted)
@@ -1551,14 +1559,6 @@ public sealed class SyncController : ControllerBase
 
                 if (existing is not null)
                 {
-                    if (existing.Transaction is not null &&
-                        !_officeScopeService.CanWriteOfficeForPayments(existing.Transaction.ResponsibleOfficeCode, existing.Transaction.TenantCode))
-                    {
-                        AddClientConflict(dto, nameof(TransactionAttachment),
-                            $"Referenced transaction is outside the writable office scope: {existing.TransactionId}.", result);
-                        continue;
-                    }
-
                     dto.TransactionId = existing.TransactionId;
                     dto.IsDeleted = true;
                     valid.Add(dto);
@@ -3846,6 +3846,14 @@ public sealed class SyncController : ControllerBase
                 .Include(x => x.Invoice)
                 .ThenInclude(invoice => invoice!.Customer)
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
+            if (existing?.Invoice is not null &&
+                !_officeScopeService.CanWriteOfficeForPayments(existing.Invoice.ResponsibleOfficeCode, existing.Invoice.TenantCode))
+            {
+                AddClientConflict(dto, nameof(Payment),
+                    $"Existing invoice is outside the writable office scope: {existing.InvoiceId}.", result);
+                continue;
+            }
+
             var invoice = await _dbContext.Invoices.IgnoreQueryFilters()
                 .Include(x => x.Customer)
                 .FirstOrDefaultAsync(x => x.Id == dto.InvoiceId, cancellationToken);
@@ -3856,14 +3864,6 @@ public sealed class SyncController : ControllerBase
 
                 if (existing is not null)
                 {
-                    if (existing.Invoice is not null &&
-                        !_officeScopeService.CanWriteOfficeForPayments(existing.Invoice.ResponsibleOfficeCode, existing.Invoice.TenantCode))
-                    {
-                        AddClientConflict(dto, nameof(Payment),
-                            $"Referenced invoice is outside the writable office scope: {existing.InvoiceId}.", result);
-                        continue;
-                    }
-
                     dto.IsDeleted = true;
                     dto.InvoiceId = existing.InvoiceId;
                     valid.Add(dto);
