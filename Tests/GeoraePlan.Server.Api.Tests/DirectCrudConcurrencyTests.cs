@@ -613,6 +613,84 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task InvoicesController_Create_ForbidsReadSharedRentalBillingProfileLink()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "invoice-editor-usenet",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = new[] { PermissionNames.InvoiceEdit }
+        };
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Allowed invoice rental customer",
+            NameMatchKey = "ALLOWEDINVOICERENTALCUSTOMER",
+            TradeType = "Sales"
+        };
+        var readSharedProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ProfileKey = "READ-SHARED-INVOICE-PROFILE",
+            CustomerName = "Read shared invoice profile",
+            BillingDay = 25,
+            MonthlyAmount = 100m
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.RentalBillingProfiles.Add(readSharedProfile);
+        dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        {
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Usenet,
+            ShareRentals = true,
+            AllowTargetWrite = false
+        });
+        await dbContext.SaveChangesAsync();
+
+        var dto = new InvoiceDto
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            VoucherType = VoucherType.Sales,
+            SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            InvoiceDate = new DateOnly(2026, 6, 17),
+            TotalAmount = 100m,
+            SupplyAmount = 91m,
+            VatAmount = 9m,
+            LinkedRentalBillingProfileId = readSharedProfile.Id,
+            LinkedRentalBillingRunId = Guid.NewGuid()
+        };
+
+        var controller = new InvoicesController(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
+
+        var response = await controller.Create(dto, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(response.Result);
+        Assert.False(await dbContext.Invoices.IgnoreQueryFilters().AnyAsync(row => row.Id == dto.Id));
+    }
+
+    [Fact]
     public async Task SyncPush_RejectsInvoiceLineWithOutOfScopeItem()
     {
         var currentUser = new TestCurrentUserContext
@@ -699,6 +777,176 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             .SingleAsync());
         Assert.False(await dbContext.ItemWarehouseStocks
             .AnyAsync(row => row.ItemId == outOfScopeItem.Id));
+    }
+
+    [Fact]
+    public async Task SyncPush_RejectsInvoiceLineWithOutOfScopeItem_WhenCustomerRelinkedByName()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "invoice-sync-usenet",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = new[] { PermissionNames.InvoiceEdit }
+        };
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Relinked sync invoice customer",
+            NameMatchKey = MatchKeyNormalizer.Normalize("Relinked sync invoice customer"),
+            TradeType = "Sales"
+        };
+        var outOfScopeItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "Out of scope relinked invoice item",
+            NameMatchKey = "OUTOFSCOPERELINKEDINVOICEITEM",
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 5m
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Items.Add(outOfScopeItem);
+        await dbContext.SaveChangesAsync();
+
+        var invoiceId = Guid.NewGuid();
+        var result = AssertSyncOk(await CreateSyncController(dbContext, currentUser)
+            .Push(new SyncPushRequest
+            {
+                DeviceId = "invoice-relinked-out-of-scope-item-device",
+                Invoices =
+                [
+                    new InvoiceDto
+                    {
+                        Id = invoiceId,
+                        CustomerId = Guid.NewGuid(),
+                        CustomerName = customer.NameOriginal,
+                        TenantCode = TenantScopeCatalog.UsenetGroup,
+                        OfficeCode = OfficeCodeCatalog.Usenet,
+                        ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                        VoucherType = VoucherType.Sales,
+                        SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                        InvoiceDate = new DateOnly(2026, 6, 17),
+                        TotalAmount = 100m,
+                        SupplyAmount = 91m,
+                        VatAmount = 9m,
+                        Lines =
+                        [
+                            new InvoiceLineDto
+                            {
+                                Id = Guid.NewGuid(),
+                                InvoiceId = invoiceId,
+                                ItemId = outOfScopeItem.Id,
+                                ItemNameOriginal = outOfScopeItem.NameOriginal,
+                                ItemTrackingType = ItemTrackingTypes.Stock,
+                                Unit = "EA",
+                                Quantity = 1m,
+                                UnitPrice = 100m,
+                                LineAmount = 100m
+                            }
+                        ]
+                    }
+                ]
+            }, CancellationToken.None));
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(Invoice), StringComparison.Ordinal) &&
+            conflict.Reason.Contains("Referenced item is outside the readable office scope", StringComparison.Ordinal));
+        Assert.False(await dbContext.Invoices.IgnoreQueryFilters().AnyAsync(row => row.Id == invoiceId));
+        Assert.Equal(5m, await dbContext.Items.IgnoreQueryFilters()
+            .Where(row => row.Id == outOfScopeItem.Id)
+            .Select(row => row.CurrentStock)
+            .SingleAsync());
+        Assert.False(await dbContext.ItemWarehouseStocks
+            .AnyAsync(row => row.ItemId == outOfScopeItem.Id));
+    }
+
+    [Fact]
+    public async Task SyncPush_RejectsInvoiceWithReadSharedRentalBillingProfileLink()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "invoice-sync-usenet",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = new[] { PermissionNames.InvoiceEdit }
+        };
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Allowed sync invoice rental customer",
+            NameMatchKey = "ALLOWEDSYNCINVOICERENTALCUSTOMER",
+            TradeType = "Sales"
+        };
+        var readSharedProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ProfileKey = "READ-SHARED-SYNC-INVOICE-PROFILE",
+            CustomerName = "Read shared sync invoice profile",
+            BillingDay = 25,
+            MonthlyAmount = 100m
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.RentalBillingProfiles.Add(readSharedProfile);
+        dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        {
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Usenet,
+            ShareRentals = true,
+            AllowTargetWrite = false
+        });
+        await dbContext.SaveChangesAsync();
+
+        var invoiceId = Guid.NewGuid();
+        var result = AssertSyncOk(await CreateSyncController(dbContext, currentUser)
+            .Push(new SyncPushRequest
+            {
+                DeviceId = "invoice-read-shared-rental-link-device",
+                Invoices =
+                [
+                    new InvoiceDto
+                    {
+                        Id = invoiceId,
+                        CustomerId = customer.Id,
+                        TenantCode = TenantScopeCatalog.UsenetGroup,
+                        OfficeCode = OfficeCodeCatalog.Usenet,
+                        ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                        VoucherType = VoucherType.Sales,
+                        SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                        InvoiceDate = new DateOnly(2026, 6, 17),
+                        TotalAmount = 100m,
+                        SupplyAmount = 91m,
+                        VatAmount = 9m,
+                        LinkedRentalBillingProfileId = readSharedProfile.Id,
+                        LinkedRentalBillingRunId = Guid.NewGuid()
+                    }
+                ]
+            }, CancellationToken.None));
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(Invoice), StringComparison.Ordinal) &&
+            conflict.Reason.Contains("Referenced rental billing profile is outside the writable office scope", StringComparison.Ordinal));
+        Assert.False(await dbContext.Invoices.IgnoreQueryFilters().AnyAsync(row => row.Id == invoiceId));
     }
 
     [Fact]

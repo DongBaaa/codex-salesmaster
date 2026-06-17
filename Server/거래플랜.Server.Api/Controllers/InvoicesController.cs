@@ -107,6 +107,8 @@ public sealed class InvoicesController : ControllerBase
             customer.OfficeCode);
         if (await ValidateInvoiceLineItemScopeAsync(dto.Lines, cancellationToken) is { } lineScopeError)
             return lineScopeError;
+        if (await ValidateLinkedRentalBillingProfileScopeAsync(dto, cancellationToken) is { } rentalProfileScopeError)
+            return rentalProfileScopeError;
 
         var entity = new Invoice { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
         entity.Apply(dto);
@@ -167,6 +169,8 @@ public sealed class InvoicesController : ControllerBase
             customer.OfficeCode);
         if (await ValidateInvoiceLineItemScopeAsync(dto.Lines, cancellationToken) is { } lineScopeError)
             return lineScopeError;
+        if (await ValidateLinkedRentalBillingProfileScopeAsync(dto, cancellationToken) is { } rentalProfileScopeError)
+            return rentalProfileScopeError;
 
         entity.Apply(dto);
         _dbContext.InvoiceLines.RemoveRange(entity.Lines);
@@ -241,6 +245,34 @@ public sealed class InvoicesController : ControllerBase
             if (!_officeScopeService.CanReadOfficeForItems(item.OfficeCode, item.TenantCode))
                 return Forbid();
         }
+
+        return null;
+    }
+
+    private async Task<ActionResult?> ValidateLinkedRentalBillingProfileScopeAsync(
+        InvoiceDto dto,
+        CancellationToken cancellationToken)
+    {
+        if (!dto.LinkedRentalBillingProfileId.HasValue || dto.LinkedRentalBillingProfileId.Value == Guid.Empty)
+            return null;
+
+        var profile = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => current.Id == dto.LinkedRentalBillingProfileId.Value)
+            .Select(current => new
+            {
+                current.IsDeleted,
+                current.ResponsibleOfficeCode,
+                current.TenantCode
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (profile is null || profile.IsDeleted)
+            return BadRequest("Referenced rental billing profile was not found.");
+
+        if (!_officeScopeService.CanWriteOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode))
+            return Forbid();
 
         return null;
     }

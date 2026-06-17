@@ -3531,6 +3531,8 @@ public sealed class SyncController : ControllerBase
                         }
                         if (!await ValidateReadableInvoiceLineItemsAsync(dto, result, cancellationToken))
                             continue;
+                        if (!await ValidateWritableInvoiceRentalBillingProfileAsync(dto, result, cancellationToken))
+                            continue;
 
                         valid.Add(dto);
                         continue;
@@ -3540,6 +3542,8 @@ public sealed class SyncController : ControllerBase
                     {
                         dto.CustomerId = existing.CustomerId;
                         if (!await ValidateReadableInvoiceLineItemsAsync(dto, result, cancellationToken))
+                            continue;
+                        if (!await ValidateWritableInvoiceRentalBillingProfileAsync(dto, result, cancellationToken))
                             continue;
 
                         valid.Add(dto);
@@ -3574,6 +3578,11 @@ public sealed class SyncController : ControllerBase
                                 "invoice-customer-relinked",
                                 $"전표 '{dto.Id:D}'의 거래처를 이름 기준으로 다시 연결했습니다.");
                         }
+                        if (!await ValidateReadableInvoiceLineItemsAsync(dto, result, cancellationToken))
+                            continue;
+                        if (!await ValidateWritableInvoiceRentalBillingProfileAsync(dto, result, cancellationToken))
+                            continue;
+
                         valid.Add(dto);
                         continue;
                     }
@@ -3612,6 +3621,8 @@ public sealed class SyncController : ControllerBase
                             $"전표 '{dto.Id:D}'의 거래처를 기존 저장값 기준으로 유지했습니다.");
                     }
                     if (!await ValidateReadableInvoiceLineItemsAsync(dto, result, cancellationToken))
+                        continue;
+                    if (!await ValidateWritableInvoiceRentalBillingProfileAsync(dto, result, cancellationToken))
                         continue;
 
                     valid.Add(dto);
@@ -3654,6 +3665,8 @@ public sealed class SyncController : ControllerBase
             }
 
             if (!await ValidateReadableInvoiceLineItemsAsync(dto, result, cancellationToken))
+                continue;
+            if (!await ValidateWritableInvoiceRentalBillingProfileAsync(dto, result, cancellationToken))
                 continue;
 
             valid.Add(dto);
@@ -3702,6 +3715,50 @@ public sealed class SyncController : ControllerBase
         }
 
         return true;
+    }
+
+    private async Task<bool> ValidateWritableInvoiceRentalBillingProfileAsync(
+        InvoiceDto dto,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        if (dto.IsDeleted)
+            return true;
+
+        if (!dto.LinkedRentalBillingProfileId.HasValue || dto.LinkedRentalBillingProfileId.Value == Guid.Empty)
+            return true;
+
+        var profile = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => current.Id == dto.LinkedRentalBillingProfileId.Value)
+            .Select(current => new
+            {
+                current.IsDeleted,
+                current.ResponsibleOfficeCode,
+                current.TenantCode
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (profile is null || profile.IsDeleted)
+        {
+            AddClientConflict(
+                dto,
+                nameof(Invoice),
+                $"Referenced rental billing profile was not found: {dto.LinkedRentalBillingProfileId}.",
+                result);
+            return false;
+        }
+
+        if (_officeScopeService.CanWriteOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode))
+            return true;
+
+        AddClientConflict(
+            dto,
+            nameof(Invoice),
+            $"Referenced rental billing profile is outside the writable office scope: {dto.LinkedRentalBillingProfileId}.",
+            result);
+        return false;
     }
 
     private async Task<Customer?> FindReadableCustomerByNameAsync(string? customerName, CancellationToken cancellationToken)
