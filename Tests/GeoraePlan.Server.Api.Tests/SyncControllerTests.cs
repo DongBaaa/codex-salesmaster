@@ -1388,6 +1388,97 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsRentalAssignmentHistoryBillingProfile_WhenProfileIsReadSharedButNotWritable()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "rental-history-usenet",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.RentalAssetEdit]
+        };
+
+        var asset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "RENTAL-HISTORY-READ-SHARED-PROFILE-ASSET",
+            ManagementNumber = "RH-READ-SHARED",
+            ItemName = "Read shared profile copier",
+            MachineNumber = "READ-SHARED-001",
+            MonthlyFee = 100m
+        };
+        var sharedReadOnlyProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ProfileKey = "READ-SHARED-HISTORY-PROFILE",
+            CustomerName = "Read Shared History Customer",
+            ItemName = asset.ItemName,
+            InstallSiteName = "Read Shared History Site",
+            BillingDay = 10,
+            MonthlyAmount = 30000m
+        };
+        _dbContext.RentalAssets.Add(asset);
+        _dbContext.RentalBillingProfiles.Add(sharedReadOnlyProfile);
+        _dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        {
+            Id = Guid.NewGuid(),
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Usenet,
+            ShareRentals = true,
+            AllowTargetWrite = false,
+            Note = "read-only rental share for assignment history profile link scope test"
+        });
+        await _dbContext.SaveChangesAsync();
+
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var historyId = Guid.NewGuid();
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "rental-history-read-shared-profile-device",
+            RentalAssetAssignmentHistories =
+            [
+                new RentalAssetAssignmentHistoryDto
+                {
+                    Id = historyId,
+                    AssetId = asset.Id,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    BillingProfileId = sharedReadOnlyProfile.Id,
+                    BillingProfileDisplay = sharedReadOnlyProfile.ProfileKey,
+                    CustomerName = sharedReadOnlyProfile.CustomerName,
+                    InstallLocation = sharedReadOnlyProfile.InstallSiteName,
+                    ItemName = asset.ItemName,
+                    MachineNumber = asset.MachineNumber,
+                    ManagementNumber = asset.ManagementNumber,
+                    MonthlyFee = asset.MonthlyFee,
+                    IsCurrent = true,
+                    LinkedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(RentalAssetAssignmentHistory), StringComparison.Ordinal) &&
+            conflict.Reason.Contains("Referenced rental billing profile is outside the writable office scope", StringComparison.Ordinal));
+        Assert.False(await scopedDb.RentalAssetAssignmentHistories.IgnoreQueryFilters().AnyAsync(row => row.Id == historyId));
+    }
+
+    [Fact]
     public async Task Push_ResolvesRentalAssetCustomerReference_ByReadableCustomerName()
     {
         var customer = new Customer
@@ -2037,6 +2128,97 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Equal(assetId, storedAsset.Id);
         Assert.Equal(profileId, storedAsset.BillingProfileId);
         Assert.Equal("2603-501", storedAsset.ManagementNumber);
+    }
+
+    [Fact]
+    public async Task Push_RejectsRentalAssetBillingProfile_WhenProfileIsReadSharedButNotWritable()
+    {
+        var sharedReadOnlyProfileId = Guid.NewGuid();
+        _dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        {
+            Id = Guid.NewGuid(),
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Usenet,
+            ShareRentals = true,
+            AllowTargetWrite = false,
+            Note = "read-only rental share for rental asset profile link scope test"
+        });
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Read Shared Rental Asset Customer",
+            NameMatchKey = "READSHAREDRENTALASSETCUSTOMER",
+            TradeType = "매출"
+        });
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = sharedReadOnlyProfileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ProfileKey = "READ-SHARED-ASSET-PROFILE",
+            CustomerName = "Read Shared Rental Asset Customer",
+            ItemName = "ASSET-PRINTER-READ-SHARED",
+            InstallSiteName = "Read Shared Install Site",
+            BillingDay = 10,
+            MonthlyAmount = 30000m,
+            CreatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 17, 0, 0, 0, DateTimeKind.Utc)
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-rental-asset-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.RentalAssetEdit]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var assetId = Guid.NewGuid();
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-asset-read-shared-profile",
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ManagementId = "601",
+                    ManagementNumber = "2606-601",
+                    AssetKey = "USENET|2606-601|601|Read Shared Rental Asset Customer|ASSET-PRINTER-READ-SHARED",
+                    CustomerName = "Read Shared Rental Asset Customer",
+                    CurrentCustomerName = "Read Shared Rental Asset Customer",
+                    ItemName = "ASSET-PRINTER-READ-SHARED",
+                    InstallLocation = "Read Shared Install Site",
+                    InstallSiteName = "Read Shared Install Site",
+                    BillingProfileId = sharedReadOnlyProfileId,
+                    CurrentLocation = "설치",
+                    CreatedAtUtc = new DateTime(2026, 6, 17, 0, 1, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 17, 0, 1, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalAsset) &&
+            conflict.Reason.Contains("outside the writable office scope", StringComparison.OrdinalIgnoreCase));
+        Assert.False(await scopedDb.RentalAssets.IgnoreQueryFilters().AnyAsync(asset => asset.Id == assetId));
     }
 
     [Fact]

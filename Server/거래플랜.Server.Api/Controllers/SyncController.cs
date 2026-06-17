@@ -2474,10 +2474,10 @@ public sealed class SyncController : ControllerBase
                 .FirstOrDefaultAsync(profile => profile.Id == dto.BillingProfileId.Value, cancellationToken);
             if (billingProfile is not null &&
                 !billingProfile.IsDeleted &&
-                !_officeScopeService.CanReadOfficeForRentals(billingProfile.ResponsibleOfficeCode, billingProfile.TenantCode))
+                !_officeScopeService.CanWriteOfficeForRentals(billingProfile.ResponsibleOfficeCode, billingProfile.TenantCode))
             {
                 AddClientConflict(dto, nameof(RentalAssetAssignmentHistory),
-                    $"Referenced rental billing profile is outside the readable office scope: {dto.BillingProfileId.Value}.", result);
+                    $"Referenced rental billing profile is outside the writable office scope: {dto.BillingProfileId.Value}.", result);
                 return false;
             }
         }
@@ -2776,10 +2776,10 @@ public sealed class SyncController : ControllerBase
 
             if (billingProfile is not null)
             {
-                if (!_officeScopeService.CanReadOfficeForRentals(billingProfile.ResponsibleOfficeCode, billingProfile.TenantCode))
+                if (!_officeScopeService.CanWriteOfficeForRentals(billingProfile.ResponsibleOfficeCode, billingProfile.TenantCode))
                 {
                     AddClientConflict(dto, nameof(RentalAsset),
-                        $"Referenced rental billing profile is outside the readable office scope: {billingProfile.Id}.", result);
+                        $"Referenced rental billing profile is outside the writable office scope: {billingProfile.Id}.", result);
                     continue;
                 }
 
