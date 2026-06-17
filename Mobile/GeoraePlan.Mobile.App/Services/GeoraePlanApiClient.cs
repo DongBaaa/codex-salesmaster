@@ -377,7 +377,7 @@ public sealed class GeoraePlanApiClient
 
         response.Dispose();
 
-        var recovery = await _sessionRecovery.TryRestoreSessionAsync($"401:{relative}", ct);
+        var recovery = await _sessionRecovery.TryRestoreSessionAsync($"401:{relative}", forceRefresh: true, ct: ct);
         if (recovery.Success)
         {
             var retryResponse = await SendCoreAsync(requestFactory, ct);

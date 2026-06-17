@@ -20,11 +20,17 @@ public sealed class MobileSessionRecoveryService
     }
 
     public async Task<SessionRecoveryResult> TryRestoreSessionAsync(string reason, CancellationToken ct = default)
+        => await TryRestoreSessionAsync(reason, forceRefresh: false, ct).ConfigureAwait(false);
+
+    public async Task<SessionRecoveryResult> TryRestoreSessionAsync(
+        string reason,
+        bool forceRefresh,
+        CancellationToken ct = default)
     {
         await _restoreLock.WaitAsync(ct);
         try
         {
-            if (await _sessionStore.HasUsableSessionAsync().ConfigureAwait(false))
+            if (!forceRefresh && await _sessionStore.HasUsableSessionAsync().ConfigureAwait(false))
                 return SessionRecoveryResult.SuccessResult($"세션이 이미 유효합니다. ({reason})");
 
             var username = _settings.GetLastUsername().Trim();

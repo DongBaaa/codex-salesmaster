@@ -83,6 +83,31 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("TryDeleteFile(temporaryPath)", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void MobileAuthentication401_ForcesSessionRecoveryInsteadOfReusingRejectedToken()
+    {
+        var root = FindRepositoryRoot();
+        var recoverySource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "MobileSessionRecoveryService.cs"));
+        var apiSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "GeoraePlanApiClient.cs"));
+
+        Assert.Contains("TryRestoreSessionAsync(reason, forceRefresh: false, ct)", recoverySource, StringComparison.Ordinal);
+        Assert.Contains("bool forceRefresh", recoverySource, StringComparison.Ordinal);
+        Assert.Contains("if (!forceRefresh && await _sessionStore.HasUsableSessionAsync()", recoverySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (await _sessionStore.HasUsableSessionAsync()", recoverySource, StringComparison.Ordinal);
+        Assert.Contains("TryRestoreSessionAsync($\"401:{relative}\", forceRefresh: true, ct: ct)", apiSource, StringComparison.Ordinal);
+        Assert.Contains("TryRestoreSessionAsync($\"token:{relative}\", ct)", apiSource, StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
