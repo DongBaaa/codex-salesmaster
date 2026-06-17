@@ -130,6 +130,8 @@ builder.Services.AddScoped<InventoryLedgerService>();
 builder.Services.AddScoped<InvoiceStockSnapshotService>();
 builder.Services.AddScoped<RentalAssignmentHistoryService>();
 builder.Services.AddScoped<IJwtTokenFactory, JwtTokenFactory>();
+builder.Services.AddScoped<IActiveUserSessionValidator, ActiveUserSessionValidator>();
+builder.Services.AddScoped<ActiveUserJwtBearerEvents>();
 builder.Services.AddScoped<IInvoiceNumberService, InvoiceNumberService>();
 builder.Services.AddSingleton<RevisionClock>();
 builder.Services.AddSingleton<ICentralFileStorage, CentralFileStorage>();
@@ -152,6 +154,7 @@ builder.Services
             ValidateLifetime = true,
             ClockSkew = TimeSpan.FromMinutes(1)
         };
+        options.EventsType = typeof(ActiveUserJwtBearerEvents);
     });
 
 builder.Services.AddAuthorization(options =>

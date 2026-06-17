@@ -6,6 +6,15 @@ namespace 거래플랜.Desktop.App.Data;
 
 public sealed class LocalDbContext : DbContext
 {
+    public LocalDbContext()
+    {
+    }
+
+    public LocalDbContext(DbContextOptions<LocalDbContext> options)
+        : base(options)
+    {
+    }
+
     public DbSet<LocalCompanyProfile> CompanyProfiles => Set<LocalCompanyProfile>();
     public DbSet<LocalUnit> Units => Set<LocalUnit>();
     public DbSet<LocalCustomerCategory> CustomerCategories => Set<LocalCustomerCategory>();
@@ -45,6 +54,9 @@ public sealed class LocalDbContext : DbContext
 
     protected override void OnConfiguring(DbContextOptionsBuilder options)
     {
+        if (options.IsConfigured)
+            return;
+
         options.UseSqlite($"Data Source={AppPaths.LocalDbFile}");
     }
 

@@ -13,14 +13,17 @@ namespace GeoraePlan.Desktop.App.Tests;
 
 public sealed class LoginViewModelAuthFallbackTests
 {
+    private static readonly SemaphoreSlim AppRootLock = new(1, 1);
+
     [Fact]
     public async Task LoginAsync_ServerHttpError_DoesNotOfferOfflineLoginFromCachedPassword()
     {
+        await AppRootLock.WaitAsync();
         var tempRoot = PrepareAppRoot("georaeplan-login-http-error");
 
         try
         {
-            await using var db = new LocalDbContext();
+            await using var db = CreateDbContext(tempRoot);
             await db.Database.EnsureDeletedAsync();
             await db.Database.EnsureCreatedAsync();
 
@@ -59,17 +62,71 @@ public sealed class LoginViewModelAuthFallbackTests
         finally
         {
             await CleanupAppRootAsync(tempRoot);
+            AppRootLock.Release();
+        }
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task LoginAsync_BlockedOrUnauthorizedResponse_DoesNotOfferOfflineLoginFromCachedPassword(HttpStatusCode statusCode)
+    {
+        await AppRootLock.WaitAsync();
+        var tempRoot = PrepareAppRoot($"georaeplan-login-{statusCode:D}");
+
+        try
+        {
+            await using var db = CreateDbContext(tempRoot);
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = new SessionState();
+            var local = CreateLocalStateService(db, session);
+            await local.SaveSessionCacheAsync(
+                "cached-user",
+                "user",
+                Array.Empty<string>(),
+                TenantScopeCatalog.UsenetGroup,
+                TenantScopeCatalog.ScopeOfficeOnly,
+                OfficeCodeCatalog.Usenet,
+                "cached-password");
+
+            var api = new ErpApiClient(
+                new HttpClient(new StaticLoginResponseHandler(statusCode, "BLOCKED"))
+                {
+                    BaseAddress = new Uri("http://localhost/")
+                },
+                session);
+            var viewModel = new LoginViewModel(api, session, local)
+            {
+                Username = "cached-user",
+                Password = "cached-password"
+            };
+            var loginSucceeded = false;
+            viewModel.LoginSucceeded += () => loginSucceeded = true;
+
+            await viewModel.LoginCommand.ExecuteAsync(null);
+
+            Assert.False(viewModel.ShowOfflineButton);
+            Assert.False(loginSucceeded);
+            Assert.False(session.IsLoggedIn);
+        }
+        finally
+        {
+            await CleanupAppRootAsync(tempRoot);
+            AppRootLock.Release();
         }
     }
 
     [Fact]
     public async Task LoginAsync_TransportSocketFailure_OffersOfflineLoginWhenCachePasswordMatches()
     {
+        await AppRootLock.WaitAsync();
         var tempRoot = PrepareAppRoot("georaeplan-login-network-error");
 
         try
         {
-            await using var db = new LocalDbContext();
+            await using var db = CreateDbContext(tempRoot);
             await db.Database.EnsureDeletedAsync();
             await db.Database.EnsureCreatedAsync();
 
@@ -105,23 +162,32 @@ public sealed class LoginViewModelAuthFallbackTests
         finally
         {
             await CleanupAppRootAsync(tempRoot);
+            AppRootLock.Release();
         }
     }
 
     private static LocalStateService CreateLocalStateService(LocalDbContext db, SessionState session)
         => new(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
 
+    private static LocalDbContext CreateDbContext(string tempRoot)
+    {
+        Directory.CreateDirectory(tempRoot);
+        var dbPath = Path.Combine(tempRoot, "login-fallback-test.db");
+        var options = new DbContextOptionsBuilder<LocalDbContext>()
+            .UseSqlite($"Data Source={dbPath}")
+            .Options;
+        return new LocalDbContext(options);
+    }
+
     private static string PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
-        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
         return tempRoot;
     }
 
     private static async Task CleanupAppRootAsync(string tempRoot)
     {
-        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
         SqliteConnection.ClearAllPools();
 
         if (!Directory.Exists(tempRoot))
@@ -137,12 +203,12 @@ public sealed class LoginViewModelAuthFallbackTests
         }
     }
 
-    private sealed class StaticLoginResponseHandler(HttpStatusCode statusCode) : HttpMessageHandler
+    private sealed class StaticLoginResponseHandler(HttpStatusCode statusCode, string responseBody = "test login failure") : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             => Task.FromResult(new HttpResponseMessage(statusCode)
             {
-                Content = new StringContent("test login failure")
+                Content = new StringContent(responseBody)
             });
     }
 
