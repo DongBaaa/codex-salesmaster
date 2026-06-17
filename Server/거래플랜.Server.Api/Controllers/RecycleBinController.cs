@@ -1680,9 +1680,27 @@ public sealed class RecycleBinController : ControllerBase
         {
             CreatePurgeRecord("transaction", transaction.Id, transaction.TenantCode, transaction.ResponsibleOfficeCode)
         };
+        var linkedPaymentAttachments = new List<PaymentAttachment>();
         if (linkedPayment is not null)
         {
-            purgeRecords.Add(CreatePurgeRecord("payment", linkedPayment.Id, transaction.TenantCode, transaction.ResponsibleOfficeCode));
+            if (!linkedPayment.IsDeleted)
+                return (false, "활성 연동 수금/지급 기록이 남아 있어 거래내역을 영구삭제할 수 없습니다.");
+
+            var linkedPaymentInvoice = await _dbContext.Invoices
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == linkedPayment.InvoiceId, cancellationToken);
+            if (linkedPaymentInvoice is null || !_officeScopeService.CanWriteOfficeForPayments(linkedPaymentInvoice.ResponsibleOfficeCode, linkedPaymentInvoice.TenantCode))
+                return (false, "현재 계정으로 연동 수금/지급 기록을 영구삭제할 수 없어 거래내역을 영구삭제할 수 없습니다.");
+
+            linkedPaymentAttachments = await _dbContext.PaymentAttachments
+                .IgnoreQueryFilters()
+                .Where(current => current.PaymentId == linkedPayment.Id)
+                .ToListAsync(cancellationToken);
+            foreach (var attachment in linkedPaymentAttachments)
+                _fileStorage.DeleteIfExists(attachment.StoragePath);
+
+            purgeRecords.Add(CreatePurgeRecord("payment", linkedPayment.Id, linkedPaymentInvoice.TenantCode, linkedPaymentInvoice.ResponsibleOfficeCode));
+            _dbContext.PaymentAttachments.RemoveRange(linkedPaymentAttachments);
             _dbContext.Payments.Remove(linkedPayment);
         }
 

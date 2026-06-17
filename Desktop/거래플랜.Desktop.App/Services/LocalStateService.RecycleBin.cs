@@ -1846,10 +1846,30 @@ public sealed partial class LocalStateService
         var linkedPayment = await _db.Payments
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == transactionId, ct);
+        if (linkedPayment is not null)
+        {
+            if (!linkedPayment.IsDeleted)
+                return OfficeMutationResult.Denied("활성 연동 수금/지급 기록이 남아 있어 거래내역을 영구삭제할 수 없습니다.");
+
+            var linkedPaymentInvoice = await _db.Invoices
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == linkedPayment.InvoiceId, ct);
+            if (linkedPaymentInvoice is null || !CanAccessInvoice(linkedPaymentInvoice, session))
+                return OfficeMutationResult.Denied("권한이 없어 연동 수금/지급 기록을 영구삭제할 수 없습니다.");
+        }
 
         var now = DateTime.UtcNow;
         if (linkedPayment is not null)
+        {
             _db.Payments.Remove(linkedPayment);
+            AddPurgeAudit(nameof(LocalPayment), linkedPayment.Id, new
+            {
+                linkedPayment.InvoiceId,
+                linkedPayment.PaymentDate,
+                linkedPayment.Amount,
+                Reason = "LinkedTransactionPurge"
+            }, session, now);
+        }
 
         _db.TransactionAttachments.RemoveRange(attachments);
         _db.Transactions.Remove(transaction);

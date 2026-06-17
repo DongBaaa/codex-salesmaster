@@ -1122,6 +1122,77 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     [Fact]
+    public async Task PermanentlyDeleteTransaction_RejectsWhenLinkedPaymentIsActive()
+    {
+        PrepareAppRoot("georaeplan-rental-purge-transaction-active-linked-payment");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var invoiceId = Guid.NewGuid();
+            var transactionId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(customerId, "Active linked payment customer"));
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = invoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "LOCAL-TX-PURGE-ACTIVE-PAYMENT",
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 17),
+                TotalAmount = 1000m,
+                SupplyAmount = 1000m,
+                IsDeleted = false
+            });
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = transactionId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 17),
+                TransactionKind = PaymentFlowConstants.TransactionKindInvoiceReceipt,
+                LinkedInvoiceId = invoiceId,
+                ReceiptTotal = 1000m,
+                SettlementAmount = 1000m,
+                IsDeleted = true
+            });
+            db.Payments.Add(new LocalPayment
+            {
+                Id = transactionId,
+                InvoiceId = invoiceId,
+                PaymentDate = new DateOnly(2026, 6, 17),
+                Amount = 1000m,
+                IsDeleted = false
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var purge = await local.PermanentlyDeleteRecycleBinEntryAsync(
+                RecycleBinEntityKind.Transaction,
+                transactionId,
+                session);
+
+            Assert.False(purge.Success);
+            Assert.Contains("활성", purge.Message);
+            Assert.True(await db.Transactions.IgnoreQueryFilters().AnyAsync(current => current.Id == transactionId));
+            Assert.True(await db.Payments.IgnoreQueryFilters().AnyAsync(current => current.Id == transactionId && !current.IsDeleted));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SyncPull_DirectRentalBillingInvoicePayment_UpdatesRentalSettlement()
     {
         PrepareAppRoot("georaeplan-rental-pull-payment-settlement");
