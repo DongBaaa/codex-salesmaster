@@ -243,6 +243,88 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     [Fact]
+    public async Task BillingHistoryRows_IncludeFinancialRunMissingFromProfileJson()
+    {
+        PrepareAppRoot("georaeplan-rental-history-financial-run-missing-json");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var runId = Guid.NewGuid();
+            var customerName = "Financial run missing json customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            profile.BillingCycleMonths = 12;
+            profile.MonthlyAmount = 330_000m;
+            profile.BillingRunsJson = "[]";
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "청구대상"));
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 1, 8),
+                TransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt,
+                LinkedRentalBillingProfileId = profileId,
+                LinkedRentalBillingRunId = runId,
+                ReceiptTotal = 3_960_000m,
+                BankReceipt = 3_960_000m,
+                SettlementAmount = 3_960_000m,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+
+            var histories = await service.GetBillingHistoryRowsAsync(
+                new[] { profileId },
+                session,
+                new DateOnly(2026, 6, 17));
+
+            var history = Assert.Single(histories, current => current.BillingRunId == runId);
+            Assert.Equal(3_960_000m, history.SettledAmount);
+            Assert.Equal(3_960_000m, history.BilledAmount);
+            Assert.Equal(0m, history.OutstandingAmount);
+            Assert.True(history.CanDelete);
+
+            var rows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    ReferenceDate = new DateOnly(2026, 6, 17),
+                    ExpandCustomerSummaryRows = true
+                },
+                session);
+            var row = Assert.Single(rows, current => current.Source.Id == profileId);
+            Assert.Contains(row.BillingHistoryRows, current => current.BillingRunId == runId);
+
+            var delete = await service.DeleteBillingHistoryAsync(profileId, runId, session);
+            Assert.True(delete.Success, delete.Message);
+            var deletedTransaction = await db.Transactions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.LinkedRentalBillingRunId == runId);
+            Assert.True(deletedTransaction.IsDeleted);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task StartBilling_AllowsNextUnbilledCycle_WhenReferenceDateIsOutsideBillingMonth()
     {
         PrepareAppRoot("georaeplan-rental-start-outside-billing-month");

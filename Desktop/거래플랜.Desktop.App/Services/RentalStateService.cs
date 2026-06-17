@@ -1353,6 +1353,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var customerNameMap = await GetBillingProfileCustomerNameMapAsync(profiles, ct);
         var billingRunsByProfile = BuildBillingRunsByProfile(profiles);
+        await AddSupplementalFinancialBillingRunsAsync(profiles, billingRunsByProfile, ct);
         var displayBillingRunsByProfile = maxDisplayRows > 0
             ? LimitBillingRunsForHistoryDisplay(billingRunsByProfile, maxDisplayRows)
             : billingRunsByProfile;
@@ -1435,6 +1436,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
         LogRentalLoadStep("Rental billing customer lookup", stepStopwatch, $"customers={customerNameMap.Count:N0}");
 
         stepStopwatch.Restart();
+        var billingRunsByProfile = BuildBillingRunsByProfile(profiles);
+        await AddSupplementalFinancialBillingRunsAsync(profiles, billingRunsByProfile, ct);
+        ct.ThrowIfCancellationRequested();
+        LogRentalLoadStep("Rental billing financial run supplement", stepStopwatch, $"profiles={billingRunsByProfile.Count:N0}");
+
+        stepStopwatch.Restart();
         var preparedProfiles = new List<RentalBillingPreparedProfile>(profiles.Count);
         var preparedBillingRunCount = 0;
         foreach (var profile in profiles)
@@ -1443,7 +1450,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
             assetsByProfile.TryGetValue(profile.Id, out var profileAssets);
             profileAssets ??= new List<LocalRentalAsset>();
             var templateItems = GetBillingTemplateItems(profile, profileAssets);
-            var runs = GetBillingRuns(profile);
+            var runs = billingRunsByProfile.TryGetValue(profile.Id, out var loadedRuns)
+                ? loadedRuns
+                : GetBillingRuns(profile);
             var persistedRuns = runs.ToList();
             var previewRun = GetOrCreateBillingRun(profile, referenceDate, persistChanges: false, templateItems, runs);
             var billingRuns = ResolveBillingRunsForRowBuild(
@@ -1908,8 +1917,47 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 }
             }
 
+            var directPaymentRows = await (
+                    from payment in _db.Payments.AsNoTracking()
+                    join invoice in _db.Invoices.AsNoTracking()
+                        on payment.InvoiceId equals invoice.Id
+                    where !payment.IsDeleted &&
+                          !invoice.IsDeleted &&
+                          invoice.IsLatestVersion &&
+                          invoice.LinkedRentalBillingRunId.HasValue &&
+                          scopedBatchIds.Contains(invoice.LinkedRentalBillingRunId.Value) &&
+                          !_db.Transactions.AsNoTracking().Any(transaction =>
+                              !transaction.IsDeleted &&
+                              transaction.Id == payment.Id &&
+                              transaction.LinkedRentalBillingProfileId == invoice.LinkedRentalBillingProfileId)
+                    select new RentalBillingRunSettlementLookup(
+                        invoice.LinkedRentalBillingRunId!.Value,
+                        payment.Amount,
+                        payment.PaymentDate))
+                .ToListAsync(ct);
+            foreach (var row in directPaymentRows)
+            {
+                if (settlementByRun.TryGetValue(row.RunId, out var existing))
+                {
+                    var lastSettledDate = existing.LastSettledDate.HasValue &&
+                                          existing.LastSettledDate.Value >= row.TransactionDate
+                        ? existing.LastSettledDate.Value
+                        : row.TransactionDate;
+                    settlementByRun[row.RunId] = new RentalBillingRunSettlementInfo(
+                        existing.SettledAmount + row.SettlementAmount,
+                        lastSettledDate);
+                }
+                else
+                {
+                    settlementByRun[row.RunId] = new RentalBillingRunSettlementInfo(
+                        row.SettlementAmount,
+                        row.TransactionDate);
+                }
+            }
+
             var invoiceRows = await _db.Invoices.AsNoTracking()
                 .Where(invoice => !invoice.IsDeleted &&
+                                  invoice.IsLatestVersion &&
                                   invoice.LinkedRentalBillingRunId.HasValue &&
                                   scopedBatchIds.Contains(invoice.LinkedRentalBillingRunId.Value))
                 .Select(invoice => new RentalBillingRunInvoiceLookup(
@@ -1949,6 +1997,28 @@ WHERE ""AssignedUsername"" <> '';", ct);
         Guid InvoiceId,
         decimal TotalAmount,
         DateTime UpdatedAtUtc);
+
+    private sealed class SupplementalBillingRunAccumulator
+    {
+        public Guid ProfileId { get; init; }
+        public Guid RunId { get; init; }
+        public DateOnly? InvoiceDate { get; set; }
+        public DateOnly? LastSettlementDate { get; set; }
+        public decimal InvoiceAmount { get; set; }
+        public decimal SettlementAmount { get; set; }
+    }
+
+    private readonly record struct SupplementalBillingRunInvoiceLookup(
+        Guid ProfileId,
+        Guid RunId,
+        DateOnly InvoiceDate,
+        decimal TotalAmount);
+
+    private readonly record struct SupplementalBillingRunSettlementLookup(
+        Guid ProfileId,
+        Guid RunId,
+        DateOnly SettlementDate,
+        decimal Amount);
 
     private readonly record struct RentalBillingHistorySummary(
         int PastUnresolvedCount,
@@ -2262,6 +2332,195 @@ WHERE ""AssignedUsername"" <> '';", ct);
             runsByProfile[profile.Id] = DeduplicateBillingRuns(GetBillingRuns(profile));
 
         return runsByProfile;
+    }
+
+    private async Task AddSupplementalFinancialBillingRunsAsync(
+        IReadOnlyList<LocalRentalBillingProfile> profiles,
+        Dictionary<Guid, List<RentalBillingRunModel>> runsByProfile,
+        CancellationToken ct)
+    {
+        if (profiles.Count == 0)
+            return;
+
+        var profileById = profiles
+            .Where(profile => profile.Id != Guid.Empty)
+            .GroupBy(profile => profile.Id)
+            .ToDictionary(group => group.Key, group => group.First());
+        if (profileById.Count == 0)
+            return;
+
+        var existingRunIdsByProfile = runsByProfile.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value
+                .Where(run => run.RunId != Guid.Empty)
+                .Select(run => run.RunId)
+                .ToHashSet());
+        var accumulators = new Dictionary<(Guid ProfileId, Guid RunId), SupplementalBillingRunAccumulator>();
+
+        SupplementalBillingRunAccumulator GetAccumulator(Guid profileId, Guid runId)
+        {
+            var key = (profileId, runId);
+            if (!accumulators.TryGetValue(key, out var accumulator))
+            {
+                accumulator = new SupplementalBillingRunAccumulator
+                {
+                    ProfileId = profileId,
+                    RunId = runId
+                };
+                accumulators[key] = accumulator;
+            }
+
+            return accumulator;
+        }
+
+        foreach (var batchIds in profileById.Keys.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds;
+
+            var invoiceRows = await _db.Invoices.AsNoTracking()
+                .Where(invoice =>
+                    !invoice.IsDeleted &&
+                    invoice.IsLatestVersion &&
+                    invoice.LinkedRentalBillingProfileId.HasValue &&
+                    invoice.LinkedRentalBillingRunId.HasValue &&
+                    scopedBatchIds.Contains(invoice.LinkedRentalBillingProfileId.Value))
+                .Select(invoice => new SupplementalBillingRunInvoiceLookup(
+                    invoice.LinkedRentalBillingProfileId!.Value,
+                    invoice.LinkedRentalBillingRunId!.Value,
+                    invoice.InvoiceDate,
+                    invoice.TotalAmount))
+                .ToListAsync(ct);
+            foreach (var row in invoiceRows)
+            {
+                if (existingRunIdsByProfile.TryGetValue(row.ProfileId, out var existingRunIds) &&
+                    existingRunIds.Contains(row.RunId))
+                {
+                    continue;
+                }
+
+                var accumulator = GetAccumulator(row.ProfileId, row.RunId);
+                accumulator.InvoiceAmount += Math.Max(0m, row.TotalAmount);
+                if (!accumulator.InvoiceDate.HasValue || row.InvoiceDate > accumulator.InvoiceDate.Value)
+                    accumulator.InvoiceDate = row.InvoiceDate;
+            }
+
+            var transactionRows = await _db.Transactions.AsNoTracking()
+                .Where(transaction =>
+                    !transaction.IsDeleted &&
+                    transaction.LinkedRentalBillingProfileId.HasValue &&
+                    transaction.LinkedRentalBillingRunId.HasValue &&
+                    scopedBatchIds.Contains(transaction.LinkedRentalBillingProfileId.Value))
+                .Select(transaction => new SupplementalBillingRunSettlementLookup(
+                    transaction.LinkedRentalBillingProfileId!.Value,
+                    transaction.LinkedRentalBillingRunId!.Value,
+                    transaction.TransactionDate,
+                    transaction.SettlementAmount))
+                .ToListAsync(ct);
+            foreach (var row in transactionRows)
+            {
+                if (existingRunIdsByProfile.TryGetValue(row.ProfileId, out var existingRunIds) &&
+                    existingRunIds.Contains(row.RunId))
+                {
+                    continue;
+                }
+
+                var accumulator = GetAccumulator(row.ProfileId, row.RunId);
+                accumulator.SettlementAmount += Math.Max(0m, row.Amount);
+                if (!accumulator.LastSettlementDate.HasValue || row.SettlementDate > accumulator.LastSettlementDate.Value)
+                    accumulator.LastSettlementDate = row.SettlementDate;
+            }
+
+            var directPaymentRows = await (
+                    from payment in _db.Payments.AsNoTracking()
+                    join invoice in _db.Invoices.AsNoTracking()
+                        on payment.InvoiceId equals invoice.Id
+                    where !payment.IsDeleted &&
+                          !invoice.IsDeleted &&
+                          invoice.IsLatestVersion &&
+                          invoice.LinkedRentalBillingProfileId.HasValue &&
+                          invoice.LinkedRentalBillingRunId.HasValue &&
+                          scopedBatchIds.Contains(invoice.LinkedRentalBillingProfileId.Value) &&
+                          !_db.Transactions.AsNoTracking().Any(transaction =>
+                              !transaction.IsDeleted &&
+                              transaction.Id == payment.Id &&
+                              transaction.LinkedRentalBillingProfileId == invoice.LinkedRentalBillingProfileId)
+                    select new SupplementalBillingRunSettlementLookup(
+                        invoice.LinkedRentalBillingProfileId!.Value,
+                        invoice.LinkedRentalBillingRunId!.Value,
+                        payment.PaymentDate,
+                        payment.Amount))
+                .ToListAsync(ct);
+            foreach (var row in directPaymentRows)
+            {
+                if (existingRunIdsByProfile.TryGetValue(row.ProfileId, out var existingRunIds) &&
+                    existingRunIds.Contains(row.RunId))
+                {
+                    continue;
+                }
+
+                var accumulator = GetAccumulator(row.ProfileId, row.RunId);
+                accumulator.SettlementAmount += Math.Max(0m, row.Amount);
+                if (!accumulator.LastSettlementDate.HasValue || row.SettlementDate > accumulator.LastSettlementDate.Value)
+                    accumulator.LastSettlementDate = row.SettlementDate;
+            }
+        }
+
+        foreach (var accumulator in accumulators.Values)
+        {
+            if (!profileById.TryGetValue(accumulator.ProfileId, out var profile))
+                continue;
+
+            if (!runsByProfile.TryGetValue(accumulator.ProfileId, out var runs))
+            {
+                runs = new List<RentalBillingRunModel>();
+                runsByProfile[accumulator.ProfileId] = runs;
+            }
+
+            if (runs.Any(run => run.RunId == accumulator.RunId))
+                continue;
+
+            runs.Add(BuildSupplementalFinancialBillingRun(profile, accumulator));
+        }
+    }
+
+    private static RentalBillingRunModel BuildSupplementalFinancialBillingRun(
+        LocalRentalBillingProfile profile,
+        SupplementalBillingRunAccumulator accumulator)
+    {
+        var cycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths);
+        var scheduledDate = accumulator.InvoiceDate
+                            ?? accumulator.LastSettlementDate
+                            ?? profile.LastSettledDate
+                            ?? profile.LastBilledDate
+                            ?? DateOnly.FromDateTime(DateTime.Today);
+        var period = ResolveBillingPeriod(profile, scheduledDate, cycleMonths);
+        var expectedCycleAmount = Math.Max(0m, profile.MonthlyAmount) * cycleMonths;
+        var settledAmount = Math.Max(0m, accumulator.SettlementAmount);
+        var billedAmount = accumulator.InvoiceAmount > 0m
+            ? Math.Max(0m, accumulator.InvoiceAmount)
+            : Math.Max(expectedCycleAmount, settledAmount);
+        var outstandingAmount = Math.Max(0m, billedAmount - settledAmount);
+        var status = billedAmount > 0m && outstandingAmount <= 0m
+            ? PaymentFlowConstants.BillingStatusCompleted
+            : PaymentFlowConstants.BillingStatusInProgress;
+
+        return new RentalBillingRunModel
+        {
+            RunId = accumulator.RunId,
+            RunKey = $"{period.StartDate:yyyyMMdd}-{period.EndDate:yyyyMMdd}",
+            ScheduledDate = scheduledDate,
+            PeriodStartDate = period.StartDate,
+            PeriodEndDate = period.EndDate,
+            CycleMonths = cycleMonths,
+            PeriodLabel = BuildBillingPeriodLabel(period.StartDate, period.EndDate),
+            Status = status,
+            BilledAmount = billedAmount,
+            SettledAmount = settledAmount,
+            SettlementStatus = DetermineBillingSettlementStatus(profile, settledAmount, billedAmount),
+            SettledDate = accumulator.LastSettlementDate,
+            Note = "전표/수금 근거로 복원된 청구 이력"
+        };
     }
 
     private static List<Guid> CollectBillingRunReferenceIds(
@@ -4989,12 +5248,21 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var run = FindBillingRunById(profile, billingRunId);
         if (run is null)
-            return LocalMutationResult.Missing("선택한 조회/작성 기준일의 청구 정보를 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도하세요.");
+        {
+            var supplementalRunsByProfile = BuildBillingRunsByProfile([profile]);
+            await AddSupplementalFinancialBillingRunsAsync([profile], supplementalRunsByProfile, ct);
+            if (supplementalRunsByProfile.TryGetValue(profile.Id, out var supplementalRuns))
+                run = supplementalRuns.FirstOrDefault(current => current.RunId == billingRunId);
+
+            if (run is null)
+                return LocalMutationResult.Missing("선택한 조회/작성 기준일의 청구 정보를 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도하세요.");
+        }
 
         var linkedInvoices = await _db.Invoices.IgnoreQueryFilters()
             .AsNoTracking()
             .Where(invoice =>
                 !invoice.IsDeleted &&
+                invoice.IsLatestVersion &&
                 invoice.VoucherType == VoucherType.Sales &&
                 invoice.LinkedRentalBillingProfileId == billingProfileId &&
                 invoice.LinkedRentalBillingRunId == billingRunId)
