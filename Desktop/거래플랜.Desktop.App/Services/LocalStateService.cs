@@ -2853,6 +2853,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			_db.Entry(existing).CurrentValues.SetValues(payment);
 		}
 		await _db.SaveChangesAsync(ct);
+		if (invoice.LinkedRentalBillingProfileId.HasValue && invoice.LinkedRentalBillingProfileId.Value != Guid.Empty)
+		{
+			await RecalculateRentalSettlementAsync(invoice.LinkedRentalBillingProfileId.Value, invoice.LinkedRentalBillingRunId, ct);
+		}
 		return OfficeMutationResult.Ok(payment.Id, "수금/지급을 저장했습니다.");
 	}
 
@@ -2861,10 +2865,17 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		var payment = await _db.Payments.FindAsync(new object[1] { id }, ct);
 		if (payment != null)
 		{
+			var invoice = await _db.Invoices.IgnoreQueryFilters()
+				.AsNoTracking()
+				.FirstOrDefaultAsync(current => current.Id == payment.InvoiceId, ct);
 			payment.IsDeleted = true;
 			payment.IsDirty = true;
 			payment.UpdatedAtUtc = DateTime.UtcNow;
 			await _db.SaveChangesAsync(ct);
+			if (invoice?.LinkedRentalBillingProfileId is Guid billingProfileId && billingProfileId != Guid.Empty)
+			{
+				await RecalculateRentalSettlementAsync(billingProfileId, invoice.LinkedRentalBillingRunId, ct);
+			}
 		}
 	}
 
@@ -4734,14 +4745,85 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	private async Task<decimal> GetRentalSettledAmountCoreAsync(Guid billingProfileId, Guid? billingRunId, CancellationToken ct)
 	{
-		IQueryable<LocalTransaction> query = from transaction in _db.Transactions.IgnoreQueryFilters().AsNoTracking()
+		IQueryable<LocalTransaction> transactionQuery = from transaction in _db.Transactions.IgnoreQueryFilters().AsNoTracking()
 			where !transaction.IsDeleted && transaction.LinkedRentalBillingProfileId == billingProfileId
 			select transaction;
 		if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
 		{
-			query = query.Where((LocalTransaction transaction) => transaction.LinkedRentalBillingRunId == ((Guid?)billingRunId).Value);
+			transactionQuery = transactionQuery.Where((LocalTransaction transaction) => transaction.LinkedRentalBillingRunId == ((Guid?)billingRunId).Value);
 		}
-		return (await query.Select((LocalTransaction transaction) => transaction.SettlementAmount).ToListAsync(ct)).Sum();
+		var transactionSettledAmount = (await transactionQuery
+			.Select((LocalTransaction transaction) => transaction.SettlementAmount)
+			.ToListAsync(ct)).Sum();
+
+		var directPaymentQuery =
+			from payment in _db.Payments.IgnoreQueryFilters().AsNoTracking()
+			join invoice in _db.Invoices.IgnoreQueryFilters().AsNoTracking()
+				on payment.InvoiceId equals invoice.Id
+			where !payment.IsDeleted &&
+			      !invoice.IsDeleted &&
+			      invoice.LinkedRentalBillingProfileId == billingProfileId &&
+			      !_db.Transactions.IgnoreQueryFilters().AsNoTracking().Any(transaction =>
+				      !transaction.IsDeleted &&
+				      transaction.Id == payment.Id &&
+				      transaction.LinkedRentalBillingProfileId == billingProfileId)
+			select new
+			{
+				payment.Amount,
+				invoice.LinkedRentalBillingRunId
+			};
+		if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
+		{
+			directPaymentQuery = directPaymentQuery.Where(row => row.LinkedRentalBillingRunId == billingRunId.Value);
+		}
+
+		var directPaymentSettledAmount = (await directPaymentQuery
+			.Select(row => row.Amount)
+			.ToListAsync(ct)).Sum();
+
+		return transactionSettledAmount + directPaymentSettledAmount;
+	}
+
+	private async Task<DateOnly?> GetRentalLastSettledDateCoreAsync(Guid billingProfileId, Guid? billingRunId, CancellationToken ct)
+	{
+		IQueryable<LocalTransaction> transactionQuery = from transaction in _db.Transactions.IgnoreQueryFilters().AsNoTracking()
+			where !transaction.IsDeleted && transaction.LinkedRentalBillingProfileId == billingProfileId
+			select transaction;
+		if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
+		{
+			transactionQuery = transactionQuery.Where((LocalTransaction transaction) => transaction.LinkedRentalBillingRunId == ((Guid?)billingRunId).Value);
+		}
+
+		var transactionDates = await transactionQuery
+			.Select((LocalTransaction transaction) => transaction.TransactionDate)
+			.ToListAsync(ct);
+
+		var directPaymentQuery =
+			from payment in _db.Payments.IgnoreQueryFilters().AsNoTracking()
+			join invoice in _db.Invoices.IgnoreQueryFilters().AsNoTracking()
+				on payment.InvoiceId equals invoice.Id
+			where !payment.IsDeleted &&
+			      !invoice.IsDeleted &&
+			      invoice.LinkedRentalBillingProfileId == billingProfileId &&
+			      !_db.Transactions.IgnoreQueryFilters().AsNoTracking().Any(transaction =>
+				      !transaction.IsDeleted &&
+				      transaction.Id == payment.Id &&
+				      transaction.LinkedRentalBillingProfileId == billingProfileId)
+			select new
+			{
+				payment.PaymentDate,
+				invoice.LinkedRentalBillingRunId
+			};
+		if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
+		{
+			directPaymentQuery = directPaymentQuery.Where(row => row.LinkedRentalBillingRunId == billingRunId.Value);
+		}
+
+		var directPaymentDates = await directPaymentQuery
+			.Select(row => row.PaymentDate)
+			.ToListAsync(ct);
+		var dates = transactionDates.Concat(directPaymentDates).ToList();
+		return dates.Count == 0 ? null : dates.Max();
 	}
 
 	private async Task<LocalInvoice?> FindTrackedSalesInvoiceForRentalBillingAsync(Guid billingProfileId, Guid? billingRunId, CancellationToken ct)
@@ -4895,10 +4977,9 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				run.SettlementStatus = DetermineRentalSettlementStatus(profile.BillingMethod, settledAmount, billedAmount);
 				run.Status = ((profile.OutstandingAmount <= 0m) ? "완료" : (string.Equals(run.Status, "보류", StringComparison.OrdinalIgnoreCase) ? "보류" : "청구중"));
 				RentalBillingRunModel rentalBillingRunModel = run;
-				DateOnly? settledDate = ((!(settledAmount > 0m)) ? ((DateOnly?)null) : (await ((IQueryable<LocalTransaction>)(from transaction in _db.Transactions.IgnoreQueryFilters().AsNoTracking()
-					where !transaction.IsDeleted && transaction.LinkedRentalBillingRunId == ((Guid?)billingRunId).Value
-					orderby transaction.TransactionDate descending
-					select transaction)).Select((Expression<Func<LocalTransaction, DateOnly?>>)((LocalTransaction transaction) => transaction.TransactionDate)).FirstOrDefaultAsync(ct)));
+				DateOnly? settledDate = settledAmount > 0m
+					? await GetRentalLastSettledDateCoreAsync(billingProfileId, billingRunId, ct)
+					: null;
 				rentalBillingRunModel.SettledDate = settledDate;
 				if (profile.OutstandingAmount <= 0m)
 				{
@@ -4911,19 +4992,15 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			profile.BillingStatus = "완료";
 			LocalRentalBillingProfile localRentalBillingProfile = profile;
-			localRentalBillingProfile.LastSettledDate = await ((IQueryable<LocalTransaction>)(from transaction in _db.Transactions.IgnoreQueryFilters().AsNoTracking()
-				where !transaction.IsDeleted && transaction.LinkedRentalBillingProfileId == billingProfileId && (!((Guid?)billingRunId).HasValue || transaction.LinkedRentalBillingRunId == ((Guid?)billingRunId).Value)
-				orderby transaction.TransactionDate descending
-				select transaction)).Select((Expression<Func<LocalTransaction, DateOnly?>>)((LocalTransaction transaction) => transaction.TransactionDate)).FirstOrDefaultAsync(ct);
+			localRentalBillingProfile.LastSettledDate = await GetRentalLastSettledDateCoreAsync(billingProfileId, billingRunId, ct);
 		}
 		else if (!string.Equals(profile.BillingStatus, "보류", StringComparison.OrdinalIgnoreCase) && !string.Equals(profile.BillingStatus, "취소", StringComparison.OrdinalIgnoreCase))
 		{
 			profile.BillingStatus = "청구중";
 			LocalRentalBillingProfile localRentalBillingProfile2 = profile;
-			DateOnly? lastSettledDate = ((!(settledAmount > 0m)) ? ((DateOnly?)null) : (await ((IQueryable<LocalTransaction>)(from transaction in _db.Transactions.IgnoreQueryFilters().AsNoTracking()
-				where !transaction.IsDeleted && transaction.LinkedRentalBillingProfileId == billingProfileId && (!((Guid?)billingRunId).HasValue || transaction.LinkedRentalBillingRunId == ((Guid?)billingRunId).Value)
-				orderby transaction.TransactionDate descending
-				select transaction)).Select((Expression<Func<LocalTransaction, DateOnly?>>)((LocalTransaction transaction) => transaction.TransactionDate)).FirstOrDefaultAsync(ct)));
+			DateOnly? lastSettledDate = settledAmount > 0m
+				? await GetRentalLastSettledDateCoreAsync(billingProfileId, billingRunId, ct)
+				: null;
 			localRentalBillingProfile2.LastSettledDate = lastSettledDate;
 		}
 		profile.IsDirty = true;
