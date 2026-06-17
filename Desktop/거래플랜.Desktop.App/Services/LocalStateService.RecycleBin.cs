@@ -1134,6 +1134,16 @@ public sealed partial class LocalStateService
         if (payment is null)
             return OfficeMutationResult.Ok(paymentId, "수금/지급 서버 영구삭제 상태가 이미 로컬에 반영되어 있습니다.");
 
+        var activeLinkedTransaction = await _db.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(current =>
+                current.Id == paymentId &&
+                !current.IsDeleted &&
+                current.LinkedInvoiceId == payment.InvoiceId, ct);
+        if (activeLinkedTransaction is not null)
+            return OfficeMutationResult.Ok(paymentId, "활성 거래내역에서 생성된 전표 수금/지급 기록이어서 서버 영구삭제 반영을 보류했습니다.");
+
         _db.Payments.Remove(payment);
         await _db.SaveChangesAsync(ct);
         return OfficeMutationResult.Ok(paymentId, "수금/지급 서버 영구삭제를 로컬에 반영했습니다.");
@@ -1167,7 +1177,7 @@ public sealed partial class LocalStateService
         await _db.SaveChangesAsync(ct);
 
         if (transaction.LinkedRentalBillingProfileId.HasValue && transaction.LinkedRentalBillingProfileId.Value != Guid.Empty)
-            await RecalculateRentalSettlementAsync(transaction.LinkedRentalBillingProfileId.Value, ct);
+            await RecalculateRentalSettlementAsync(transaction.LinkedRentalBillingProfileId.Value, transaction.LinkedRentalBillingRunId, ct);
 
         return OfficeMutationResult.Ok(transactionId, "거래내역 서버 영구삭제를 로컬에 반영했습니다.");
     }
@@ -1550,6 +1560,16 @@ public sealed partial class LocalStateService
         if (!payment.IsDeleted)
             return OfficeMutationResult.Ok(paymentId, "이미 활성 상태인 수금/지급 기록입니다.");
 
+        var linkedDeletedTransaction = await _db.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(current =>
+                current.Id == paymentId &&
+                current.IsDeleted &&
+                current.LinkedInvoiceId == payment.InvoiceId, ct);
+        if (linkedDeletedTransaction is not null)
+            return await RestoreTransactionAsync(paymentId, session, ct);
+
         var invoice = await _db.Invoices
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == payment.InvoiceId, ct);
@@ -1680,7 +1700,7 @@ public sealed partial class LocalStateService
             await SyncInvoicePaymentFromTransactionAsync(transaction, linkedInvoice, ct);
 
         if (transaction.LinkedRentalBillingProfileId.HasValue && transaction.LinkedRentalBillingProfileId.Value != Guid.Empty)
-            await RecalculateRentalSettlementAsync(transaction.LinkedRentalBillingProfileId.Value, ct);
+            await RecalculateRentalSettlementAsync(transaction.LinkedRentalBillingProfileId.Value, transaction.LinkedRentalBillingRunId, ct);
 
         return OfficeMutationResult.Ok(
             transaction.Id,
@@ -1731,7 +1751,7 @@ public sealed partial class LocalStateService
         await _db.SaveChangesAsync(ct);
 
         if (transaction.LinkedRentalBillingProfileId.HasValue && transaction.LinkedRentalBillingProfileId.Value != Guid.Empty)
-            await RecalculateRentalSettlementAsync(transaction.LinkedRentalBillingProfileId.Value, ct);
+            await RecalculateRentalSettlementAsync(transaction.LinkedRentalBillingProfileId.Value, transaction.LinkedRentalBillingRunId, ct);
 
         return OfficeMutationResult.Ok(transaction.Id, "거래내역을 휴지통에서 영구삭제했습니다.");
     }
