@@ -329,6 +329,11 @@ if ($shouldEnableAot) {
     $arguments += '-p:AndroidEnableProfiledAot=true'
     Write-Host 'android_profiled_aot=true'
 }
+elseif ($DisableAot.IsPresent) {
+    $arguments += '-p:RunAOTCompilation=false'
+    $arguments += '-p:AndroidEnableProfiledAot=false'
+    Write-Host 'android_profiled_aot=false'
+}
 
 $shouldDisableTrimming = $DisableTrimming.IsPresent
 if ($shouldDisableTrimming) {

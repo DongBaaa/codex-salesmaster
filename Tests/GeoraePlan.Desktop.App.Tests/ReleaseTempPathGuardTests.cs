@@ -69,6 +69,26 @@ public sealed class ReleaseTempPathGuardTests
             "Path.GetTempPath()");
     }
 
+    [Fact]
+    public void AndroidBuildScript_DisableAotOverridesProjectAotDefaults()
+    {
+        var source = ReadRepositoryFile(
+            "tools",
+            "mobile",
+            "Build-GeoraePlanAndroidApk.ps1");
+
+        Assert.Contains("$DisableAot.IsPresent", source, StringComparison.Ordinal);
+        Assert.Contains("$arguments += '-p:RunAOTCompilation=false'", source, StringComparison.Ordinal);
+        Assert.Contains("$arguments += '-p:AndroidEnableProfiledAot=false'", source, StringComparison.Ordinal);
+        AssertInOrder(
+            source,
+            "$shouldEnableAot = $isReleaseBuild -and -not $DisableAot.IsPresent",
+            "$arguments += '-p:RunAOTCompilation=true'",
+            "elseif ($DisableAot.IsPresent)",
+            "$arguments += '-p:RunAOTCompilation=false'",
+            "$shouldDisableTrimming = $DisableTrimming.IsPresent");
+    }
+
     private static string ReadRepositoryFile(params string[] pathParts)
         => File.ReadAllText(Path.Combine([FindRepositoryRoot(), .. pathParts]));
 
