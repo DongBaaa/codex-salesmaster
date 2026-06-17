@@ -1313,6 +1313,137 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     [Fact]
+    public async Task SyncPull_OutOfOfficeRentalTransactionSideEffects_DoNotBecomeDirtyOrVisibleToOfficeOnlyUser()
+    {
+        PrepareAppRoot("georaeplan-rental-pull-cross-office-side-effect-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var hiddenProfileId = Guid.NewGuid();
+            var hiddenAssetId = Guid.NewGuid();
+            var hiddenCustomerId = Guid.NewGuid();
+            var hiddenInvoiceId = Guid.NewGuid();
+            var hiddenRunId = Guid.NewGuid();
+            var hiddenTransactionId = Guid.NewGuid();
+            var now = DateTime.UtcNow;
+
+            var session = CreateOfficeOnlySession(OfficeCodeCatalog.Usenet);
+            var dispatcher = new SyncRequestDispatcher();
+            var local = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
+            var rental = new RentalStateService(db, local);
+            var diagnostics = new SyncDiagnosticsService(session);
+            var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
+            using var sync = new SyncService(db, local, rental, api, session, dispatcher, diagnostics);
+
+            await InvokePrivateInstanceTaskAsync(
+                sync,
+                "ApplyPullAsync",
+                new SyncPullResponse
+                {
+                    CurrentServerRevision = 930,
+                    Customers =
+                    {
+                        new CustomerDto
+                        {
+                            Id = hiddenCustomerId,
+                            TenantCode = TenantScopeCatalog.UsenetGroup,
+                            OfficeCode = OfficeCodeCatalog.Yeonsu,
+                            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                            NameOriginal = "Hidden Yeonsu customer",
+                            NameMatchKey = "HIDDENYEONSU",
+                            TradeType = CustomerTradeTypes.Sales,
+                            CreatedAtUtc = now,
+                            UpdatedAtUtc = now,
+                            Revision = 930
+                        }
+                    },
+                    RentalBillingProfiles =
+                    {
+                        CreateBillingProfileDto(
+                            hiddenProfileId,
+                            hiddenAssetId,
+                            hiddenCustomerId,
+                            "Hidden Yeonsu customer",
+                            OfficeCodeCatalog.Yeonsu,
+                            hiddenRunId,
+                            revision: 930)
+                    },
+                    RentalAssets =
+                    {
+                        CreateRentalAssetDto(
+                            hiddenAssetId,
+                            hiddenProfileId,
+                            "Hidden Yeonsu customer",
+                            OfficeCodeCatalog.Yeonsu,
+                            revision: 930)
+                    },
+                    Invoices =
+                    {
+                        CreateRentalInvoiceDto(
+                            hiddenInvoiceId,
+                            hiddenCustomerId,
+                            hiddenProfileId,
+                            hiddenRunId,
+                            OfficeCodeCatalog.Yeonsu,
+                            revision: 930)
+                    },
+                    Transactions =
+                    {
+                        new TransactionDto
+                        {
+                            Id = hiddenTransactionId,
+                            CustomerId = hiddenCustomerId,
+                            TenantCode = TenantScopeCatalog.UsenetGroup,
+                            OfficeCode = OfficeCodeCatalog.Yeonsu,
+                            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                            TransactionDate = new DateOnly(2026, 5, 27),
+                            TransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt,
+                            LinkedInvoiceId = hiddenInvoiceId,
+                            LinkedInvoiceNumber = "HIDDEN-YEONSU-INV",
+                            LinkedRentalBillingProfileId = hiddenProfileId,
+                            LinkedRentalBillingRunId = hiddenRunId,
+                            BankReceipt = 100_000m,
+                            ReceiptTotal = 100_000m,
+                            SettlementAmount = 100_000m,
+                            Note = "hidden cross office pulled rental transaction",
+                            CreatedAtUtc = now,
+                            UpdatedAtUtc = now,
+                            Revision = 930
+                        }
+                    }
+                },
+                0L,
+                CancellationToken.None,
+                false);
+
+            var hiddenPayment = await db.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == hiddenTransactionId);
+            Assert.False(hiddenPayment.IsDirty);
+            Assert.Equal(hiddenInvoiceId, hiddenPayment.InvoiceId);
+            var hiddenProfile = await db.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == hiddenProfileId);
+            Assert.False(hiddenProfile.IsDirty);
+            Assert.Equal(100_000m, hiddenProfile.SettledAmount);
+
+            Assert.Empty(await local.GetDirtyTransactionsForSyncAsync(session));
+            Assert.Empty(await local.GetDirtyPaymentsForSyncAsync(session));
+            var visibleInvoices = await local.GetInvoicesAsync(null, null, null, session);
+            Assert.DoesNotContain(visibleInvoices, invoice => invoice.Id == hiddenInvoiceId);
+
+            var visibleRows = await rental.GetBillingRowsAsync(
+                new RentalBillingFilter { ExpandCustomerSummaryRows = true },
+                session);
+            Assert.DoesNotContain(visibleRows, row => row.SelectionId == hiddenProfileId || row.CustomerDisplayName == "Hidden Yeonsu customer");
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SyncPull_DirectRentalBillingInvoicePaymentDelete_RevertsRentalSettlement()
     {
         PrepareAppRoot("georaeplan-rental-pull-payment-delete-settlement");
@@ -1508,6 +1639,157 @@ public sealed class RentalBillingDeletionFlowTests
             UpdatedAtUtc = DateTime.UtcNow
         };
 
+    private static RentalBillingProfileDto CreateBillingProfileDto(
+        Guid profileId,
+        Guid assetId,
+        Guid customerId,
+        string customerName,
+        string officeCode,
+        Guid runId,
+        long revision)
+    {
+        var now = DateTime.UtcNow;
+        return new RentalBillingProfileDto
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, officeCode),
+            OfficeCode = officeCode,
+            ResponsibleOfficeCode = officeCode,
+            ManagementCompanyCode = officeCode,
+            ProfileKey = $"profile-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = customerName,
+            InstallSiteName = customerName,
+            ItemName = "Scope guard rental item",
+            BillingType = "묶음",
+            BillingAdvanceMode = "후불",
+            BillingStatus = "청구중",
+            SettlementStatus = PaymentFlowConstants.SettlementStatusPending,
+            CompletionStatus = PaymentFlowConstants.CompletionPending,
+            BillingDay = 25,
+            BillingCycleMonths = 1,
+            MonthlyAmount = 100_000m,
+            OutstandingAmount = 100_000m,
+            BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    DisplayItemName = "Scope guard rental item",
+                    BillingLineMode = "묶음",
+                    RepresentativeAssetId = assetId,
+                    Quantity = 1m,
+                    UnitPrice = 100_000m,
+                    Amount = 100_000m,
+                    IncludedAssetIds = [assetId]
+                }
+            }),
+            BillingRunsJson = JsonSerializer.Serialize(new List<RentalBillingRunModel>
+            {
+                new()
+                {
+                    RunId = runId,
+                    RunKey = "2026-05",
+                    ScheduledDate = new DateOnly(2026, 5, 25),
+                    PeriodStartDate = new DateOnly(2026, 5, 1),
+                    PeriodEndDate = new DateOnly(2026, 5, 31),
+                    PeriodLabel = "2026-05",
+                    Status = PaymentFlowConstants.BillingStatusInProgress,
+                    BilledAmount = 100_000m,
+                    SettledAmount = 0m,
+                    SettlementStatus = PaymentFlowConstants.SettlementStatusPending
+                }
+            }),
+            IsActive = true,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now,
+            Revision = revision
+        };
+    }
+
+    private static RentalAssetDto CreateRentalAssetDto(
+        Guid assetId,
+        Guid profileId,
+        string customerName,
+        string officeCode,
+        long revision)
+    {
+        var now = DateTime.UtcNow;
+        return new RentalAssetDto
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, officeCode),
+            OfficeCode = officeCode,
+            ResponsibleOfficeCode = officeCode,
+            ManagementCompanyCode = officeCode,
+            ManagementId = $"M-{assetId:N}",
+            ManagementNumber = ShortCode("MN", assetId),
+            AssetKey = $"AK-{assetId:N}",
+            CustomerName = customerName,
+            CurrentCustomerName = customerName,
+            InstallSiteName = customerName,
+            InstallLocation = customerName,
+            ItemName = "Scope guard rental item",
+            MachineNumber = ShortCode("SN", assetId),
+            AssetStatus = "임대진행중",
+            BillingProfileId = profileId,
+            BillingEligibilityStatus = "청구대상",
+            MonthlyFee = 100_000m,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now,
+            Revision = revision
+        };
+    }
+
+    private static InvoiceDto CreateRentalInvoiceDto(
+        Guid invoiceId,
+        Guid customerId,
+        Guid profileId,
+        Guid runId,
+        string officeCode,
+        long revision)
+    {
+        var now = DateTime.UtcNow;
+        return new InvoiceDto
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            CustomerName = "Hidden Yeonsu customer",
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, officeCode),
+            OfficeCode = officeCode,
+            ResponsibleOfficeCode = officeCode,
+            InvoiceNumber = "HIDDEN-YEONSU-INV",
+            LocalTempNumber = "HIDDEN-YEONSU-TMP",
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId,
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 5, 25),
+            TotalAmount = 100_000m,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m,
+            IsDeleted = false,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now,
+            Revision = revision,
+            Lines =
+            {
+                new InvoiceLineDto
+                {
+                    Id = Guid.NewGuid(),
+                    InvoiceId = invoiceId,
+                    ItemNameOriginal = "Scope guard rental item",
+                    Unit = "EA",
+                    Quantity = 1m,
+                    UnitPrice = 100_000m,
+                    LineAmount = 100_000m,
+                    OrderIndex = 0
+                }
+            }
+        };
+    }
+
     private static string ShortCode(string prefix, Guid id)
         => $"{prefix}-{id:N}".Substring(0, 12);
 
@@ -1553,6 +1835,20 @@ public sealed class RentalBillingDeletionFlowTests
             TenantCode = TenantScopeCatalog.UsenetGroup,
             OfficeCode = OfficeCodeCatalog.Usenet,
             ScopeType = TenantScopeCatalog.ScopeAdmin
+        });
+        return session;
+    }
+
+    private static SessionState CreateOfficeOnlySession(string officeCode)
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            Username = $"user-{officeCode}",
+            Role = DomainConstants.RoleUser,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, officeCode),
+            OfficeCode = officeCode,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
         });
         return session;
     }
