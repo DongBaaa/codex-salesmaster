@@ -105,6 +105,9 @@ public sealed class InvoicesController : ControllerBase
             dto.OfficeCode,
             customer.TenantCode,
             customer.OfficeCode);
+        if (await ValidateInvoiceLineItemScopeAsync(dto.Lines, cancellationToken) is { } lineScopeError)
+            return lineScopeError;
+
         var entity = new Invoice { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
         entity.Apply(dto);
         if (string.IsNullOrWhiteSpace(entity.InvoiceNumber))
@@ -162,6 +165,9 @@ public sealed class InvoicesController : ControllerBase
             dto.OfficeCode,
             customer.TenantCode,
             customer.OfficeCode);
+        if (await ValidateInvoiceLineItemScopeAsync(dto.Lines, cancellationToken) is { } lineScopeError)
+            return lineScopeError;
+
         entity.Apply(dto);
         _dbContext.InvoiceLines.RemoveRange(entity.Lines);
         entity.Lines.Clear();
@@ -206,6 +212,37 @@ public sealed class InvoicesController : ControllerBase
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _inventoryLedgerService.RebuildAsync(cancellationToken);
         return NoContent();
+    }
+
+    private async Task<ActionResult?> ValidateInvoiceLineItemScopeAsync(
+        IEnumerable<InvoiceLineDto>? lines,
+        CancellationToken cancellationToken)
+    {
+        var itemIds = (lines ?? [])
+            .Where(line => !line.IsDeleted && line.ItemId.HasValue && line.ItemId.Value != Guid.Empty)
+            .Select(line => line.ItemId!.Value)
+            .Distinct()
+            .ToList();
+        if (itemIds.Count == 0)
+            return null;
+
+        var items = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item => itemIds.Contains(item.Id) && !item.IsDeleted)
+            .Select(item => new { item.Id, item.OfficeCode, item.TenantCode })
+            .ToDictionaryAsync(item => item.Id, cancellationToken);
+
+        foreach (var itemId in itemIds)
+        {
+            if (!items.TryGetValue(itemId, out var item))
+                continue;
+
+            if (!_officeScopeService.CanReadOfficeForItems(item.OfficeCode, item.TenantCode))
+                return Forbid();
+        }
+
+        return null;
     }
 
     private static void ApplyInvoiceLines(Invoice invoice, IEnumerable<InvoiceLineDto>? lines)

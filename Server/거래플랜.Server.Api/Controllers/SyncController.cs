@@ -3461,6 +3461,9 @@ public sealed class SyncController : ControllerBase
                                 "invoice-customer-relinked",
                                 $"전표 '{dto.Id:D}'의 거래처를 기존 전표/이름 기준으로 다시 연결했습니다.");
                         }
+                        if (!await ValidateReadableInvoiceLineItemsAsync(dto, result, cancellationToken))
+                            continue;
+
                         valid.Add(dto);
                         continue;
                     }
@@ -3468,6 +3471,9 @@ public sealed class SyncController : ControllerBase
                     if (dto.IsDeleted)
                     {
                         dto.CustomerId = existing.CustomerId;
+                        if (!await ValidateReadableInvoiceLineItemsAsync(dto, result, cancellationToken))
+                            continue;
+
                         valid.Add(dto);
                         continue;
                     }
@@ -3537,6 +3543,9 @@ public sealed class SyncController : ControllerBase
                             "invoice-customer-relinked",
                             $"전표 '{dto.Id:D}'의 거래처를 기존 저장값 기준으로 유지했습니다.");
                     }
+                    if (!await ValidateReadableInvoiceLineItemsAsync(dto, result, cancellationToken))
+                        continue;
+
                     valid.Add(dto);
                     continue;
                 }
@@ -3576,10 +3585,55 @@ public sealed class SyncController : ControllerBase
                     $"전표 '{dto.Id:D}'의 거래처를 서버 기준 거래처로 다시 맞췄습니다.");
             }
 
+            if (!await ValidateReadableInvoiceLineItemsAsync(dto, result, cancellationToken))
+                continue;
+
             valid.Add(dto);
         }
 
         return valid;
+    }
+
+    private async Task<bool> ValidateReadableInvoiceLineItemsAsync(
+        InvoiceDto dto,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        if (dto.IsDeleted)
+            return true;
+
+        var itemIds = (dto.Lines ?? [])
+            .Where(line => !line.IsDeleted && line.ItemId.HasValue && line.ItemId.Value != Guid.Empty)
+            .Select(line => line.ItemId!.Value)
+            .Distinct()
+            .ToList();
+        if (itemIds.Count == 0)
+            return true;
+
+        var items = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item => itemIds.Contains(item.Id) && !item.IsDeleted)
+            .Select(item => new { item.Id, item.OfficeCode, item.TenantCode })
+            .ToDictionaryAsync(item => item.Id, cancellationToken);
+
+        foreach (var itemId in itemIds)
+        {
+            if (!items.TryGetValue(itemId, out var item))
+                continue;
+
+            if (_officeScopeService.CanReadOfficeForItems(item.OfficeCode, item.TenantCode))
+                continue;
+
+            AddClientConflict(
+                dto,
+                nameof(Invoice),
+                $"Referenced item is outside the readable office scope: {itemId}.",
+                result);
+            return false;
+        }
+
+        return true;
     }
 
     private async Task<Customer?> FindReadableCustomerByNameAsync(string? customerName, CancellationToken cancellationToken)
