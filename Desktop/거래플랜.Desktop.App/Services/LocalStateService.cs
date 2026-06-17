@@ -5447,6 +5447,17 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Missing("재고이동 기록을 찾을 수 없습니다.");
 		}
+		string sourceOfficeCode = ResolveOfficeCodeFromWarehouseCode(transfer.FromWarehouseCode);
+		string targetOfficeCode = ResolveOfficeCodeFromWarehouseCode(transfer.ToWarehouseCode);
+		if (!CanWriteOfficeScope(session, sourceOfficeCode) && !CanWriteOfficeScope(session, targetOfficeCode))
+		{
+			return OfficeMutationResult.Denied("권한이 없어 해당 업체 범위의 재고이동을 삭제할 수 없습니다.");
+		}
+		string normalizedStatus = InventoryTransferStatusNormalizer.Normalize(transfer.TransferStatus, transfer.ReceivedByUsername, transfer.ReceivedAtUtc, transfer.RejectedByUsername, transfer.RejectedAtUtc);
+		if (normalizedStatus is InventoryTransferStatusNormalizer.Received or InventoryTransferStatusNormalizer.Rejected && !CanWriteOfficeScope(session, targetOfficeCode))
+		{
+			return OfficeMutationResult.Denied("도착지 담당자 또는 관리자만 수령확정 또는 반려된 재고이동을 삭제할 수 있습니다.");
+		}
 		if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(transfer, expectedRevision, "재고이동 문서", out string conflictMessage))
 		{
 			return OfficeMutationResult.Conflict(conflictMessage);
