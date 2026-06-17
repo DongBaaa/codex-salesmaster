@@ -5027,6 +5027,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         if ((linkedTransactions.Count > 0 || invoiceDeleteTargetIds.Count > 0) && _local is null)
             return LocalMutationResult.Denied("연결된 판매전표/입금 내역 삭제 서비스를 사용할 수 없습니다.");
+        if (invoiceDeleteTargetIds.Count > 0 && !CanDeleteRentalBillingInvoices(session))
+            return LocalMutationResult.Denied("권한이 없어 연결된 판매전표를 삭제할 수 없습니다. 전표 편집 권한이 필요합니다.");
         if (linkedTransactions.Count > 0 && !CanDeleteRentalBillingTransactions(session))
             return LocalMutationResult.Denied("권한이 없어 연결된 입금 내역을 삭제할 수 없습니다. 수금/지급 편집 권한이 필요합니다.");
         if (linkedTransactions.Count > 0 && !session.HasAdministrativePrivileges)
@@ -5045,7 +5047,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         foreach (var invoiceId in invoiceDeleteTargetIds)
-            await _local!.DeleteInvoiceAsync(invoiceId, ct);
+        {
+            var deleteInvoiceResult = await _local!.DeleteInvoiceAsync(invoiceId, session, expectedRevision: null, ct);
+            if (!deleteInvoiceResult.Success)
+                return ConvertOfficeMutationResult(deleteInvoiceResult, "연결된 판매전표를 삭제할 수 없습니다.");
+        }
 
         profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
@@ -5177,6 +5183,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private static bool CanDeleteRentalBillingTransactions(SessionState? session)
         => session is not null &&
            (session.HasAdministrativePrivileges || session.HasPermission(AppPermissionNames.PaymentEdit));
+
+    private static bool CanDeleteRentalBillingInvoices(SessionState? session)
+        => session is not null &&
+           (session.HasAdministrativePrivileges || session.HasPermission(AppPermissionNames.InvoiceEdit));
 
     private static LocalMutationResult ConvertOfficeMutationResult(OfficeMutationResult result, string fallbackMessage)
     {

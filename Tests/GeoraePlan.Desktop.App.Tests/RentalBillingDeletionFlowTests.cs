@@ -183,6 +183,66 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     [Fact]
+    public async Task DeleteBillingHistory_RequiresInvoiceEditPermissionForLinkedSalesInvoice()
+    {
+        PrepareAppRoot("georaeplan-rental-delete-history-requires-invoice-edit");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Rental delete permission customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "청구대상"));
+            await db.SaveChangesAsync();
+
+            var invoiceEditorSession = CreateUserSession(
+                AppPermissionNames.RentalProfileEdit,
+                AppPermissionNames.InvoiceEdit);
+            var invoiceEditorLocal = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), invoiceEditorSession);
+            var invoiceEditorRental = new RentalStateService(db, invoiceEditorLocal);
+            var started = await invoiceEditorRental.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), invoiceEditorSession);
+            Assert.True(started.Success, started.Message);
+
+            var invoice = await db.Invoices
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == started.RelatedEntityId);
+            var runId = Assert.IsType<Guid>(invoice.LinkedRentalBillingRunId);
+
+            var rentalOnlySession = CreateUserSession(AppPermissionNames.RentalProfileEdit);
+            var rentalOnlyLocal = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), rentalOnlySession);
+            var rentalOnlyService = new RentalStateService(db, rentalOnlyLocal);
+
+            var denied = await rentalOnlyService.DeleteBillingHistoryAsync(profileId, runId, rentalOnlySession);
+
+            Assert.False(denied.Success);
+            Assert.Contains("전표", denied.Message);
+            var persistedInvoice = await db.Invoices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == invoice.Id);
+            Assert.False(persistedInvoice.IsDeleted);
+            var persistedProfile = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == profileId);
+            Assert.Contains(DeserializeRuns(persistedProfile), current => current.RunId == runId);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task StartBilling_AllowsNextUnbilledCycle_WhenReferenceDateIsOutsideBillingMonth()
     {
         PrepareAppRoot("georaeplan-rental-start-outside-billing-month");
@@ -1835,6 +1895,21 @@ public sealed class RentalBillingDeletionFlowTests
             TenantCode = TenantScopeCatalog.UsenetGroup,
             OfficeCode = OfficeCodeCatalog.Usenet,
             ScopeType = TenantScopeCatalog.ScopeAdmin
+        });
+        return session;
+    }
+
+    private static SessionState CreateUserSession(params string[] permissions)
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            Username = "user",
+            Role = DomainConstants.RoleUser,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = permissions.ToList()
         });
         return session;
     }
