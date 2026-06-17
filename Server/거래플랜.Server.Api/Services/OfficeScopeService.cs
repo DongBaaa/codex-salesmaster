@@ -679,9 +679,6 @@ public sealed class OfficeScopeService
             hasGlobalScope: false,
             hasTenantScope: false);
 
-        if (!string.Equals(CurrentScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
-            return writable.ToList();
-
         foreach (var policy in GetActivePolicies())
         {
             if (!policy.AllowTargetWrite)

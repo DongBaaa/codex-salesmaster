@@ -137,6 +137,79 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_AllowsTargetOfficeToUpdateSharedSourceCustomer_WhenSharingPolicyAllowsWrite()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu-customer-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.CustomerEdit]
+        };
+
+        await using var scopedDb = CreateDbContext(currentUser);
+        scopedDb.DataSharingPolicies.Add(new DataSharingPolicy
+        {
+            Id = Guid.NewGuid(),
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ShareCustomers = true,
+            AllowTargetWrite = true,
+            IsActive = true
+        });
+
+        var customerId = Guid.NewGuid();
+        scopedDb.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "공유 원본 거래처",
+            NameMatchKey = "공유원본거래처",
+            TradeType = "매출"
+        });
+        await scopedDb.SaveChangesAsync();
+
+        var existing = await scopedDb.Customers.IgnoreQueryFilters().SingleAsync(customer => customer.Id == customerId);
+        var controller = CreateController(scopedDb, currentUser);
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "shared-write-customer-device",
+            Customers =
+            [
+                new CustomerDto
+                {
+                    Id = customerId,
+                    TenantCode = existing.TenantCode,
+                    OfficeCode = existing.OfficeCode,
+                    ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+                    NameOriginal = "공유 원본 거래처 수정",
+                    NameMatchKey = "공유원본거래처수정",
+                    TradeType = existing.TradeType,
+                    ExpectedRevision = existing.Revision,
+                    UpdatedAtUtc = DateTime.UtcNow.AddMinutes(1),
+                    MutationId = $"shared-write-customer-device:Customer:{customerId:N}:{existing.Revision}",
+                    MutationCreatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal("공유 원본 거래처 수정", await scopedDb.Customers.IgnoreQueryFilters()
+            .Where(customer => customer.Id == customerId)
+            .Select(customer => customer.NameOriginal)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task Push_AllowsNegativeItemWarehouseStockSnapshotForShortageSales()
     {
         var itemId = Guid.NewGuid();

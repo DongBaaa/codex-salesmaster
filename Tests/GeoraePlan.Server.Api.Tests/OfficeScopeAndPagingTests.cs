@@ -514,6 +514,54 @@ public sealed class OfficeScopeAndPagingTests : IDisposable
         Assert.Equal([OfficeCodeCatalog.Yeonsu], rentalArea.WritableOfficeCodes);
     }
 
+    [Fact]
+    public async Task OfficeOnlyUser_CanWriteSharedSourceOfficeData_WhenSharingPolicyAllowsTargetWrite()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu_user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+
+        await using var dbContext = CreateDbContext(currentUser);
+        dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        {
+            Id = Guid.NewGuid(),
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ShareCustomers = true,
+            ShareItems = true,
+            ShareInvoices = true,
+            SharePayments = true,
+            ShareContracts = true,
+            ShareRentals = true,
+            ShareDeliveries = true,
+            AllowTargetWrite = true,
+            IsActive = true
+        });
+        await dbContext.SaveChangesAsync();
+
+        var service = new OfficeScopeService(currentUser, dbContext);
+        var matrix = service.BuildCurrentScopeMatrix();
+
+        Assert.True(service.CanWriteOfficeForCustomers(OfficeCodeCatalog.Usenet, TenantScopeCatalog.UsenetGroup));
+        Assert.True(service.CanWriteOfficeForItems(OfficeCodeCatalog.Usenet, TenantScopeCatalog.UsenetGroup));
+        Assert.True(service.CanWriteOfficeForInvoices(OfficeCodeCatalog.Usenet, TenantScopeCatalog.UsenetGroup));
+        Assert.True(service.CanWriteOfficeForPayments(OfficeCodeCatalog.Usenet, TenantScopeCatalog.UsenetGroup));
+        Assert.True(service.CanWriteOfficeForContracts(OfficeCodeCatalog.Usenet, TenantScopeCatalog.UsenetGroup));
+        Assert.True(service.CanWriteOfficeForRentals(OfficeCodeCatalog.Usenet, TenantScopeCatalog.UsenetGroup));
+        Assert.True(service.CanWriteOfficeForDeliveries(OfficeCodeCatalog.Usenet, TenantScopeCatalog.UsenetGroup));
+
+        var customerArea = Assert.Single(matrix.Areas, area => area.AreaCode == "customers");
+        Assert.Equal(
+            [OfficeCodeCatalog.Usenet, OfficeCodeCatalog.Yeonsu],
+            customerArea.WritableOfficeCodes.OrderBy(code => code).ToArray());
+    }
+
 
     [Fact]
     public async Task ScopeDiagnosticsController_Get_ReturnsCurrentScopeMatrix()
