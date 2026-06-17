@@ -256,6 +256,180 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task RestoreInvoice_RejectsLinkedDeletedCustomerOutsideCustomerWriteScope()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = CreateDeletedCustomerOutsideCurrentOffice();
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "INV-SCOPE-RESTORE-001",
+            VoucherType = VoucherType.Sales,
+            IsDeleted = true
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(invoice);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = invoice.Id,
+                        Kind = "invoice"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("연결된 거래처", item.Message);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.True(await dbContext.Customers.IgnoreQueryFilters()
+            .Where(current => current.Id == customer.Id)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+        Assert.True(await dbContext.Invoices.IgnoreQueryFilters()
+            .Where(current => current.Id == invoice.Id)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task RestorePayment_RejectsLinkedDeletedCustomerOutsideCustomerWriteScope()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = CreateDeletedCustomerOutsideCurrentOffice();
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "INV-SCOPE-RESTORE-002",
+            VoucherType = VoucherType.Sales,
+            IsDeleted = false
+        };
+        var payment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoice.Id,
+            Amount = 1000m,
+            IsDeleted = true
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(invoice);
+        dbContext.Payments.Add(payment);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = payment.Id,
+                        Kind = "payment"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("연결된 거래처", item.Message);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.True(await dbContext.Customers.IgnoreQueryFilters()
+            .Where(current => current.Id == customer.Id)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+        Assert.True(await dbContext.Payments.IgnoreQueryFilters()
+            .Where(current => current.Id == payment.Id)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task RestoreTransaction_RejectsLinkedDeletedCustomerOutsideCustomerWriteScope()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = CreateDeletedCustomerOutsideCurrentOffice();
+        var transaction = new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 17),
+            TransactionKind = "수금",
+            ReceiptTotal = 1000m,
+            IsDeleted = true
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Transactions.Add(transaction);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = transaction.Id,
+                        Kind = "transaction"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("연결된 거래처", item.Message);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.True(await dbContext.Customers.IgnoreQueryFilters()
+            .Where(current => current.Id == customer.Id)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+        Assert.True(await dbContext.Transactions.IgnoreQueryFilters()
+            .Where(current => current.Id == transaction.Id)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task RestoreCustomerCategory_RejectsActiveDuplicateAndKeepsDeletedRow()
     {
         var currentUser = CreateAdminUser();
@@ -783,6 +957,29 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
             OfficeCode = OfficeCodeCatalog.Usenet,
             ScopeType = TenantScopeCatalog.ScopeAdmin,
             IsAdmin = true
+        };
+
+    private static TestCurrentUserContext CreateOfficeOnlyUser()
+        => new()
+        {
+            Username = "office-user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            IsAdmin = false
+        };
+
+    private static Customer CreateDeletedCustomerOutsideCurrentOffice()
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "권한 외 삭제 거래처",
+            NameMatchKey = "권한외삭제거래처",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true
         };
 
     public void Dispose()

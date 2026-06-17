@@ -938,9 +938,12 @@ public sealed class RecycleBinController : ControllerBase
         if (!_officeScopeService.CanWriteOfficeForInvoices(invoice.ResponsibleOfficeCode, invoice.TenantCode))
             return (false, "현재 계정으로 복원할 수 없는 전표입니다.");
 
-        var customerRestored = await RestoreInvoiceGroupAsync(invoice, customer, cancellationToken);
+        var invoiceGroupRestore = await RestoreInvoiceGroupAsync(invoice, customer, cancellationToken);
+        if (!invoiceGroupRestore.Success)
+            return (false, invoiceGroupRestore.Message);
+
         await _dbContext.SaveChangesAsync(cancellationToken);
-        return (true, customerRestored
+        return (true, invoiceGroupRestore.CustomerRestored
             ? "전표를 복원하고 연결된 거래처도 함께 활성화했습니다."
             : "전표를 복원했습니다.");
     }
@@ -978,11 +981,19 @@ public sealed class RecycleBinController : ControllerBase
         var invoiceRestored = false;
         if (invoice.IsDeleted)
         {
-            customerRestored = await RestoreInvoiceGroupAsync(invoice, customer, cancellationToken);
+            var invoiceGroupRestore = await RestoreInvoiceGroupAsync(invoice, customer, cancellationToken);
+            if (!invoiceGroupRestore.Success)
+                return (false, invoiceGroupRestore.Message);
+
+            customerRestored = invoiceGroupRestore.CustomerRestored;
             invoiceRestored = true;
         }
         else if (customer.IsDeleted)
         {
+            var customerScopeCheck = EnsureCanRestoreLinkedCustomer(customer);
+            if (!customerScopeCheck.Success)
+                return customerScopeCheck;
+
             customer.IsDeleted = false;
             customerRestored = true;
         }
@@ -1022,6 +1033,10 @@ public sealed class RecycleBinController : ControllerBase
 
         if (customer.IsDeleted)
         {
+            var customerScopeCheck = EnsureCanRestoreLinkedCustomer(customer);
+            if (!customerScopeCheck.Success)
+                return customerScopeCheck;
+
             customer.IsDeleted = false;
             customerRestored = true;
         }
@@ -1038,8 +1053,12 @@ public sealed class RecycleBinController : ControllerBase
 
                 if (linkedInvoice.IsDeleted)
                 {
+                    var invoiceGroupRestore = await RestoreInvoiceGroupAsync(linkedInvoice, customer, cancellationToken);
+                    if (!invoiceGroupRestore.Success)
+                        return (false, invoiceGroupRestore.Message);
+
                     invoiceRestored = true;
-                    customerRestored = await RestoreInvoiceGroupAsync(linkedInvoice, customer, cancellationToken) || customerRestored;
+                    customerRestored = invoiceGroupRestore.CustomerRestored || customerRestored;
                 }
             }
         }
@@ -1870,7 +1889,7 @@ public sealed class RecycleBinController : ControllerBase
             .ToListAsync(cancellationToken);
     }
 
-    private async Task<bool> RestoreInvoiceGroupAsync(
+    private async Task<(bool Success, bool CustomerRestored, string Message)> RestoreInvoiceGroupAsync(
         Invoice invoice,
         Customer customer,
         CancellationToken cancellationToken)
@@ -1878,6 +1897,10 @@ public sealed class RecycleBinController : ControllerBase
         var customerRestored = false;
         if (customer.IsDeleted)
         {
+            var customerScopeCheck = EnsureCanRestoreLinkedCustomer(customer);
+            if (!customerScopeCheck.Success)
+                return (false, false, customerScopeCheck.Message);
+
             customer.IsDeleted = false;
             customerRestored = true;
         }
@@ -1907,8 +1930,13 @@ public sealed class RecycleBinController : ControllerBase
             current.IsLatestVersion = current.VersionNumber == maxVersionNumber;
         }
 
-        return customerRestored;
+        return (true, customerRestored, string.Empty);
     }
+
+    private (bool Success, string Message) EnsureCanRestoreLinkedCustomer(Customer customer)
+        => !customer.IsDeleted || _officeScopeService.CanWriteOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode)
+            ? (true, string.Empty)
+            : (false, "현재 계정으로 연결된 거래처를 복원할 수 없습니다.");
 
     private static (bool Success, string Message) EnsureRecycleBinMutationRevision(
         TrackedEntity entity,
