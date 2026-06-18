@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text.Json;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
@@ -326,7 +327,12 @@ public sealed class SyncController : ControllerBase
             var validCustomerContracts = await FilterValidCustomerContractsAsync(request.CustomerContracts ?? [], result, cancellationToken);
             await UpsertEntitiesAsync(validCustomerContracts, _dbContext.CustomerContracts,
                 (e, d) => e.Apply(d), d => new CustomerContract { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
-            await PersistCustomerContractsToStorageAsync(validCustomerContracts, cancellationToken);
+            if (validCustomerContracts.Count > 0)
+            {
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                await PersistCustomerContractsToStorageAsync(validCustomerContracts, cancellationToken);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+            }
             var scopedItems = await PrepareScopedItemsAsync(request.Items ?? [], result, cancellationToken);
             await EnsureItemCategoryOptionsForItemsAsync(scopedItems, cancellationToken);
             await UpsertEntitiesAsync(scopedItems, _dbContext.Items,
@@ -359,7 +365,12 @@ public sealed class SyncController : ControllerBase
             var validTransactionAttachments = await FilterValidTransactionAttachmentsAsync(request.TransactionAttachments ?? [], result, cancellationToken);
             await UpsertEntitiesAsync(validTransactionAttachments, _dbContext.TransactionAttachments,
                 (e, d) => e.Apply(d), d => new TransactionAttachment { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
-            await PersistTransactionAttachmentsToStorageAsync(validTransactionAttachments, cancellationToken);
+            if (validTransactionAttachments.Count > 0)
+            {
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                await PersistTransactionAttachmentsToStorageAsync(validTransactionAttachments, cancellationToken);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+            }
             var scopedInventoryTransfers = await PrepareScopedInventoryTransfersAsync(request.InventoryTransfers ?? [], result, cancellationToken);
             var validInventoryTransfers = await FilterValidInventoryTransfersAsync(scopedInventoryTransfers, result, cancellationToken);
             await UpsertInventoryTransfersAsync(validInventoryTransfers, result, deviceId, itemWarehouseStockResult.AcceptedStockKeys, cancellationToken);
@@ -1676,7 +1687,11 @@ public sealed class SyncController : ControllerBase
                     continue;
                 }
 
-                dto.FileSize = dto.FileSize <= 0 ? fileContent.LongLength : dto.FileSize;
+                if (fileContent.Length > 0)
+                {
+                    dto.FileSize = fileContent.LongLength;
+                    dto.FileHash = ComputeSha256Hex(fileContent);
+                }
             }
 
             valid.Add(dto);
@@ -4002,8 +4017,8 @@ public sealed class SyncController : ControllerBase
                         dto.FileContent = [];
                         dto.FileName = string.IsNullOrWhiteSpace(fileName) ? existing.FileName : fileName;
                         dto.MimeType = string.IsNullOrWhiteSpace(mimeType) ? existing.MimeType : mimeType;
-                        dto.FileSize = dto.FileSize > 0 ? dto.FileSize : existing.FileSize;
-                        dto.FileHash = string.IsNullOrWhiteSpace(dto.FileHash) ? existing.FileHash : dto.FileHash.Trim();
+                        dto.FileSize = existing.FileSize;
+                        dto.FileHash = existing.FileHash;
                     }
                     else
                     {
@@ -4037,6 +4052,12 @@ public sealed class SyncController : ControllerBase
                     AddClientConflict(dto, nameof(CustomerContract),
                         "Only PDF contracts are allowed.", result);
                     continue;
+                }
+
+                if (fileContent.Length > 0)
+                {
+                    dto.FileSize = fileContent.LongLength;
+                    dto.FileHash = ComputeSha256Hex(fileContent);
                 }
             }
 
@@ -4662,6 +4683,9 @@ public sealed class SyncController : ControllerBase
             entity.FileContent = [];
         }
     }
+
+    private static string ComputeSha256Hex(byte[] content)
+        => Convert.ToHexString(SHA256.HashData(content));
 
     private async Task PersistTransactionAttachmentsToStorageAsync(
         IEnumerable<TransactionAttachmentDto> attachments,

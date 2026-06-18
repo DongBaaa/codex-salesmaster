@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Cryptography;
 using Xunit;
 
 namespace GeoraePlan.Server.Api.Tests;
@@ -3982,8 +3983,8 @@ public sealed class SyncControllerTests : IDisposable
                     ContractType = "거래계약서",
                     FileName = "stored-contract.pdf",
                     MimeType = "application/pdf",
-                    FileSize = 4,
-                    FileHash = "OLD-HASH",
+                    FileSize = 999,
+                    FileHash = "CLIENT-SHOULD-NOT-REPLACE-STORED-HASH",
                     Description = "메타데이터만 수정",
                     SignedDate = new DateOnly(2026, 5, 26),
                     UploadedAtUtc = contract.UploadedAtUtc,
@@ -4000,6 +4001,7 @@ public sealed class SyncControllerTests : IDisposable
         var result = Assert.IsType<SyncPushResult>(ok.Value);
 
         Assert.Equal(0, result.ConflictCount);
+        _dbContext.ChangeTracker.Clear();
         var stored = await _dbContext.CustomerContracts.IgnoreQueryFilters().FirstAsync(current => current.Id == contractId);
         Assert.Equal("메타데이터만 수정", stored.Description);
         Assert.Equal(new DateOnly(2026, 5, 26), stored.SignedDate);
@@ -4007,6 +4009,60 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Empty(stored.FileContent);
         Assert.Equal(4, stored.FileSize);
         Assert.Equal("OLD-HASH", stored.FileHash);
+    }
+
+    [Fact]
+    public async Task Push_NormalizesCustomerContractFileMetadata_FromUploadedContent()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "CONTRACT-FILE-METADATA-CUSTOMER",
+            NameMatchKey = "CONTRACTFILEMETADATACUSTOMER",
+            TradeType = "Sales"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var contractId = Guid.NewGuid();
+        var pdfBytes = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D, 0x31, 0x2E, 0x37 };
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-contract-file-metadata",
+            CustomerContracts =
+            [
+                new CustomerContractDto
+                {
+                    Id = contractId,
+                    CustomerId = customer.Id,
+                    ContractType = "거래계약서",
+                    FileName = "contract.pdf",
+                    MimeType = "application/pdf",
+                    FileSize = 999,
+                    FileHash = "WRONG-CLIENT-HASH",
+                    Description = "server should normalize file metadata",
+                    UploadedAtUtc = new DateTime(2026, 6, 18, 0, 0, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = new DateTime(2026, 6, 18, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 18, 0, 1, 0, DateTimeKind.Utc),
+                    FileContent = pdfBytes
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.CustomerContracts.IgnoreQueryFilters().FirstAsync(current => current.Id == contractId);
+        Assert.Equal(pdfBytes.LongLength, stored.FileSize);
+        Assert.Equal(ComputeTestSha256Hex(pdfBytes), stored.FileHash);
+        Assert.Empty(stored.FileContent);
+        Assert.False(string.IsNullOrWhiteSpace(stored.StoragePath));
     }
 
     [Fact]
@@ -5129,6 +5185,77 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_NormalizesTransactionAttachmentFileMetadata_FromUploadedContent()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "TRANSACTION-ATTACHMENT-METADATA-CUSTOMER",
+            NameMatchKey = "TRANSACTIONATTACHMENTMETADATACUSTOMER",
+            TradeType = "Sales"
+        };
+        var transaction = new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 18),
+            TransactionKind = "일반수금",
+            CashReceipt = 1000m,
+            ReceiptTotal = 1000m,
+            SettlementAmount = 1000m,
+            CreatedAtUtc = new DateTime(2026, 6, 18, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 18, 0, 0, 0, DateTimeKind.Utc)
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.Transactions.Add(transaction);
+        await _dbContext.SaveChangesAsync();
+
+        var attachmentId = Guid.NewGuid();
+        var fileBytes = new byte[] { 11, 22, 33, 44, 55, 66 };
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-transaction-attachment-file-metadata",
+            TransactionAttachments =
+            [
+                new TransactionAttachmentDto
+                {
+                    Id = attachmentId,
+                    TransactionId = transaction.Id,
+                    AttachmentType = "기타",
+                    FileName = "receipt.pdf",
+                    MimeType = "application/pdf",
+                    FileSize = 999,
+                    FileHash = "WRONG-CLIENT-HASH",
+                    Description = "server should normalize attachment metadata",
+                    UploadedByUsername = "admin",
+                    UploadedAtUtc = new DateTime(2026, 6, 18, 0, 1, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = new DateTime(2026, 6, 18, 0, 1, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 18, 0, 2, 0, DateTimeKind.Utc),
+                    FileContent = fileBytes
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.TransactionAttachments.IgnoreQueryFilters().FirstAsync(current => current.Id == attachmentId);
+        Assert.Equal(fileBytes.LongLength, stored.FileSize);
+        Assert.Equal(ComputeTestSha256Hex(fileBytes), stored.FileHash);
+        Assert.Empty(stored.FileContent);
+        Assert.False(string.IsNullOrWhiteSpace(stored.StoragePath));
+    }
+
+    [Fact]
     public async Task Push_RejectsExistingTransactionAttachment_WhenExistingTransactionIsOutOfScope()
     {
         var visibleCustomer = new Customer
@@ -5899,6 +6026,9 @@ public sealed class SyncControllerTests : IDisposable
             new InvoiceStockSnapshotService(dbContext, revisionClock),
             new RentalAssignmentHistoryService(dbContext));
     }
+
+    private static string ComputeTestSha256Hex(byte[] content)
+        => Convert.ToHexString(SHA256.HashData(content));
 
     private sealed class TestCurrentUserContext : ICurrentUserContext
     {
