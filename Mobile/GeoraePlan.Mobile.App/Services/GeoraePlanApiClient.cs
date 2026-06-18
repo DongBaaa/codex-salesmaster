@@ -11,6 +11,9 @@ namespace GeoraePlan.Mobile.App.Services;
 
 public sealed class GeoraePlanApiClient
 {
+    private static readonly TimeSpan DefaultApiRequestTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan FileTransferRequestTimeout = TimeSpan.FromMinutes(3);
+
     private readonly HttpClient _http = new();
     private readonly SettingsService _settings;
     private readonly SessionStore _sessionStore;
@@ -34,7 +37,7 @@ public sealed class GeoraePlanApiClient
             Content = JsonContent.Create(request, options: _jsonOptions)
         };
 
-        using var response = await _http.SendAsync(message, ct);
+        using var response = await SendCoreAsync(() => Task.FromResult(message), ct, DefaultApiRequestTimeout);
         if (response.StatusCode == HttpStatusCode.Unauthorized)
             return null;
 
@@ -194,7 +197,8 @@ public sealed class GeoraePlanApiClient
                 "sync/wait",
                 ("sinceRev", Math.Max(0, sinceRevision).ToString()),
                 ("timeoutSeconds", timeoutSeconds.ToString())),
-            ct);
+            ct,
+            requestTimeout: TimeSpan.FromSeconds(timeoutSeconds + 5));
     }
 
     public Task<AppUpdateManifestDto?> GetUpdateManifestAsync(string channel = "stable", CancellationToken ct = default)
@@ -231,23 +235,34 @@ public sealed class GeoraePlanApiClient
                 return request;
             },
             $"payments/{paymentId}/attachments",
-            ct);
+            ct,
+            requestTimeout: FileTransferRequestTimeout);
         await EnsureSuccessAsync(response, $"payments/{paymentId}/attachments", ct);
         return await response.Content.ReadFromJsonAsync<PaymentAttachmentDto>(_jsonOptions, ct);
     }
 
-    private async Task<T?> GetAsync<T>(string relative, CancellationToken ct, bool requireAuthentication = true)
+    private async Task<T?> GetAsync<T>(
+        string relative,
+        CancellationToken ct,
+        bool requireAuthentication = true,
+        TimeSpan? requestTimeout = null)
     {
         using var response = await SendAsync(
             () => CreateRequestAsync(HttpMethod.Get, relative, requireAuthentication, ct),
             relative,
             ct,
-            requireAuthentication);
+            requireAuthentication,
+            requestTimeout);
         await EnsureSuccessAsync(response, relative, ct);
         return await response.Content.ReadFromJsonAsync<T>(_jsonOptions, ct);
     }
 
-    private async Task<TResponse?> PostAsync<TRequest, TResponse>(string relative, TRequest payload, CancellationToken ct, bool requireAuthentication = true)
+    private async Task<TResponse?> PostAsync<TRequest, TResponse>(
+        string relative,
+        TRequest payload,
+        CancellationToken ct,
+        bool requireAuthentication = true,
+        TimeSpan? requestTimeout = null)
     {
         using var response = await SendAsync(
             async () =>
@@ -258,12 +273,18 @@ public sealed class GeoraePlanApiClient
             },
             relative,
             ct,
-            requireAuthentication);
+            requireAuthentication,
+            requestTimeout);
         await EnsureSuccessAsync(response, relative, ct);
         return await response.Content.ReadFromJsonAsync<TResponse>(_jsonOptions, ct);
     }
 
-    private async Task<TResponse?> PutAsync<TRequest, TResponse>(string relative, TRequest payload, CancellationToken ct, bool requireAuthentication = true)
+    private async Task<TResponse?> PutAsync<TRequest, TResponse>(
+        string relative,
+        TRequest payload,
+        CancellationToken ct,
+        bool requireAuthentication = true,
+        TimeSpan? requestTimeout = null)
     {
         using var response = await SendAsync(
             async () =>
@@ -274,18 +295,24 @@ public sealed class GeoraePlanApiClient
             },
             relative,
             ct,
-            requireAuthentication);
+            requireAuthentication,
+            requestTimeout);
         await EnsureSuccessAsync(response, relative, ct);
         return await response.Content.ReadFromJsonAsync<TResponse>(_jsonOptions, ct);
     }
 
-    private async Task DeleteAsync(string relative, CancellationToken ct, bool requireAuthentication = true)
+    private async Task DeleteAsync(
+        string relative,
+        CancellationToken ct,
+        bool requireAuthentication = true,
+        TimeSpan? requestTimeout = null)
     {
         using var response = await SendAsync(
             () => CreateRequestAsync(HttpMethod.Delete, relative, requireAuthentication, ct),
             relative,
             ct,
-            requireAuthentication);
+            requireAuthentication,
+            requestTimeout);
         await EnsureSuccessAsync(response, relative, ct);
     }
 
@@ -371,12 +398,13 @@ public sealed class GeoraePlanApiClient
         Func<Task<HttpRequestMessage>> requestFactory,
         string relative,
         CancellationToken ct,
-        bool requireAuthentication = true)
+        bool requireAuthentication = true,
+        TimeSpan? requestTimeout = null)
     {
 #if DEBUG
         await MobileDiagnosticFaultInjector.ThrowIfConfiguredAsync(relative, ct);
 #endif
-        var response = await SendCoreAsync(requestFactory, ct);
+        var response = await SendCoreAsync(requestFactory, ct, requestTimeout ?? DefaultApiRequestTimeout);
         if (!requireAuthentication || response.StatusCode != HttpStatusCode.Unauthorized)
             return response;
 
@@ -385,7 +413,7 @@ public sealed class GeoraePlanApiClient
         var recovery = await _sessionRecovery.TryRestoreSessionAsync($"401:{relative}", forceRefresh: true, ct: ct);
         if (recovery.Success)
         {
-            var retryResponse = await SendCoreAsync(requestFactory, ct);
+            var retryResponse = await SendCoreAsync(requestFactory, ct, requestTimeout ?? DefaultApiRequestTimeout);
             if (retryResponse.StatusCode != HttpStatusCode.Unauthorized)
                 return retryResponse;
 
@@ -397,10 +425,15 @@ public sealed class GeoraePlanApiClient
             $"401 Unauthorized ({relative}): 저장된 Bearer 토큰이 만료되었고 자동 로그인으로도 복구하지 못했습니다. 다시 로그인해 주세요.".Trim());
     }
 
-    private async Task<HttpResponseMessage> SendCoreAsync(Func<Task<HttpRequestMessage>> requestFactory, CancellationToken ct)
+    private async Task<HttpResponseMessage> SendCoreAsync(
+        Func<Task<HttpRequestMessage>> requestFactory,
+        CancellationToken ct,
+        TimeSpan requestTimeout)
     {
         using var request = await requestFactory();
-        return await _http.SendAsync(request, ct);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(requestTimeout);
+        return await _http.SendAsync(request, timeoutCts.Token);
     }
 
     private async Task EnsureSuccessAsync(HttpResponseMessage response, string relative, CancellationToken ct)
@@ -449,7 +482,8 @@ public sealed class GeoraePlanApiClient
             using var response = await SendAsync(
                 () => CreateRequestAsync(HttpMethod.Get, relative, cancellationToken: ct),
                 relative,
-                ct);
+                ct,
+                requestTimeout: FileTransferRequestTimeout);
             await EnsureSuccessAsync(response, relative, ct);
 
             await using (var source = await response.Content.ReadAsStreamAsync(ct))

@@ -7,6 +7,8 @@ namespace GeoraePlan.Mobile.App.Services;
 
 public sealed class MobileSessionRecoveryService
 {
+    private static readonly TimeSpan SessionRecoveryRequestTimeout = TimeSpan.FromSeconds(15);
+
     private readonly SettingsService _settings;
     private readonly SessionStore _sessionStore;
     private readonly HttpClient _httpClient = new();
@@ -64,7 +66,9 @@ public sealed class MobileSessionRecoveryService
                 Content = JsonContent.Create(loginRequest, options: _jsonOptions)
             };
 
-            using var response = await _httpClient.SendAsync(request, ct).ConfigureAwait(false);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(SessionRecoveryRequestTimeout);
+            using var response = await _httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
             if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
                 await _sessionStore.ClearAsync().ConfigureAwait(false);

@@ -11,7 +11,11 @@
     [string]$EvidenceDirectory,
     [switch]$SkipInstall,
     [switch]$KeepTemporaryData,
-    [switch]$ExerciseOfflineDirtySync
+    [switch]$ExerciseOfflineDirtySync,
+    [switch]$ExerciseStoppedServerDirtySync,
+    [string]$DotNetPath,
+    [string]$LocalApiProjectFile,
+    [int]$StoppedServerOfflineTimeoutSeconds = 45
 )
 
 $ErrorActionPreference = 'Stop'
@@ -84,6 +88,150 @@ function Assert-LocalDirtySyncTarget {
 
     if (-not $isLoopbackHost) {
         throw "오프라인 dirty 동기화 검증은 로컬 테스트 API에서만 허용됩니다. 현재 BaseUrl: $BaseUrl"
+    }
+}
+
+function Resolve-DotNetPath {
+    param(
+        [string]$ProjectRoot,
+        [string]$RequestedPath
+    )
+
+    foreach ($candidate in @(
+        $RequestedPath,
+        (Join-Path $ProjectRoot '.dotnet\dotnet.exe'),
+        (Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\dotnet8\dotnet.exe')
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate)) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    $command = Get-Command dotnet -ErrorAction SilentlyContinue
+    if ($null -ne $command) {
+        return $command.Source
+    }
+
+    throw 'dotnet 실행 파일을 찾지 못했습니다.'
+}
+
+function Wait-LocalApiHealth {
+    param(
+        [string]$BaseUrl,
+        [int]$TimeoutSeconds = 90
+    )
+
+    $healthUrl = $BaseUrl.TrimEnd('/') + '/healthz'
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastError = $null
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $response = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 2
+            if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 600) {
+                return
+            }
+        }
+        catch {
+            $lastError = $_.Exception.Message
+            Start-Sleep -Seconds 2
+        }
+    }
+
+    throw "로컬 테스트 API healthz 대기 실패: $healthUrl / $lastError"
+}
+
+function Stop-LocalApiForBaseUrl {
+    param(
+        [string]$BaseUrl,
+        [string]$ProjectRoot
+    )
+
+    $uri = [Uri]$BaseUrl
+    $connections = @(Get-NetTCPConnection -LocalPort $uri.Port -State Listen -ErrorAction SilentlyContinue)
+    $owners = @($connections | Select-Object -ExpandProperty OwningProcess -Unique | Where-Object { $_ -gt 0 })
+    if ($owners.Count -eq 0) {
+        throw "중단할 로컬 테스트 API 프로세스를 찾지 못했습니다: $BaseUrl"
+    }
+
+    $stopped = New-Object System.Collections.Generic.List[string]
+    foreach ($ownerProcessId in $owners) {
+        $process = Get-Process -Id $ownerProcessId -ErrorAction Stop
+        $processPath = ''
+        try { $processPath = [string]$process.Path } catch { $processPath = '' }
+
+        $isProjectProcess = -not [string]::IsNullOrWhiteSpace($processPath) -and
+            $processPath.StartsWith($ProjectRoot, [StringComparison]::OrdinalIgnoreCase)
+        $isGeoraePlanProcess = $process.ProcessName.Contains('거래플랜') -or
+            $process.ProcessName.Contains('GeoraePlan') -or
+            $processPath.Contains('거래플랜') -or
+            $processPath.Contains('GeoraePlan')
+
+        if (-not ($isProjectProcess -or $isGeoraePlanProcess)) {
+            throw "로컬 테스트 API가 아닌 프로세스는 중단하지 않습니다: pid=$ownerProcessId, name=$($process.ProcessName), path=$processPath"
+        }
+
+        Stop-Process -Id $ownerProcessId -Force -ErrorAction Stop
+        $stopped.Add("$($process.ProcessName):$ownerProcessId") | Out-Null
+    }
+
+    Start-Sleep -Seconds 3
+    return @($stopped)
+}
+
+function Start-LocalApiForBaseUrl {
+    param(
+        [string]$BaseUrl,
+        [string]$ProjectRoot,
+        [string]$DotNetPath,
+        [string]$LocalApiProjectFile,
+        [string]$Username,
+        [string]$Password,
+        [string]$EvidenceDirectory,
+        [string]$Timestamp
+    )
+
+    $resolvedDotNet = Resolve-DotNetPath -ProjectRoot $ProjectRoot -RequestedPath $DotNetPath
+    if ([string]::IsNullOrWhiteSpace($LocalApiProjectFile)) {
+        $LocalApiProjectFile = Join-Path $ProjectRoot 'Server\거래플랜.Server.Api\거래플랜.Server.Api.csproj'
+    }
+    if (-not (Test-Path -LiteralPath $LocalApiProjectFile)) {
+        throw "로컬 테스트 API 프로젝트 파일을 찾지 못했습니다: $LocalApiProjectFile"
+    }
+
+    $serverDirectory = Split-Path -Parent (Resolve-Path -LiteralPath $LocalApiProjectFile)
+    $safeBaseUrl = $BaseUrl.TrimEnd('/')
+    $env:ASPNETCORE_ENVIRONMENT = 'Development'
+    $env:ASPNETCORE_URLS = $safeBaseUrl
+    $env:Kestrel__Endpoints__Http__Url = $safeBaseUrl
+    $env:Security__RequireHttpsForwardedProto = 'false'
+    $env:Database__EnableSqliteFallback = 'true'
+    $env:SeedUsers__EnableSeedUsers = 'true'
+    if ([string]::IsNullOrWhiteSpace($env:SeedUsers__UsenetUsername)) {
+        $env:SeedUsers__UsenetUsername = $Username
+    }
+    if ([string]::IsNullOrWhiteSpace($env:SeedUsers__UsenetPassword)) {
+        $env:SeedUsers__UsenetPassword = $Password
+    }
+    $env:SeedUsers__UpdateExistingUsenetPassword = 'true'
+
+    $restartStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $stdout = Join-Path $EvidenceDirectory "mobile-write-e2e-$Timestamp-local-api-restart-$restartStamp.out.log"
+    $stderr = Join-Path $EvidenceDirectory "mobile-write-e2e-$Timestamp-local-api-restart-$restartStamp.err.log"
+    $process = Start-Process `
+        -FilePath $resolvedDotNet `
+        -ArgumentList @('run', '--no-launch-profile', '--project', $LocalApiProjectFile) `
+        -WorkingDirectory $serverDirectory `
+        -RedirectStandardOutput $stdout `
+        -RedirectStandardError $stderr `
+        -WindowStyle Hidden `
+        -PassThru
+
+    Wait-LocalApiHealth -BaseUrl $safeBaseUrl -TimeoutSeconds 90
+
+    return [pscustomobject]@{
+        ProcessId = $process.Id
+        StdOut = $stdout
+        StdErr = $stderr
     }
 }
 
@@ -933,11 +1081,16 @@ $steps = New-Object System.Collections.Generic.List[object]
 $cleanupSteps = New-Object System.Collections.Generic.List[object]
 $fixture = $null
 $createdInvoice = $null
+$localApiStoppedForExercise = $false
 $resultStatus = 'FAIL'
 $errorMessage = $null
 
 try {
-    if ($ExerciseOfflineDirtySync) {
+    if ($ExerciseOfflineDirtySync -and $ExerciseStoppedServerDirtySync) {
+        throw '진단 fault 방식과 실제 API 중단 방식은 동시에 실행할 수 없습니다.'
+    }
+
+    if ($ExerciseOfflineDirtySync -or $ExerciseStoppedServerDirtySync) {
         Assert-LocalDirtySyncTarget -BaseUrl $BaseUrl
     }
 
@@ -1105,15 +1258,48 @@ try {
         Set-MobileDiagnosticNetworkFault -AdbPath $resolvedAdb -DeviceId $deviceId -PackageName $PackageName -Target 'invoices'
         $steps.Add([pscustomobject]@{ Step = 'mobile-network-fault-before-save'; Result = 'PASS'; Detail = 'NETWORK|invoices' })
     }
+    if ($ExerciseStoppedServerDirtySync) {
+        $stoppedProcesses = Stop-LocalApiForBaseUrl -BaseUrl $BaseUrl -ProjectRoot $ProjectRoot
+        $localApiStoppedForExercise = $true
+        $steps.Add([pscustomobject]@{ Step = 'local-api-stop-before-save'; Result = 'PASS'; Detail = ($stoppedProcesses -join ', ') })
+    }
 
+    $saveTappedAt = Get-Date
     Tap-Point -AdbPath $resolvedAdb -DeviceId $deviceId -X $saveButtonPoint.X -Y $saveButtonPoint.Y
-    Start-Sleep -Seconds 6
+    if ($ExerciseStoppedServerDirtySync) {
+        $afterSaveDump = Wait-UiContainsAll `
+            -AdbPath $resolvedAdb `
+            -DeviceId $deviceId `
+            -EvidenceDirectory $EvidenceDirectory `
+            -Name "mobile-write-e2e-$timestamp-after-save-stopped-server" `
+            -Needles @('오프라인/재시도 대기') `
+            -StepName '실제 API 중단 후 오프라인 저장 dirty 대기' `
+            -TimeoutSeconds $StoppedServerOfflineTimeoutSeconds
+        $offlineElapsedSeconds = [Math]::Round(((Get-Date) - $saveTappedAt).TotalSeconds, 1)
+        $steps.Add([pscustomobject]@{ Step = 'mobile-stopped-server-offline-pending'; Result = 'PASS'; Detail = "elapsed=${offlineElapsedSeconds}s, dump=$($afterSaveDump.Path)" })
 
-    $afterSaveDump = Get-UiDump -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-write-e2e-$timestamp-after-save"
+        $restart = Start-LocalApiForBaseUrl `
+            -BaseUrl $BaseUrl `
+            -ProjectRoot $ProjectRoot `
+            -DotNetPath $DotNetPath `
+            -LocalApiProjectFile $LocalApiProjectFile `
+            -Username $Username `
+            -Password $Password `
+            -EvidenceDirectory $EvidenceDirectory `
+            -Timestamp $timestamp
+        $localApiStoppedForExercise = $false
+        $steps.Add([pscustomobject]@{ Step = 'local-api-restart-before-sync'; Result = 'PASS'; Detail = "pid=$($restart.ProcessId), stdout=$($restart.StdOut), stderr=$($restart.StdErr)" })
+    }
+    else {
+        Start-Sleep -Seconds 6
+        $afterSaveDump = Get-UiDump -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-write-e2e-$timestamp-after-save"
+    }
 
-    if ($ExerciseOfflineDirtySync) {
-        Assert-UiContains -Content $afterSaveDump.Content -Needles @('오프라인/재시도 대기') -StepName '오프라인 저장 dirty 대기'
-        $steps.Add([pscustomobject]@{ Step = 'mobile-offline-invoice-pending'; Result = 'PASS'; Detail = $afterSaveDump.Path })
+    if ($ExerciseOfflineDirtySync -or $ExerciseStoppedServerDirtySync) {
+        if ($ExerciseOfflineDirtySync) {
+            Assert-UiContains -Content $afterSaveDump.Content -Needles @('오프라인/재시도 대기') -StepName '오프라인 저장 dirty 대기'
+            $steps.Add([pscustomobject]@{ Step = 'mobile-offline-invoice-pending'; Result = 'PASS'; Detail = $afterSaveDump.Path })
+        }
 
         $matchesBeforeSync = Get-TestInvoices -BaseUrl $BaseUrl -Headers $headers -CustomerId $fixture.Customer.id -Query $fixture.CustomerName |
             Where-Object {
@@ -1161,6 +1347,25 @@ catch {
     $steps.Add([pscustomobject]@{ Step = 'error'; Result = 'FAIL'; Detail = $errorMessage })
 }
 finally {
+    if ($localApiStoppedForExercise) {
+        try {
+            $restart = Start-LocalApiForBaseUrl `
+                -BaseUrl $BaseUrl `
+                -ProjectRoot $ProjectRoot `
+                -DotNetPath $DotNetPath `
+                -LocalApiProjectFile $LocalApiProjectFile `
+                -Username $Username `
+                -Password $Password `
+                -EvidenceDirectory $EvidenceDirectory `
+                -Timestamp $timestamp
+            $localApiStoppedForExercise = $false
+            $steps.Add([pscustomobject]@{ Step = 'local-api-restart-finally'; Result = 'PASS'; Detail = "pid=$($restart.ProcessId)" })
+        }
+        catch {
+            $cleanupSteps.Add([pscustomobject]@{ Target = 'local-api'; Id = ''; Result = "restart-failed: $($_.Exception.Message)" })
+        }
+    }
+
     if (-not $KeepTemporaryData) {
         try {
             if (-not $headers) {
@@ -1180,6 +1385,7 @@ $result = [pscustomobject]@{
     PackageName = $PackageName
     VoucherKind = $VoucherKind
     ExerciseOfflineDirtySync = [bool]$ExerciseOfflineDirtySync
+    ExerciseStoppedServerDirtySync = [bool]$ExerciseStoppedServerDirtySync
     Result = $resultStatus
     Error = $errorMessage
     Fixture = if ($fixture) { [pscustomobject]@{ CustomerId = $fixture.Customer.id; CustomerName = $fixture.CustomerName; ItemId = $fixture.Item.id; ItemName = $fixture.ItemName } } else { $null }
@@ -1200,6 +1406,7 @@ $mdLines = @(
     "- 패키지: $PackageName",
     "- 전표유형: $VoucherKind",
     "- 오프라인 dirty 동기화 실행: $([bool]$ExerciseOfflineDirtySync)",
+    "- 실제 API 중단 dirty 동기화 실행: $([bool]$ExerciseStoppedServerDirtySync)",
     "- 결과: $resultStatus",
     "- 오류: $errorMessage",
     '',

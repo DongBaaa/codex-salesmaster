@@ -200,6 +200,55 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("오프라인 dirty 동기화 검증은 로컬 테스트 API에서만 허용됩니다.", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void AndroidWriteE2E_CoversStoppedServerDirtySyncTimeout()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "mobile",
+            "Invoke-GeoraePlanAndroidWriteE2E.ps1"));
+
+        Assert.Contains("[switch]$ExerciseStoppedServerDirtySync", source, StringComparison.Ordinal);
+        Assert.Contains("[int]$StoppedServerOfflineTimeoutSeconds = 45", source, StringComparison.Ordinal);
+        Assert.Contains("Stop-LocalApiForBaseUrl", source, StringComparison.Ordinal);
+        Assert.Contains("Start-LocalApiForBaseUrl", source, StringComparison.Ordinal);
+        Assert.Contains("Get-NetTCPConnection -LocalPort $uri.Port -State Listen", source, StringComparison.Ordinal);
+        Assert.Contains("local-api-stop-before-save", source, StringComparison.Ordinal);
+        Assert.Contains("mobile-stopped-server-offline-pending", source, StringComparison.Ordinal);
+        Assert.Contains("local-api-restart-before-sync", source, StringComparison.Ordinal);
+        Assert.Contains("ExerciseStoppedServerDirtySync = [bool]$ExerciseStoppedServerDirtySync", source, StringComparison.Ordinal);
+        Assert.Contains("ExerciseStoppedServerDirtySync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MobileApiRequests_UseShortTimeoutWithoutBreakingFileTransfers()
+    {
+        var root = FindRepositoryRoot();
+        var apiSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "GeoraePlanApiClient.cs"));
+        var recoverySource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "MobileSessionRecoveryService.cs"));
+
+        Assert.Contains("DefaultApiRequestTimeout = TimeSpan.FromSeconds(15)", apiSource, StringComparison.Ordinal);
+        Assert.Contains("FileTransferRequestTimeout = TimeSpan.FromMinutes(3)", apiSource, StringComparison.Ordinal);
+        Assert.Contains("CancellationTokenSource.CreateLinkedTokenSource(ct)", apiSource, StringComparison.Ordinal);
+        Assert.Contains("timeoutCts.CancelAfter(requestTimeout)", apiSource, StringComparison.Ordinal);
+        Assert.Contains("requestTimeout ?? DefaultApiRequestTimeout", apiSource, StringComparison.Ordinal);
+        Assert.Contains("requestTimeout: TimeSpan.FromSeconds(timeoutSeconds + 5)", apiSource, StringComparison.Ordinal);
+        Assert.Contains("requestTimeout: FileTransferRequestTimeout", apiSource, StringComparison.Ordinal);
+        Assert.Contains("SessionRecoveryRequestTimeout = TimeSpan.FromSeconds(15)", recoverySource, StringComparison.Ordinal);
+        Assert.Contains("timeoutCts.CancelAfter(SessionRecoveryRequestTimeout)", recoverySource, StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
