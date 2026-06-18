@@ -25,11 +25,6 @@ public sealed partial class LocalStateService
 	private const string ManualStockAdjustmentMovementType = "StockAdjustmentManual";
 	private const string InventoryResetToZeroMovementType = "StockResetToZero";
 	private const int LocalQueryContainsBatchSize = 500;
-	private const long MaxTransactionAttachmentFileSizeBytes = 15L * 1024 * 1024;
-	private static readonly HashSet<string> AllowedTransactionAttachmentExtensions = new(StringComparer.OrdinalIgnoreCase)
-	{
-		".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".heic", ".heif"
-	};
 
 	private sealed record CompanyProfileDefaultDefinition(string ProfileName, string OfficeCode, string TradeName, string Representative, string BusinessNumber, string Address, string ContactNumber);
 	private readonly record struct LocalStockChangeKey(Guid ItemId, string WarehouseCode);
@@ -5413,7 +5408,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		DateTime now = DateTime.UtcNow;
 		string originalFileName = Path.GetFileName(sourceFilePath);
 		string fileExtension = Path.GetExtension(sourceFilePath);
-		if (!IsAllowedTransactionAttachmentFile(originalFileName))
+		string mimeType = ResolveMimeType(fileExtension);
+		if (!EvidenceAttachmentFilePolicy.IsAllowedFileType(originalFileName, mimeType))
 		{
 			return OfficeMutationResult.Denied("증빙 파일은 PDF 또는 이미지 파일만 저장할 수 있습니다.");
 		}
@@ -5422,15 +5418,20 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Denied("빈 증빙 파일은 저장할 수 없습니다.");
 		}
-		if (sourceFileInfo.Length > MaxTransactionAttachmentFileSizeBytes)
+		if (sourceFileInfo.Length > EvidenceAttachmentFilePolicy.MaxFileSizeBytes)
 		{
 			return OfficeMutationResult.Denied("증빙 파일은 15MB 이하만 저장할 수 있습니다. 스캔 해상도를 낮추거나 파일을 압축한 뒤 다시 시도하세요.");
+		}
+		var sourceBytes = await File.ReadAllBytesAsync(sourceFilePath, ct);
+		if (!EvidenceAttachmentFilePolicy.ContentMatchesFileType(originalFileName, mimeType, sourceBytes))
+		{
+			return OfficeMutationResult.Denied("증빙 파일 내용이 PDF 또는 이미지 형식과 일치하지 않습니다.");
 		}
 		string attachmentDir = Path.Combine(AppPaths.TransactionAttachmentsDir, transactionId.ToString("N"));
 		Directory.CreateDirectory(attachmentDir);
 		string storedFileName = $"{now:yyyyMMddHHmmssfff}_{Guid.NewGuid():N}{fileExtension}";
 		string storedPath = Path.Combine(attachmentDir, storedFileName);
-		File.Copy(sourceFilePath, storedPath, overwrite: true);
+		await File.WriteAllBytesAsync(storedPath, sourceBytes, ct);
 		var storedFileInfo = new FileInfo(storedPath);
 		int sortOrder = await (from current in _db.TransactionAttachments.IgnoreQueryFilters()
 			where current.TransactionId == transactionId
@@ -5443,7 +5444,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			FileName = originalFileName,
 			StoredFileName = storedFileName,
 			StoredPath = storedPath,
-			MimeType = ResolveMimeType(fileExtension),
+			MimeType = mimeType,
 			FileSize = storedFileInfo.Length,
 			FileHash = ComputeFileHash(storedPath),
 			Description = (description ?? string.Empty).Trim(),
@@ -6907,13 +6908,6 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 		}
 		return result;
-	}
-
-	private static bool IsAllowedTransactionAttachmentFile(string? fileName)
-	{
-		string safeFileName = Path.GetFileName(fileName ?? string.Empty);
-		string extension = Path.GetExtension(safeFileName);
-		return !string.IsNullOrWhiteSpace(safeFileName) && AllowedTransactionAttachmentExtensions.Contains(extension);
 	}
 
 	private static string ComputeFileHash(string filePath)

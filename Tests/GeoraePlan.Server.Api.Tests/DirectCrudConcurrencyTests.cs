@@ -1939,14 +1939,14 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
 
         var first = AssertOk<PaymentAttachmentDto>(await controller.UploadAttachment(
             payment.Id,
-            CreateFormFile("retry-receipt.pdf", "application/pdf", "first upload"),
+            CreateFormFile("retry-receipt.pdf", "application/pdf", TestPdfBytes("first upload")),
             "내역첨부",
             "mobile retry",
             clientAttachmentId,
             CancellationToken.None));
         var second = AssertOk<PaymentAttachmentDto>(await controller.UploadAttachment(
             payment.Id,
-            CreateFormFile("retry-receipt.pdf", "application/pdf", "second upload should not create duplicate"),
+            CreateFormFile("retry-receipt.pdf", "application/pdf", TestPdfBytes("second upload should not create duplicate")),
             "내역첨부",
             "mobile retry",
             clientAttachmentId,
@@ -1956,6 +1956,60 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         Assert.Equal(first.Id, second.Id);
         Assert.Equal(first.FileHash, second.FileHash);
         Assert.Equal(1, await dbContext.PaymentAttachments.IgnoreQueryFilters().CountAsync(current => current.PaymentId == payment.Id));
+    }
+
+    [Fact]
+    public async Task PaymentsController_UploadAttachment_RejectsFileContentThatDoesNotMatchFileType()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Payment attachment signature customer",
+            NameMatchKey = "PAYMENTATTACHMENTSIGNATURECUSTOMER",
+            TradeType = "Sales"
+        };
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "PAYMENT-ATTACHMENT-SIGNATURE",
+            InvoiceDate = new DateOnly(2026, 6, 19)
+        };
+        var payment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 19),
+            Amount = 5000m,
+            Note = "signature mismatch"
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(invoice);
+        dbContext.Payments.Add(payment);
+        await dbContext.SaveChangesAsync();
+
+        var controller = new PaymentsController(dbContext, new OfficeScopeService(currentUser, dbContext), new StubCentralFileStorage());
+
+        var response = await controller.UploadAttachment(
+            payment.Id,
+            CreateFormFile("fake-receipt.pdf", "application/pdf", [0x4D, 0x5A, 0x90, 0x00]),
+            "내역첨부",
+            "fake pdf content must not be stored",
+            Guid.NewGuid(),
+            CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(response.Result);
+        Assert.Contains("file_content_mismatch", badRequest.Value?.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(await dbContext.PaymentAttachments.IgnoreQueryFilters().ToListAsync());
     }
 
     [Fact]
@@ -2342,8 +2396,10 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             new RentalSettlementRecalculationService(dbContext));
 
     private static IFormFile CreateFormFile(string fileName, string contentType, string content)
+        => CreateFormFile(fileName, contentType, System.Text.Encoding.UTF8.GetBytes(content));
+
+    private static IFormFile CreateFormFile(string fileName, string contentType, byte[] bytes)
     {
-        var bytes = System.Text.Encoding.UTF8.GetBytes(content);
         var stream = new MemoryStream(bytes);
         return new FormFile(stream, 0, bytes.Length, "file", fileName)
         {
@@ -2351,6 +2407,9 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             ContentType = contentType
         };
     }
+
+    private static byte[] TestPdfBytes(string marker)
+        => System.Text.Encoding.UTF8.GetBytes($"%PDF-1.4\n% {marker}\n1 0 obj\n<<>>\nendobj\n%%EOF\n");
 
     private AppDbContext CreateDbContext(TestCurrentUserContext currentUser)
     {

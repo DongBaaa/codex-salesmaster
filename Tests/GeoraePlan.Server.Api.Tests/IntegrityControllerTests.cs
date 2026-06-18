@@ -1876,6 +1876,118 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FlagsAttachmentStoredContentSignatureMismatch()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+        var transactionAttachmentId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var paymentAttachmentId = Guid.NewGuid();
+        var fakePdfBytes = new byte[] { 0x4D, 0x5A, 0x90, 0x00 };
+        var fileStorage = CreateFileStorage();
+        var transactionStoragePath = await fileStorage.SaveBytesAsync(
+            "transaction-attachments",
+            transactionId.ToString("N"),
+            transactionAttachmentId,
+            "fake-transaction.pdf",
+            fakePdfBytes);
+        var paymentStoragePath = await fileStorage.SaveBytesAsync(
+            "payment-attachments",
+            paymentId.ToString("N"),
+            paymentAttachmentId,
+            "fake-payment.pdf",
+            fakePdfBytes);
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "본문 불일치 첨부 거래처",
+            NameMatchKey = "SIGNATUREMISMATCHATTACHMENTCUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = transactionId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 21),
+            TransactionKind = "수금"
+        });
+        dbContext.TransactionAttachments.Add(new TransactionAttachment
+        {
+            Id = transactionAttachmentId,
+            TransactionId = transactionId,
+            FileName = "fake-transaction.pdf",
+            MimeType = "application/pdf",
+            FileSize = fakePdfBytes.LongLength,
+            FileHash = Convert.ToHexString(SHA256.HashData(fakePdfBytes)),
+            StoragePath = transactionStoragePath,
+            FileContent = []
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "INV-SIGNATURE-MISMATCH",
+            InvoiceDate = new DateOnly(2026, 6, 21)
+        });
+        dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 6, 21),
+            Amount = 10000m
+        });
+        dbContext.PaymentAttachments.Add(new PaymentAttachment
+        {
+            Id = paymentAttachmentId,
+            PaymentId = paymentId,
+            FileName = "fake-payment.pdf",
+            MimeType = "application/pdf",
+            FileSize = fakePdfBytes.LongLength,
+            FileHash = Convert.ToHexString(SHA256.HashData(fakePdfBytes)),
+            StoragePath = paymentStoragePath,
+            FileContent = []
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = new IntegrityController(dbContext, new OfficeScopeService(currentUser, dbContext), fileStorage);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issue = Assert.Single(payload.Issues, current => current.Code == "attachment_content_signature_mismatch");
+
+        Assert.Equal("Warning", issue.Severity);
+        Assert.Equal(2, issue.Count);
+
+        var detailsResponse = await controller.GetReportDetails("attachment_content_signature_mismatch", CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+
+        Assert.Equal(2, details.DetailCount);
+        Assert.All(details.Rows, row =>
+        {
+            Assert.Contains("파일 내용 불일치", row.DetailText, StringComparison.Ordinal);
+            Assert.Contains("application/pdf", row.DetailText, StringComparison.Ordinal);
+        });
+        Assert.Contains(details.Rows, row => row.PrimaryText == "fake-transaction.pdf");
+        Assert.Contains(details.Rows, row => row.PrimaryText == "fake-payment.pdf");
+    }
+
+    [Fact]
     public async Task GetReport_FlagsAttachmentsWithFileSizeButNoReadableContent()
     {
         var currentUser = CreateAdminUser();

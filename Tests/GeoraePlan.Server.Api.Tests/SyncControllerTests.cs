@@ -5644,6 +5644,72 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsTransactionAttachment_WhenFileContentDoesNotMatchFileType()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "TRANSACTION-ATTACHMENT-SIGNATURE-CUSTOMER",
+            NameMatchKey = "TRANSACTIONATTACHMENTSIGNATURECUSTOMER",
+            TradeType = "Sales"
+        };
+        var transaction = new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 19),
+            TransactionKind = "일반수금",
+            CashReceipt = 1000m,
+            ReceiptTotal = 1000m,
+            SettlementAmount = 1000m,
+            CreatedAtUtc = new DateTime(2026, 6, 19, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 19, 0, 0, 0, DateTimeKind.Utc)
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.Transactions.Add(transaction);
+        await _dbContext.SaveChangesAsync();
+
+        var attachmentId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-transaction-attachment-signature-mismatch",
+            TransactionAttachments =
+            [
+                new TransactionAttachmentDto
+                {
+                    Id = attachmentId,
+                    TransactionId = transaction.Id,
+                    AttachmentType = "기타",
+                    FileName = "receipt.pdf",
+                    MimeType = "application/pdf",
+                    Description = "fake pdf content must not be stored",
+                    UploadedByUsername = "admin",
+                    UploadedAtUtc = new DateTime(2026, 6, 19, 0, 1, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = new DateTime(2026, 6, 19, 0, 1, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 19, 0, 2, 0, DateTimeKind.Utc),
+                    FileContent = [0x4D, 0x5A, 0x90, 0x00]
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(TransactionAttachment) &&
+            conflict.Reason.Contains("does not match the declared file type", StringComparison.OrdinalIgnoreCase));
+        Assert.False(await _dbContext.TransactionAttachments.IgnoreQueryFilters()
+            .AnyAsync(current => current.Id == attachmentId));
+    }
+
+    [Fact]
     public async Task Push_NormalizesTransactionAttachmentFileMetadata_FromUploadedContent()
     {
         var customer = new Customer
@@ -5676,7 +5742,7 @@ public sealed class SyncControllerTests : IDisposable
         await _dbContext.SaveChangesAsync();
 
         var attachmentId = Guid.NewGuid();
-        var fileBytes = new byte[] { 11, 22, 33, 44, 55, 66 };
+        var fileBytes = TestPdfBytes();
         var request = new SyncPushRequest
         {
             DeviceId = "device-transaction-attachment-file-metadata",
@@ -6573,6 +6639,9 @@ public sealed class SyncControllerTests : IDisposable
 
     private static string ComputeTestSha256Hex(byte[] content)
         => Convert.ToHexString(SHA256.HashData(content));
+
+    private static byte[] TestPdfBytes()
+        => "%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n"u8.ToArray();
 
     private sealed class SyncRentalBillingRunSnapshot
     {

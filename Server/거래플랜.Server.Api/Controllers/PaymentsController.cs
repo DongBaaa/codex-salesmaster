@@ -18,24 +18,6 @@ namespace 거래플랜.Server.Api.Controllers;
 [Route("payments")]
 public sealed class PaymentsController : ControllerBase
 {
-    private static readonly HashSet<string> AllowedAttachmentExtensions = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".heic", ".heif"
-    };
-
-    private static readonly HashSet<string> AllowedAttachmentContentTypes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "application/pdf",
-        "image/png",
-        "image/jpeg",
-        "image/bmp",
-        "image/gif",
-        "image/webp",
-        "image/tiff",
-        "image/heic",
-        "image/heif"
-    };
-
     private readonly AppDbContext _dbContext;
     private readonly OfficeScopeService _officeScopeService;
     private readonly ICentralFileStorage _fileStorage;
@@ -100,8 +82,8 @@ public sealed class PaymentsController : ControllerBase
             ? $"payment-attachment-{attachment.Id:N}"
             : Path.GetFileName(attachment.FileName);
 
-        var contentType = NormalizeContentType(attachment.MimeType, fileName);
-        if (!IsAllowedAttachment(fileName, contentType))
+        var contentType = EvidenceAttachmentFilePolicy.NormalizeContentType(attachment.MimeType, fileName);
+        if (!EvidenceAttachmentFilePolicy.IsAllowedFileType(fileName, contentType))
             contentType = "application/octet-stream";
 
         var bytes = _fileStorage.ReadBytes(attachment.StoragePath, attachment.FileContent);
@@ -185,8 +167,8 @@ public sealed class PaymentsController : ControllerBase
         if (string.IsNullOrWhiteSpace(safeFileName))
             return BadRequest(new { error = "invalid_file_name", message = "유효한 첨부 파일명을 확인할 수 없습니다." });
 
-        var normalizedContentType = NormalizeContentType(file.ContentType, safeFileName);
-        if (!IsAllowedAttachment(safeFileName, normalizedContentType))
+        var normalizedContentType = EvidenceAttachmentFilePolicy.NormalizeContentType(file.ContentType, safeFileName);
+        if (!EvidenceAttachmentFilePolicy.IsAllowedFileType(safeFileName, normalizedContentType))
         {
             return BadRequest(new
             {
@@ -198,6 +180,14 @@ public sealed class PaymentsController : ControllerBase
         await using var memory = new MemoryStream();
         await file.CopyToAsync(memory, cancellationToken);
         var bytes = memory.ToArray();
+        if (!EvidenceAttachmentFilePolicy.ContentMatchesFileType(safeFileName, normalizedContentType, bytes))
+        {
+            return BadRequest(new
+            {
+                error = "file_content_mismatch",
+                message = "첨부 파일 내용이 PDF 또는 이미지 형식과 일치하지 않습니다."
+            });
+        }
 
         var entity = new PaymentAttachment
         {
@@ -225,39 +215,6 @@ public sealed class PaymentsController : ControllerBase
         entity.FileContent = [];
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(entity.ToDto(false));
-    }
-
-    private static string NormalizeContentType(string? contentType, string fileName)
-    {
-        if (!string.IsNullOrWhiteSpace(contentType))
-            return contentType.Split(';', 2, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)[0].Trim();
-
-        return Path.GetExtension(fileName).ToLowerInvariant() switch
-        {
-            ".pdf" => "application/pdf",
-            ".png" => "image/png",
-            ".jpg" or ".jpeg" => "image/jpeg",
-            ".bmp" => "image/bmp",
-            ".gif" => "image/gif",
-            ".webp" => "image/webp",
-            ".tif" or ".tiff" => "image/tiff",
-            ".heic" => "image/heic",
-            ".heif" => "image/heif",
-            _ => "application/octet-stream"
-        };
-    }
-
-    private static bool IsAllowedAttachment(string fileName, string contentType)
-    {
-        var extension = Path.GetExtension(fileName ?? string.Empty);
-        if (!AllowedAttachmentExtensions.Contains(extension))
-            return false;
-
-        if (AllowedAttachmentContentTypes.Contains(contentType))
-            return true;
-
-        return string.Equals(contentType, "application/octet-stream", StringComparison.OrdinalIgnoreCase) &&
-               string.Equals(extension, ".pdf", StringComparison.OrdinalIgnoreCase);
     }
 
     [HttpPost]
@@ -403,5 +360,3 @@ public sealed class PaymentsController : ControllerBase
     }
 
 }
-
-

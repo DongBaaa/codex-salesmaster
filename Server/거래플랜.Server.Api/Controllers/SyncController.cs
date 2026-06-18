@@ -20,23 +20,6 @@ namespace 거래플랜.Server.Api.Controllers;
 public sealed class SyncController : ControllerBase
 {
     private const long MaxContractFileSizeBytes = 15L * 1024 * 1024;
-    private const long MaxTransactionAttachmentFileSizeBytes = 15L * 1024 * 1024;
-    private static readonly HashSet<string> AllowedTransactionAttachmentExtensions = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".heic", ".heif"
-    };
-    private static readonly HashSet<string> AllowedTransactionAttachmentContentTypes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "application/pdf",
-        "image/png",
-        "image/jpeg",
-        "image/bmp",
-        "image/gif",
-        "image/webp",
-        "image/tiff",
-        "image/heic",
-        "image/heif"
-    };
     private static readonly JsonSerializerOptions ConflictJsonOptions = new() { WriteIndented = false };
     private static readonly TimeZoneInfo KoreaTimeZone = ResolveKoreaTimeZone();
     private static readonly SemaphoreSlim RentalAssetSyncLock = new(1, 1);
@@ -1857,18 +1840,25 @@ public sealed class SyncController : ControllerBase
                 }
 
                 var fileName = Path.GetFileName(dto.FileName ?? string.Empty);
-                var mimeType = NormalizeTransactionAttachmentContentType(dto.MimeType, fileName);
-                if (fileContent.LongLength > MaxTransactionAttachmentFileSizeBytes)
+                var mimeType = EvidenceAttachmentFilePolicy.NormalizeContentType(dto.MimeType, fileName);
+                if (fileContent.LongLength > EvidenceAttachmentFilePolicy.MaxFileSizeBytes)
                 {
                     AddClientConflict(dto, nameof(TransactionAttachment),
-                        $"Attachment file size exceeds the {MaxTransactionAttachmentFileSizeBytes / (1024 * 1024)}MB limit.", result);
+                        $"Attachment file size exceeds the {EvidenceAttachmentFilePolicy.MaxFileSizeBytes / (1024 * 1024)}MB limit.", result);
                     continue;
                 }
 
-                if (!IsAllowedTransactionAttachment(fileName, mimeType))
+                if (!EvidenceAttachmentFilePolicy.IsAllowedFileType(fileName, mimeType))
                 {
                     AddClientConflict(dto, nameof(TransactionAttachment),
                         "Only PDF or image attachments are allowed.", result);
+                    continue;
+                }
+
+                if (!EvidenceAttachmentFilePolicy.ContentMatchesFileType(fileName, mimeType, fileContent))
+                {
+                    AddClientConflict(dto, nameof(TransactionAttachment),
+                        "Attachment file content does not match the declared file type.", result);
                     continue;
                 }
 
@@ -4933,39 +4923,6 @@ public sealed class SyncController : ControllerBase
 
     private static string ComputeSha256Hex(byte[] content)
         => Convert.ToHexString(SHA256.HashData(content));
-
-    private static string NormalizeTransactionAttachmentContentType(string? contentType, string fileName)
-    {
-        if (!string.IsNullOrWhiteSpace(contentType))
-            return contentType.Split(';', 2, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)[0].Trim();
-
-        return Path.GetExtension(fileName).ToLowerInvariant() switch
-        {
-            ".pdf" => "application/pdf",
-            ".png" => "image/png",
-            ".jpg" or ".jpeg" => "image/jpeg",
-            ".bmp" => "image/bmp",
-            ".gif" => "image/gif",
-            ".webp" => "image/webp",
-            ".tif" or ".tiff" => "image/tiff",
-            ".heic" => "image/heic",
-            ".heif" => "image/heif",
-            _ => "application/octet-stream"
-        };
-    }
-
-    private static bool IsAllowedTransactionAttachment(string fileName, string contentType)
-    {
-        var extension = Path.GetExtension(fileName ?? string.Empty);
-        if (!AllowedTransactionAttachmentExtensions.Contains(extension))
-            return false;
-
-        if (AllowedTransactionAttachmentContentTypes.Contains(contentType))
-            return true;
-
-        return string.Equals(contentType, "application/octet-stream", StringComparison.OrdinalIgnoreCase) &&
-               string.Equals(extension, ".pdf", StringComparison.OrdinalIgnoreCase);
-    }
 
     private async Task PersistTransactionAttachmentsToStorageAsync(
         IEnumerable<TransactionAttachmentDto> attachments,
