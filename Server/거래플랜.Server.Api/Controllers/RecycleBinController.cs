@@ -2197,7 +2197,25 @@ public sealed class RecycleBinController : ControllerBase
             current.IsLatestVersion = current.VersionNumber == maxVersionNumber;
         }
 
+        await RestoreInvoiceLinesAsync(invoiceGroup, cancellationToken);
         return (true, customerRestored, string.Empty);
+    }
+
+    private async Task RestoreInvoiceLinesAsync(IEnumerable<Invoice> invoices, CancellationToken cancellationToken)
+    {
+        var invoiceIds = invoices
+            .Select(current => current.Id)
+            .Distinct()
+            .ToList();
+        if (invoiceIds.Count == 0)
+            return;
+
+        var lines = await _dbContext.InvoiceLines
+            .IgnoreQueryFilters()
+            .Where(current => invoiceIds.Contains(current.InvoiceId) && current.IsDeleted)
+            .ToListAsync(cancellationToken);
+        foreach (var line in lines)
+            line.IsDeleted = false;
     }
 
     private (bool Success, string Message) EnsureCanWriteInvoiceGroup(IEnumerable<Invoice> invoiceGroup, string actionText)

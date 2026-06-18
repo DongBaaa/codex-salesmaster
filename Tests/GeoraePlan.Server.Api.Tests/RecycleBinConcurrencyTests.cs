@@ -1352,6 +1352,7 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         var profileId = Guid.NewGuid();
         var runId = Guid.NewGuid();
         var invoiceId = Guid.NewGuid();
+        var invoiceLineId = Guid.NewGuid();
         var transactionId = Guid.NewGuid();
         var invoiceNumber = "RECYCLE-RENTAL-RESTORE-INVOICE-001";
 
@@ -1418,6 +1419,16 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
             LinkedRentalBillingProfileId = profileId,
             LinkedRentalBillingRunId = runId
         });
+        dbContext.InvoiceLines.Add(new InvoiceLine
+        {
+            Id = invoiceLineId,
+            InvoiceId = invoiceId,
+            ItemNameOriginal = "Restore invoice line item",
+            Unit = "EA",
+            Quantity = 1m,
+            UnitPrice = 100_000m,
+            LineAmount = 100_000m
+        });
         dbContext.Transactions.Add(new TransactionRecord
         {
             Id = transactionId,
@@ -1461,6 +1472,10 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
             .Where(invoice => invoice.Id == invoiceId)
             .Select(invoice => invoice.IsDeleted)
             .SingleAsync());
+        Assert.True(await dbContext.InvoiceLines.IgnoreQueryFilters()
+            .Where(line => line.Id == invoiceLineId)
+            .Select(line => line.IsDeleted)
+            .SingleAsync());
         Assert.True(await dbContext.Payments.IgnoreQueryFilters()
             .Where(payment => payment.Id == transactionId)
             .Select(payment => payment.IsDeleted)
@@ -1495,6 +1510,10 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
             .Where(invoice => invoice.Id == invoiceId)
             .Select(invoice => invoice.IsDeleted)
             .SingleAsync());
+        Assert.False(await dbContext.InvoiceLines.IgnoreQueryFilters()
+            .Where(line => line.Id == invoiceLineId)
+            .Select(line => line.IsDeleted)
+            .SingleAsync());
         var restoredPayment = await dbContext.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(payment => payment.Id == transactionId);
         Assert.False(restoredPayment.IsDeleted);
         Assert.Equal(invoiceId, restoredPayment.InvoiceId);
@@ -1524,6 +1543,7 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         var profileId = Guid.NewGuid();
         var runId = Guid.NewGuid();
         var invoiceId = Guid.NewGuid();
+        var invoiceLineId = Guid.NewGuid();
         var transactionId = Guid.NewGuid();
         var invoiceNumber = "RECYCLE-RENTAL-RESTORE-001";
 
@@ -1589,6 +1609,16 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
             VatAmount = 9_091m,
             LinkedRentalBillingProfileId = profileId,
             LinkedRentalBillingRunId = runId
+        });
+        dbContext.InvoiceLines.Add(new InvoiceLine
+        {
+            Id = invoiceLineId,
+            InvoiceId = invoiceId,
+            ItemNameOriginal = "Restore invoice line by payment item",
+            Unit = "EA",
+            Quantity = 1m,
+            UnitPrice = 100_000m,
+            LineAmount = 100_000m
         });
         dbContext.Transactions.Add(new TransactionRecord
         {
@@ -1661,6 +1691,10 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         dbContext.ChangeTracker.Clear();
         var restoredInvoice = await dbContext.Invoices.IgnoreQueryFilters().AsNoTracking().SingleAsync(invoice => invoice.Id == invoiceId);
         Assert.False(restoredInvoice.IsDeleted);
+        Assert.False(await dbContext.InvoiceLines.IgnoreQueryFilters()
+            .Where(line => line.Id == invoiceLineId)
+            .Select(line => line.IsDeleted)
+            .SingleAsync());
         var restoredPayment = await dbContext.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(payment => payment.Id == transactionId);
         Assert.False(restoredPayment.IsDeleted);
         var relinkedTransaction = await dbContext.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(transaction => transaction.Id == transactionId);
