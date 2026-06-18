@@ -561,6 +561,96 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task InvoicesController_Create_IgnoresDeletedLinesWhenCalculatingTotals()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Deleted Line Total Customer",
+            NameMatchKey = "DELETEDLINETOTALCUSTOMER",
+            TradeType = "매출"
+        };
+        dbContext.Customers.Add(customer);
+        await dbContext.SaveChangesAsync();
+
+        var invoiceId = Guid.NewGuid();
+        var activeLineId = Guid.NewGuid();
+        var deletedLineId = Guid.NewGuid();
+        var dto = new InvoiceDto
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            VoucherType = VoucherType.Sales,
+            VatMode = InvoiceVatModes.None,
+            InvoiceDate = new DateOnly(2026, 6, 19),
+            Lines =
+            [
+                new InvoiceLineDto
+                {
+                    Id = deletedLineId,
+                    InvoiceId = invoiceId,
+                    ItemNameOriginal = "삭제 라인",
+                    Unit = "EA",
+                    Quantity = 1m,
+                    UnitPrice = 90000m,
+                    LineAmount = 90000m,
+                    OrderIndex = 1,
+                    IsDeleted = true
+                },
+                new InvoiceLineDto
+                {
+                    Id = activeLineId,
+                    InvoiceId = invoiceId,
+                    ItemNameOriginal = "활성 라인",
+                    Unit = "EA",
+                    Quantity = 1m,
+                    UnitPrice = 10000m,
+                    LineAmount = 10000m,
+                    OrderIndex = 2
+                }
+            ]
+        };
+
+        var controller = new InvoicesController(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
+
+        var response = await controller.Create(dto, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var created = Assert.IsType<InvoiceDto>(ok.Value);
+
+        Assert.Equal(10000m, created.SupplyAmount);
+        Assert.Equal(0m, created.VatAmount);
+        Assert.Equal(10000m, created.TotalAmount);
+        var line = Assert.Single(created.Lines);
+        Assert.Equal(activeLineId, line.Id);
+
+        var storedInvoice = await dbContext.Invoices.IgnoreQueryFilters()
+            .Include(invoice => invoice.Lines)
+            .SingleAsync(invoice => invoice.Id == invoiceId);
+        Assert.Equal(10000m, storedInvoice.SupplyAmount);
+        Assert.Equal(0m, storedInvoice.VatAmount);
+        Assert.Equal(10000m, storedInvoice.TotalAmount);
+        Assert.DoesNotContain(storedInvoice.Lines, current => current.Id == deletedLineId);
+        Assert.Equal(storedInvoice.TotalAmount, storedInvoice.Lines.Where(lineRow => !lineRow.IsDeleted).Sum(lineRow => lineRow.LineAmount) + storedInvoice.VatAmount);
+    }
+
+    [Fact]
     public async Task InvoicesController_Create_ForbidsOutOfScopeItemLine()
     {
         var currentUser = new TestCurrentUserContext

@@ -4335,6 +4335,93 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_IgnoresDeletedInvoiceLinesWhenCalculatingInvoiceTotals()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-DELETED-LINE-TOTAL-CUSTOMER",
+            NameMatchKey = "SYNCDELETEDLINETOTALCUSTOMER",
+            TradeType = "매출"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var invoiceId = Guid.NewGuid();
+        var activeLineId = Guid.NewGuid();
+        var deletedLineId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-invoice-deleted-line-total",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customer.Id,
+                    CustomerName = customer.NameOriginal,
+                    TenantCode = customer.TenantCode,
+                    OfficeCode = customer.OfficeCode,
+                    ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+                    VoucherType = VoucherType.Sales,
+                    VatMode = InvoiceVatModes.None,
+                    InvoiceDate = new DateOnly(2026, 6, 19),
+                    InvoiceNumber = "INV-SYNC-DELETED-LINE-TOTAL",
+                    Lines =
+                    [
+                        new InvoiceLineDto
+                        {
+                            Id = deletedLineId,
+                            InvoiceId = invoiceId,
+                            ItemNameOriginal = "sync deleted line",
+                            Unit = "EA",
+                            Quantity = 1m,
+                            UnitPrice = 90000m,
+                            LineAmount = 90000m,
+                            OrderIndex = 1,
+                            IsDeleted = true
+                        },
+                        new InvoiceLineDto
+                        {
+                            Id = activeLineId,
+                            InvoiceId = invoiceId,
+                            ItemNameOriginal = "sync active line",
+                            Unit = "EA",
+                            Quantity = 2m,
+                            UnitPrice = 5000m,
+                            LineAmount = 0m,
+                            OrderIndex = 2
+                        }
+                    ],
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(1, result.AcceptedCount);
+
+        var storedInvoice = await _dbContext.Invoices.IgnoreQueryFilters()
+            .Include(invoice => invoice.Lines)
+            .SingleAsync(invoice => invoice.Id == invoiceId);
+        Assert.Equal(10000m, storedInvoice.SupplyAmount);
+        Assert.Equal(0m, storedInvoice.VatAmount);
+        Assert.Equal(10000m, storedInvoice.TotalAmount);
+        Assert.DoesNotContain(storedInvoice.Lines, line => line.Id == deletedLineId);
+        var activeLine = Assert.Single(storedInvoice.Lines, line => !line.IsDeleted);
+        Assert.Equal(activeLineId, activeLine.Id);
+        Assert.Equal(10000m, activeLine.LineAmount);
+    }
+
+    [Fact]
     public async Task Push_RentalTransactionOnly_RecalculatesRentalSettlement()
     {
         var customerId = Guid.NewGuid();

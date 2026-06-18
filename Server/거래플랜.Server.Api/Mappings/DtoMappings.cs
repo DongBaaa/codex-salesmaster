@@ -1101,11 +1101,18 @@ public static class DtoMappings
             entity.OfficeCode,
             entity.ResponsibleOfficeCode);
         var lines = dto.Lines ?? [];
-        var totals = InvoiceVatModes.CalculateTotals(lines.Select(x => x.LineAmount), entity.VatMode);
+        var totals = InvoiceVatModes.CalculateTotals(
+            lines
+                .Where(line => !line.IsDeleted)
+                .Select(ResolveInvoiceLineAmount),
+            entity.VatMode);
         entity.TotalAmount = totals.TotalAmount;
         entity.SupplyAmount = totals.SupplyAmount;
         entity.VatAmount = totals.VatAmount;
     }
+
+    private static decimal ResolveInvoiceLineAmount(InvoiceLineDto line)
+        => line.LineAmount == 0 ? line.Quantity * line.UnitPrice : line.LineAmount;
 
     private static string NormalizeResponsibleOfficeCode(string? responsibleOfficeCode, string? ownerOfficeCode = null, string? fallbackOfficeCode = null)
         => OfficeCodeCatalog.NormalizeOfficeCodeLoose(responsibleOfficeCode, ownerOfficeCode, fallbackOfficeCode ?? OfficeCodeCatalog.Usenet);
