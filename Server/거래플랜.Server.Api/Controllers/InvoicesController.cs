@@ -353,7 +353,7 @@ public sealed class InvoicesController : ControllerBase
         entity.InstallLocation = line.InstallLocation;
         entity.RentalStartDate = line.RentalStartDate;
         entity.RentalEndDate = line.RentalEndDate;
-        entity.OrderIndex = line.OrderIndex > 0 ? line.OrderIndex : fallbackOrderIndex;
+        entity.OrderIndex = fallbackOrderIndex;
         entity.ItemTrackingType = ItemTrackingTypes.Normalize(line.ItemTrackingType);
         entity.IsDeleted = line.IsDeleted;
     }

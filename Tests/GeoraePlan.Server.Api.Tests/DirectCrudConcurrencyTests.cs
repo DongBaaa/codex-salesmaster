@@ -651,6 +651,91 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task InvoicesController_Create_RenumbersActiveLinesByPayloadOrder()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Invoice Line Order Customer",
+            NameMatchKey = "INVOICELINEORDERCUSTOMER",
+            TradeType = "매출"
+        };
+        dbContext.Customers.Add(customer);
+        await dbContext.SaveChangesAsync();
+
+        var invoiceId = Guid.NewGuid();
+        var firstPayloadLineId = Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff");
+        var secondPayloadLineId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var dto = new InvoiceDto
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            VoucherType = VoucherType.Sales,
+            VatMode = InvoiceVatModes.None,
+            InvoiceDate = new DateOnly(2026, 6, 20),
+            Lines =
+            [
+                new InvoiceLineDto
+                {
+                    Id = firstPayloadLineId,
+                    InvoiceId = invoiceId,
+                    ItemNameOriginal = "payload first",
+                    Unit = "EA",
+                    Quantity = 1m,
+                    UnitPrice = 1000m,
+                    LineAmount = 1000m,
+                    OrderIndex = 50
+                },
+                new InvoiceLineDto
+                {
+                    Id = secondPayloadLineId,
+                    InvoiceId = invoiceId,
+                    ItemNameOriginal = "payload second",
+                    Unit = "EA",
+                    Quantity = 1m,
+                    UnitPrice = 2000m,
+                    LineAmount = 2000m,
+                    OrderIndex = 50
+                }
+            ]
+        };
+
+        var controller = new InvoicesController(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
+
+        var response = await controller.Create(dto, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var created = Assert.IsType<InvoiceDto>(ok.Value);
+
+        Assert.Equal(new[] { "payload first", "payload second" }, created.Lines.Select(line => line.ItemNameOriginal).ToArray());
+        Assert.Equal(new[] { 1, 2 }, created.Lines.Select(line => line.OrderIndex).ToArray());
+
+        var storedLines = await dbContext.InvoiceLines
+            .AsNoTracking()
+            .Where(line => line.InvoiceId == invoiceId)
+            .OrderBy(line => line.OrderIndex)
+            .ToListAsync();
+        Assert.Equal(new[] { "payload first", "payload second" }, storedLines.Select(line => line.ItemNameOriginal).ToArray());
+        Assert.Equal(new[] { 1, 2 }, storedLines.Select(line => line.OrderIndex).ToArray());
+    }
+
+    [Fact]
     public async Task InvoicesController_Create_ForbidsOutOfScopeItemLine()
     {
         var currentUser = new TestCurrentUserContext

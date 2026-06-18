@@ -2433,7 +2433,14 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<LocalInvoice?> GetInvoiceAsync(Guid id, CancellationToken ct = default(CancellationToken))
 	{
-		return await _db.Invoices.Include((LocalInvoice i) => i.Lines.Where((LocalInvoiceLine l) => !l.IsDeleted)).Include((LocalInvoice i) => i.Payments.Where((LocalPayment p) => !p.IsDeleted)).AsSplitQuery().AsNoTracking()
+		return await _db.Invoices
+			.Include((LocalInvoice i) => i.Lines
+				.Where((LocalInvoiceLine l) => !l.IsDeleted)
+				.OrderBy((LocalInvoiceLine l) => l.OrderIndex > 0 ? l.OrderIndex : int.MaxValue)
+				.ThenBy((LocalInvoiceLine l) => l.Id))
+			.Include((LocalInvoice i) => i.Payments.Where((LocalPayment p) => !p.IsDeleted))
+			.AsSplitQuery()
+			.AsNoTracking()
 			.FirstOrDefaultAsync((LocalInvoice i) => i.Id == id, ct);
 	}
 
@@ -2459,7 +2466,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				: seed.VersionGroupId;
 
 		var latest = await _db.Invoices
-			.Include(invoice => invoice.Lines.Where(line => !line.IsDeleted))
+			.Include(invoice => invoice.Lines
+				.Where(line => !line.IsDeleted)
+				.OrderBy(line => line.OrderIndex > 0 ? line.OrderIndex : int.MaxValue)
+				.ThenBy(line => line.Id))
 			.Include(invoice => invoice.Payments.Where(payment => !payment.IsDeleted))
 			.AsSplitQuery()
 			.AsNoTracking()
@@ -6711,7 +6721,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			InstallLocation = (line.InstallLocation ?? string.Empty),
 			RentalStartDate = line.RentalStartDate,
 			RentalEndDate = line.RentalEndDate,
-			OrderIndex = line.OrderIndex > 0 ? line.OrderIndex : index + 1,
+			OrderIndex = index + 1,
 			ItemTrackingType = ItemTrackingTypes.Normalize(line.ItemTrackingType),
 			IsDeleted = false
 		}).ToList();

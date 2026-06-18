@@ -4422,6 +4422,89 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RenumbersActiveInvoiceLinesByPayloadOrder()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-LINE-ORDER-CUSTOMER",
+            NameMatchKey = "SYNCLINEORDERCUSTOMER",
+            TradeType = "매출"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var invoiceId = Guid.NewGuid();
+        var firstPayloadLineId = Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff");
+        var secondPayloadLineId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-invoice-line-order",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customer.Id,
+                    CustomerName = customer.NameOriginal,
+                    TenantCode = customer.TenantCode,
+                    OfficeCode = customer.OfficeCode,
+                    ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+                    VoucherType = VoucherType.Sales,
+                    VatMode = InvoiceVatModes.None,
+                    InvoiceDate = new DateOnly(2026, 6, 20),
+                    InvoiceNumber = "INV-SYNC-LINE-ORDER",
+                    Lines =
+                    [
+                        new InvoiceLineDto
+                        {
+                            Id = firstPayloadLineId,
+                            InvoiceId = invoiceId,
+                            ItemNameOriginal = "sync payload first",
+                            Unit = "EA",
+                            Quantity = 1m,
+                            UnitPrice = 1000m,
+                            LineAmount = 1000m,
+                            OrderIndex = 50
+                        },
+                        new InvoiceLineDto
+                        {
+                            Id = secondPayloadLineId,
+                            InvoiceId = invoiceId,
+                            ItemNameOriginal = "sync payload second",
+                            Unit = "EA",
+                            Quantity = 1m,
+                            UnitPrice = 2000m,
+                            LineAmount = 2000m,
+                            OrderIndex = 50
+                        }
+                    ],
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(1, result.AcceptedCount);
+
+        var storedLines = await _dbContext.InvoiceLines
+            .AsNoTracking()
+            .Where(line => line.InvoiceId == invoiceId)
+            .OrderBy(line => line.OrderIndex)
+            .ToListAsync();
+        Assert.Equal(new[] { "sync payload first", "sync payload second" }, storedLines.Select(line => line.ItemNameOriginal).ToArray());
+        Assert.Equal(new[] { 1, 2 }, storedLines.Select(line => line.OrderIndex).ToArray());
+    }
+
+    [Fact]
     public async Task Push_RentalTransactionOnly_RecalculatesRentalSettlement()
     {
         var customerId = Guid.NewGuid();

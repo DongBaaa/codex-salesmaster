@@ -120,6 +120,81 @@ public sealed class InvoiceSelfConflictAutoRebaseTests
         }
     }
 
+    [Fact]
+    public async Task SaveInvoiceAsync_RenumbersActiveLinesByCurrentListOrder()
+    {
+        PrepareAppRoot("georaeplan-invoice-line-order");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession("admin");
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var customerId = await SeedCustomerAsync(db);
+            var invoiceId = Guid.NewGuid();
+
+            var result = await service.SaveInvoiceAsync(
+                new LocalInvoice
+                {
+                    Id = invoiceId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = new DateOnly(2026, 6, 20),
+                    Lines =
+                    {
+                        new LocalInvoiceLine
+                        {
+                            ItemNameOriginal = "local payload first",
+                            ItemTrackingType = ItemTrackingTypes.NonStock,
+                            Unit = "EA",
+                            Quantity = 1m,
+                            UnitPrice = 1000m,
+                            LineAmount = 1000m,
+                            OrderIndex = 50
+                        },
+                        new LocalInvoiceLine
+                        {
+                            ItemNameOriginal = "local payload second",
+                            ItemTrackingType = ItemTrackingTypes.NonStock,
+                            Unit = "EA",
+                            Quantity = 1m,
+                            UnitPrice = 2000m,
+                            LineAmount = 2000m,
+                            OrderIndex = 50
+                        }
+                    }
+                },
+                new InvoiceSaveContext
+                {
+                    Username = "admin",
+                    Role = DomainConstants.RoleAdmin,
+                    OfficeCode = OfficeCodeCatalog.Usenet
+                },
+                session);
+
+            Assert.True(result.Success, result.Message);
+
+            var storedLines = await db.InvoiceLines
+                .AsNoTracking()
+                .Where(line => line.InvoiceId == result.SavedInvoiceId)
+                .OrderBy(line => line.OrderIndex)
+                .ToListAsync();
+            Assert.Equal(new[] { "local payload first", "local payload second" }, storedLines.Select(line => line.ItemNameOriginal).ToArray());
+            Assert.Equal(new[] { 1, 2 }, storedLines.Select(line => line.OrderIndex).ToArray());
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static LocalInvoice BuildInvoice(Guid invoiceId, Guid customerId, DateOnly invoiceDate, string memo)
         => new()
         {
