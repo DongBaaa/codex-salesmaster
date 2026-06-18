@@ -122,6 +122,14 @@ public sealed class IntegrityController : ControllerBase
             "Error",
             "업체 간 직접 재고이동 문서가 존재합니다.");
 
+        var inventoryTransferLineMissingTransferRowCount = _officeScopeService.HasGlobalDataScope
+            ? await _dbContext.InventoryTransferLines
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .CountAsync(line => !_dbContext.InventoryTransfers.IgnoreQueryFilters().Any(transfer => transfer.Id == line.TransferId), cancellationToken)
+            : 0;
+        AddIssue(issues, "inventory_transfer_line_missing_transfer_rows", inventoryTransferLineMissingTransferRowCount, "Error", "부모 재고이동 문서가 없는 재고이동 세부내역이 존재합니다.");
+
         var orphanWarehouseStockCount = await _dbContext.ItemWarehouseStocks
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -238,6 +246,15 @@ public sealed class IntegrityController : ControllerBase
             .CountAsync(attachment => !_dbContext.Transactions.IgnoreQueryFilters().Any(transaction => !transaction.IsDeleted && transaction.Id == attachment.TransactionId), cancellationToken);
         AddIssue(issues, "orphan_attachment_transaction_refs", orphanTransactionAttachmentCount, "Error", "거래내역이 없는 증빙 첨부가 존재합니다.");
 
+        var deletedTransactionAttachmentMissingTransactionRowCount = _officeScopeService.HasGlobalDataScope
+            ? await _dbContext.TransactionAttachments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(attachment => attachment.IsDeleted)
+                .CountAsync(attachment => !_dbContext.Transactions.IgnoreQueryFilters().Any(transaction => transaction.Id == attachment.TransactionId), cancellationToken)
+            : 0;
+        AddIssue(issues, "deleted_transaction_attachment_missing_transaction_rows", deletedTransactionAttachmentMissingTransactionRowCount, "Error", "영구 삭제된 거래내역의 삭제 첨부 잔여 행이 존재합니다.");
+
         var orphanPaymentAttachmentCount = await _dbContext.PaymentAttachments
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -251,6 +268,19 @@ public sealed class IntegrityController : ControllerBase
             .Where(attachment => attachment.IsDeleted)
             .CountAsync(attachment => !_dbContext.Payments.IgnoreQueryFilters().Any(payment => payment.Id == attachment.PaymentId), cancellationToken);
         AddIssue(issues, "deleted_payment_attachment_missing_payment_rows", deletedPaymentAttachmentMissingPaymentRowCount, "Error", "영구 삭제된 결제의 삭제 첨부 잔여 행이 존재합니다.");
+
+        var customerContractMissingCustomerRowCount = _officeScopeService.HasGlobalDataScope
+            ? await _dbContext.CustomerContracts
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .CountAsync(contract => !_dbContext.Customers.IgnoreQueryFilters().Any(customer => customer.Id == contract.CustomerId), cancellationToken)
+            : 0;
+        AddIssue(issues, "customer_contract_missing_customer_rows", customerContractMissingCustomerRowCount, "Error", "부모 거래처 행이 없는 계약/첨부가 존재합니다.");
+
+        var rentalBillingLogMissingProfileRowCount = await _officeScopeService.ApplyRentalBillingLogScope(
+                _dbContext.RentalBillingLogs.IgnoreQueryFilters().AsNoTracking())
+            .CountAsync(log => !_dbContext.RentalBillingProfiles.IgnoreQueryFilters().Any(profile => profile.Id == log.BillingProfileId), cancellationToken);
+        AddIssue(issues, "rental_billing_log_missing_profile_rows", rentalBillingLogMissingProfileRowCount, "Error", "부모 청구 프로필 행이 없는 렌탈 청구 로그가 존재합니다.");
 
         var fileStorageIssueCandidates = await LoadFileStorageIssueCandidatesAsync(cancellationToken);
         AddIssue(
@@ -333,6 +363,7 @@ public sealed class IntegrityController : ControllerBase
             "ambiguous_shared_item_tenant_scope" => await LoadSharedItemScopeConflictDetailsAsync(cancellationToken),
             "deleted_item_stock_residue" => await LoadDeletedItemStockResidueDetailsAsync(cancellationToken),
             "cross_tenant_inventory_transfers" => await LoadCrossTenantInventoryTransferDetailsAsync(cancellationToken),
+            "inventory_transfer_line_missing_transfer_rows" => await LoadInventoryTransferLineMissingTransferRowDetailsAsync(cancellationToken),
             "orphan_item_warehouse_stock_refs" => await LoadOrphanItemWarehouseStockDetailsAsync(cancellationToken),
             "item_stock_snapshot_mismatch" => await LoadItemStockSnapshotMismatchDetailsAsync(cancellationToken),
             "orphan_invoice_customer_refs" => await LoadOrphanInvoiceCustomerDetailsAsync(cancellationToken),
@@ -351,8 +382,11 @@ public sealed class IntegrityController : ControllerBase
             "orphan_payment_invoice_refs" => await LoadOrphanPaymentInvoiceDetailsAsync(cancellationToken),
             "deleted_payment_missing_invoice_rows" => await LoadDeletedPaymentMissingInvoiceRowDetailsAsync(cancellationToken),
             "orphan_attachment_transaction_refs" => await LoadOrphanTransactionAttachmentDetailsAsync(cancellationToken),
+            "deleted_transaction_attachment_missing_transaction_rows" => await LoadDeletedTransactionAttachmentMissingTransactionRowDetailsAsync(cancellationToken),
             "orphan_payment_attachment_refs" => await LoadOrphanPaymentAttachmentDetailsAsync(cancellationToken),
             "deleted_payment_attachment_missing_payment_rows" => await LoadDeletedPaymentAttachmentMissingPaymentRowDetailsAsync(cancellationToken),
+            "customer_contract_missing_customer_rows" => await LoadCustomerContractMissingCustomerRowDetailsAsync(cancellationToken),
+            "rental_billing_log_missing_profile_rows" => await LoadRentalBillingLogMissingProfileRowDetailsAsync(cancellationToken),
             "file_content_unavailable" => await LoadFileContentUnavailableDetailsAsync(cancellationToken),
             "file_content_db_residue" => await LoadFileContentDbResidueDetailsAsync(cancellationToken),
             "file_storage_missing" => await LoadStoredFileMissingDetailsAsync(cancellationToken),
@@ -602,6 +636,39 @@ public sealed class IntegrityController : ControllerBase
                     string.IsNullOrWhiteSpace(row.Transfer.TransferStatus) ? null : $"상태 {row.Transfer.TransferStatus}",
                     $"창고 {NormalizeCellText(row.Transfer.FromWarehouseCode)} → {NormalizeCellText(row.Transfer.ToWarehouseCode)}",
                     string.IsNullOrWhiteSpace(row.Transfer.Memo) ? null : $"메모 {row.Transfer.Memo}")))
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadInventoryTransferLineMissingTransferRowDetailsAsync(CancellationToken cancellationToken)
+    {
+        if (!_officeScopeService.HasGlobalDataScope)
+            return [];
+
+        var lines = await (
+                from line in _dbContext.InventoryTransferLines.IgnoreQueryFilters().AsNoTracking()
+                join transfer in _dbContext.InventoryTransfers.IgnoreQueryFilters().AsNoTracking()
+                    on line.TransferId equals transfer.Id into transferGroup
+                from transfer in transferGroup.DefaultIfEmpty()
+                where transfer == null
+                orderby line.TransferId, line.ItemNameOriginal, line.Id
+                select line)
+            .ToListAsync(cancellationToken);
+
+        return lines
+            .Select(line => CreateDetailRow(
+                entityType: "재고이동 세부내역",
+                entityIdText: FormatGuid(line.Id),
+                primaryText: FirstNonEmpty(line.ItemNameOriginal, FormatGuid(line.Id)),
+                secondaryText: CombineParts(line.SpecificationOriginal, line.Unit),
+                referenceText: $"누락 재고이동 {FormatGuid(line.TransferId)}",
+                scopeText: "공통",
+                detailText: CombineParts(
+                    line.IsDeleted ? "삭제상태 삭제" : "삭제상태 활성",
+                    $"요청수량 {FormatNumber(line.Quantity)}",
+                    line.ReceivedQuantity.HasValue ? $"수령수량 {FormatNumber(line.ReceivedQuantity.Value)}" : null,
+                    line.QuantityDifference.HasValue ? $"차이 {FormatNumber(line.QuantityDifference.Value)}" : null,
+                    string.IsNullOrWhiteSpace(line.Remark) ? null : $"비고 {line.Remark}",
+                    string.IsNullOrWhiteSpace(line.ReceiptRemark) ? null : $"수령비고 {line.ReceiptRemark}")))
             .ToList();
     }
 
@@ -1355,6 +1422,37 @@ public sealed class IntegrityController : ControllerBase
             .ToList();
     }
 
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadDeletedTransactionAttachmentMissingTransactionRowDetailsAsync(CancellationToken cancellationToken)
+    {
+        if (!_officeScopeService.HasGlobalDataScope)
+            return [];
+
+        var attachments = await (
+                from attachment in _dbContext.TransactionAttachments.IgnoreQueryFilters().AsNoTracking().Where(current => current.IsDeleted)
+                join transaction in _dbContext.Transactions.IgnoreQueryFilters().AsNoTracking()
+                    on attachment.TransactionId equals transaction.Id into transactionGroup
+                from transaction in transactionGroup.DefaultIfEmpty()
+                where transaction == null
+                orderby attachment.UploadedAtUtc, attachment.Id
+                select attachment)
+            .ToListAsync(cancellationToken);
+
+        return attachments
+            .Select(attachment => CreateDetailRow(
+                entityType: "삭제 거래첨부",
+                entityIdText: FormatGuid(attachment.Id),
+                primaryText: FirstNonEmpty(attachment.FileName, FormatGuid(attachment.Id)),
+                secondaryText: CombineParts(attachment.AttachmentType, attachment.Description),
+                referenceText: $"누락 거래 행 {FormatGuid(attachment.TransactionId)}",
+                scopeText: $"업로드 {FormatUtcDateTime(attachment.UploadedAtUtc)}",
+                detailText: CombineParts(
+                    "삭제상태 삭제",
+                    string.IsNullOrWhiteSpace(attachment.VerificationStatus) ? null : $"검증상태 {attachment.VerificationStatus}",
+                    attachment.FileSize > 0 ? $"크기 {attachment.FileSize:N0} bytes" : null,
+                    string.IsNullOrWhiteSpace(attachment.StoragePath) ? null : $"경로 {attachment.StoragePath}")))
+            .ToList();
+    }
+
     private async Task<List<IntegrityIssueDetailRowDto>> LoadOrphanPaymentAttachmentDetailsAsync(CancellationToken cancellationToken)
     {
         var attachments = await (
@@ -1405,6 +1503,65 @@ public sealed class IntegrityController : ControllerBase
                     "삭제상태 삭제",
                     attachment.FileSize > 0 ? $"크기 {attachment.FileSize:N0} bytes" : null,
                     string.IsNullOrWhiteSpace(attachment.StoragePath) ? null : $"경로 {attachment.StoragePath}")))
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadCustomerContractMissingCustomerRowDetailsAsync(CancellationToken cancellationToken)
+    {
+        if (!_officeScopeService.HasGlobalDataScope)
+            return [];
+
+        var contracts = await (
+                from contract in _dbContext.CustomerContracts.IgnoreQueryFilters().AsNoTracking()
+                join customer in _dbContext.Customers.IgnoreQueryFilters().AsNoTracking()
+                    on contract.CustomerId equals customer.Id into customerGroup
+                from customer in customerGroup.DefaultIfEmpty()
+                where customer == null
+                orderby contract.UploadedAtUtc, contract.Id
+                select contract)
+            .ToListAsync(cancellationToken);
+
+        return contracts
+            .Select(contract => CreateDetailRow(
+                entityType: "거래처계약서",
+                entityIdText: FormatGuid(contract.Id),
+                primaryText: FirstNonEmpty(contract.FileName, FormatGuid(contract.Id)),
+                secondaryText: CombineParts(contract.ContractType, contract.Description),
+                referenceText: $"누락 거래처 행 {FormatGuid(contract.CustomerId)}",
+                scopeText: $"업로드 {FormatUtcDateTime(contract.UploadedAtUtc)}",
+                detailText: CombineParts(
+                    contract.IsDeleted ? "삭제상태 삭제" : "삭제상태 활성",
+                    contract.IsPrimary ? "대표 계약" : null,
+                    contract.FileSize > 0 ? $"크기 {contract.FileSize:N0} bytes" : null,
+                    string.IsNullOrWhiteSpace(contract.StoragePath) ? null : $"경로 {contract.StoragePath}")))
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalBillingLogMissingProfileRowDetailsAsync(CancellationToken cancellationToken)
+    {
+        var logs = await (
+                from log in _officeScopeService.ApplyRentalBillingLogScope(_dbContext.RentalBillingLogs.IgnoreQueryFilters().AsNoTracking())
+                join profile in _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking()
+                    on log.BillingProfileId equals profile.Id into profileGroup
+                from profile in profileGroup.DefaultIfEmpty()
+                where profile == null
+                orderby log.BillingYearMonth, log.ScheduledDate, log.Id
+                select log)
+            .ToListAsync(cancellationToken);
+
+        return logs
+            .Select(log => CreateDetailRow(
+                entityType: "렌탈 청구로그",
+                entityIdText: FormatGuid(log.Id),
+                primaryText: FirstNonEmpty(log.BillingYearMonth, FormatGuid(log.Id)),
+                secondaryText: CombineParts(log.Status, $"청구 {FormatMoney(log.BilledAmount)}"),
+                referenceText: $"누락 청구프로필 행 {FormatGuid(log.BillingProfileId)}",
+                scopeText: FormatScope(log.TenantCode, log.OfficeCode, log.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    log.IsDeleted ? "삭제상태 삭제" : "삭제상태 활성",
+                    $"예정일 {FormatDate(log.ScheduledDate)}",
+                    log.ProcessedDate.HasValue ? $"처리일 {FormatDate(log.ProcessedDate.Value)}" : null,
+                    string.IsNullOrWhiteSpace(log.Note) ? null : $"비고 {log.Note}")))
             .ToList();
     }
 
@@ -2125,6 +2282,7 @@ public sealed class IntegrityController : ControllerBase
             "ambiguous_shared_item_tenant_scope" => new IntegrityIssueDefinition("ambiguous_shared_item_tenant_scope", "Warning", "공용(ALL) 품목 중 사용 이력이 서로 다른 업체로 섞여 tenant 자동 보정이 보류된 항목이 있습니다."),
             "deleted_item_stock_residue" => new IntegrityIssueDefinition("deleted_item_stock_residue", "Error", "삭제된 품목에 현재재고 또는 창고 재고 행이 남아 있습니다."),
             "cross_tenant_inventory_transfers" => new IntegrityIssueDefinition("cross_tenant_inventory_transfers", "Error", "업체 간 직접 재고이동 문서가 존재합니다."),
+            "inventory_transfer_line_missing_transfer_rows" => new IntegrityIssueDefinition("inventory_transfer_line_missing_transfer_rows", "Error", "부모 재고이동 문서가 없는 재고이동 세부내역이 존재합니다."),
             "orphan_item_warehouse_stock_refs" => new IntegrityIssueDefinition("orphan_item_warehouse_stock_refs", "Error", "품목이 없는 창고 재고 행이 존재합니다."),
             "item_stock_snapshot_mismatch" => new IntegrityIssueDefinition("item_stock_snapshot_mismatch", "Warning", "품목 현재재고와 창고 합계가 일치하지 않는 항목이 있습니다."),
             "orphan_invoice_customer_refs" => new IntegrityIssueDefinition("orphan_invoice_customer_refs", "Error", "거래처가 없는 전표 참조가 존재합니다."),
@@ -2143,8 +2301,11 @@ public sealed class IntegrityController : ControllerBase
             "orphan_payment_invoice_refs" => new IntegrityIssueDefinition("orphan_payment_invoice_refs", "Error", "전표가 없는 수금/지급 참조가 존재합니다."),
             "deleted_payment_missing_invoice_rows" => new IntegrityIssueDefinition("deleted_payment_missing_invoice_rows", "Error", "영구 삭제된 전표의 삭제 결제 잔여 행이 존재합니다."),
             "orphan_attachment_transaction_refs" => new IntegrityIssueDefinition("orphan_attachment_transaction_refs", "Error", "거래내역이 없는 증빙 첨부가 존재합니다."),
+            "deleted_transaction_attachment_missing_transaction_rows" => new IntegrityIssueDefinition("deleted_transaction_attachment_missing_transaction_rows", "Error", "영구 삭제된 거래내역의 삭제 첨부 잔여 행이 존재합니다."),
             "orphan_payment_attachment_refs" => new IntegrityIssueDefinition("orphan_payment_attachment_refs", "Error", "결제내역이 없는 결제 첨부가 존재합니다."),
             "deleted_payment_attachment_missing_payment_rows" => new IntegrityIssueDefinition("deleted_payment_attachment_missing_payment_rows", "Error", "영구 삭제된 결제의 삭제 첨부 잔여 행이 존재합니다."),
+            "customer_contract_missing_customer_rows" => new IntegrityIssueDefinition("customer_contract_missing_customer_rows", "Error", "부모 거래처 행이 없는 계약/첨부가 존재합니다."),
+            "rental_billing_log_missing_profile_rows" => new IntegrityIssueDefinition("rental_billing_log_missing_profile_rows", "Error", "부모 청구 프로필 행이 없는 렌탈 청구 로그가 존재합니다."),
             "file_content_unavailable" => new IntegrityIssueDefinition("file_content_unavailable", "Error", "파일 크기는 있으나 저장소 경로와 DB 파일 본문이 모두 비어 있는 첨부/계약서가 있습니다."),
             "file_content_db_residue" => new IntegrityIssueDefinition("file_content_db_residue", "Warning", "파일 본문이 DB에 남아 저장소 이동이 완료되지 않은 첨부/계약서가 있습니다."),
             "file_storage_missing" => new IntegrityIssueDefinition("file_storage_missing", "Error", "저장소 경로가 있으나 실제 저장 파일을 읽을 수 없는 첨부/계약서가 있습니다."),

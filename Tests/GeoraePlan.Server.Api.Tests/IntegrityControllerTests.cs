@@ -308,6 +308,185 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FlagsRemainingChildRowsWithHardMissingParentRows()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        var missingTransactionId = Guid.NewGuid();
+        var transactionAttachmentId = Guid.NewGuid();
+        var missingCustomerId = Guid.NewGuid();
+        var contractId = Guid.NewGuid();
+        var missingProfileId = Guid.NewGuid();
+        var billingLogId = Guid.NewGuid();
+        var missingTransferId = Guid.NewGuid();
+        var transferLineId = Guid.NewGuid();
+
+        await dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
+        dbContext.TransactionAttachments.Add(new TransactionAttachment
+        {
+            Id = transactionAttachmentId,
+            TransactionId = missingTransactionId,
+            FileName = "deleted-transaction-attachment.pdf",
+            AttachmentType = "증빙",
+            FileSize = 256,
+            StoragePath = "attachments/transactions/deleted-transaction-attachment.pdf",
+            IsDeleted = true
+        });
+        dbContext.CustomerContracts.Add(new CustomerContract
+        {
+            Id = contractId,
+            CustomerId = missingCustomerId,
+            ContractType = "거래계약서",
+            FileName = "missing-customer-contract.pdf",
+            FileSize = 512,
+            StoragePath = "contracts/missing-customer-contract.pdf"
+        });
+        dbContext.RentalBillingLogs.Add(new RentalBillingLog
+        {
+            Id = billingLogId,
+            BillingProfileId = missingProfileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            BillingYearMonth = "2026-06",
+            ScheduledDate = new DateOnly(2026, 6, 25),
+            Status = "예정",
+            BilledAmount = 77000m
+        });
+        dbContext.InventoryTransferLines.Add(new InventoryTransferLine
+        {
+            Id = transferLineId,
+            TransferId = missingTransferId,
+            ItemNameOriginal = "Missing Transfer Item",
+            SpecificationOriginal = "A4",
+            Unit = "대",
+            Quantity = 3m,
+            ReceivedQuantity = 1m,
+            QuantityDifference = -2m,
+            Remark = "missing transfer"
+        });
+        await dbContext.SaveChangesAsync();
+        await dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issues = payload.Issues.ToDictionary(issue => issue.Code, StringComparer.OrdinalIgnoreCase);
+
+        Assert.Equal(1, issues["deleted_transaction_attachment_missing_transaction_rows"].Count);
+        Assert.Equal(1, issues["customer_contract_missing_customer_rows"].Count);
+        Assert.Equal(1, issues["rental_billing_log_missing_profile_rows"].Count);
+        Assert.Equal(1, issues["inventory_transfer_line_missing_transfer_rows"].Count);
+
+        var transactionAttachmentDetails = await GetSingleDetailRowAsync(controller, "deleted_transaction_attachment_missing_transaction_rows");
+        Assert.Equal("삭제 거래첨부", transactionAttachmentDetails.EntityType);
+        Assert.Equal(FormatGuidForTest(transactionAttachmentId), transactionAttachmentDetails.EntityIdText);
+        Assert.Contains(FormatGuidForTest(missingTransactionId), transactionAttachmentDetails.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains("삭제상태 삭제", transactionAttachmentDetails.DetailText, StringComparison.Ordinal);
+
+        var contractDetails = await GetSingleDetailRowAsync(controller, "customer_contract_missing_customer_rows");
+        Assert.Equal("거래처계약서", contractDetails.EntityType);
+        Assert.Equal(FormatGuidForTest(contractId), contractDetails.EntityIdText);
+        Assert.Contains(FormatGuidForTest(missingCustomerId), contractDetails.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains("missing-customer-contract.pdf", contractDetails.PrimaryText, StringComparison.Ordinal);
+
+        var billingLogDetails = await GetSingleDetailRowAsync(controller, "rental_billing_log_missing_profile_rows");
+        Assert.Equal("렌탈 청구로그", billingLogDetails.EntityType);
+        Assert.Equal(FormatGuidForTest(billingLogId), billingLogDetails.EntityIdText);
+        Assert.Contains(FormatGuidForTest(missingProfileId), billingLogDetails.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains("청구 77,000", billingLogDetails.SecondaryText, StringComparison.Ordinal);
+
+        var transferLineDetails = await GetSingleDetailRowAsync(controller, "inventory_transfer_line_missing_transfer_rows");
+        Assert.Equal("재고이동 세부내역", transferLineDetails.EntityType);
+        Assert.Equal(FormatGuidForTest(transferLineId), transferLineDetails.EntityIdText);
+        Assert.Contains(FormatGuidForTest(missingTransferId), transferLineDetails.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains("요청수량 3", transferLineDetails.DetailText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetReport_DoesNotExposeUnscopableHardMissingChildRowsToOfficeScopedUsers()
+    {
+        var currentUser = CreateOfficeScopedUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        var missingTransactionId = Guid.NewGuid();
+        var transactionAttachmentId = Guid.NewGuid();
+        var missingCustomerId = Guid.NewGuid();
+        var contractId = Guid.NewGuid();
+        var missingProfileId = Guid.NewGuid();
+        var billingLogId = Guid.NewGuid();
+        var missingTransferId = Guid.NewGuid();
+        var transferLineId = Guid.NewGuid();
+
+        await dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
+        dbContext.TransactionAttachments.Add(new TransactionAttachment
+        {
+            Id = transactionAttachmentId,
+            TransactionId = missingTransactionId,
+            FileName = "deleted-transaction-attachment.pdf",
+            AttachmentType = "evidence",
+            FileSize = 256,
+            IsDeleted = true
+        });
+        dbContext.CustomerContracts.Add(new CustomerContract
+        {
+            Id = contractId,
+            CustomerId = missingCustomerId,
+            ContractType = "contract",
+            FileName = "missing-customer-contract.pdf",
+            FileSize = 512
+        });
+        dbContext.RentalBillingLogs.Add(new RentalBillingLog
+        {
+            Id = billingLogId,
+            BillingProfileId = missingProfileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            BillingYearMonth = "2026-06",
+            ScheduledDate = new DateOnly(2026, 6, 25),
+            Status = "scheduled",
+            BilledAmount = 77000m
+        });
+        dbContext.InventoryTransferLines.Add(new InventoryTransferLine
+        {
+            Id = transferLineId,
+            TransferId = missingTransferId,
+            ItemNameOriginal = "Missing Transfer Item",
+            Unit = "EA",
+            Quantity = 3m
+        });
+        await dbContext.SaveChangesAsync();
+        await dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+
+        Assert.DoesNotContain(payload.Issues, issue => issue.Code == "deleted_transaction_attachment_missing_transaction_rows");
+        Assert.DoesNotContain(payload.Issues, issue => issue.Code == "customer_contract_missing_customer_rows");
+        Assert.DoesNotContain(payload.Issues, issue => issue.Code == "inventory_transfer_line_missing_transfer_rows");
+        var rentalLogIssue = Assert.Single(payload.Issues, issue => issue.Code == "rental_billing_log_missing_profile_rows");
+        Assert.Equal(1, rentalLogIssue.Count);
+
+        foreach (var code in new[]
+        {
+            "deleted_transaction_attachment_missing_transaction_rows",
+            "customer_contract_missing_customer_rows",
+            "inventory_transfer_line_missing_transfer_rows"
+        })
+        {
+            var detailResponse = await controller.GetReportDetails(code, CancellationToken.None);
+            var detailOk = Assert.IsType<OkObjectResult>(detailResponse.Result);
+            var detailPayload = Assert.IsType<IntegrityIssueDetailResultDto>(detailOk.Value);
+            Assert.Empty(detailPayload.Rows);
+        }
+    }
+
+    [Fact]
     public async Task GetReport_FlagsDeletedPaymentResiduesWithHardMissingParents()
     {
         var currentUser = CreateAdminUser();
@@ -1550,6 +1729,14 @@ public sealed class IntegrityControllerTests : IDisposable
             Options.Create(new CentralFileStorageOptions { RootPath = _fileStorageRoot }),
             new TestHostEnvironment());
 
+    private static async Task<IntegrityIssueDetailRowDto> GetSingleDetailRowAsync(IntegrityController controller, string code)
+    {
+        var response = await controller.GetReportDetails(code, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityIssueDetailResultDto>(ok.Value);
+        return Assert.Single(payload.Rows);
+    }
+
     private static TestCurrentUserContext CreateAdminUser()
         => new()
         {
@@ -1558,6 +1745,16 @@ public sealed class IntegrityControllerTests : IDisposable
             OfficeCode = OfficeCodeCatalog.Usenet,
             ScopeType = TenantScopeCatalog.ScopeAdmin,
             IsAdmin = true
+        };
+
+    private static TestCurrentUserContext CreateOfficeScopedUser()
+        => new()
+        {
+            Username = "office-user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            IsAdmin = false
         };
 
     private static string FormatGuidForTest(Guid value)

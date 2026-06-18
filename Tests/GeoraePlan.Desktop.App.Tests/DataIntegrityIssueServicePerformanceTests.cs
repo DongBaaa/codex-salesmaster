@@ -342,6 +342,119 @@ public sealed class DataIntegrityIssueServicePerformanceTests
         }
     }
 
+
+    [Fact]
+    public async Task ScanAsync_FindsRemainingChildRowsWhoseParentRowsAreHardMissing()
+    {
+        PrepareAppRoot("georaeplan-integrity-remaining-child-parent-missing");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var missingCustomerId = Guid.NewGuid();
+            var customerContractId = Guid.NewGuid();
+            var missingTransactionId = Guid.NewGuid();
+            var transactionAttachmentId = Guid.NewGuid();
+            var missingBillingProfileId = Guid.NewGuid();
+            var rentalBillingLogId = Guid.NewGuid();
+            var missingTransferId = Guid.NewGuid();
+            var transferLineId = Guid.NewGuid();
+
+            await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
+            db.CustomerContracts.Add(new LocalCustomerContract
+            {
+                Id = customerContractId,
+                CustomerId = missingCustomerId,
+                ContractType = "contract",
+                FileName = "missing-customer-contract.pdf",
+                FileSize = 512,
+                IsDeleted = false,
+                IsDirty = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            db.TransactionAttachments.Add(new LocalTransactionAttachment
+            {
+                Id = transactionAttachmentId,
+                TransactionId = missingTransactionId,
+                AttachmentType = "evidence",
+                FileName = "missing-transaction-attachment.pdf",
+                FileSize = 256,
+                IsDeleted = true,
+                IsDirty = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            db.RentalBillingLogs.Add(new LocalRentalBillingLog
+            {
+                Id = rentalBillingLogId,
+                BillingProfileId = missingBillingProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                BillingYearMonth = "2026-06",
+                ScheduledDate = new DateOnly(2026, 6, 25),
+                Status = "scheduled",
+                BilledAmount = 77000m,
+                IsDeleted = false,
+                IsDirty = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            db.InventoryTransferLines.Add(new LocalInventoryTransferLine
+            {
+                Id = transferLineId,
+                TransferId = missingTransferId,
+                ItemNameOriginal = "Missing Transfer Item",
+                SpecificationOriginal = "A4",
+                Unit = "EA",
+                Quantity = 3m,
+                ReceivedQuantity = 1m,
+                QuantityDifference = -2m,
+                Remark = "missing transfer",
+                IsDeleted = false
+            });
+            await db.SaveChangesAsync();
+            await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateAdminSession());
+            var issuesByCode = result.Issues.ToLookup(issue => issue.Code, StringComparer.OrdinalIgnoreCase);
+
+            var customerContractIssue = Assert.Single(issuesByCode[DataIntegrityIssueCodes.CustomerContractMissingCustomerReference]);
+            Assert.Equal(customerContractId, customerContractIssue.EntityId);
+            Assert.Contains(missingCustomerId.ToString("D"), customerContractIssue.CurrentValue, StringComparison.Ordinal);
+            Assert.Contains("missing-customer-contract.pdf", customerContractIssue.CurrentValue, StringComparison.Ordinal);
+            Assert.Equal(DataIntegrityDirectActionKind.OpenSyncDiagnostics, customerContractIssue.DirectActionKind);
+
+            var transactionAttachmentIssue = Assert.Single(issuesByCode[DataIntegrityIssueCodes.TransactionAttachmentMissingTransactionReference]);
+            Assert.Equal(transactionAttachmentId, transactionAttachmentIssue.EntityId);
+            Assert.Contains(missingTransactionId.ToString("D"), transactionAttachmentIssue.CurrentValue, StringComparison.Ordinal);
+            Assert.Contains("missing-transaction-attachment.pdf", transactionAttachmentIssue.CurrentValue, StringComparison.Ordinal);
+            Assert.Equal(DataIntegrityDirectActionKind.OpenSyncDiagnostics, transactionAttachmentIssue.DirectActionKind);
+
+            var rentalBillingLogIssue = Assert.Single(issuesByCode[DataIntegrityIssueCodes.RentalBillingLogMissingProfileReference]);
+            Assert.Equal(rentalBillingLogId, rentalBillingLogIssue.EntityId);
+            Assert.Contains(missingBillingProfileId.ToString("D"), rentalBillingLogIssue.CurrentValue, StringComparison.Ordinal);
+            Assert.Contains("2026-06", rentalBillingLogIssue.CurrentValue, StringComparison.Ordinal);
+            Assert.Equal(DataIntegrityDirectActionKind.OpenSyncDiagnostics, rentalBillingLogIssue.DirectActionKind);
+
+            var transferLineIssue = Assert.Single(issuesByCode[DataIntegrityIssueCodes.InventoryTransferLineMissingTransferReference]);
+            Assert.Equal(transferLineId, transferLineIssue.EntityId);
+            Assert.Equal("Missing Transfer Item", transferLineIssue.ItemName);
+            Assert.Contains(missingTransferId.ToString("D"), transferLineIssue.CurrentValue, StringComparison.Ordinal);
+            Assert.Contains("3.00", transferLineIssue.CurrentValue, StringComparison.Ordinal);
+            Assert.Equal(DataIntegrityDirectActionKind.OpenSyncDiagnostics, transferLineIssue.DirectActionKind);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     [Fact]
     public async Task ScanAsync_PrefiltersMasterDataSourceLoadByOperationalScope()
     {

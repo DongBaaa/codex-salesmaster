@@ -40,10 +40,14 @@ public static class DataIntegrityIssueCodes
     public const string CustomerDuplicateCandidate = "customer_duplicate_candidate";
     public const string ItemDuplicateCandidate = "item_duplicate_candidate";
     public const string WarehouseDuplicateCandidate = "warehouse_duplicate_candidate";
+    public const string CustomerContractMissingCustomerReference = "customer_contract_missing_customer_reference";
     public const string InvoiceAmountMismatch = "invoice_amount_mismatch";
     public const string InvoiceOverSettled = "invoice_over_settled";
     public const string InvoiceLineMissingInvoiceReference = "invoice_line_missing_invoice_reference";
     public const string PaymentMissingInvoiceReference = "payment_missing_invoice_reference";
+    public const string TransactionAttachmentMissingTransactionReference = "transaction_attachment_missing_transaction_reference";
+    public const string RentalBillingLogMissingProfileReference = "rental_billing_log_missing_profile_reference";
+    public const string InventoryTransferLineMissingTransferReference = "inventory_transfer_line_missing_transfer_reference";
     public const string InventoryDeletedItemStockResidue = "inventory_deleted_item_stock_residue";
     public const string InventoryStockSnapshotMismatch = "inventory_stock_snapshot_mismatch";
     public const string InventoryWarehouseReferenceMissing = "inventory_warehouse_reference_missing";
@@ -324,6 +328,13 @@ public sealed class DataIntegrityIssueService
             "다중창고",
             "같은 담당지점 안에 창고 코드 또는 창고명이 중복된 후보가 있습니다.",
             "창고별 재고를 확인한 뒤 실제 같은 창고만 정리하세요."),
+        [DataIntegrityIssueCodes.CustomerContractMissingCustomerReference] = new(
+            DataIntegrityIssueCodes.CustomerContractMissingCustomerReference,
+            "계약/첨부 거래처 참조 누락",
+            "Error",
+            "거래처",
+            "거래처 계약/첨부 행이 현재 로컬 DB에 존재하지 않는 거래처 ID를 참조합니다.",
+            "동기화 진단에서 서버 상태와 휴지통 영구삭제 이력을 확인한 뒤 계약/첨부 잔여 행을 정리하세요."),
         [DataIntegrityIssueCodes.InvoiceAmountMismatch] = new(
             DataIntegrityIssueCodes.InvoiceAmountMismatch,
             "전표 금액 계산 불일치",
@@ -352,6 +363,27 @@ public sealed class DataIntegrityIssueService
             "회계경리",
             "수금/지급 행이 현재 로컬 DB에 존재하지 않는 전표 ID를 참조합니다.",
             "동기화 진단에서 서버 상태와 휴지통 영구삭제 이력을 확인한 뒤 결제 잔여 행을 정리하세요."),
+        [DataIntegrityIssueCodes.TransactionAttachmentMissingTransactionReference] = new(
+            DataIntegrityIssueCodes.TransactionAttachmentMissingTransactionReference,
+            "거래첨부 거래내역 참조 누락",
+            "Error",
+            "회계경리",
+            "거래첨부 행이 현재 로컬 DB에 존재하지 않는 거래내역 ID를 참조합니다.",
+            "동기화 진단에서 서버 상태와 휴지통 영구삭제 이력을 확인한 뒤 거래첨부 잔여 행을 정리하세요."),
+        [DataIntegrityIssueCodes.RentalBillingLogMissingProfileReference] = new(
+            DataIntegrityIssueCodes.RentalBillingLogMissingProfileReference,
+            "청구로그 청구 프로필 참조 누락",
+            "Error",
+            "렌탈 청구",
+            "렌탈 청구 로그가 현재 로컬 DB에 존재하지 않는 청구 프로필 ID를 참조합니다.",
+            "청구관리와 동기화 진단에서 해당 청구월의 프로필/전표/입금 연결을 확인하세요."),
+        [DataIntegrityIssueCodes.InventoryTransferLineMissingTransferReference] = new(
+            DataIntegrityIssueCodes.InventoryTransferLineMissingTransferReference,
+            "재고이동 세부내역 문서 참조 누락",
+            "Error",
+            "재고",
+            "재고이동 세부내역 행이 현재 로컬 DB에 존재하지 않는 재고이동 문서 ID를 참조합니다.",
+            "동기화 진단에서 서버 상태와 재고이동 영구삭제 이력을 확인한 뒤 세부내역 잔여 행을 정리하세요."),
         [DataIntegrityIssueCodes.InventoryDeletedItemStockResidue] = new(
             DataIntegrityIssueCodes.InventoryDeletedItemStockResidue,
             "삭제 품목 재고 잔여",
@@ -576,6 +608,14 @@ public sealed class DataIntegrityIssueService
             "Integrity scan payment missing invoice references",
             stepStopwatch,
             $"issues={paymentMissingInvoiceIssues.Count:N0}");
+
+        stepStopwatch.Restart();
+        var hardMissingChildReferenceIssues = await LoadHardMissingChildReferenceIssuesAsync(session, ct);
+        details.AddRange(hardMissingChildReferenceIssues);
+        LogIntegrityScanStep(
+            "Integrity scan hard-missing child references",
+            stepStopwatch,
+            $"issues={hardMissingChildReferenceIssues.Count:N0}");
 
         stepStopwatch.Restart();
         foreach (var history in scopedAssignmentHistories)
@@ -1605,6 +1645,114 @@ public sealed class DataIntegrityIssueService
                 currentValue: $"InvoiceId {payment.InvoiceId:D} / 금액 {payment.Amount:N0} / 삭제상태 {deletionState}",
                 expectedValue: "참조 전표 행 존재",
                 message: $"{payment.PaymentDate:yyyy-MM-dd} 수금/지급 {payment.Id:N}의 전표 참조가 현재 로컬 DB에 없습니다.",
+                directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
+        }
+
+        return issues;
+    }
+
+    private async Task<List<DataIntegrityIssueDetail>> LoadHardMissingChildReferenceIssuesAsync(SessionState session, CancellationToken ct)
+    {
+        var issues = new List<DataIntegrityIssueDetail>();
+        var fallbackOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, DomainConstants.OfficeUsenet);
+
+        if (session.HasAdministrativePrivileges)
+        {
+            var contracts = await (
+                    from contract in _db.CustomerContracts.IgnoreQueryFilters().AsNoTracking()
+                    join customer in _db.Customers.IgnoreQueryFilters().AsNoTracking()
+                        on contract.CustomerId equals customer.Id into customerGroup
+                    from customer in customerGroup.DefaultIfEmpty()
+                    where customer == null
+                    orderby contract.UploadedAtUtc, contract.Id
+                    select contract)
+                .ToListAsync(ct);
+
+            foreach (var contract in contracts)
+            {
+                AddGeneralIssue(
+                    issues,
+                    DataIntegrityIssueCodes.CustomerContractMissingCustomerReference,
+                    entityType: "거래처 계약/첨부",
+                    entityId: contract.Id,
+                    officeCode: fallbackOfficeCode,
+                    currentValue: $"CustomerId {contract.CustomerId:D} / 파일 {NormalizeDisplay(contract.FileName, "파일명 없음")} / 삭제상태 {(contract.IsDeleted ? "삭제" : "활성")}",
+                    expectedValue: "참조 거래처 행 존재",
+                    message: $"{NormalizeDisplay(contract.FileName, "거래처 계약/첨부")} 행 {contract.Id:N}의 거래처 참조가 현재 로컬 DB에 없습니다.",
+                    directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
+            }
+
+            var transactionAttachments = await (
+                    from attachment in _db.TransactionAttachments.IgnoreQueryFilters().AsNoTracking()
+                    join transaction in _db.Transactions.IgnoreQueryFilters().AsNoTracking()
+                        on attachment.TransactionId equals transaction.Id into transactionGroup
+                    from transaction in transactionGroup.DefaultIfEmpty()
+                    where transaction == null
+                    orderby attachment.UploadedAtUtc, attachment.Id
+                    select attachment)
+                .ToListAsync(ct);
+
+            foreach (var attachment in transactionAttachments)
+            {
+                AddGeneralIssue(
+                    issues,
+                    DataIntegrityIssueCodes.TransactionAttachmentMissingTransactionReference,
+                    entityType: "거래첨부",
+                    entityId: attachment.Id,
+                    officeCode: fallbackOfficeCode,
+                    currentValue: $"TransactionId {attachment.TransactionId:D} / 파일 {NormalizeDisplay(attachment.FileName, "파일명 없음")} / 삭제상태 {(attachment.IsDeleted ? "삭제" : "활성")}",
+                    expectedValue: "참조 거래내역 행 존재",
+                    message: $"{NormalizeDisplay(attachment.FileName, "거래첨부")} 행 {attachment.Id:N}의 거래내역 참조가 현재 로컬 DB에 없습니다.",
+                    directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
+            }
+
+            var transferLines = await (
+                    from line in _db.InventoryTransferLines.IgnoreQueryFilters().AsNoTracking()
+                    join transfer in _db.InventoryTransfers.IgnoreQueryFilters().AsNoTracking()
+                        on line.TransferId equals transfer.Id into transferGroup
+                    from transfer in transferGroup.DefaultIfEmpty()
+                    where transfer == null
+                    orderby line.TransferId, line.ItemNameOriginal, line.Id
+                    select line)
+                .ToListAsync(ct);
+
+            foreach (var line in transferLines)
+            {
+                AddGeneralIssue(
+                    issues,
+                    DataIntegrityIssueCodes.InventoryTransferLineMissingTransferReference,
+                    entityType: "재고이동 세부내역",
+                    entityId: line.Id,
+                    itemName: line.ItemNameOriginal,
+                    officeCode: fallbackOfficeCode,
+                    currentValue: $"TransferId {line.TransferId:D} / 요청수량 {line.Quantity:N2} / 삭제상태 {(line.IsDeleted ? "삭제" : "활성")}",
+                    expectedValue: "참조 재고이동 문서 행 존재",
+                    message: $"{NormalizeDisplay(line.ItemNameOriginal, "재고이동 세부내역")} 행 {line.Id:N}의 재고이동 문서 참조가 현재 로컬 DB에 없습니다.",
+                    directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
+            }
+        }
+
+        var rentalLogs = await (
+                from log in _db.RentalBillingLogs.IgnoreQueryFilters().AsNoTracking()
+                join profile in _db.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking()
+                    on log.BillingProfileId equals profile.Id into profileGroup
+                from profile in profileGroup.DefaultIfEmpty()
+                where profile == null
+                orderby log.BillingYearMonth, log.ScheduledDate, log.Id
+                select log)
+            .ToListAsync(ct);
+
+        foreach (var log in rentalLogs.Where(log => IsInSessionScope(log.TenantCode, log.ResponsibleOfficeCode, session)))
+        {
+            AddGeneralIssue(
+                issues,
+                DataIntegrityIssueCodes.RentalBillingLogMissingProfileReference,
+                entityType: "렌탈 청구로그",
+                entityId: log.Id,
+                officeCode: log.ResponsibleOfficeCode,
+                currentValue: $"BillingProfileId {log.BillingProfileId:D} / 청구월 {NormalizeDisplay(log.BillingYearMonth, "미지정")} / 삭제상태 {(log.IsDeleted ? "삭제" : "활성")}",
+                expectedValue: "참조 청구 프로필 행 존재",
+                message: $"{NormalizeDisplay(log.BillingYearMonth, "렌탈 청구월")} 청구로그 {log.Id:N}의 청구 프로필 참조가 현재 로컬 DB에 없습니다.",
                 directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
         }
 
