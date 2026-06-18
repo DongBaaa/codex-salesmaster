@@ -24,6 +24,7 @@ public sealed partial class LocalStateService
 {
 	private const string ManualStockAdjustmentMovementType = "StockAdjustmentManual";
 	private const string InventoryResetToZeroMovementType = "StockResetToZero";
+	private const int LocalQueryContainsBatchSize = 500;
 
 	private sealed record CompanyProfileDefaultDefinition(string ProfileName, string OfficeCode, string TradeName, string Representative, string BusinessNumber, string Address, string ContactNumber);
 	private readonly record struct LocalStockChangeKey(Guid ItemId, string WarehouseCode);
@@ -2736,6 +2737,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			invoice.LastSavedAtUtc = now;
 		}
 		List<Guid> deletedInvoiceIds = invoicesToDelete.Select((LocalInvoice localInvoice) => localInvoice.Id).ToList();
+		var rentalSettlementTargets = await LoadRentalSettlementTargetsForInvoiceDeleteAsync(deletedInvoiceIds, ct);
 		await DetachTransactionsFromInvoicesAsync(deletedInvoiceIds, now, ct);
 		await MarkPaymentsDeletedForInvoicesAsync(deletedInvoiceIds, now, ct);
 		_db.AuditLogs.Add(new LocalAuditLog
@@ -2751,6 +2753,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			CreatedAtUtc = now
 		});
 		await _db.SaveChangesAsync(ct);
+		await RecalculateRentalSettlementsAsync(rentalSettlementTargets, ct);
 		await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
 		{
 			Username = "system",
@@ -2794,6 +2797,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			invoice.LastSavedAtUtc = now;
 		}
 		List<Guid> deletedInvoiceIds = invoicesToDelete.Select((LocalInvoice localInvoice) => localInvoice.Id).ToList();
+		var rentalSettlementTargets = await LoadRentalSettlementTargetsForInvoiceDeleteAsync(deletedInvoiceIds, ct);
 		await DetachTransactionsFromInvoicesAsync(deletedInvoiceIds, now, ct);
 		await MarkPaymentsDeletedForInvoicesAsync(deletedInvoiceIds, now, ct);
 		_db.AuditLogs.Add(new LocalAuditLog
@@ -2809,6 +2813,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			CreatedAtUtc = now
 		});
 		await _db.SaveChangesAsync(ct);
+		await RecalculateRentalSettlementsAsync(rentalSettlementTargets, ct);
 		await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
 		{
 			Username = (session.User?.Username ?? "local-user"),
@@ -5074,6 +5079,49 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			transaction.IsDirty = true;
 			transaction.UpdatedAtUtc = updatedAtUtc;
 		}
+	}
+
+	private async Task<List<(Guid ProfileId, Guid? RunId)>> LoadRentalSettlementTargetsForInvoiceDeleteAsync(IReadOnlyCollection<Guid> invoiceIds, CancellationToken ct)
+	{
+		if (invoiceIds == null || invoiceIds.Count == 0)
+		{
+			return new List<(Guid ProfileId, Guid? RunId)>();
+		}
+
+		var targets = new List<(Guid ProfileId, Guid? RunId)>();
+		foreach (var batchIds in invoiceIds.Where(id => id != Guid.Empty).Distinct().Chunk(LocalQueryContainsBatchSize))
+		{
+			ct.ThrowIfCancellationRequested();
+			var scopedBatchIds = batchIds;
+			var invoiceTargets = await (from invoice in _db.Invoices.IgnoreQueryFilters().AsNoTracking()
+				where scopedBatchIds.Contains(invoice.Id) &&
+				      invoice.LinkedRentalBillingProfileId.HasValue &&
+				      invoice.LinkedRentalBillingProfileId.Value != Guid.Empty
+				select new
+				{
+					ProfileId = invoice.LinkedRentalBillingProfileId!.Value,
+					RunId = invoice.LinkedRentalBillingRunId
+				}).ToListAsync(ct);
+			targets.AddRange(invoiceTargets.Select(target => (target.ProfileId, target.RunId)));
+
+			var transactionTargets = await (from transaction in _db.Transactions.IgnoreQueryFilters().AsNoTracking()
+				where !transaction.IsDeleted &&
+				      transaction.LinkedInvoiceId.HasValue &&
+				      scopedBatchIds.Contains(transaction.LinkedInvoiceId.Value) &&
+				      transaction.LinkedRentalBillingProfileId.HasValue &&
+				      transaction.LinkedRentalBillingProfileId.Value != Guid.Empty
+				select new
+				{
+					ProfileId = transaction.LinkedRentalBillingProfileId!.Value,
+					RunId = transaction.LinkedRentalBillingRunId
+				}).ToListAsync(ct);
+			targets.AddRange(transactionTargets.Select(target => (target.ProfileId, target.RunId)));
+		}
+
+		return targets
+			.Where(target => target.ProfileId != Guid.Empty)
+			.Distinct()
+			.ToList();
 	}
 
 	private async Task MarkPaymentsDeletedForInvoicesAsync(IReadOnlyCollection<Guid> invoiceIds, DateTime updatedAtUtc, CancellationToken ct)
