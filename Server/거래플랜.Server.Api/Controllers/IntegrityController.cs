@@ -186,6 +186,17 @@ public sealed class IntegrityController : ControllerBase
             .CountAsync(profile => !_dbContext.Customers.IgnoreQueryFilters().Any(customer => !customer.IsDeleted && customer.Id == profile.CustomerId), cancellationToken);
         AddIssue(issues, "orphan_rental_profile_customer_refs", orphanRentalProfileCustomerCount, "Error", "거래처가 없는 렌탈 청구 프로필 참조가 존재합니다.");
 
+        var rentalProfileCustomerScopeMismatchCount = await (
+                from profile in _officeScopeService.ApplyRentalBillingProfileScope(_dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking())
+                    .Where(profile => !profile.IsDeleted && profile.CustomerId.HasValue)
+                join customer in _dbContext.Customers.IgnoreQueryFilters().AsNoTracking().Where(customer => !customer.IsDeleted)
+                    on profile.CustomerId!.Value equals customer.Id
+                where profile.TenantCode != customer.TenantCode ||
+                      profile.ResponsibleOfficeCode != customer.ResponsibleOfficeCode
+                select profile.Id)
+            .CountAsync(cancellationToken);
+        AddIssue(issues, "rental_profile_customer_scope_mismatch", rentalProfileCustomerScopeMismatchCount, "Error", "렌탈 청구 프로필이 다른 업체/담당지점 거래처를 참조합니다.");
+
         var rentalProfileCustomerUnlinkedCount = await _officeScopeService.ApplyRentalBillingProfileScope(_dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking())
             .Where(profile => !profile.IsDeleted && !profile.CustomerId.HasValue && !string.IsNullOrWhiteSpace(profile.CustomerName))
             .CountAsync(cancellationToken);
@@ -209,10 +220,32 @@ public sealed class IntegrityController : ControllerBase
             .CountAsync(asset => !_dbContext.Customers.IgnoreQueryFilters().Any(customer => !customer.IsDeleted && customer.Id == asset.CustomerId), cancellationToken);
         AddIssue(issues, "orphan_rental_asset_customer_refs", orphanRentalAssetCustomerCount, "Error", "거래처가 없는 렌탈 자산 참조가 존재합니다.");
 
+        var rentalAssetCustomerScopeMismatchCount = await (
+                from asset in _officeScopeService.ApplyRentalAssetScope(_dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking())
+                    .Where(asset => !asset.IsDeleted && asset.CustomerId.HasValue)
+                join customer in _dbContext.Customers.IgnoreQueryFilters().AsNoTracking().Where(customer => !customer.IsDeleted)
+                    on asset.CustomerId!.Value equals customer.Id
+                where asset.TenantCode != customer.TenantCode ||
+                      asset.ResponsibleOfficeCode != customer.ResponsibleOfficeCode
+                select asset.Id)
+            .CountAsync(cancellationToken);
+        AddIssue(issues, "rental_asset_customer_scope_mismatch", rentalAssetCustomerScopeMismatchCount, "Error", "렌탈 자산이 다른 업체/담당지점 거래처를 참조합니다.");
+
         var orphanRentalAssetProfileCount = await _officeScopeService.ApplyRentalAssetScope(_dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking())
             .Where(asset => !asset.IsDeleted && asset.BillingProfileId.HasValue)
             .CountAsync(asset => !_dbContext.RentalBillingProfiles.IgnoreQueryFilters().Any(profile => !profile.IsDeleted && profile.Id == asset.BillingProfileId), cancellationToken);
         AddIssue(issues, "orphan_rental_asset_profile_refs", orphanRentalAssetProfileCount, "Error", "렌탈 청구 프로필이 없는 자산 연결이 존재합니다.");
+
+        var rentalAssetProfileScopeMismatchCount = await (
+                from asset in _officeScopeService.ApplyRentalAssetScope(_dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking())
+                    .Where(asset => !asset.IsDeleted && asset.BillingProfileId.HasValue)
+                join profile in _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().Where(profile => !profile.IsDeleted)
+                    on asset.BillingProfileId!.Value equals profile.Id
+                where asset.TenantCode != profile.TenantCode ||
+                      asset.ResponsibleOfficeCode != profile.ResponsibleOfficeCode
+                select asset.Id)
+            .CountAsync(cancellationToken);
+        AddIssue(issues, "rental_asset_profile_scope_mismatch", rentalAssetProfileScopeMismatchCount, "Error", "렌탈 자산이 다른 업체/담당지점 청구 프로필을 참조합니다.");
 
         var orphanRentalAssetItemCount = await _officeScopeService.ApplyRentalAssetScope(_dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking())
             .Where(asset => !asset.IsDeleted && asset.ItemId.HasValue)
@@ -233,6 +266,28 @@ public sealed class IntegrityController : ControllerBase
                        !_dbContext.RentalBillingProfiles.IgnoreQueryFilters().Any(profile => !profile.IsDeleted && profile.Id == history.BillingProfileId.Value)))),
                 cancellationToken);
         AddIssue(issues, "rental_assignment_missing_reference_rows", rentalAssignmentMissingReferenceCount, "Error", "렌탈 임대이력이 존재하지 않거나 삭제된 자산/거래처/청구 프로필을 참조합니다.");
+
+        var rentalAssignmentScopeMismatchCount = await (
+                from history in scopedRentalAssignmentHistories.Where(history => !history.IsDeleted && history.IsCurrent && history.AssetId != Guid.Empty)
+                join asset in _dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking().Where(asset => !asset.IsDeleted)
+                    on history.AssetId equals asset.Id
+                join customer in _dbContext.Customers.IgnoreQueryFilters().AsNoTracking().Where(customer => !customer.IsDeleted)
+                    on history.CustomerId equals (Guid?)customer.Id into customerGroup
+                from customer in customerGroup.DefaultIfEmpty()
+                join profile in _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().Where(profile => !profile.IsDeleted)
+                    on history.BillingProfileId equals (Guid?)profile.Id into profileGroup
+                from profile in profileGroup.DefaultIfEmpty()
+                where history.TenantCode != asset.TenantCode ||
+                      history.ResponsibleOfficeCode != asset.ResponsibleOfficeCode ||
+                      (customer != null &&
+                       (history.TenantCode != customer.TenantCode ||
+                        history.ResponsibleOfficeCode != customer.ResponsibleOfficeCode)) ||
+                      (profile != null &&
+                       (history.TenantCode != profile.TenantCode ||
+                        history.ResponsibleOfficeCode != profile.ResponsibleOfficeCode))
+                select history.Id)
+            .CountAsync(cancellationToken);
+        AddIssue(issues, "rental_assignment_current_scope_mismatch", rentalAssignmentScopeMismatchCount, "Error", "현재 렌탈 설치이력이 다른 업체/담당지점 자산/거래처/청구 프로필을 참조합니다.");
 
         var rentalAssignmentHistoricalStaleReferenceCount = await scopedRentalAssignmentHistories
             .Where(history => !history.IsDeleted && !history.IsCurrent && history.AssetId != Guid.Empty)
@@ -465,14 +520,18 @@ public sealed class IntegrityController : ControllerBase
             "invoice_line_missing_invoice_rows" => await LoadInvoiceLineMissingInvoiceRowDetailsAsync(cancellationToken),
             "orphan_transaction_customer_refs" => await LoadOrphanTransactionCustomerDetailsAsync(cancellationToken),
             "orphan_rental_profile_customer_refs" => await LoadOrphanRentalProfileCustomerDetailsAsync(cancellationToken),
+            "rental_profile_customer_scope_mismatch" => await LoadRentalProfileCustomerScopeMismatchDetailsAsync(cancellationToken),
             "rental_profile_customer_unlinked" => await LoadRentalProfileCustomerUnlinkedDetailsAsync(cancellationToken),
             "rental_profile_monthly_amount_mismatch" => await LoadRentalProfileMonthlyAmountMismatchDetailsAsync(cancellationToken),
             "rental_profile_asset_monthly_amount_mismatch" => await LoadRentalProfileAssetMonthlyAmountMismatchDetailsAsync(cancellationToken),
             "rental_asset_template_monthly_mismatch" => await LoadRentalAssetTemplateMonthlyMismatchDetailsAsync(cancellationToken),
             "orphan_rental_asset_customer_refs" => await LoadOrphanRentalAssetCustomerDetailsAsync(cancellationToken),
+            "rental_asset_customer_scope_mismatch" => await LoadRentalAssetCustomerScopeMismatchDetailsAsync(cancellationToken),
             "orphan_rental_asset_profile_refs" => await LoadOrphanRentalAssetProfileDetailsAsync(cancellationToken),
+            "rental_asset_profile_scope_mismatch" => await LoadRentalAssetProfileScopeMismatchDetailsAsync(cancellationToken),
             "orphan_rental_asset_item_refs" => await LoadOrphanRentalAssetItemDetailsAsync(cancellationToken),
             "rental_assignment_missing_reference_rows" => await LoadRentalAssignmentMissingReferenceDetailsAsync(cancellationToken),
+            "rental_assignment_current_scope_mismatch" => await LoadRentalAssignmentCurrentScopeMismatchDetailsAsync(cancellationToken),
             "rental_assignment_historical_stale_reference_rows" => await LoadRentalAssignmentHistoricalStaleReferenceDetailsAsync(cancellationToken),
             "rental_asset_multiple_current_assignments" => await LoadRentalAssetMultipleCurrentAssignmentDetailsAsync(cancellationToken),
             "orphan_transaction_invoice_refs" => await LoadOrphanTransactionInvoiceDetailsAsync(cancellationToken),
@@ -1167,6 +1226,37 @@ public sealed class IntegrityController : ControllerBase
             .ToList();
     }
 
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalProfileCustomerScopeMismatchDetailsAsync(CancellationToken cancellationToken)
+    {
+        var rows = await (
+                from profile in _officeScopeService.ApplyRentalBillingProfileScope(_dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking())
+                    .Where(current => !current.IsDeleted && current.CustomerId.HasValue)
+                join customer in _dbContext.Customers.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
+                    on profile.CustomerId!.Value equals customer.Id
+                where profile.TenantCode != customer.TenantCode ||
+                      profile.ResponsibleOfficeCode != customer.ResponsibleOfficeCode
+                orderby profile.ProfileKey, profile.Id
+                select new { Profile = profile, Customer = customer })
+            .ToListAsync(cancellationToken);
+
+        return rows
+            .Select(row => CreateDetailRow(
+                entityType: "렌탈청구프로필",
+                entityIdText: FormatGuid(row.Profile.Id),
+                primaryText: FirstNonEmpty(row.Profile.ProfileKey, FormatGuid(row.Profile.Id)),
+                secondaryText: CombineParts(row.Profile.CustomerName, row.Profile.ItemName),
+                referenceText: CombineParts(
+                    $"거래처 범위 불일치 {FormatGuid(row.Customer.Id)}",
+                    $"거래처 범위 {FormatScope(row.Customer.TenantCode, row.Customer.OfficeCode, row.Customer.ResponsibleOfficeCode)}"),
+                scopeText: FormatScope(row.Profile.TenantCode, row.Profile.OfficeCode, row.Profile.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    string.IsNullOrWhiteSpace(row.Customer.NameOriginal) ? null : $"거래처 {row.Customer.NameOriginal}",
+                    string.IsNullOrWhiteSpace(row.Profile.ManagementCompanyCode) ? null : $"관리업체 {row.Profile.ManagementCompanyCode}",
+                    string.IsNullOrWhiteSpace(row.Profile.InstallSiteName) ? null : $"설치처 {row.Profile.InstallSiteName}",
+                    "조치: 렌탈 청구 프로필과 같은 업체/담당지점의 거래처로 다시 연결하세요")))
+            .ToList();
+    }
+
     private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalProfileCustomerUnlinkedDetailsAsync(CancellationToken cancellationToken)
     {
         var profiles = await _officeScopeService.ApplyRentalBillingProfileScope(_dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking())
@@ -1357,6 +1447,39 @@ public sealed class IntegrityController : ControllerBase
             .ToList();
     }
 
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalAssetCustomerScopeMismatchDetailsAsync(CancellationToken cancellationToken)
+    {
+        var rows = await (
+                from asset in _officeScopeService.ApplyRentalAssetScope(_dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking())
+                    .Where(current => !current.IsDeleted && current.CustomerId.HasValue)
+                join customer in _dbContext.Customers.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
+                    on asset.CustomerId!.Value equals customer.Id
+                where asset.TenantCode != customer.TenantCode ||
+                      asset.ResponsibleOfficeCode != customer.ResponsibleOfficeCode
+                orderby asset.ManagementNumber, asset.AssetKey, asset.Id
+                select new { Asset = asset, Customer = customer })
+            .ToListAsync(cancellationToken);
+
+        return rows
+            .Select(row => CreateDetailRow(
+                entityType: "렌탈자산",
+                entityIdText: FormatGuid(row.Asset.Id),
+                primaryText: FirstNonEmpty(row.Asset.ManagementNumber, row.Asset.AssetKey, row.Asset.ManagementId),
+                secondaryText: CombineParts(row.Asset.CustomerName, row.Asset.ItemName),
+                referenceText: CombineParts(
+                    $"거래처 범위 불일치 {FormatGuid(row.Customer.Id)}",
+                    $"거래처 범위 {FormatScope(row.Customer.TenantCode, row.Customer.OfficeCode, row.Customer.ResponsibleOfficeCode)}"),
+                scopeText: FormatScope(row.Asset.TenantCode, row.Asset.OfficeCode, row.Asset.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    string.IsNullOrWhiteSpace(row.Asset.AssetKey) ? null : $"자산키 {row.Asset.AssetKey}",
+                    string.IsNullOrWhiteSpace(row.Customer.NameOriginal) ? null : $"거래처 {row.Customer.NameOriginal}",
+                    string.IsNullOrWhiteSpace(FirstNonEmpty(row.Asset.InstallLocation, row.Asset.CurrentLocation, row.Asset.InstallSiteName))
+                        ? null
+                        : $"설치위치 {FirstNonEmpty(row.Asset.InstallLocation, row.Asset.CurrentLocation, row.Asset.InstallSiteName)}",
+                    "조치: 렌탈 자산과 같은 업체/담당지점의 거래처로 다시 연결하세요")))
+            .ToList();
+    }
+
     private async Task<List<IntegrityIssueDetailRowDto>> LoadOrphanRentalAssetProfileDetailsAsync(CancellationToken cancellationToken)
     {
         var assets = await (
@@ -1384,6 +1507,39 @@ public sealed class IntegrityController : ControllerBase
                     string.IsNullOrWhiteSpace(FirstNonEmpty(asset.InstallLocation, asset.CurrentLocation, asset.InstallSiteName))
                         ? null
                         : $"설치위치 {FirstNonEmpty(asset.InstallLocation, asset.CurrentLocation, asset.InstallSiteName)}")))
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalAssetProfileScopeMismatchDetailsAsync(CancellationToken cancellationToken)
+    {
+        var rows = await (
+                from asset in _officeScopeService.ApplyRentalAssetScope(_dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking())
+                    .Where(current => !current.IsDeleted && current.BillingProfileId.HasValue)
+                join profile in _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
+                    on asset.BillingProfileId!.Value equals profile.Id
+                where asset.TenantCode != profile.TenantCode ||
+                      asset.ResponsibleOfficeCode != profile.ResponsibleOfficeCode
+                orderby asset.ManagementNumber, asset.AssetKey, asset.Id
+                select new { Asset = asset, Profile = profile })
+            .ToListAsync(cancellationToken);
+
+        return rows
+            .Select(row => CreateDetailRow(
+                entityType: "렌탈자산",
+                entityIdText: FormatGuid(row.Asset.Id),
+                primaryText: FirstNonEmpty(row.Asset.ManagementNumber, row.Asset.AssetKey, row.Asset.ManagementId),
+                secondaryText: CombineParts(row.Asset.CustomerName, row.Asset.ItemName),
+                referenceText: CombineParts(
+                    $"청구프로필 범위 불일치 {FormatGuid(row.Profile.Id)}",
+                    $"청구프로필 범위 {FormatScope(row.Profile.TenantCode, row.Profile.OfficeCode, row.Profile.ResponsibleOfficeCode)}"),
+                scopeText: FormatScope(row.Asset.TenantCode, row.Asset.OfficeCode, row.Asset.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    string.IsNullOrWhiteSpace(row.Asset.AssetKey) ? null : $"자산키 {row.Asset.AssetKey}",
+                    string.IsNullOrWhiteSpace(row.Profile.ProfileKey) ? null : $"청구프로필키 {row.Profile.ProfileKey}",
+                    string.IsNullOrWhiteSpace(FirstNonEmpty(row.Asset.InstallLocation, row.Asset.CurrentLocation, row.Asset.InstallSiteName))
+                        ? null
+                        : $"설치위치 {FirstNonEmpty(row.Asset.InstallLocation, row.Asset.CurrentLocation, row.Asset.InstallSiteName)}",
+                    "조치: 렌탈 자산과 같은 업체/담당지점의 청구 프로필로 다시 연결하세요")))
             .ToList();
     }
 
@@ -1449,6 +1605,46 @@ public sealed class IntegrityController : ControllerBase
                 referenceText: BuildRentalAssignmentMissingReferenceText(history, activeAssetIds, activeCustomerIds, activeProfileIds),
                 scopeText: FormatScope(history.TenantCode, history.OfficeCode, history.ResponsibleOfficeCode),
                 detailText: BuildRentalAssignmentHistoryDetailText(history)))
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalAssignmentCurrentScopeMismatchDetailsAsync(CancellationToken cancellationToken)
+    {
+        var rows = await (
+                from history in _officeScopeService.ApplyRentalAssignmentHistoryScope(
+                        _dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().AsNoTracking())
+                    .Where(history => !history.IsDeleted && history.IsCurrent && history.AssetId != Guid.Empty)
+                join asset in _dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking().Where(asset => !asset.IsDeleted)
+                    on history.AssetId equals asset.Id
+                join customer in _dbContext.Customers.IgnoreQueryFilters().AsNoTracking().Where(customer => !customer.IsDeleted)
+                    on history.CustomerId equals (Guid?)customer.Id into customerGroup
+                from customer in customerGroup.DefaultIfEmpty()
+                join profile in _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().Where(profile => !profile.IsDeleted)
+                    on history.BillingProfileId equals (Guid?)profile.Id into profileGroup
+                from profile in profileGroup.DefaultIfEmpty()
+                where history.TenantCode != asset.TenantCode ||
+                      history.ResponsibleOfficeCode != asset.ResponsibleOfficeCode ||
+                      (customer != null &&
+                       (history.TenantCode != customer.TenantCode ||
+                        history.ResponsibleOfficeCode != customer.ResponsibleOfficeCode)) ||
+                      (profile != null &&
+                       (history.TenantCode != profile.TenantCode ||
+                        history.ResponsibleOfficeCode != profile.ResponsibleOfficeCode))
+                orderby history.ResponsibleOfficeCode, history.ManagementNumber, history.LinkedAtUtc, history.Id
+                select new { History = history, Asset = asset, Customer = customer, Profile = profile })
+            .ToListAsync(cancellationToken);
+
+        return rows
+            .Select(row => CreateDetailRow(
+                entityType: "렌탈 임대이력",
+                entityIdText: FormatGuid(row.History.Id),
+                primaryText: BuildRentalAssignmentHistoryDisplay(row.History),
+                secondaryText: CombineParts(row.History.CustomerName, row.History.ItemName, row.History.ManagementNumber),
+                referenceText: BuildRentalAssignmentScopeMismatchReferenceText(row.History, row.Asset, row.Customer, row.Profile),
+                scopeText: FormatScope(row.History.TenantCode, row.History.OfficeCode, row.History.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    BuildRentalAssignmentHistoryDetailText(row.History),
+                    "조치: 현재 설치이력과 같은 업체/담당지점의 자산·거래처·청구 프로필로 다시 연결하세요")))
             .ToList();
     }
 
@@ -3066,14 +3262,18 @@ public sealed class IntegrityController : ControllerBase
             "invoice_line_missing_invoice_rows" => new IntegrityIssueDefinition("invoice_line_missing_invoice_rows", "Error", "부모 전표 행이 없는 전표 세부내역이 존재합니다."),
             "orphan_transaction_customer_refs" => new IntegrityIssueDefinition("orphan_transaction_customer_refs", "Error", "거래처가 없는 수금/지불 참조가 존재합니다."),
             "orphan_rental_profile_customer_refs" => new IntegrityIssueDefinition("orphan_rental_profile_customer_refs", "Error", "거래처가 없는 렌탈 청구 프로필 참조가 존재합니다."),
+            "rental_profile_customer_scope_mismatch" => new IntegrityIssueDefinition("rental_profile_customer_scope_mismatch", "Error", "렌탈 청구 프로필이 다른 업체/담당지점 거래처를 참조합니다."),
             "rental_profile_customer_unlinked" => new IntegrityIssueDefinition("rental_profile_customer_unlinked", "Warning", "거래처 ID 없이 거래처명만 저장된 렌탈 청구 프로필이 있습니다."),
             "rental_profile_monthly_amount_mismatch" => new IntegrityIssueDefinition("rental_profile_monthly_amount_mismatch", "Warning", "렌탈 청구 프로필 월 기준금액과 청구 품목 합계가 다릅니다."),
             "rental_profile_asset_monthly_amount_mismatch" => new IntegrityIssueDefinition("rental_profile_asset_monthly_amount_mismatch", "Warning", "렌탈 청구 프로필 월 기준금액과 연결 자산 월요금 합계가 다릅니다."),
             "rental_asset_template_monthly_mismatch" => new IntegrityIssueDefinition("rental_asset_template_monthly_mismatch", "Warning", "렌탈 자산 월요금 합계와 청구 품목 금액이 다릅니다."),
             "orphan_rental_asset_customer_refs" => new IntegrityIssueDefinition("orphan_rental_asset_customer_refs", "Error", "거래처가 없는 렌탈 자산 참조가 존재합니다."),
+            "rental_asset_customer_scope_mismatch" => new IntegrityIssueDefinition("rental_asset_customer_scope_mismatch", "Error", "렌탈 자산이 다른 업체/담당지점 거래처를 참조합니다."),
             "orphan_rental_asset_profile_refs" => new IntegrityIssueDefinition("orphan_rental_asset_profile_refs", "Error", "렌탈 청구 프로필이 없는 자산 연결이 존재합니다."),
+            "rental_asset_profile_scope_mismatch" => new IntegrityIssueDefinition("rental_asset_profile_scope_mismatch", "Error", "렌탈 자산이 다른 업체/담당지점 청구 프로필을 참조합니다."),
             "orphan_rental_asset_item_refs" => new IntegrityIssueDefinition("orphan_rental_asset_item_refs", "Error", "품목이 없는 렌탈 자산 연결이 존재합니다."),
             "rental_assignment_missing_reference_rows" => new IntegrityIssueDefinition("rental_assignment_missing_reference_rows", "Error", "렌탈 임대이력이 존재하지 않거나 삭제된 자산/거래처/청구 프로필을 참조합니다."),
+            "rental_assignment_current_scope_mismatch" => new IntegrityIssueDefinition("rental_assignment_current_scope_mismatch", "Error", "현재 렌탈 설치이력이 다른 업체/담당지점 자산/거래처/청구 프로필을 참조합니다."),
             "rental_assignment_historical_stale_reference_rows" => new IntegrityIssueDefinition("rental_assignment_historical_stale_reference_rows", "Info", "과거 렌탈 임대이력의 거래처/청구 프로필 참조가 현재 마스터에서 사라졌지만 스냅샷 표시값은 남아 있습니다."),
             "rental_asset_multiple_current_assignments" => new IntegrityIssueDefinition("rental_asset_multiple_current_assignments", "Error", "하나의 렌탈 자산에 현재 임대중으로 표시된 이력이 여러 개 있습니다."),
             "orphan_transaction_invoice_refs" => new IntegrityIssueDefinition("orphan_transaction_invoice_refs", "Error", "전표가 없는 거래/수금 참조가 존재합니다."),
@@ -3219,6 +3419,35 @@ public sealed class IntegrityController : ControllerBase
             ? "참조 정상"
             : string.Join(" / ", missingReferences);
     }
+
+    private static string BuildRentalAssignmentScopeMismatchReferenceText(
+        RentalAssetAssignmentHistory history,
+        RentalAsset asset,
+        Customer? customer,
+        RentalBillingProfile? profile)
+    {
+        return CombineParts(
+            HasDifferentTenantOrResponsibleOffice(history.TenantCode, history.ResponsibleOfficeCode, asset.TenantCode, asset.ResponsibleOfficeCode)
+                ? $"자산 범위 불일치 {FormatGuid(asset.Id)} / 자산 범위 {FormatScope(asset.TenantCode, asset.OfficeCode, asset.ResponsibleOfficeCode)}"
+                : null,
+            customer is not null && HasDifferentTenantOrResponsibleOffice(history.TenantCode, history.ResponsibleOfficeCode, customer.TenantCode, customer.ResponsibleOfficeCode)
+                ? $"거래처 범위 불일치 {FormatGuid(customer.Id)} / 거래처 범위 {FormatScope(customer.TenantCode, customer.OfficeCode, customer.ResponsibleOfficeCode)}"
+                : null,
+            profile is not null && HasDifferentTenantOrResponsibleOffice(history.TenantCode, history.ResponsibleOfficeCode, profile.TenantCode, profile.ResponsibleOfficeCode)
+                ? $"청구프로필 범위 불일치 {FormatGuid(profile.Id)} / 청구프로필 범위 {FormatScope(profile.TenantCode, profile.OfficeCode, profile.ResponsibleOfficeCode)}"
+                : null);
+    }
+
+    private static bool HasDifferentTenantOrResponsibleOffice(
+        string? tenantCode,
+        string? responsibleOfficeCode,
+        string? referenceTenantCode,
+        string? referenceResponsibleOfficeCode)
+        => !string.Equals(NormalizeScopeComparisonValue(tenantCode), NormalizeScopeComparisonValue(referenceTenantCode), StringComparison.OrdinalIgnoreCase) ||
+           !string.Equals(NormalizeScopeComparisonValue(responsibleOfficeCode), NormalizeScopeComparisonValue(referenceResponsibleOfficeCode), StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeScopeComparisonValue(string? value)
+        => (value ?? string.Empty).Trim();
 
     private static string BuildRentalAssignmentHistoryDetailText(RentalAssetAssignmentHistory history)
         => CombineParts(

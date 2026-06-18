@@ -996,6 +996,124 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FlagsRentalScopeMismatchedReferenceRows()
+    {
+        var currentUser = CreateOfficeScopedUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        var outsideCustomerId = Guid.NewGuid();
+        var outsideProfileId = Guid.NewGuid();
+        var scopedProfileId = Guid.NewGuid();
+        var scopedAssetId = Guid.NewGuid();
+        var scopedHistoryId = Guid.NewGuid();
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = outsideCustomerId,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "Outside Rental Customer",
+            NameMatchKey = "OUTSIDERENTALCUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.RentalBillingProfiles.AddRange(
+            new RentalBillingProfile
+            {
+                Id = outsideProfileId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                ProfileKey = "PROFILE-OUTSIDE-SCOPE",
+                CustomerId = outsideCustomerId,
+                CustomerName = "Outside Rental Customer",
+                ItemName = "Outside Copier",
+                IsActive = true
+            },
+            new RentalBillingProfile
+            {
+                Id = scopedProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = "PROFILE-SCOPED-WRONG-CUSTOMER",
+                CustomerId = outsideCustomerId,
+                CustomerName = "Outside Rental Customer",
+                ItemName = "Scoped Copier",
+                IsActive = true
+            });
+        dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = scopedAssetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "ASSET-SCOPED-WRONG-REF",
+            ManagementId = "WRONG-REF",
+            ManagementNumber = "WRONG-REF",
+            CustomerId = outsideCustomerId,
+            BillingProfileId = outsideProfileId,
+            CustomerName = "Outside Rental Customer",
+            ItemName = "Scoped Copier",
+            MonthlyFee = 100000m
+        });
+        dbContext.RentalAssetAssignmentHistories.Add(new RentalAssetAssignmentHistory
+        {
+            Id = scopedHistoryId,
+            AssetId = scopedAssetId,
+            CustomerId = outsideCustomerId,
+            BillingProfileId = outsideProfileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            CustomerName = "Outside Rental Customer",
+            BillingProfileDisplay = "Outside Rental Profile",
+            ItemName = "Scoped Copier",
+            ManagementNumber = "WRONG-REF",
+            MonthlyFee = 100000m,
+            IsCurrent = true,
+            LinkedAtUtc = new DateTime(2026, 6, 5, 0, 0, 0, DateTimeKind.Utc)
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issues = payload.Issues.ToDictionary(issue => issue.Code, StringComparer.OrdinalIgnoreCase);
+
+        Assert.Equal(1, issues["rental_profile_customer_scope_mismatch"].Count);
+        Assert.Equal(1, issues["rental_asset_customer_scope_mismatch"].Count);
+        Assert.Equal(1, issues["rental_asset_profile_scope_mismatch"].Count);
+        Assert.Equal(1, issues["rental_assignment_current_scope_mismatch"].Count);
+        Assert.DoesNotContain(payload.Issues, issue => issue.Code == "orphan_rental_profile_customer_refs");
+        Assert.DoesNotContain(payload.Issues, issue => issue.Code == "orphan_rental_asset_customer_refs");
+        Assert.DoesNotContain(payload.Issues, issue => issue.Code == "orphan_rental_asset_profile_refs");
+        Assert.DoesNotContain(payload.Issues, issue => issue.Code == "rental_assignment_missing_reference_rows");
+
+        var profileCustomerDetail = await GetSingleDetailRowAsync(controller, "rental_profile_customer_scope_mismatch");
+        Assert.Equal(FormatGuidForTest(scopedProfileId), profileCustomerDetail.EntityIdText);
+        Assert.Contains(FormatGuidForTest(outsideCustomerId), profileCustomerDetail.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains(OfficeCodeCatalog.Itworld, profileCustomerDetail.ReferenceText, StringComparison.Ordinal);
+
+        var assetCustomerDetail = await GetSingleDetailRowAsync(controller, "rental_asset_customer_scope_mismatch");
+        Assert.Equal(FormatGuidForTest(scopedAssetId), assetCustomerDetail.EntityIdText);
+        Assert.Contains(FormatGuidForTest(outsideCustomerId), assetCustomerDetail.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains(OfficeCodeCatalog.Itworld, assetCustomerDetail.ReferenceText, StringComparison.Ordinal);
+
+        var assetProfileDetail = await GetSingleDetailRowAsync(controller, "rental_asset_profile_scope_mismatch");
+        Assert.Equal(FormatGuidForTest(scopedAssetId), assetProfileDetail.EntityIdText);
+        Assert.Contains(FormatGuidForTest(outsideProfileId), assetProfileDetail.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains(OfficeCodeCatalog.Itworld, assetProfileDetail.ReferenceText, StringComparison.Ordinal);
+
+        var assignmentDetail = await GetSingleDetailRowAsync(controller, "rental_assignment_current_scope_mismatch");
+        Assert.Equal(FormatGuidForTest(scopedHistoryId), assignmentDetail.EntityIdText);
+        Assert.Contains(FormatGuidForTest(outsideCustomerId), assignmentDetail.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains(FormatGuidForTest(outsideProfileId), assignmentDetail.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains("100,000", assignmentDetail.DetailText, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task GetReport_FlagsRentalBillingRunSettlementMismatch()
     {
         var currentUser = CreateAdminUser();
