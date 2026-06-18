@@ -1583,6 +1583,96 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task RentalSettlementRecalculation_PreservesCancelledRunWhenOutstandingRemains()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Server rental cancelled customer",
+            NameMatchKey = "SERVERRENTALCANCELLEDCUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"profile-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = "Server rental cancelled customer",
+            BillingStatus = "취소",
+            SettlementStatus = "확인대기",
+            CompletionStatus = "미완료",
+            MonthlyAmount = 100_000m,
+            SettledAmount = 0m,
+            OutstandingAmount = 100_000m,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new ServerRentalBillingRunSnapshot
+                {
+                    RunId = runId,
+                    RunKey = "2026-06",
+                    ScheduledDate = new DateOnly(2026, 6, 25),
+                    PeriodStartDate = new DateOnly(2026, 6, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    PeriodLabel = "2026-06",
+                    Status = "취소",
+                    BilledAmount = 100_000m,
+                    SettledAmount = 0m,
+                    SettlementStatus = "확인대기"
+                }
+            })
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "RENTAL-CANCEL-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 25),
+            TotalAmount = 100_000m,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId
+        });
+        await dbContext.SaveChangesAsync();
+
+        var service = new RentalSettlementRecalculationService(dbContext);
+        await service.RecalculateRentalSettlementsAsync([(profileId, runId)], CancellationToken.None);
+        await dbContext.SaveChangesAsync();
+
+        var recalculatedProfile = await dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal(0m, recalculatedProfile.SettledAmount);
+        Assert.Equal(100_000m, recalculatedProfile.OutstandingAmount);
+        Assert.Equal("취소", recalculatedProfile.BillingStatus);
+        var recalculatedRun = Assert.Single(JsonSerializer.Deserialize<List<ServerRentalBillingRunSnapshot>>(recalculatedProfile.BillingRunsJson) ?? []);
+        Assert.Equal("취소", recalculatedRun.Status);
+        Assert.Equal(0m, recalculatedRun.SettledAmount);
+        Assert.Equal("확인대기", recalculatedRun.SettlementStatus);
+    }
+
+    [Fact]
     public async Task InvoicesController_Update_RentalBillingInvoice_RecalculatesBilledAndOutstandingAmounts()
     {
         var currentUser = CreateAdminUser();

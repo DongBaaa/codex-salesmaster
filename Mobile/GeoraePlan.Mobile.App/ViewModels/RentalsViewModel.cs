@@ -557,7 +557,12 @@ public sealed class RentalBillingHistoryDisplayRow
             SourcePriority = 2,
             ProfileKey = profile.ProfileKey,
             CustomerName = profile.CustomerName,
-            Status = Normalize(run?.Status, outstandingAmount <= 0m && billedAmount > 0m ? "완료" : "청구중"),
+            Status = RentalBillingEvidenceStatusResolver.Resolve(
+                run?.Status,
+                evidence.HasInvoice || evidence.HasTransaction || evidence.HasPayment,
+                settledAmount,
+                outstandingAmount,
+                billedAmount),
             OfficeCode = Normalize(evidence.OfficeCode, ResolveOffice(profile.ResponsibleOfficeCode, profile.OfficeCode)),
             SortDate = evidence.SettledDate ?? evidence.InvoiceDate ?? scheduledDate,
             Title = string.IsNullOrWhiteSpace(profile.CustomerName)

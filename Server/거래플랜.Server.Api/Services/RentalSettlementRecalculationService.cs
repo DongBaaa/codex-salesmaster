@@ -1,6 +1,7 @@
 using System.Text.Json;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
+using 거래플랜.Shared.Contracts;
 using Microsoft.EntityFrameworkCore;
 
 namespace 거래플랜.Server.Api.Services;
@@ -138,9 +139,9 @@ public sealed class RentalSettlementRecalculationService
                 run.SettledAmount = settledAmount;
                 run.SettlementStatus = DetermineRentalSettlementStatus(profile.BillingMethod, settledAmount, billedAmount);
                 run.Status = profile.OutstandingAmount <= 0m
-                    ? "완료"
-                    : string.Equals(run.Status, "보류", StringComparison.OrdinalIgnoreCase)
-                        ? "보류"
+                    ? RentalBillingEvidenceStatusResolver.Completed
+                    : RentalBillingEvidenceStatusResolver.IsManualStopStatus(run.Status)
+                        ? run.Status.Trim()
                         : "청구중";
                 run.SettledDate = settledAmount > 0m
                     ? await GetRentalLastSettledDateCoreAsync(billingProfileId, billingRunId, cancellationToken)

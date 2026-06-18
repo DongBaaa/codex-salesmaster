@@ -1,4 +1,5 @@
 using Xunit;
+using 거래플랜.Shared.Contracts;
 
 namespace GeoraePlan.Desktop.App.Tests;
 
@@ -58,8 +59,41 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("AddTransactionBillingRunEvidence", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("AddInvoiceBillingRunEvidence", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("AddPaymentBillingRunEvidence", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("RentalBillingEvidenceStatusResolver.Resolve(", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("evidence.HasInvoice || evidence.HasTransaction || evidence.HasPayment", viewModelSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveEvidenceStatus(", viewModelSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("IsManualStopStatus(normalizedRunStatus)", viewModelSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Status = Normalize(run?.Status, outstandingAmount <= 0m && billedAmount > 0m ? \"완료\" : \"청구중\")", viewModelSource, StringComparison.Ordinal);
         var normalizedViewModelSource = viewModelSource.Replace("\r\n", "\n", StringComparison.Ordinal);
         Assert.DoesNotContain("state.SyncedRentalBillingLogs\n            .Where(log => MatchesBillingLog", normalizedViewModelSource, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("청구중", true, 100, 0, 100, "완료")]
+    [InlineData("보류", true, 100, 0, 100, "완료")]
+    [InlineData("보류", true, 0, 100, 100, "보류")]
+    [InlineData("취소", true, 0, 100, 100, "취소")]
+    [InlineData("청구중", true, 40, 60, 100, "부분입금")]
+    [InlineData("완료", true, 40, 60, 100, "부분입금")]
+    [InlineData("완료", true, 0, 100, 100, "청구중")]
+    [InlineData("  청구중  ", false, 0, 0, 0, "청구중")]
+    [InlineData("", false, 0, 0, 0, "청구중")]
+    public void RentalBillingEvidenceStatusResolver_PrioritizesActualFinancialEvidence(
+        string runStatus,
+        bool hasFinancialEvidence,
+        int settledAmount,
+        int outstandingAmount,
+        int billedAmount,
+        string expectedStatus)
+    {
+        var actualStatus = RentalBillingEvidenceStatusResolver.Resolve(
+            runStatus,
+            hasFinancialEvidence,
+            settledAmount,
+            outstandingAmount,
+            billedAmount);
+
+        Assert.Equal(expectedStatus, actualStatus);
     }
 
     [Fact]
