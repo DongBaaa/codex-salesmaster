@@ -256,6 +256,210 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FlagsAttachmentsWithFileSizeButNoReadableContent()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "파일 누락 거래처",
+            NameMatchKey = "FILEMISSINGCUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.CustomerContracts.Add(new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customerId,
+            ContractType = "거래계약서",
+            FileName = "contract-missing.pdf",
+            FileSize = 12,
+            StoragePath = string.Empty,
+            FileContent = []
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = transactionId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 12),
+            TransactionKind = "수금"
+        });
+        dbContext.TransactionAttachments.Add(new TransactionAttachment
+        {
+            Id = Guid.NewGuid(),
+            TransactionId = transactionId,
+            FileName = "transaction-missing.pdf",
+            FileSize = 24,
+            StoragePath = string.Empty,
+            FileContent = []
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "INV-FILE-MISSING",
+            InvoiceDate = new DateOnly(2026, 6, 12)
+        });
+        dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 6, 12),
+            Amount = 30000m
+        });
+        dbContext.PaymentAttachments.Add(new PaymentAttachment
+        {
+            Id = Guid.NewGuid(),
+            PaymentId = paymentId,
+            FileName = "payment-missing.pdf",
+            FileSize = 36,
+            StoragePath = string.Empty,
+            FileContent = []
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = new IntegrityController(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext));
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issue = Assert.Single(payload.Issues, current => current.Code == "file_content_unavailable");
+
+        Assert.Equal("Error", issue.Severity);
+        Assert.Equal(3, issue.Count);
+        Assert.DoesNotContain(payload.Issues, current => current.Code == "file_content_db_residue");
+
+        var detailsResponse = await controller.GetReportDetails("file_content_unavailable", CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+
+        Assert.Equal(3, details.DetailCount);
+        Assert.All(details.Rows, row =>
+        {
+            Assert.Contains("StoragePath 비어 있음", row.DetailText, StringComparison.Ordinal);
+            Assert.Contains("DB FileContent 0 bytes", row.DetailText, StringComparison.Ordinal);
+        });
+    }
+
+    [Fact]
+    public async Task GetReport_FlagsDbFileContentResidueAfterStorageMigration()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "DB 본문 잔류 거래처",
+            NameMatchKey = "DBRESIDUECUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.CustomerContracts.Add(new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customerId,
+            ContractType = "거래계약서",
+            FileName = "contract-residue.pdf",
+            FileSize = 4,
+            StoragePath = "contracts/contract-residue.pdf",
+            FileContent = [1, 2, 3, 4]
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = transactionId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 13),
+            TransactionKind = "수금"
+        });
+        dbContext.TransactionAttachments.Add(new TransactionAttachment
+        {
+            Id = Guid.NewGuid(),
+            TransactionId = transactionId,
+            FileName = "transaction-residue.pdf",
+            FileSize = 3,
+            StoragePath = "attachments/transaction-residue.pdf",
+            FileContent = [5, 6, 7]
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "INV-FILE-RESIDUE",
+            InvoiceDate = new DateOnly(2026, 6, 13)
+        });
+        dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 6, 13),
+            Amount = 40000m
+        });
+        dbContext.PaymentAttachments.Add(new PaymentAttachment
+        {
+            Id = Guid.NewGuid(),
+            PaymentId = paymentId,
+            FileName = "payment-residue.pdf",
+            FileSize = 2,
+            StoragePath = "attachments/payment-residue.pdf",
+            FileContent = [8, 9]
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = new IntegrityController(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext));
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issue = Assert.Single(payload.Issues, current => current.Code == "file_content_db_residue");
+
+        Assert.Equal("Warning", issue.Severity);
+        Assert.Equal(3, issue.Count);
+        Assert.DoesNotContain(payload.Issues, current => current.Code == "file_content_unavailable");
+
+        var detailsResponse = await controller.GetReportDetails("file_content_db_residue", CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+
+        Assert.Equal(3, details.DetailCount);
+        Assert.Contains(details.Rows, row => row.PrimaryText == "contract-residue.pdf" && row.DetailText.Contains("DB FileContent 4 bytes", StringComparison.Ordinal));
+        Assert.Contains(details.Rows, row => row.PrimaryText == "transaction-residue.pdf" && row.DetailText.Contains("DB FileContent 3 bytes", StringComparison.Ordinal));
+        Assert.Contains(details.Rows, row => row.PrimaryText == "payment-residue.pdf" && row.DetailText.Contains("DB FileContent 2 bytes", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task GetReport_IgnoresNonInventoryItems_WhenCountingStockMismatch()
     {
         var currentUser = CreateAdminUser();

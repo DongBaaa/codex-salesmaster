@@ -227,6 +227,20 @@ public sealed class IntegrityController : ControllerBase
             .CountAsync(attachment => !_dbContext.Payments.IgnoreQueryFilters().Any(payment => !payment.IsDeleted && payment.Id == attachment.PaymentId), cancellationToken);
         AddIssue(issues, "orphan_payment_attachment_refs", orphanPaymentAttachmentCount, "Error", "결제내역이 없는 결제 첨부가 존재합니다.");
 
+        var fileStorageIssueCandidates = await LoadFileStorageIssueCandidatesAsync(cancellationToken);
+        AddIssue(
+            issues,
+            "file_content_unavailable",
+            fileStorageIssueCandidates.Count(IsFileContentUnavailable),
+            "Error",
+            "파일 크기는 있으나 저장소 경로와 DB 파일 본문이 모두 비어 있는 첨부/계약서가 있습니다.");
+        AddIssue(
+            issues,
+            "file_content_db_residue",
+            fileStorageIssueCandidates.Count(HasDbFileContentResidue),
+            "Warning",
+            "파일 본문이 DB에 남아 저장소 이동이 완료되지 않은 첨부/계약서가 있습니다.");
+
         var report = new IntegrityReportDto
         {
             GeneratedAtUtc = DateTime.UtcNow,
@@ -293,6 +307,8 @@ public sealed class IntegrityController : ControllerBase
             "orphan_payment_invoice_refs" => await LoadOrphanPaymentInvoiceDetailsAsync(cancellationToken),
             "orphan_attachment_transaction_refs" => await LoadOrphanTransactionAttachmentDetailsAsync(cancellationToken),
             "orphan_payment_attachment_refs" => await LoadOrphanPaymentAttachmentDetailsAsync(cancellationToken),
+            "file_content_unavailable" => await LoadFileContentUnavailableDetailsAsync(cancellationToken),
+            "file_content_db_residue" => await LoadFileContentDbResidueDetailsAsync(cancellationToken),
             _ => []
         };
     }
@@ -1259,6 +1275,146 @@ public sealed class IntegrityController : ControllerBase
             .ToList();
     }
 
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadFileContentUnavailableDetailsAsync(CancellationToken cancellationToken)
+    {
+        var candidates = await LoadFileStorageIssueCandidatesAsync(cancellationToken);
+        return candidates
+            .Where(IsFileContentUnavailable)
+            .OrderBy(candidate => candidate.EntityType, StringComparer.Ordinal)
+            .ThenBy(candidate => candidate.PrimaryText, StringComparer.OrdinalIgnoreCase)
+            .Select(CreateFileStorageIssueDetailRow)
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadFileContentDbResidueDetailsAsync(CancellationToken cancellationToken)
+    {
+        var candidates = await LoadFileStorageIssueCandidatesAsync(cancellationToken);
+        return candidates
+            .Where(HasDbFileContentResidue)
+            .OrderBy(candidate => candidate.EntityType, StringComparer.Ordinal)
+            .ThenBy(candidate => candidate.PrimaryText, StringComparer.OrdinalIgnoreCase)
+            .Select(CreateFileStorageIssueDetailRow)
+            .ToList();
+    }
+
+    private async Task<List<FileStorageIssueCandidate>> LoadFileStorageIssueCandidatesAsync(CancellationToken cancellationToken)
+    {
+        var candidates = new List<FileStorageIssueCandidate>();
+
+        var contractRows = await _officeScopeService
+            .ApplyCustomerContractScope(_dbContext.CustomerContracts.IgnoreQueryFilters().AsNoTracking())
+            .Where(contract => !contract.IsDeleted)
+            .Select(contract => new
+            {
+                contract.Id,
+                contract.CustomerId,
+                contract.ContractType,
+                contract.FileName,
+                contract.Description,
+                contract.UploadedAtUtc,
+                contract.FileSize,
+                contract.StoragePath,
+                FileContentLength = contract.FileContent.Length,
+                CustomerName = contract.Customer == null ? string.Empty : contract.Customer.NameOriginal,
+                TenantCode = contract.Customer == null ? string.Empty : contract.Customer.TenantCode,
+                OfficeCode = contract.Customer == null ? string.Empty : contract.Customer.OfficeCode,
+                ResponsibleOfficeCode = contract.Customer == null ? string.Empty : contract.Customer.ResponsibleOfficeCode
+            })
+            .ToListAsync(cancellationToken);
+
+        candidates.AddRange(contractRows.Select(contract => new FileStorageIssueCandidate(
+            EntityType: "거래처계약서",
+            EntityId: contract.Id,
+            PrimaryText: FirstNonEmpty(contract.FileName, FormatGuid(contract.Id)),
+            SecondaryText: CombineParts(contract.ContractType, contract.Description),
+            ReferenceText: $"거래처 {FirstNonEmpty(contract.CustomerName, FormatGuid(contract.CustomerId))}",
+            ScopeText: CombineParts(FormatScope(contract.TenantCode, contract.OfficeCode, contract.ResponsibleOfficeCode), $"업로드 {FormatUtcDateTime(contract.UploadedAtUtc)}"),
+            FileSize: contract.FileSize,
+            StoragePath: contract.StoragePath,
+            FileContentLength: contract.FileContentLength)));
+
+        var transactionAttachmentRows = await _officeScopeService
+            .ApplyTransactionAttachmentScope(_dbContext.TransactionAttachments.IgnoreQueryFilters().AsNoTracking())
+            .Where(attachment => !attachment.IsDeleted)
+            .Select(attachment => new
+            {
+                attachment.Id,
+                attachment.TransactionId,
+                attachment.AttachmentType,
+                attachment.FileName,
+                attachment.Description,
+                attachment.UploadedAtUtc,
+                attachment.FileSize,
+                attachment.StoragePath,
+                FileContentLength = attachment.FileContent.Length,
+                TransactionDate = attachment.Transaction == null ? (DateOnly?)null : attachment.Transaction.TransactionDate,
+                TransactionKind = attachment.Transaction == null ? string.Empty : attachment.Transaction.TransactionKind,
+                LinkedInvoiceNumber = attachment.Transaction == null ? string.Empty : attachment.Transaction.LinkedInvoiceNumber,
+                TenantCode = attachment.Transaction == null ? string.Empty : attachment.Transaction.TenantCode,
+                OfficeCode = attachment.Transaction == null ? string.Empty : attachment.Transaction.OfficeCode,
+                ResponsibleOfficeCode = attachment.Transaction == null ? string.Empty : attachment.Transaction.ResponsibleOfficeCode
+            })
+            .ToListAsync(cancellationToken);
+
+        candidates.AddRange(transactionAttachmentRows.Select(attachment => new FileStorageIssueCandidate(
+            EntityType: "거래첨부",
+            EntityId: attachment.Id,
+            PrimaryText: FirstNonEmpty(attachment.FileName, FormatGuid(attachment.Id)),
+            SecondaryText: CombineParts(attachment.AttachmentType, attachment.Description),
+            ReferenceText: attachment.TransactionDate.HasValue
+                ? CombineParts(
+                    $"거래 {FormatDate(attachment.TransactionDate.Value)}",
+                    attachment.TransactionKind,
+                    string.IsNullOrWhiteSpace(attachment.LinkedInvoiceNumber) ? null : $"전표 {attachment.LinkedInvoiceNumber}")
+                : $"거래 {FormatGuid(attachment.TransactionId)}",
+            ScopeText: CombineParts(FormatScope(attachment.TenantCode, attachment.OfficeCode, attachment.ResponsibleOfficeCode), $"업로드 {FormatUtcDateTime(attachment.UploadedAtUtc)}"),
+            FileSize: attachment.FileSize,
+            StoragePath: attachment.StoragePath,
+            FileContentLength: attachment.FileContentLength)));
+
+        var scopedPayments = _officeScopeService
+            .ApplyPaymentScope(_dbContext.Payments.IgnoreQueryFilters().AsNoTracking())
+            .Where(payment => !payment.IsDeleted);
+        var paymentAttachmentRows = await (
+                from attachment in _dbContext.PaymentAttachments.IgnoreQueryFilters().AsNoTracking().Where(attachment => !attachment.IsDeleted)
+                join payment in scopedPayments on attachment.PaymentId equals payment.Id
+                select new
+                {
+                    attachment.Id,
+                    attachment.PaymentId,
+                    attachment.AttachmentType,
+                    attachment.FileName,
+                    attachment.Description,
+                    attachment.UploadedAtUtc,
+                    attachment.FileSize,
+                    attachment.StoragePath,
+                    FileContentLength = attachment.FileContent.Length,
+                    payment.PaymentDate,
+                    payment.Amount,
+                    InvoiceNumber = payment.Invoice == null ? string.Empty : payment.Invoice.InvoiceNumber,
+                    TenantCode = payment.Invoice == null ? string.Empty : payment.Invoice.TenantCode,
+                    OfficeCode = payment.Invoice == null ? string.Empty : payment.Invoice.OfficeCode,
+                    ResponsibleOfficeCode = payment.Invoice == null ? string.Empty : payment.Invoice.ResponsibleOfficeCode
+                })
+            .ToListAsync(cancellationToken);
+
+        candidates.AddRange(paymentAttachmentRows.Select(attachment => new FileStorageIssueCandidate(
+            EntityType: "결제첨부",
+            EntityId: attachment.Id,
+            PrimaryText: FirstNonEmpty(attachment.FileName, FormatGuid(attachment.Id)),
+            SecondaryText: CombineParts(attachment.AttachmentType, attachment.Description),
+            ReferenceText: CombineParts(
+                $"결제 {FormatDate(attachment.PaymentDate)}",
+                $"금액 {FormatMoney(attachment.Amount)}",
+                string.IsNullOrWhiteSpace(attachment.InvoiceNumber) ? null : $"전표 {attachment.InvoiceNumber}"),
+            ScopeText: CombineParts(FormatScope(attachment.TenantCode, attachment.OfficeCode, attachment.ResponsibleOfficeCode), $"업로드 {FormatUtcDateTime(attachment.UploadedAtUtc)}"),
+            FileSize: attachment.FileSize,
+            StoragePath: attachment.StoragePath,
+            FileContentLength: attachment.FileContentLength)));
+
+        return candidates;
+    }
+
     private async Task<List<IntegrityIssueDetailRowDto>> LoadSharedItemScopeConflictDetailsAsync(CancellationToken cancellationToken)
     {
         var snapshots = await LoadSharedItemScopeConflictSnapshotsAsync(cancellationToken);
@@ -1826,6 +1982,8 @@ public sealed class IntegrityController : ControllerBase
             "orphan_payment_invoice_refs" => new IntegrityIssueDefinition("orphan_payment_invoice_refs", "Error", "전표가 없는 수금/지급 참조가 존재합니다."),
             "orphan_attachment_transaction_refs" => new IntegrityIssueDefinition("orphan_attachment_transaction_refs", "Error", "거래내역이 없는 증빙 첨부가 존재합니다."),
             "orphan_payment_attachment_refs" => new IntegrityIssueDefinition("orphan_payment_attachment_refs", "Error", "결제내역이 없는 결제 첨부가 존재합니다."),
+            "file_content_unavailable" => new IntegrityIssueDefinition("file_content_unavailable", "Error", "파일 크기는 있으나 저장소 경로와 DB 파일 본문이 모두 비어 있는 첨부/계약서가 있습니다."),
+            "file_content_db_residue" => new IntegrityIssueDefinition("file_content_db_residue", "Warning", "파일 본문이 DB에 남아 저장소 이동이 완료되지 않은 첨부/계약서가 있습니다."),
             _ => new IntegrityIssueDefinition(string.Empty, string.Empty, string.Empty)
         };
 
@@ -1882,6 +2040,29 @@ public sealed class IntegrityController : ControllerBase
             DetailText = NormalizeCellText(detailText)
         };
     }
+
+    private static IntegrityIssueDetailRowDto CreateFileStorageIssueDetailRow(FileStorageIssueCandidate candidate)
+    {
+        return CreateDetailRow(
+            entityType: candidate.EntityType,
+            entityIdText: FormatGuid(candidate.EntityId),
+            primaryText: candidate.PrimaryText,
+            secondaryText: candidate.SecondaryText,
+            referenceText: candidate.ReferenceText,
+            scopeText: candidate.ScopeText,
+            detailText: CombineParts(
+                $"FileSize {candidate.FileSize:N0} bytes",
+                string.IsNullOrWhiteSpace(candidate.StoragePath) ? "StoragePath 비어 있음" : $"StoragePath {candidate.StoragePath}",
+                $"DB FileContent {candidate.FileContentLength:N0} bytes"));
+    }
+
+    private static bool IsFileContentUnavailable(FileStorageIssueCandidate candidate)
+        => candidate.FileSize > 0 &&
+           string.IsNullOrWhiteSpace(candidate.StoragePath) &&
+           candidate.FileContentLength <= 0;
+
+    private static bool HasDbFileContentResidue(FileStorageIssueCandidate candidate)
+        => candidate.FileContentLength > 0;
 
     private static string FormatScope(params string?[] parts)
         => string.Join(" / ", parts.Where(part => !string.IsNullOrWhiteSpace(part)).Select(part => part!.Trim()));
@@ -1959,6 +2140,17 @@ public sealed class IntegrityController : ControllerBase
         => value == default ? "-" : $"{value:yyyy-MM-dd HH:mm:ss} UTC";
 
     private sealed record IntegrityIssueDefinition(string Code, string Severity, string Message);
+
+    private sealed record FileStorageIssueCandidate(
+        string EntityType,
+        Guid EntityId,
+        string PrimaryText,
+        string SecondaryText,
+        string ReferenceText,
+        string ScopeText,
+        long FileSize,
+        string StoragePath,
+        int FileContentLength);
 
     private sealed record NegativeStockInvoiceEvidence(
         Guid ItemId,
