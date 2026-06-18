@@ -222,6 +222,8 @@ public sealed class GeoraePlanApiClient
                 form.Add(fileContent, "file", attachment.FileName);
                 form.Add(new StringContent(attachment.AttachmentType ?? "내역첨부"), "attachmentType");
                 form.Add(new StringContent(attachment.Description ?? string.Empty), "description");
+                if (attachment.LocalId != Guid.Empty)
+                    form.Add(new StringContent(attachment.LocalId.ToString("D")), "clientAttachmentId");
                 request.Content = form;
                 return request;
             },

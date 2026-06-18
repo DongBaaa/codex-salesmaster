@@ -6,6 +6,7 @@ using 거래플랜.Server.Api.Security;
 using 거래플랜.Server.Api.Services;
 using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -1602,6 +1603,69 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PaymentsController_UploadAttachment_IsIdempotentForClientAttachmentId()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Mobile attachment retry customer",
+            NameMatchKey = "MOBILEATTACHMENTRETRYCUSTOMER",
+            TradeType = "Sales"
+        };
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "MOBILE-ATTACHMENT-IDEMPOTENT",
+            InvoiceDate = new DateOnly(2026, 6, 18)
+        };
+        var payment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 18),
+            Amount = 5000m,
+            Note = "mobile upload retry"
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(invoice);
+        dbContext.Payments.Add(payment);
+        await dbContext.SaveChangesAsync();
+
+        var controller = new PaymentsController(dbContext, new OfficeScopeService(currentUser, dbContext), new StubCentralFileStorage());
+        var clientAttachmentId = Guid.NewGuid();
+
+        var first = AssertOk<PaymentAttachmentDto>(await controller.UploadAttachment(
+            payment.Id,
+            CreateFormFile("retry-receipt.pdf", "application/pdf", "first upload"),
+            "내역첨부",
+            "mobile retry",
+            clientAttachmentId,
+            CancellationToken.None));
+        var second = AssertOk<PaymentAttachmentDto>(await controller.UploadAttachment(
+            payment.Id,
+            CreateFormFile("retry-receipt.pdf", "application/pdf", "second upload should not create duplicate"),
+            "내역첨부",
+            "mobile retry",
+            clientAttachmentId,
+            CancellationToken.None));
+
+        Assert.Equal(clientAttachmentId, first.Id);
+        Assert.Equal(first.Id, second.Id);
+        Assert.Equal(first.FileHash, second.FileHash);
+        Assert.Equal(1, await dbContext.PaymentAttachments.IgnoreQueryFilters().CountAsync(current => current.PaymentId == payment.Id));
+    }
+
+    [Fact]
     public async Task CompanyProfileController_Upsert_ReturnsConflict_WhenExpectedRevisionDoesNotMatch()
     {
         var currentUser = CreateAdminUser();
@@ -1884,6 +1948,17 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             new InventoryLedgerService(dbContext),
             new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
             new RentalAssignmentHistoryService(dbContext));
+
+    private static IFormFile CreateFormFile(string fileName, string contentType, string content)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(content);
+        var stream = new MemoryStream(bytes);
+        return new FormFile(stream, 0, bytes.Length, "file", fileName)
+        {
+            Headers = new HeaderDictionary(),
+            ContentType = contentType
+        };
+    }
 
     private AppDbContext CreateDbContext(TestCurrentUserContext currentUser)
     {

@@ -213,6 +213,7 @@ public sealed class SyncCoordinator
                 state.PendingPush.Transactions.RemoveAll(x => x.Id == linkedTransaction.Id);
 
             var attachmentList = attachments?.ToList() ?? [];
+            var uploadedAttachments = new List<PendingPaymentAttachmentRecord>();
 
             try
             {
@@ -248,7 +249,7 @@ public sealed class SyncCoordinator
                     try
                     {
                         await _api.UploadPaymentAttachmentAsync(payment.Id, attachment, ct);
-                        await _attachmentStore.RemoveAsync(attachment, ct);
+                        uploadedAttachments.Add(attachment);
                     }
                     catch (Exception uploadEx)
                     {
@@ -286,6 +287,7 @@ public sealed class SyncCoordinator
             }
 
             await _store.SaveAsync(state, ct);
+            await RemoveUploadedPaymentAttachmentDraftsAsync(uploadedAttachments, ct);
             return state;
         }
         finally
@@ -464,6 +466,7 @@ public sealed class SyncCoordinator
         }
 
         var uploadedIds = new List<Guid>();
+        var uploadedAttachments = new List<PendingPaymentAttachmentRecord>();
         var errors = new List<string>();
 
         foreach (var attachment in pending)
@@ -485,7 +488,7 @@ public sealed class SyncCoordinator
 
                 await _api.UploadPaymentAttachmentAsync(attachment.PaymentId, attachment, ct);
                 uploadedIds.Add(attachment.LocalId);
-                await _attachmentStore.RemoveAsync(attachment, ct);
+                uploadedAttachments.Add(attachment);
             }
             catch (Exception ex)
             {
@@ -506,7 +509,26 @@ public sealed class SyncCoordinator
             state.ConsecutiveFailureCount++;
         }
 
+        await _store.SaveAsync(state, ct);
+        await RemoveUploadedPaymentAttachmentDraftsAsync(uploadedAttachments, ct);
         return state;
+    }
+
+    private async Task RemoveUploadedPaymentAttachmentDraftsAsync(
+        IEnumerable<PendingPaymentAttachmentRecord> attachments,
+        CancellationToken ct)
+    {
+        foreach (var attachment in attachments)
+        {
+            try
+            {
+                await _attachmentStore.RemoveAsync(attachment, ct);
+            }
+            catch (Exception ex)
+            {
+                MobileAppLogger.Warn("SYNC", $"업로드 완료 첨부 임시 파일 정리 실패: {attachment.FileName} / {ex.Message}");
+            }
+        }
     }
 
     private async Task MarkConcurrencyConflictAndRefreshAsync(MobileSyncState state, Exception ex, CancellationToken ct)

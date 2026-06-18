@@ -116,6 +116,7 @@ public sealed class PaymentsController : ControllerBase
         [FromForm] IFormFile file,
         [FromForm] string? attachmentType,
         [FromForm] string? description,
+        [FromForm] Guid? clientAttachmentId,
         CancellationToken cancellationToken)
     {
         if (!_officeScopeService.CanEditPayments())
@@ -135,6 +136,41 @@ public sealed class PaymentsController : ControllerBase
 
         if (file.Length > 15 * 1024 * 1024)
             return BadRequest(new { error = "file_too_large", message = "첨부 파일은 15MB 이하만 업로드할 수 있습니다." });
+
+        var attachmentId = clientAttachmentId.GetValueOrDefault();
+        if (attachmentId != Guid.Empty)
+        {
+            var existingAttachment = await _dbContext.PaymentAttachments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x => x.Id == attachmentId, cancellationToken);
+            if (existingAttachment is not null)
+            {
+                if (existingAttachment.PaymentId != paymentId)
+                {
+                    return Conflict(new
+                    {
+                        error = "client_attachment_id_conflict",
+                        message = "이미 다른 수금/지급 내역에 사용된 모바일 첨부 식별자입니다."
+                    });
+                }
+
+                if (existingAttachment.IsDeleted)
+                {
+                    return Conflict(new
+                    {
+                        error = "client_attachment_deleted",
+                        message = "이미 삭제된 첨부 식별자입니다. 첨부를 새로 선택한 뒤 다시 시도하세요."
+                    });
+                }
+
+                return Ok(existingAttachment.ToDto(false));
+            }
+        }
+        else
+        {
+            attachmentId = Guid.NewGuid();
+        }
 
         var safeFileName = Path.GetFileName(file.FileName ?? string.Empty);
         if (string.IsNullOrWhiteSpace(safeFileName))
@@ -156,7 +192,7 @@ public sealed class PaymentsController : ControllerBase
 
         var entity = new PaymentAttachment
         {
-            Id = Guid.NewGuid(),
+            Id = attachmentId,
             PaymentId = paymentId,
             AttachmentType = string.IsNullOrWhiteSpace(attachmentType) ? "내역첨부" : attachmentType.Trim(),
             Description = description?.Trim() ?? string.Empty,
@@ -358,6 +394,5 @@ public sealed class PaymentsController : ControllerBase
     }
 
 }
-
 
 
