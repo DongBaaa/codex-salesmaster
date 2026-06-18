@@ -21,15 +21,18 @@ public sealed class PaymentsController : ControllerBase
     private readonly AppDbContext _dbContext;
     private readonly OfficeScopeService _officeScopeService;
     private readonly ICentralFileStorage _fileStorage;
+    private readonly RentalSettlementRecalculationService _rentalSettlementRecalculationService;
 
     public PaymentsController(
         AppDbContext dbContext,
         OfficeScopeService officeScopeService,
-        ICentralFileStorage fileStorage)
+        ICentralFileStorage fileStorage,
+        RentalSettlementRecalculationService rentalSettlementRecalculationService)
     {
         _dbContext = dbContext;
         _officeScopeService = officeScopeService;
         _fileStorage = fileStorage;
+        _rentalSettlementRecalculationService = rentalSettlementRecalculationService;
     }
 
     [HttpGet]
@@ -239,6 +242,8 @@ public sealed class PaymentsController : ControllerBase
         entity.Apply(dto);
         _dbContext.Payments.Add(entity);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await RecalculateRentalSettlementsForPaymentInvoicesAsync([invoice], cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
 
         var saved = await _dbContext.Payments
             .AsNoTracking()
@@ -279,7 +284,10 @@ public sealed class PaymentsController : ControllerBase
         if (await ValidatePaymentAmountAsync(dto, id, cancellationToken) is { } paymentValidationError)
             return paymentValidationError;
 
+        var previousInvoice = entity.Invoice;
         entity.Apply(dto);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        await RecalculateRentalSettlementsForPaymentInvoicesAsync([previousInvoice, targetInvoice], cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(entity.ToDto());
     }
@@ -311,7 +319,21 @@ public sealed class PaymentsController : ControllerBase
             attachment.IsDeleted = true;
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await RecalculateRentalSettlementsForPaymentInvoicesAsync([entity.Invoice], cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
         return NoContent();
+    }
+
+    private async Task RecalculateRentalSettlementsForPaymentInvoicesAsync(
+        IEnumerable<Invoice?> invoices,
+        CancellationToken cancellationToken)
+    {
+        var targets = (invoices ?? Enumerable.Empty<Invoice?>())
+            .Where(invoice => invoice?.LinkedRentalBillingProfileId is Guid profileId && profileId != Guid.Empty)
+            .Select(invoice => (ProfileId: invoice!.LinkedRentalBillingProfileId!.Value, RunId: invoice.LinkedRentalBillingRunId))
+            .Distinct()
+            .ToList();
+        await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(targets, cancellationToken);
     }
 
     private async Task<ActionResult?> ValidatePaymentAmountAsync(

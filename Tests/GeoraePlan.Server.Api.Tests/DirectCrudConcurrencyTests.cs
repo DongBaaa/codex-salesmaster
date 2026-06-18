@@ -431,7 +431,7 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             new InventoryLedgerService(dbContext),
             new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
             new RentalSettlementRecalculationService(dbContext));
-        var paymentController = new PaymentsController(dbContext, new OfficeScopeService(currentUser, dbContext), new StubCentralFileStorage());
+        var paymentController = CreatePaymentsController(dbContext, currentUser);
 
         var customerDto = (await dbContext.Customers.IgnoreQueryFilters().SingleAsync(row => row.Id == customer.Id)).ToDto();
         customerDto.ExpectedRevision = customerDto.Revision;
@@ -1547,6 +1547,71 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PaymentsController_Create_RentalBillingDirectPayment_RecalculatesSettlement()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var scenario = SeedRentalDirectPaymentScenario(dbContext);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreatePaymentsController(dbContext, currentUser);
+        var createResponse = await controller.Create(new PaymentDto
+        {
+            Id = scenario.PaymentId,
+            InvoiceId = scenario.InvoiceId,
+            PaymentDate = new DateOnly(2026, 7, 26),
+            Amount = 40_000m,
+            Note = "direct rental payment"
+        }, CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(createResponse.Result);
+        await AssertRentalSettlementAsync(dbContext, scenario.ProfileId, scenario.RunId, expectedSettled: 40_000m, expectedOutstanding: 60_000m);
+    }
+
+    [Fact]
+    public async Task PaymentsController_Update_RentalBillingDirectPayment_RecalculatesSettlement()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var scenario = SeedRentalDirectPaymentScenario(dbContext, existingPaymentAmount: 40_000m, storedSettledAmount: 40_000m);
+        await dbContext.SaveChangesAsync();
+        var storedPayment = await dbContext.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(payment => payment.Id == scenario.PaymentId);
+
+        var controller = CreatePaymentsController(dbContext, currentUser);
+        var updateResponse = await controller.Update(scenario.PaymentId, new PaymentDto
+        {
+            Id = scenario.PaymentId,
+            InvoiceId = scenario.InvoiceId,
+            PaymentDate = storedPayment.PaymentDate,
+            Amount = 70_000m,
+            Note = "direct rental payment updated",
+            ExpectedRevision = storedPayment.Revision
+        }, CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(updateResponse.Result);
+        await AssertRentalSettlementAsync(dbContext, scenario.ProfileId, scenario.RunId, expectedSettled: 70_000m, expectedOutstanding: 30_000m);
+    }
+
+    [Fact]
+    public async Task PaymentsController_Delete_RentalBillingDirectPayment_RecalculatesSettlement()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var scenario = SeedRentalDirectPaymentScenario(dbContext, existingPaymentAmount: 40_000m, storedSettledAmount: 40_000m);
+        await dbContext.SaveChangesAsync();
+        var storedPayment = await dbContext.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(payment => payment.Id == scenario.PaymentId);
+
+        var controller = CreatePaymentsController(dbContext, currentUser);
+        var deleteResponse = await controller.Delete(scenario.PaymentId, storedPayment.Revision, CancellationToken.None);
+
+        Assert.IsType<NoContentResult>(deleteResponse);
+        await AssertRentalSettlementAsync(dbContext, scenario.ProfileId, scenario.RunId, expectedSettled: 0m, expectedOutstanding: 100_000m);
+    }
+
+    [Fact]
     public async Task InvoicesController_SalesCreate_AllowsNegativeWarehouseStockWhenInventoryIsShort()
     {
         var currentUser = CreateAdminUser();
@@ -1795,7 +1860,7 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             .Include(x => x.Invoice)
             .ThenInclude(invoice => invoice!.Customer)
             .FirstAsync(x => x.Id == payment.Id);
-        var controller = new PaymentsController(dbContext, new OfficeScopeService(currentUser, dbContext), new StubCentralFileStorage());
+        var controller = CreatePaymentsController(dbContext, currentUser);
 
         var response = await controller.Delete(stored.Id, stored.Revision + 1, CancellationToken.None);
 
@@ -1883,7 +1948,7 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         dto.InvoiceId = outOfScopeInvoice.Id;
         dto.Note = "attempted out-of-scope relink";
 
-        var controller = new PaymentsController(dbContext, new OfficeScopeService(currentUser, dbContext), new StubCentralFileStorage());
+        var controller = CreatePaymentsController(dbContext, currentUser);
 
         var response = await controller.Update(payment.Id, dto, CancellationToken.None);
 
@@ -1934,7 +1999,7 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         dbContext.Payments.Add(payment);
         await dbContext.SaveChangesAsync();
 
-        var controller = new PaymentsController(dbContext, new OfficeScopeService(currentUser, dbContext), new StubCentralFileStorage());
+        var controller = CreatePaymentsController(dbContext, currentUser);
         var clientAttachmentId = Guid.NewGuid();
 
         var first = AssertOk<PaymentAttachmentDto>(await controller.UploadAttachment(
@@ -1997,7 +2062,7 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         dbContext.Payments.Add(payment);
         await dbContext.SaveChangesAsync();
 
-        var controller = new PaymentsController(dbContext, new OfficeScopeService(currentUser, dbContext), new StubCentralFileStorage());
+        var controller = CreatePaymentsController(dbContext, currentUser);
 
         var response = await controller.UploadAttachment(
             payment.Id,
@@ -2064,7 +2129,7 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         dbContext.PaymentAttachments.Add(attachment);
         await dbContext.SaveChangesAsync();
 
-        var controller = new PaymentsController(dbContext, new OfficeScopeService(currentUser, dbContext), new StubCentralFileStorage());
+        var controller = CreatePaymentsController(dbContext, currentUser);
 
         var result = await controller.GetAttachmentContent(attachment.Id, CancellationToken.None);
 
@@ -2394,6 +2459,160 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
             new RentalAssignmentHistoryService(dbContext),
             new RentalSettlementRecalculationService(dbContext));
+
+    private static PaymentsController CreatePaymentsController(AppDbContext dbContext, TestCurrentUserContext currentUser)
+        => new(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext),
+            new StubCentralFileStorage(),
+            new RentalSettlementRecalculationService(dbContext));
+
+    private static RentalDirectPaymentScenario SeedRentalDirectPaymentScenario(
+        AppDbContext dbContext,
+        decimal? existingPaymentAmount = null,
+        decimal storedSettledAmount = 0m)
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var billedAmount = 100_000m;
+        var storedOutstandingAmount = Math.Max(0m, billedAmount - storedSettledAmount);
+        var storedSettlementStatus = storedSettledAmount <= 0m
+            ? "확인대기"
+            : storedSettledAmount < billedAmount
+                ? "부분입금"
+                : "입금확인";
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Direct rental payment customer",
+            NameMatchKey = "DIRECTRENTALPAYMENTCUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"profile-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = "Direct rental payment customer",
+            BillingStatus = storedOutstandingAmount <= 0m ? "완료" : "청구중",
+            SettlementStatus = storedSettlementStatus,
+            CompletionStatus = storedOutstandingAmount <= 0m ? "완료" : "미완료",
+            MonthlyAmount = billedAmount,
+            SettledAmount = storedSettledAmount,
+            OutstandingAmount = storedOutstandingAmount,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new ServerRentalBillingRunSnapshot
+                {
+                    RunId = runId,
+                    RunKey = "2026-07",
+                    ScheduledDate = new DateOnly(2026, 7, 25),
+                    PeriodStartDate = new DateOnly(2026, 7, 1),
+                    PeriodEndDate = new DateOnly(2026, 7, 31),
+                    PeriodLabel = "2026-07",
+                    Status = storedOutstandingAmount <= 0m ? "완료" : "청구중",
+                    BilledAmount = billedAmount,
+                    SettledAmount = storedSettledAmount,
+                    SettlementStatus = storedSettlementStatus,
+                    SettledDate = storedSettledAmount > 0m ? new DateOnly(2026, 7, 26) : null
+                }
+            })
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "RENTAL-DIRECT-PAY-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 7, 25),
+            TotalAmount = billedAmount,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId
+        });
+        dbContext.InvoiceLines.Add(new InvoiceLine
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoiceId,
+            ItemNameOriginal = "Rental billing direct payment item",
+            Unit = "EA",
+            Quantity = 1m,
+            UnitPrice = billedAmount,
+            LineAmount = billedAmount
+        });
+
+        if (existingPaymentAmount.HasValue)
+        {
+            dbContext.Payments.Add(new Payment
+            {
+                Id = paymentId,
+                InvoiceId = invoiceId,
+                PaymentDate = new DateOnly(2026, 7, 26),
+                Amount = existingPaymentAmount.Value,
+                Note = "seeded direct rental payment"
+            });
+        }
+
+        return new RentalDirectPaymentScenario(customerId, profileId, runId, invoiceId, paymentId);
+    }
+
+    private static async Task AssertRentalSettlementAsync(
+        AppDbContext dbContext,
+        Guid profileId,
+        Guid runId,
+        decimal expectedSettled,
+        decimal expectedOutstanding)
+    {
+        var profile = await dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == profileId);
+        var expectedSettlementStatus = expectedSettled <= 0m
+            ? "확인대기"
+            : expectedOutstanding > 0m
+                ? "부분입금"
+                : "입금확인";
+
+        Assert.Equal(expectedSettled, profile.SettledAmount);
+        Assert.Equal(expectedOutstanding, profile.OutstandingAmount);
+        Assert.Equal(expectedOutstanding <= 0m ? "완료" : "미완료", profile.CompletionStatus);
+        Assert.Equal(expectedSettlementStatus, profile.SettlementStatus);
+
+        var run = Assert.Single(JsonSerializer.Deserialize<List<ServerRentalBillingRunSnapshot>>(profile.BillingRunsJson) ?? [], current => current.RunId == runId);
+        Assert.Equal(100_000m, run.BilledAmount);
+        Assert.Equal(expectedSettled, run.SettledAmount);
+        Assert.Equal(expectedSettlementStatus, run.SettlementStatus);
+        Assert.Equal(expectedOutstanding <= 0m ? "완료" : "청구중", run.Status);
+        if (expectedSettled <= 0m)
+            Assert.Null(run.SettledDate);
+        else
+            Assert.Equal(new DateOnly(2026, 7, 26), run.SettledDate);
+    }
+
+    private sealed record RentalDirectPaymentScenario(
+        Guid CustomerId,
+        Guid ProfileId,
+        Guid RunId,
+        Guid InvoiceId,
+        Guid PaymentId);
 
     private static IFormFile CreateFormFile(string fileName, string contentType, string content)
         => CreateFormFile(fileName, contentType, System.Text.Encoding.UTF8.GetBytes(content));
