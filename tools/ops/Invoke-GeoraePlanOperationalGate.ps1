@@ -482,6 +482,15 @@ else {
 }
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value ("healthz status={0} error={1} body={2}" -f $health.StatusCode, $health.Error, $health.Content)
 
+$ready = Invoke-TextProbe -Uri ($BaseUrl + '/readyz')
+if ($ready.Success -and $ready.StatusCode -eq 200) {
+    Add-Check -Checks $checks -Name 'live readyz' -Status 'PASS' -Detail ("200 OK, {0}ms" -f $ready.ElapsedMs)
+}
+else {
+    Add-Check -Checks $checks -Name 'live readyz' -Status 'FAIL' -Detail ("status={0}, error={1}" -f $ready.StatusCode, $ready.Error)
+}
+Add-Content -LiteralPath $logPath -Encoding UTF8 -Value ("readyz status={0} error={1} body={2}" -f $ready.StatusCode, $ready.Error, $ready.Content)
+
 $manifest = Invoke-TextProbe -Uri ($BaseUrl + "/updates/manifest?channel=$Channel")
 $desktopVersion = ''
 $androidVersion = ''

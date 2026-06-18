@@ -122,6 +122,24 @@ public sealed class ReleaseTempPathGuardTests
             "$liveObservationScript = Join-Path $resolvedRoot");
     }
 
+    [Fact]
+    public void OperationalGate_ChecksReadinessBeforeManifestAndDatabaseDependentChecks()
+    {
+        var source = ReadRepositoryFile(
+            "tools",
+            "ops",
+            "Invoke-GeoraePlanOperationalGate.ps1");
+
+        Assert.Contains("Add-Check -Checks $checks -Name 'live healthz'", source, StringComparison.Ordinal);
+        Assert.Contains("Add-Check -Checks $checks -Name 'live readyz'", source, StringComparison.Ordinal);
+        Assert.Contains("readyz status={0} error={1} body={2}", source, StringComparison.Ordinal);
+        AssertInOrder(
+            source,
+            "$health = Invoke-TextProbe -Uri ($BaseUrl + '/healthz')",
+            "$ready = Invoke-TextProbe -Uri ($BaseUrl + '/readyz')",
+            "$manifest = Invoke-TextProbe -Uri ($BaseUrl + \"/updates/manifest?channel=$Channel\")");
+    }
+
     private static string ReadRepositoryFile(params string[] pathParts)
         => File.ReadAllText(Path.Combine([FindRepositoryRoot(), .. pathParts]));
 
