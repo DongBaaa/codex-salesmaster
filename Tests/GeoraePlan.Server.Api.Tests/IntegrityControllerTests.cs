@@ -1132,6 +1132,77 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FlagsInvoiceLinkedTransactionWithoutMatchingPaymentRow()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Transaction payment mismatch customer",
+            NameMatchKey = "TRANSACTIONPAYMENTMISMATCHCUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "PAY-MISMATCH-001",
+            InvoiceDate = new DateOnly(2026, 6, 19),
+            VoucherType = VoucherType.Sales,
+            TotalAmount = 100_000m,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m,
+            IsDeleted = false
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = transactionId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 20),
+            TransactionKind = "수금",
+            LinkedInvoiceId = invoiceId,
+            LinkedInvoiceNumber = "PAY-MISMATCH-001",
+            BankReceipt = 60_000m,
+            ReceiptTotal = 60_000m,
+            SettlementAmount = 60_000m,
+            IsDeleted = false
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issue = Assert.Single(payload.Issues, current => current.Code == "invoice_linked_transaction_payment_mismatch");
+
+        Assert.Equal("Error", issue.Severity);
+        Assert.Equal(1, issue.Count);
+
+        var row = await GetSingleDetailRowAsync(controller, "invoice_linked_transaction_payment_mismatch");
+
+        Assert.Equal(FormatGuidForTest(transactionId), row.EntityIdText);
+        Assert.Contains("수금·지급 행 없음", row.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains(FormatGuidForTest(invoiceId), row.DetailText, StringComparison.Ordinal);
+        Assert.Contains("거래 정산 60,000", row.SecondaryText, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task GetReport_FlagsAttachmentsWithFileSizeButNoReadableContent()
     {
         var currentUser = CreateAdminUser();

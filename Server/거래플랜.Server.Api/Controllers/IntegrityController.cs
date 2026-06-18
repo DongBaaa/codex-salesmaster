@@ -273,6 +273,9 @@ public sealed class IntegrityController : ControllerBase
             .CountAsync(payment => !_dbContext.Invoices.IgnoreQueryFilters().Any(invoice => invoice.Id == payment.InvoiceId), cancellationToken);
         AddIssue(issues, "deleted_payment_missing_invoice_rows", deletedPaymentMissingInvoiceRowCount, "Error", "영구 삭제된 전표의 삭제 결제 잔여 행이 존재합니다.");
 
+        var invoiceLinkedTransactionPaymentMismatchCount = (await LoadInvoiceLinkedTransactionPaymentMismatchRowsAsync(cancellationToken)).Count;
+        AddIssue(issues, "invoice_linked_transaction_payment_mismatch", invoiceLinkedTransactionPaymentMismatchCount, "Error", "전표 연결 거래내역과 파생 수금/지급 행의 전표·금액 상태가 다릅니다.");
+
         var rentalInvoiceDeletedPaymentDetachedTransactionCount = await (
                 from payment in _dbContext.Payments.IgnoreQueryFilters().AsNoTracking().Where(payment => payment.IsDeleted)
                 join invoice in _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
@@ -448,6 +451,7 @@ public sealed class IntegrityController : ControllerBase
             "orphan_transaction_invoice_refs" => await LoadOrphanTransactionInvoiceDetailsAsync(cancellationToken),
             "orphan_payment_invoice_refs" => await LoadOrphanPaymentInvoiceDetailsAsync(cancellationToken),
             "deleted_payment_missing_invoice_rows" => await LoadDeletedPaymentMissingInvoiceRowDetailsAsync(cancellationToken),
+            "invoice_linked_transaction_payment_mismatch" => await LoadInvoiceLinkedTransactionPaymentMismatchDetailsAsync(cancellationToken),
             "rental_invoice_deleted_payment_detached_transaction" => await LoadRentalInvoiceDeletedPaymentDetachedTransactionDetailsAsync(cancellationToken),
             "rental_billing_run_settlement_mismatch" => await LoadRentalBillingRunSettlementMismatchDetailsAsync(cancellationToken),
             "rental_billing_run_missing_run_id" => await LoadRentalBillingRunMissingRunIdDetailsAsync(cancellationToken),
@@ -1579,6 +1583,71 @@ public sealed class IntegrityController : ControllerBase
                     string.IsNullOrWhiteSpace(payment.Note) ? null : $"메모 {payment.Note}",
                     $"결제ID {FormatGuid(payment.Id)}")))
             .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadInvoiceLinkedTransactionPaymentMismatchDetailsAsync(CancellationToken cancellationToken)
+    {
+        var rows = await LoadInvoiceLinkedTransactionPaymentMismatchRowsAsync(cancellationToken);
+        return rows
+            .Select(row => CreateDetailRow(
+                entityType: "전표 연결 거래내역",
+                entityIdText: FormatGuid(row.TransactionId),
+                primaryText: CombineParts(row.TransactionKind, FormatDate(row.TransactionDate), FirstNonEmpty(row.InvoiceNumber, row.LocalTempNumber, FormatGuid(row.InvoiceId))),
+                secondaryText: $"거래 정산 {FormatMoney(row.TransactionSettlementAmount)} / 수금·지급 {FormatOptionalMoney(row.PaymentAmount)}",
+                referenceText: BuildInvoiceLinkedTransactionPaymentMismatchReason(row),
+                scopeText: FormatScope(row.TenantCode, row.OfficeCode, row.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    $"전표ID {FormatGuid(row.InvoiceId)}",
+                    $"거래내역ID {FormatGuid(row.TransactionId)}",
+                    row.PaymentId.HasValue ? $"결제ID {FormatGuid(row.PaymentId.Value)}" : "결제ID 없음",
+                    row.PaymentInvoiceId.HasValue ? $"결제 전표ID {FormatGuid(row.PaymentInvoiceId.Value)}" : "결제 전표ID 없음",
+                    row.PaymentIsDeleted.HasValue ? $"결제 삭제상태 {(row.PaymentIsDeleted.Value ? "삭제" : "활성")}" : "결제 행 없음",
+                    string.IsNullOrWhiteSpace(row.LinkedInvoiceNumber) ? null : $"거래 전표번호 {row.LinkedInvoiceNumber}")))
+            .ToList();
+    }
+
+    private async Task<List<InvoiceLinkedTransactionPaymentMismatchRow>> LoadInvoiceLinkedTransactionPaymentMismatchRowsAsync(CancellationToken cancellationToken)
+    {
+        var rows = await (
+                from transaction in _officeScopeService.ApplyTransactionScope(_dbContext.Transactions.IgnoreQueryFilters().AsNoTracking())
+                    .Where(transaction =>
+                        !transaction.IsDeleted &&
+                        transaction.LinkedInvoiceId.HasValue &&
+                        transaction.LinkedInvoiceId.Value != Guid.Empty &&
+                        transaction.SettlementAmount > 0m)
+                join invoice in _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
+                        .Where(invoice => !invoice.IsDeleted)
+                    on transaction.LinkedInvoiceId!.Value equals invoice.Id
+                join payment in _dbContext.Payments.IgnoreQueryFilters().AsNoTracking()
+                    on transaction.Id equals payment.Id into paymentGroup
+                from payment in paymentGroup.DefaultIfEmpty()
+                where payment == null ||
+                      payment.IsDeleted ||
+                      payment.InvoiceId != invoice.Id ||
+                      payment.Amount - transaction.SettlementAmount >= 1m ||
+                      transaction.SettlementAmount - payment.Amount >= 1m
+                orderby transaction.TransactionDate, transaction.Id
+                select new InvoiceLinkedTransactionPaymentMismatchRow(
+                    transaction.Id,
+                    invoice.Id,
+                    payment == null ? null : (Guid?)payment.Id,
+                    transaction.TenantCode,
+                    transaction.OfficeCode,
+                    transaction.ResponsibleOfficeCode,
+                    transaction.TransactionDate,
+                    transaction.TransactionKind,
+                    transaction.LinkedInvoiceNumber,
+                    transaction.SettlementAmount,
+                    invoice.InvoiceNumber,
+                    invoice.LocalTempNumber,
+                    invoice.InvoiceDate,
+                    invoice.TotalAmount,
+                    payment == null ? null : (Guid?)payment.InvoiceId,
+                    payment == null ? null : (decimal?)payment.Amount,
+                    payment == null ? null : (bool?)payment.IsDeleted))
+            .ToListAsync(cancellationToken);
+
+        return rows;
     }
 
     private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalInvoiceDeletedPaymentDetachedTransactionDetailsAsync(CancellationToken cancellationToken)
@@ -2949,6 +3018,7 @@ public sealed class IntegrityController : ControllerBase
             "orphan_transaction_invoice_refs" => new IntegrityIssueDefinition("orphan_transaction_invoice_refs", "Error", "전표가 없는 거래/수금 참조가 존재합니다."),
             "orphan_payment_invoice_refs" => new IntegrityIssueDefinition("orphan_payment_invoice_refs", "Error", "전표가 없는 수금/지급 참조가 존재합니다."),
             "deleted_payment_missing_invoice_rows" => new IntegrityIssueDefinition("deleted_payment_missing_invoice_rows", "Error", "영구 삭제된 전표의 삭제 결제 잔여 행이 존재합니다."),
+            "invoice_linked_transaction_payment_mismatch" => new IntegrityIssueDefinition("invoice_linked_transaction_payment_mismatch", "Error", "전표 연결 거래내역과 파생 수금/지급 행의 전표·금액 상태가 다릅니다."),
             "rental_invoice_deleted_payment_detached_transaction" => new IntegrityIssueDefinition("rental_invoice_deleted_payment_detached_transaction", "Error", "활성 렌탈 전표에 삭제 상태 수금/지급과 전표 링크가 끊긴 활성 거래내역이 함께 남아 있습니다."),
             "rental_billing_run_settlement_mismatch" => new IntegrityIssueDefinition("rental_billing_run_settlement_mismatch", "Error", "렌탈 청구 run의 저장 정산금액과 실제 활성 수금/거래내역 합계가 다릅니다."),
             "rental_billing_run_missing_run_id" => new IntegrityIssueDefinition("rental_billing_run_missing_run_id", "Info", "렌탈 청구 프로필에 run ID가 비어 있는 과거 청구 JSON이 있습니다."),
@@ -3252,6 +3322,23 @@ public sealed class IntegrityController : ControllerBase
     private static string FormatMoney(decimal value)
         => value.ToString("#,##0.##");
 
+    private static string FormatOptionalMoney(decimal? value)
+        => value.HasValue ? FormatMoney(value.Value) : "행 없음";
+
+    private static string BuildInvoiceLinkedTransactionPaymentMismatchReason(InvoiceLinkedTransactionPaymentMismatchRow row)
+    {
+        if (!row.PaymentId.HasValue)
+            return "수금·지급 행 없음";
+        if (row.PaymentIsDeleted == true)
+            return "수금·지급 삭제상태";
+        if (row.PaymentInvoiceId != row.InvoiceId)
+            return "수금·지급 전표 링크 불일치";
+        if (!row.PaymentAmount.HasValue || AmountDiffers(row.PaymentAmount.Value, row.TransactionSettlementAmount))
+            return "수금·지급 금액 불일치";
+
+        return "전표 연결 거래내역/수금·지급 불일치";
+    }
+
     private static string FormatVoucherType(VoucherType value)
         => value switch
         {
@@ -3373,6 +3460,25 @@ public sealed class IntegrityController : ControllerBase
         List<RentalAsset> LinkedAssets,
         decimal TemplateMonthlyAmount,
         decimal AssetMonthlyAmount);
+
+    private sealed record InvoiceLinkedTransactionPaymentMismatchRow(
+        Guid TransactionId,
+        Guid InvoiceId,
+        Guid? PaymentId,
+        string TenantCode,
+        string OfficeCode,
+        string ResponsibleOfficeCode,
+        DateOnly TransactionDate,
+        string TransactionKind,
+        string LinkedInvoiceNumber,
+        decimal TransactionSettlementAmount,
+        string InvoiceNumber,
+        string LocalTempNumber,
+        DateOnly InvoiceDate,
+        decimal InvoiceTotalAmount,
+        Guid? PaymentInvoiceId,
+        decimal? PaymentAmount,
+        bool? PaymentIsDeleted);
 
     private sealed record RentalBillingRunSettlementMismatchRow(
         Guid ProfileId,

@@ -345,6 +345,81 @@ public sealed class DataIntegrityIssueServicePerformanceTests
 
 
     [Fact]
+    public async Task ScanAsync_FindsInvoiceLinkedTransactionWithoutMatchingPaymentRow()
+    {
+        PrepareAppRoot("georaeplan-integrity-invoice-linked-transaction-payment-mismatch");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var invoiceId = Guid.NewGuid();
+            var transactionId = Guid.NewGuid();
+
+            db.Customers.Add(CreateCustomer(customerId, OfficeCodeCatalog.Usenet, "Transaction payment mismatch customer"));
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = invoiceId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerId = customerId,
+                InvoiceNumber = "LOCAL-PAY-MISMATCH-001",
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 19),
+                TotalAmount = 100_000m,
+                SupplyAmount = 90_909m,
+                VatAmount = 9_091m,
+                VatMode = InvoiceVatModes.Included,
+                IsLatestVersion = true,
+                IsDeleted = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = transactionId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 20),
+                TransactionKind = PaymentFlowConstants.TransactionKindReceipt,
+                LinkedInvoiceId = invoiceId,
+                LinkedInvoiceNumber = "LOCAL-PAY-MISMATCH-001",
+                BankReceipt = 60_000m,
+                ReceiptTotal = 60_000m,
+                SettlementAmount = 60_000m,
+                IsDeleted = false,
+                IsDirty = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateAdminSession());
+            var issue = Assert.Single(result.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.InvoiceLinkedTransactionPaymentMismatch);
+
+            Assert.Equal(invoiceId, issue.EntityId);
+            Assert.Equal("Error", issue.Severity);
+            Assert.Equal(DataIntegrityDirectActionKind.OpenPaymentForInvoice, issue.DirectActionKind);
+            Assert.Contains(transactionId.ToString("D"), issue.ReviewInfo, StringComparison.Ordinal);
+            Assert.Contains("수금·지급 행 없음", issue.CurrentValue, StringComparison.Ordinal);
+            Assert.Contains("60,000", issue.CurrentValue, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+
+    [Fact]
     public async Task ScanAsync_FindsRentalBillingRunSettlementMismatch()
     {
         PrepareAppRoot("georaeplan-integrity-rental-run-settlement-mismatch");
