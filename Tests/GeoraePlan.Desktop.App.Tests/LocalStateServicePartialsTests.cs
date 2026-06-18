@@ -7943,6 +7943,57 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task SaveTransactionAttachmentAsync_RejectsUnsupportedFileType()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-attachment-type-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var transactionId = Guid.Parse("87777777-7777-7777-7777-777777777777");
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = transactionId,
+                CustomerId = Guid.Parse("87777777-7777-7777-7777-777777777778"),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionKind = PaymentFlowConstants.TransactionKindReceipt,
+                ReceiptTotal = 100m,
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var unsupportedFilePath = Path.Combine(tempRoot, "payload.exe");
+            await File.WriteAllBytesAsync(unsupportedFilePath, [0x4D, 0x5A, 0x90, 0x00]);
+
+            var result = await service.SaveTransactionAttachmentAsync(
+                transactionId,
+                unsupportedFilePath,
+                "입금확인증",
+                "unsupported executable must not be stored",
+                session);
+
+            Assert.False(result.Success);
+            Assert.True(result.PermissionDenied);
+            Assert.Contains("PDF 또는 이미지", result.Message);
+            Assert.Empty(await db.TransactionAttachments.IgnoreQueryFilters().ToListAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task TransactionAttachmentMutations_RejectStaleExpectedRevision()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-attachment-concurrency-{Guid.NewGuid():N}");

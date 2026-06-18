@@ -1383,7 +1383,7 @@ public sealed partial class PaymentViewModel : ObservableObject
         var dialog = new OpenFileDialog
         {
             Title = "수금/지급 증빙 첨부",
-            Filter = "지원 파일|*.pdf;*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff|PDF 파일|*.pdf|이미지 파일|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff|모든 파일|*.*",
+            Filter = "지원 파일|*.pdf;*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff;*.heic;*.heif|PDF 파일|*.pdf|이미지 파일|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff;*.heic;*.heif",
             Multiselect = false
         };
 

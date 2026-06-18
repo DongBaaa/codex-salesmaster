@@ -5578,6 +5578,72 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsTransactionAttachment_WhenFileTypeUnsupported()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "TRANSACTION-ATTACHMENT-UNSUPPORTED-CUSTOMER",
+            NameMatchKey = "TRANSACTIONATTACHMENTUNSUPPORTEDCUSTOMER",
+            TradeType = "Sales"
+        };
+        var transaction = new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 19),
+            TransactionKind = "일반수금",
+            CashReceipt = 1000m,
+            ReceiptTotal = 1000m,
+            SettlementAmount = 1000m,
+            CreatedAtUtc = new DateTime(2026, 6, 19, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 19, 0, 0, 0, DateTimeKind.Utc)
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.Transactions.Add(transaction);
+        await _dbContext.SaveChangesAsync();
+
+        var attachmentId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-transaction-attachment-unsupported-type",
+            TransactionAttachments =
+            [
+                new TransactionAttachmentDto
+                {
+                    Id = attachmentId,
+                    TransactionId = transaction.Id,
+                    AttachmentType = "기타",
+                    FileName = "payload.exe",
+                    MimeType = "application/octet-stream",
+                    Description = "unsupported executable must not be stored",
+                    UploadedByUsername = "admin",
+                    UploadedAtUtc = new DateTime(2026, 6, 19, 0, 1, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = new DateTime(2026, 6, 19, 0, 1, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 19, 0, 2, 0, DateTimeKind.Utc),
+                    FileContent = [0x4D, 0x5A, 0x90, 0x00]
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(TransactionAttachment) &&
+            conflict.Reason.Contains("Only PDF or image attachments are allowed", StringComparison.OrdinalIgnoreCase));
+        Assert.False(await _dbContext.TransactionAttachments.IgnoreQueryFilters()
+            .AnyAsync(current => current.Id == attachmentId));
+    }
+
+    [Fact]
     public async Task Push_NormalizesTransactionAttachmentFileMetadata_FromUploadedContent()
     {
         var customer = new Customer
