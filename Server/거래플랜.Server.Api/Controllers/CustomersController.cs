@@ -209,6 +209,19 @@ public sealed class CustomersController : ControllerBase
         if (OptimisticConcurrencyGuard.Check(this, entity, expectedRevision, nameof(Customer)) is { } conflict)
             return conflict;
 
+        var referenceBlockMessage = await CustomerDeletionReferenceGuard.BuildActiveReferenceBlockMessageAsync(
+            _dbContext,
+            id,
+            cancellationToken);
+        if (referenceBlockMessage is not null)
+        {
+            return Conflict(new
+            {
+                error = CustomerDeletionReferenceGuard.ConflictCode,
+                message = referenceBlockMessage
+            });
+        }
+
         entity.IsDeleted = true;
 
         var contracts = await _officeScopeService.ApplyCustomerContractScope(_dbContext.CustomerContracts
@@ -279,6 +292,5 @@ public sealed class CustomersController : ControllerBase
         dto.TradeType = CustomerClassificationNormalizer.NormalizeTradeTypeOrDefault(rawTradeType);
     }
 }
-
 
 

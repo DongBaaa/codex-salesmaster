@@ -1110,6 +1110,19 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
+            if (dto.IsDeleted && existing is not null && !existing.IsDeleted)
+            {
+                var referenceBlockMessage = await CustomerDeletionReferenceGuard.BuildActiveReferenceBlockMessageAsync(
+                    _dbContext,
+                    existing.Id,
+                    cancellationToken);
+                if (referenceBlockMessage is not null)
+                {
+                    AddClientConflict(dto, nameof(Customer), referenceBlockMessage, result);
+                    continue;
+                }
+            }
+
             if (existing is not null)
                 PreserveCustomerTextWhenIncomingLooksLossy(dto, existing);
 

@@ -124,6 +124,7 @@ public sealed partial class LocalStateService
         var movedTransactionCount = 0;
         var movedRentalProfileCount = 0;
         var movedRentalAssetCount = 0;
+        var movedRentalAssignmentHistoryCount = 0;
 
         var targetHasActivePrimaryContract = await _db.CustomerContracts
             .IgnoreQueryFilters()
@@ -194,7 +195,20 @@ public sealed partial class LocalStateService
             movedRentalAssetCount++;
         }
 
-        if (movedContractCount + movedInvoiceCount + movedTransactionCount + movedRentalProfileCount + movedRentalAssetCount == 0)
+        var rentalAssignmentHistories = await _db.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .Where(current => current.CustomerId == sourceDeletedCustomerId)
+            .ToListAsync(ct);
+        foreach (var history in rentalAssignmentHistories)
+        {
+            history.CustomerId = targetCustomerId;
+            if (ShouldReplaceDisplayValue(history.CustomerName, source.NameOriginal))
+                history.CustomerName = target.NameOriginal;
+            MarkRecycleBinMutation(history, now);
+            movedRentalAssignmentHistoryCount++;
+        }
+
+        if (movedContractCount + movedInvoiceCount + movedTransactionCount + movedRentalProfileCount + movedRentalAssetCount + movedRentalAssignmentHistoryCount == 0)
             return OfficeMutationResult.Denied("옮길 연결 데이터가 없습니다.");
 
         _db.AuditLogs.Add(new LocalAuditLog
@@ -214,7 +228,8 @@ public sealed partial class LocalStateService
                 movedInvoiceCount,
                 movedTransactionCount,
                 movedRentalProfileCount,
-                movedRentalAssetCount
+                movedRentalAssetCount,
+                movedRentalAssignmentHistoryCount
             }),
             CreatedAtUtc = now
         });
@@ -224,7 +239,7 @@ public sealed partial class LocalStateService
 
         return OfficeMutationResult.Ok(
             sourceDeletedCustomerId,
-            $"연결 이동을 완료했습니다. 계약서 {movedContractCount:N0}건, 전표 {movedInvoiceCount:N0}건, 거래내역 {movedTransactionCount:N0}건, 렌탈 청구 {movedRentalProfileCount:N0}건, 렌탈 자산 {movedRentalAssetCount:N0}건을 옮겼습니다.");
+            $"연결 이동을 완료했습니다. 계약서 {movedContractCount:N0}건, 전표 {movedInvoiceCount:N0}건, 거래내역 {movedTransactionCount:N0}건, 렌탈 청구 {movedRentalProfileCount:N0}건, 렌탈 자산 {movedRentalAssetCount:N0}건, 설치이력 {movedRentalAssignmentHistoryCount:N0}건을 옮겼습니다.");
     }
 
     private async Task<RecycleBinDependencyInfo> GetCustomerRecycleBinDependencyInfoAsync(Guid customerId, SessionState session, CancellationToken ct)
@@ -241,6 +256,7 @@ public sealed partial class LocalStateService
         var rentalProfileCount = await _db.RentalBillingProfiles.IgnoreQueryFilters().CountAsync(current => current.CustomerId == customerId, ct);
         var activeContractCount = await _db.CustomerContracts.IgnoreQueryFilters().CountAsync(current => current.CustomerId == customerId && !current.IsDeleted, ct);
         var rentalAssetCount = await _db.RentalAssets.IgnoreQueryFilters().CountAsync(current => current.CustomerId == customerId, ct);
+        var currentAssignmentHistoryCount = await _db.RentalAssetAssignmentHistories.IgnoreQueryFilters().CountAsync(current => current.CustomerId == customerId && !current.IsDeleted && current.IsCurrent, ct);
 
         var dependencies = new List<RecycleBinDependencyItem>();
         AppendDependency(dependencies, "연결 전표", invoiceCount, "전표가 남아 있으면 거래처를 영구삭제할 수 없습니다.");
@@ -248,8 +264,9 @@ public sealed partial class LocalStateService
         AppendDependency(dependencies, "연결 렌탈 청구 프로필", rentalProfileCount, "렌탈 청구 프로필이 남아 있으면 거래처를 영구삭제할 수 없습니다.");
         AppendDependency(dependencies, "활성 계약서", activeContractCount, "활성 계약서를 먼저 정리해야 합니다.");
         AppendDependency(dependencies, "연결 렌탈 자산", rentalAssetCount, "렌탈 자산 연결을 먼저 옮기거나 정리해야 합니다.");
+        AppendDependency(dependencies, "현재 설치이력", currentAssignmentHistoryCount, "현재 설치이력을 먼저 다른 거래처로 옮기거나 정리해야 합니다.");
 
-        var blockingCount = invoiceCount + transactionCount + rentalProfileCount + activeContractCount + rentalAssetCount;
+        var blockingCount = invoiceCount + transactionCount + rentalProfileCount + activeContractCount + rentalAssetCount + currentAssignmentHistoryCount;
         return new RecycleBinDependencyInfo
         {
             CanPurge = blockingCount == 0,

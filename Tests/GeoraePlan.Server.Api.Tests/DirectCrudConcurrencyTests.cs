@@ -92,6 +92,106 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task CustomersController_Delete_ReturnsConflict_WhenActiveBusinessReferencesRemain()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "REFERENCE-BLOCK-CUSTOMER",
+            NameMatchKey = "REFERENCEBLOCKCUSTOMER",
+            TradeType = "매출"
+        };
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            InvoiceNumber = "CUSTOMER-DELETE-BLOCK-INVOICE",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 19)
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            TransactionDate = new DateOnly(2026, 6, 19),
+            TransactionKind = "수금"
+        });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"profile-{profileId:N}",
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal
+        });
+        dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            AssetKey = $"asset-{assetId:N}",
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            CurrentCustomerName = customer.NameOriginal,
+            ManagementNumber = "A-001"
+        });
+        dbContext.RentalAssetAssignmentHistories.Add(new RentalAssetAssignmentHistory
+        {
+            Id = Guid.NewGuid(),
+            AssetId = assetId,
+            CustomerId = customer.Id,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            CustomerName = customer.NameOriginal,
+            ManagementNumber = "A-001",
+            IsCurrent = true
+        });
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Customers.IgnoreQueryFilters().FirstAsync(x => x.Id == customer.Id);
+        var controller = new CustomersController(dbContext, new OfficeScopeService(currentUser, dbContext), new StubCentralFileStorage());
+
+        var response = await controller.Delete(stored.Id, stored.Revision, CancellationToken.None);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(response);
+        var payload = conflict.Value;
+        Assert.NotNull(payload);
+        var payloadType = payload!.GetType();
+        Assert.Equal(CustomerDeletionReferenceGuard.ConflictCode, payloadType.GetProperty("error")?.GetValue(payload));
+        var message = Assert.IsType<string>(payloadType.GetProperty("message")?.GetValue(payload));
+        Assert.Contains("전표 1건", message, StringComparison.Ordinal);
+        Assert.Contains("거래내역 1건", message, StringComparison.Ordinal);
+        Assert.Contains("렌탈 청구 1건", message, StringComparison.Ordinal);
+        Assert.Contains("렌탈 자산 1건", message, StringComparison.Ordinal);
+        Assert.Contains("현재 설치이력 1건", message, StringComparison.Ordinal);
+        Assert.False(await dbContext.Customers.IgnoreQueryFilters()
+            .Where(current => current.Id == customer.Id)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task ItemsController_Update_ReturnsConflict_WhenRevisionFallbackDoesNotMatch()
     {
         var currentUser = CreateAdminUser();

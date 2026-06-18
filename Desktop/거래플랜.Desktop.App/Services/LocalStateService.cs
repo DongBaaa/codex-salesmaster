@@ -567,6 +567,11 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			{
 				throw new InvalidOperationException(conflictMessage);
 			}
+			var referenceBlockMessage = await BuildCustomerDeletionReferenceBlockMessageAsync(id, ct);
+			if (referenceBlockMessage != null)
+			{
+				throw new InvalidOperationException(referenceBlockMessage);
+			}
 			customer.IsDeleted = true;
 			customer.IsDirty = true;
 			customer.UpdatedAtUtc = DateTime.UtcNow;
@@ -594,6 +599,11 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(customer, expectedRevision, "거래처", out string conflictMessage))
 		{
 			return OfficeMutationResult.Conflict(conflictMessage);
+		}
+		var referenceBlockMessage = await BuildCustomerDeletionReferenceBlockMessageAsync(id, ct);
+		if (referenceBlockMessage != null)
+		{
+			return OfficeMutationResult.Denied(referenceBlockMessage);
 		}
 		customer.IsDeleted = true;
 		customer.IsDirty = true;
@@ -6957,6 +6967,44 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			contract.IsDirty = true;
 			contract.IsPrimary = false;
 			contract.UpdatedAtUtc = DateTime.UtcNow;
+		}
+	}
+
+	private async Task<string?> BuildCustomerDeletionReferenceBlockMessageAsync(Guid customerId, CancellationToken ct)
+	{
+		var activeInvoiceCount = await _db.Invoices
+			.IgnoreQueryFilters()
+			.CountAsync(current => current.CustomerId == customerId && !current.IsDeleted, ct);
+		var activeTransactionCount = await _db.Transactions
+			.IgnoreQueryFilters()
+			.CountAsync(current => current.CustomerId == customerId && !current.IsDeleted, ct);
+		var activeRentalProfileCount = await _db.RentalBillingProfiles
+			.IgnoreQueryFilters()
+			.CountAsync(current => current.CustomerId == customerId && !current.IsDeleted, ct);
+		var activeRentalAssetCount = await _db.RentalAssets
+			.IgnoreQueryFilters()
+			.CountAsync(current => current.CustomerId == customerId && !current.IsDeleted, ct);
+		var activeCurrentAssignmentHistoryCount = await _db.RentalAssetAssignmentHistories
+			.IgnoreQueryFilters()
+			.CountAsync(current => current.CustomerId == customerId && !current.IsDeleted && current.IsCurrent, ct);
+
+		var parts = new List<string>();
+		AddReferenceCount(parts, "전표", activeInvoiceCount);
+		AddReferenceCount(parts, "거래내역", activeTransactionCount);
+		AddReferenceCount(parts, "렌탈 청구", activeRentalProfileCount);
+		AddReferenceCount(parts, "렌탈 자산", activeRentalAssetCount);
+		AddReferenceCount(parts, "현재 설치이력", activeCurrentAssignmentHistoryCount);
+
+		return parts.Count == 0
+			? null
+			: $"연결된 활성 데이터({string.Join(", ", parts)})가 남아 있어 거래처를 삭제할 수 없습니다. 먼저 전표/거래내역/렌탈 연결을 다른 거래처로 옮기거나 삭제·해제한 뒤 다시 시도하세요.";
+	}
+
+	private static void AddReferenceCount(ICollection<string> parts, string label, int count)
+	{
+		if (count > 0)
+		{
+			parts.Add($"{label} {count:N0}건");
 		}
 	}
 

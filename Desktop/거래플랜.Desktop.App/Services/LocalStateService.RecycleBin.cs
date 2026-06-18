@@ -1337,6 +1337,12 @@ public sealed partial class LocalStateService
         if (hasRentalAssets)
             return OfficeMutationResult.Denied("연결된 렌탈 자산이 남아 있어 거래처를 영구삭제할 수 없습니다.");
 
+        var hasCurrentAssignmentHistories = await _db.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .AnyAsync(current => current.CustomerId == customerId && !current.IsDeleted && current.IsCurrent, ct);
+        if (hasCurrentAssignmentHistories)
+            return OfficeMutationResult.Denied("현재 설치이력이 남아 있어 거래처를 영구삭제할 수 없습니다.");
+
         var contracts = await _db.CustomerContracts
             .IgnoreQueryFilters()
             .Where(current => current.CustomerId == customerId)

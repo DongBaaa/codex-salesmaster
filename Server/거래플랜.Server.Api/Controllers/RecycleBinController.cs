@@ -1542,6 +1542,12 @@ public sealed class RecycleBinController : ControllerBase
         if (hasRentalAssets)
             return (false, "연결된 렌탈 자산이 남아 있어 거래처를 영구삭제할 수 없습니다.");
 
+        var hasCurrentAssignmentHistories = await _dbContext.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .AnyAsync(current => current.CustomerId == customerId && !current.IsDeleted && current.IsCurrent, cancellationToken);
+        if (hasCurrentAssignmentHistories)
+            return (false, "현재 설치이력이 남아 있어 거래처를 영구삭제할 수 없습니다.");
+
         await TouchPurgeRecordsAsync(
         [
             CreatePurgeRecord("customer", customer.Id, customer.TenantCode, customer.ResponsibleOfficeCode)

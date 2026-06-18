@@ -5543,6 +5543,70 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsCustomerDelete_WhenActiveBusinessReferencesRemain()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-CUSTOMER-DELETE-BLOCK",
+            NameMatchKey = "SYNCCUSTOMERDELETEBLOCK",
+            TradeType = "매출"
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 19),
+            InvoiceNumber = "SYNC-CUSTOMER-DELETE-BLOCK-INVOICE"
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var stored = await _dbContext.Customers.IgnoreQueryFilters().SingleAsync(current => current.Id == customer.Id);
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-customer-delete-reference-block",
+            Customers =
+            [
+                new CustomerDto
+                {
+                    Id = stored.Id,
+                    TenantCode = stored.TenantCode,
+                    OfficeCode = stored.OfficeCode,
+                    ResponsibleOfficeCode = stored.ResponsibleOfficeCode,
+                    NameOriginal = stored.NameOriginal,
+                    NameMatchKey = stored.NameMatchKey,
+                    TradeType = stored.TradeType,
+                    IsDeleted = true,
+                    CreatedAtUtc = stored.CreatedAtUtc,
+                    UpdatedAtUtc = DateTime.UtcNow,
+                    Revision = stored.Revision,
+                    ExpectedRevision = stored.Revision
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        var conflict = Assert.Single(result.Conflicts, current => current.EntityName == nameof(Customer));
+        Assert.Contains("전표 1건", conflict.Reason, StringComparison.Ordinal);
+        Assert.False(await _dbContext.Customers.IgnoreQueryFilters()
+            .Where(current => current.Id == customer.Id)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task Push_RemovesActiveLines_WhenExistingInvoiceIsDeleted()
     {
         var customer = new Customer
