@@ -1198,6 +1198,73 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task RestorePayment_RestoresDeletedPaymentAttachments()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = CreateScopedCustomer("첨부 수금 복원 거래처", OfficeCodeCatalog.Usenet);
+        var invoice = CreateScopedInvoice(customer.Id, OfficeCodeCatalog.Usenet, "INV-PAYMENT-RESTORE-ATTACHMENT");
+        var paymentId = Guid.NewGuid();
+        var attachmentId = Guid.NewGuid();
+        var deletedPayment = new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 18),
+            Amount = 1000m,
+            IsDeleted = true
+        };
+        var deletedAttachment = new PaymentAttachment
+        {
+            Id = attachmentId,
+            PaymentId = paymentId,
+            FileName = "restore-payment-attachment.pdf",
+            MimeType = "application/pdf",
+            FileSize = 16,
+            FileHash = "restore-payment-attachment-hash",
+            StoragePath = "storage/restore-payment-attachment.pdf",
+            FileContent = [0x25, 0x50, 0x44, 0x46],
+            IsDeleted = true
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(invoice);
+        dbContext.Payments.Add(deletedPayment);
+        dbContext.PaymentAttachments.Add(deletedAttachment);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = paymentId,
+                        Kind = "payment"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success, item.Message);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.False(await dbContext.Payments.IgnoreQueryFilters()
+            .Where(current => current.Id == paymentId)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.PaymentAttachments.IgnoreQueryFilters()
+            .Where(current => current.Id == attachmentId)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task RestoreInvoice_AfterRentalInvoiceDelete_RestoresLinkedPaymentTransactionAndSettlement()
     {
         var currentUser = CreateAdminUser();
