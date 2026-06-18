@@ -121,6 +121,175 @@ function Invoke-TextProbe {
     }
 }
 
+function Resolve-AbsolutePackageUri {
+    param(
+        [string]$BaseUrl,
+        [string]$PackageUrl
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PackageUrl)) {
+        return ""
+    }
+
+    try {
+        $baseUri = [Uri]::new($BaseUrl.TrimEnd('/') + '/')
+        return ([Uri]::new($baseUri, $PackageUrl)).AbsoluteUri
+    }
+    catch {
+        return ""
+    }
+}
+
+function Invoke-UpdatePackageHeaderProbe {
+    param(
+        [ValidateSet('HEAD','GET')][string]$Method,
+        [string]$Uri,
+        [int]$TimeoutSec = 30
+    )
+
+    try {
+        Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue | Out-Null
+
+        $httpMethod = if ($Method -eq 'HEAD') {
+            [System.Net.Http.HttpMethod]::Head
+        }
+        else {
+            [System.Net.Http.HttpMethod]::Get
+        }
+
+        $client = [System.Net.Http.HttpClient]::new()
+        $request = [System.Net.Http.HttpRequestMessage]::new($httpMethod, $Uri)
+        $response = $null
+        try {
+            $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
+            $started = Get-Date
+            $response = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+            $elapsedMs = [int]((Get-Date) - $started).TotalMilliseconds
+            $contentLength = $null
+            if ($null -ne $response.Content.Headers.ContentLength) {
+                $contentLength = [int64]$response.Content.Headers.ContentLength
+            }
+
+            return [pscustomobject]@{
+                Success = [bool]$response.IsSuccessStatusCode
+                StatusCode = [int]$response.StatusCode
+                ContentLength = $contentLength
+                ContentType = [string]$response.Content.Headers.ContentType
+                ElapsedMs = $elapsedMs
+                Error = ""
+            }
+        }
+        finally {
+            if ($null -ne $response) { $response.Dispose() }
+            $request.Dispose()
+            $client.Dispose()
+        }
+    }
+    catch {
+        $statusCode = 0
+        try {
+            if ($_.Exception.StatusCode) {
+                $statusCode = [int]$_.Exception.StatusCode
+            }
+        }
+        catch {
+            $statusCode = 0
+        }
+
+        return [pscustomobject]@{
+            Success = $false
+            StatusCode = $statusCode
+            ContentLength = $null
+            ContentType = ""
+            ElapsedMs = 0
+            Error = $_.Exception.Message
+        }
+    }
+}
+
+function Test-UpdatePackageDownloadHeaders {
+    param(
+        [string]$BaseUrl,
+        [string]$Platform,
+        $Package
+    )
+
+    $packageUrl = [string](Get-JsonPropertyValue -Object $Package -Name 'packageUrl')
+    $version = [string](Get-JsonPropertyValue -Object $Package -Name 'version')
+    $fileName = [string](Get-JsonPropertyValue -Object $Package -Name 'fileName')
+    $expectedFileSize = 0L
+    $fileSizeValue = Get-JsonPropertyValue -Object $Package -Name 'fileSize'
+    [void][int64]::TryParse([string]$fileSizeValue, [ref]$expectedFileSize)
+    $absoluteUri = Resolve-AbsolutePackageUri -BaseUrl $BaseUrl -PackageUrl $packageUrl
+    $issues = New-Object System.Collections.Generic.List[string]
+
+    if ([string]::IsNullOrWhiteSpace($absoluteUri)) {
+        $issues.Add('packageUrl is missing or invalid') | Out-Null
+        return [pscustomobject]@{
+            Platform = $Platform
+            Version = $version
+            FileName = $fileName
+            PackageUrl = $packageUrl
+            AbsoluteUri = $absoluteUri
+            ExpectedFileSize = $expectedFileSize
+            HeadStatus = 0
+            HeadContentLength = $null
+            HeadContentType = ""
+            HeadElapsedMs = 0
+            GetStatus = 0
+            GetContentLength = $null
+            GetContentType = ""
+            GetElapsedMs = 0
+            Result = 'FAIL'
+            Issues = @($issues)
+        }
+    }
+
+    if ($expectedFileSize -le 0) {
+        $issues.Add('manifest fileSize is missing or not positive') | Out-Null
+    }
+
+    $head = Invoke-UpdatePackageHeaderProbe -Method HEAD -Uri $absoluteUri
+    $get = Invoke-UpdatePackageHeaderProbe -Method GET -Uri $absoluteUri
+
+    if (-not $head.Success -or $head.StatusCode -ne 200) {
+        $issues.Add(("HEAD status={0} error={1}" -f $head.StatusCode, $head.Error)) | Out-Null
+    }
+
+    if (-not $get.Success -or $get.StatusCode -ne 200) {
+        $issues.Add(("GET status={0} error={1}" -f $get.StatusCode, $get.Error)) | Out-Null
+    }
+
+    if ($expectedFileSize -gt 0) {
+        if ($null -eq $head.ContentLength -or [int64]$head.ContentLength -ne $expectedFileSize) {
+            $issues.Add(("HEAD Content-Length={0}, manifest fileSize={1}" -f $head.ContentLength, $expectedFileSize)) | Out-Null
+        }
+
+        if ($null -eq $get.ContentLength -or [int64]$get.ContentLength -ne $expectedFileSize) {
+            $issues.Add(("GET Content-Length={0}, manifest fileSize={1}" -f $get.ContentLength, $expectedFileSize)) | Out-Null
+        }
+    }
+
+    return [pscustomobject]@{
+        Platform = $Platform
+        Version = $version
+        FileName = $fileName
+        PackageUrl = $packageUrl
+        AbsoluteUri = $absoluteUri
+        ExpectedFileSize = $expectedFileSize
+        HeadStatus = $head.StatusCode
+        HeadContentLength = $head.ContentLength
+        HeadContentType = $head.ContentType
+        HeadElapsedMs = $head.ElapsedMs
+        GetStatus = $get.StatusCode
+        GetContentLength = $get.ContentLength
+        GetContentType = $get.ContentType
+        GetElapsedMs = $get.ElapsedMs
+        Result = if ($issues.Count -eq 0) { 'PASS' } else { 'FAIL' }
+        Issues = @($issues)
+    }
+}
+
 function Read-ResponseBody {
     param($Response)
 
@@ -318,6 +487,7 @@ $desktopVersion = ''
 $androidVersion = ''
 $desktopPackageUrl = ''
 $androidPackageUrl = ''
+$manifestJson = $null
 if ($manifest.Success -and $manifest.StatusCode -eq 200) {
     try {
         $manifestJson = $manifest.Content | ConvertFrom-Json
@@ -337,6 +507,51 @@ else {
     Add-Check -Checks $checks -Name 'stable manifest' -Status 'FAIL' -Detail ("status={0}, error={1}" -f $manifest.StatusCode, $manifest.Error)
 }
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value ("manifest status={0} error={1}" -f $manifest.StatusCode, $manifest.Error)
+
+$updateDownloadReportPath = Join-Path $OutputDirectory 'update-downloads.md'
+$updateDownloadJsonPath = Join-Path $OutputDirectory 'update-downloads.json'
+if ($null -eq $manifestJson) {
+    Add-Check -Checks $checks -Name 'update package downloads' -Status 'BLOCKED' -Detail 'stable manifest was not parsed; package download header checks skipped'
+}
+else {
+    $downloadChecks = New-Object System.Collections.Generic.List[object]
+    $desktopPackage = Get-JsonPropertyValue -Object $manifestJson -Name 'desktop'
+    $androidPackage = Get-JsonPropertyValue -Object $manifestJson -Name 'android'
+    $downloadChecks.Add((Test-UpdatePackageDownloadHeaders -BaseUrl $BaseUrl -Platform 'desktop' -Package $desktopPackage)) | Out-Null
+    $downloadChecks.Add((Test-UpdatePackageDownloadHeaders -BaseUrl $BaseUrl -Platform 'android' -Package $androidPackage)) | Out-Null
+    $downloadChecks | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $updateDownloadJsonPath -Encoding UTF8
+
+    $updateDownloadLines = New-Object System.Collections.Generic.List[string]
+    $updateDownloadLines.Add('# 업데이트 패키지 다운로드 헤더 검증') | Out-Null
+    $updateDownloadLines.Add('') | Out-Null
+    $updateDownloadLines.Add(('- 실행시각: {0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))) | Out-Null
+    $updateDownloadLines.Add(('- BaseUrl: `{0}`' -f $BaseUrl)) | Out-Null
+    $updateDownloadLines.Add(('- Channel: `{0}`' -f $Channel)) | Out-Null
+    $updateDownloadLines.Add('') | Out-Null
+    $updateDownloadLines.Add('| 플랫폼 | 결과 | 버전 | HEAD | HEAD length | GET | GET length | manifest size | 파일 |') | Out-Null
+    $updateDownloadLines.Add('|---|---|---:|---:|---:|---:|---:|---:|---|') | Out-Null
+    foreach ($row in $downloadChecks) {
+        $updateDownloadLines.Add(('| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} |' -f $row.Platform, $row.Result, $row.Version, $row.HeadStatus, $row.HeadContentLength, $row.GetStatus, $row.GetContentLength, $row.ExpectedFileSize, $row.FileName)) | Out-Null
+        if ($row.Issues.Count -gt 0) {
+            foreach ($issue in $row.Issues) {
+                $updateDownloadLines.Add(('- {0}: {1}' -f $row.Platform, $issue)) | Out-Null
+            }
+        }
+    }
+    $updateDownloadLines.Add('') | Out-Null
+    $updateDownloadLines.Add(('JSON: `{0}`' -f $updateDownloadJsonPath)) | Out-Null
+    Set-Content -LiteralPath $updateDownloadReportPath -Encoding UTF8 -Value $updateDownloadLines
+
+    $failedDownloads = @($downloadChecks | Where-Object { $_.Result -ne 'PASS' })
+    if ($failedDownloads.Count -gt 0) {
+        $failedSummary = @($failedDownloads | ForEach-Object { "{0}: {1}" -f $_.Platform, ($_.Issues -join '; ') }) -join ' / '
+        Add-Check -Checks $checks -Name 'update package downloads' -Status 'FAIL' -Detail ("{0}; {1}" -f $failedSummary, $updateDownloadReportPath)
+    }
+    else {
+        $downloadSummary = @($downloadChecks | ForEach-Object { "{0}=HEAD {1}/GET {2}/size {3}" -f $_.Platform, $_.HeadStatus, $_.GetStatus, $_.ExpectedFileSize }) -join ', '
+        Add-Check -Checks $checks -Name 'update package downloads' -Status 'PASS' -Detail ("{0}; {1}" -f $downloadSummary, $updateDownloadReportPath)
+    }
+}
 
 $liveObservationScript = Join-Path $resolvedRoot '테스트 시행\Invoke-LiveObservationCheck.ps1'
 $liveObservationReport = Join-Path $OutputDirectory 'live-observation.md'

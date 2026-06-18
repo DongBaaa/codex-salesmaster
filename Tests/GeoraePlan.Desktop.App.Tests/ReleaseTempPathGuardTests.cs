@@ -98,6 +98,30 @@ public sealed class ReleaseTempPathGuardTests
             "$shouldDisableTrimming = $DisableTrimming.IsPresent");
     }
 
+    [Fact]
+    public void OperationalGate_ValidatesUpdatePackageHeadAndGetHeadersWithoutDownloadingPackages()
+    {
+        var source = ReadRepositoryFile(
+            "tools",
+            "ops",
+            "Invoke-GeoraePlanOperationalGate.ps1");
+
+        Assert.Contains("function Invoke-UpdatePackageHeaderProbe", source, StringComparison.Ordinal);
+        Assert.Contains("[System.Net.Http.HttpCompletionOption]::ResponseHeadersRead", source, StringComparison.Ordinal);
+        Assert.Contains("function Test-UpdatePackageDownloadHeaders", source, StringComparison.Ordinal);
+        Assert.Contains("HEAD Content-Length", source, StringComparison.Ordinal);
+        Assert.Contains("GET Content-Length", source, StringComparison.Ordinal);
+        Assert.Contains("manifest fileSize", source, StringComparison.Ordinal);
+        Assert.Contains("update-downloads.md", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ContentLength.HasValue", source, StringComparison.Ordinal);
+        AssertInOrder(
+            source,
+            "$manifest = Invoke-TextProbe",
+            "$updateDownloadReportPath = Join-Path $OutputDirectory 'update-downloads.md'",
+            "Add-Check -Checks $checks -Name 'update package downloads'",
+            "$liveObservationScript = Join-Path $resolvedRoot");
+    }
+
     private static string ReadRepositoryFile(params string[] pathParts)
         => File.ReadAllText(Path.Combine([FindRepositoryRoot(), .. pathParts]));
 
