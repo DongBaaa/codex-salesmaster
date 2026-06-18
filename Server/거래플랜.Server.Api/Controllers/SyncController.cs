@@ -2357,7 +2357,19 @@ public sealed class SyncController : ControllerBase
 
         foreach (var dto in payload)
         {
+            var requestedCustomerId = dto.CustomerId;
             dto.CustomerId = await ResolveRentalBillingProfileCustomerReferenceAsync(dto, cancellationToken);
+            if (!await ValidateExplicitRentalCustomerReferenceAsync(
+                    dto,
+                    nameof(RentalBillingProfile),
+                    requestedCustomerId,
+                    dto.CustomerId,
+                    result,
+                    cancellationToken))
+            {
+                continue;
+            }
+
             var linkedCustomer = await GetRentalReferenceCustomerAsync(dto.CustomerId, cancellationToken);
             if (linkedCustomer is not null)
             {
@@ -3051,7 +3063,19 @@ public sealed class SyncController : ControllerBase
                 dto.BillingProfileId = remappedBillingProfileId;
             }
 
+            var requestedCustomerId = dto.CustomerId;
             dto.CustomerId = await ResolveRentalAssetCustomerReferenceAsync(dto, cancellationToken);
+            if (!await ValidateExplicitRentalCustomerReferenceAsync(
+                    dto,
+                    nameof(RentalAsset),
+                    requestedCustomerId,
+                    dto.CustomerId,
+                    result,
+                    cancellationToken))
+            {
+                continue;
+            }
+
             dto.ItemId = await ResolveRentalAssetItemReferenceAsync(dto, cancellationToken);
             var linkedCustomer = await GetRentalReferenceCustomerAsync(dto.CustomerId, cancellationToken);
             if (linkedCustomer is not null)
@@ -3414,6 +3438,39 @@ public sealed class SyncController : ControllerBase
         return customer is not null && !customer.IsDeleted && CanReadCustomerForRentalReference(customer)
             ? customer
             : null;
+    }
+
+    private async Task<bool> ValidateExplicitRentalCustomerReferenceAsync(
+        SyncEntityDto dto,
+        string entityName,
+        Guid? requestedCustomerId,
+        Guid? resolvedCustomerId,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        if (!requestedCustomerId.HasValue ||
+            requestedCustomerId.Value == Guid.Empty ||
+            resolvedCustomerId.HasValue)
+        {
+            return true;
+        }
+
+        var requestedCustomer = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(customer => customer.Id == requestedCustomerId.Value, cancellationToken);
+        if (requestedCustomer is null || requestedCustomer.IsDeleted)
+            return true;
+
+        if (CanReadCustomerForRentalReference(requestedCustomer))
+            return true;
+
+        AddClientConflict(
+            dto,
+            entityName,
+            $"Referenced customer is outside the readable office scope: {requestedCustomerId.Value}.",
+            result);
+        return false;
     }
 
     private static string ResolveRentalCustomerOfficeCode(string? officeCode)

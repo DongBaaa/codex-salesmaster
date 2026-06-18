@@ -2050,6 +2050,68 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsRentalAsset_WhenExplicitCustomerIdExistsOutsideReadableScope()
+    {
+        var outsideCustomerId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = outsideCustomerId,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "ITWORLD-HIDDEN-RENTAL-ASSET-CUSTOMER",
+            NameMatchKey = "ITWORLDHIDDENRENTALASSETCUSTOMER",
+            TradeType = "매출"
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-rental-asset-customer-scope",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.RentalAssetEdit]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var assetId = Guid.NewGuid();
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-asset-outside-customer",
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ManagementId = "701",
+                    ManagementNumber = "2606-701",
+                    CustomerId = outsideCustomerId,
+                    CustomerName = "ITWORLD-HIDDEN-RENTAL-ASSET-CUSTOMER",
+                    CurrentCustomerName = "ITWORLD-HIDDEN-RENTAL-ASSET-CUSTOMER",
+                    ItemName = "MODEL-OUTSIDE-CUSTOMER",
+                    CurrentLocation = "설치",
+                    CreatedAtUtc = new DateTime(2026, 6, 19, 0, 1, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 19, 0, 1, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalAsset) &&
+            conflict.Reason.Contains("outside the readable office scope", StringComparison.OrdinalIgnoreCase));
+        Assert.False(await scopedDb.RentalAssets.IgnoreQueryFilters().AnyAsync(asset => asset.Id == assetId));
+    }
+
+    [Fact]
     public async Task Push_RejectsCrossTenantRentalAssetUpdate_ForUserWithRentalEditAll()
     {
         var currentUser = new TestCurrentUserContext
@@ -3554,6 +3616,76 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Contains(result.Conflicts, conflict =>
             conflict.EntityName == nameof(RentalBillingProfile) &&
             conflict.Reason.Contains("outside the writable office scope", StringComparison.OrdinalIgnoreCase));
+        Assert.False(await scopedDb.RentalBillingProfiles.IgnoreQueryFilters().AnyAsync(profile => profile.Id == profileId));
+    }
+
+    [Fact]
+    public async Task Push_RejectsRentalBillingProfile_WhenExplicitCustomerIdExistsOutsideReadableScope()
+    {
+        var outsideCustomerId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = outsideCustomerId,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "ITWORLD-HIDDEN-RENTAL-PROFILE-CUSTOMER",
+            NameMatchKey = "ITWORLDHIDDENRENTALPROFILECUSTOMER",
+            TradeType = "매출",
+            BusinessNumber = "123-45-67890"
+        });
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "유즈넷 렌탈"
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-rental-profile-customer-scope",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.RentalProfileEdit]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var profileId = Guid.NewGuid();
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-profile-outside-customer",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = "USENET|1234567890|ITWORLD-HIDDEN-RENTAL-PROFILE-CUSTOMER||OUT-1000",
+                    CustomerId = outsideCustomerId,
+                    CustomerName = "ITWORLD-HIDDEN-RENTAL-PROFILE-CUSTOMER",
+                    BusinessNumber = "123-45-67890",
+                    ItemName = "OUT-1000",
+                    BillingDay = 10,
+                    MonthlyAmount = 50000m,
+                    CreatedAtUtc = new DateTime(2026, 6, 19, 0, 2, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 19, 0, 2, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.Reason.Contains("outside the readable office scope", StringComparison.OrdinalIgnoreCase));
         Assert.False(await scopedDb.RentalBillingProfiles.IgnoreQueryFilters().AnyAsync(profile => profile.Id == profileId));
     }
 
