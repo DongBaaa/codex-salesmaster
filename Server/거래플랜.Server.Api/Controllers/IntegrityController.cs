@@ -294,6 +294,9 @@ public sealed class IntegrityController : ControllerBase
             .CountAsync(cancellationToken);
         AddIssue(issues, "rental_invoice_deleted_payment_detached_transaction", rentalInvoiceDeletedPaymentDetachedTransactionCount, "Error", "활성 렌탈 전표에 삭제 상태 수금/지급과 전표 링크가 끊긴 활성 거래내역이 함께 남아 있습니다.");
 
+        var rentalBillingRunSettlementMismatchCount = (await LoadRentalBillingRunSettlementMismatchRowsAsync(cancellationToken)).Count;
+        AddIssue(issues, "rental_billing_run_settlement_mismatch", rentalBillingRunSettlementMismatchCount, "Error", "렌탈 청구 run의 저장 정산금액과 실제 활성 수금/거래내역 합계가 다릅니다.");
+
         var orphanTransactionAttachmentCount = await _dbContext.TransactionAttachments
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -440,6 +443,7 @@ public sealed class IntegrityController : ControllerBase
             "orphan_payment_invoice_refs" => await LoadOrphanPaymentInvoiceDetailsAsync(cancellationToken),
             "deleted_payment_missing_invoice_rows" => await LoadDeletedPaymentMissingInvoiceRowDetailsAsync(cancellationToken),
             "rental_invoice_deleted_payment_detached_transaction" => await LoadRentalInvoiceDeletedPaymentDetachedTransactionDetailsAsync(cancellationToken),
+            "rental_billing_run_settlement_mismatch" => await LoadRentalBillingRunSettlementMismatchDetailsAsync(cancellationToken),
             "orphan_attachment_transaction_refs" => await LoadOrphanTransactionAttachmentDetailsAsync(cancellationToken),
             "deleted_transaction_attachment_missing_transaction_rows" => await LoadDeletedTransactionAttachmentMissingTransactionRowDetailsAsync(cancellationToken),
             "orphan_payment_attachment_refs" => await LoadOrphanPaymentAttachmentDetailsAsync(cancellationToken),
@@ -1638,6 +1642,128 @@ public sealed class IntegrityController : ControllerBase
             .ToList();
     }
 
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalBillingRunSettlementMismatchDetailsAsync(CancellationToken cancellationToken)
+    {
+        var rows = await LoadRentalBillingRunSettlementMismatchRowsAsync(cancellationToken);
+        return rows
+            .Select(row => CreateDetailRow(
+                entityType: "렌탈 청구 run",
+                entityIdText: FormatGuid(row.ProfileId),
+                primaryText: CombineParts(row.ProfileDisplayName, row.RunKey, FormatDate(row.ScheduledDate)),
+                secondaryText: $"저장 정산 {FormatMoney(row.StoredSettledAmount)} / 실제 {FormatMoney(row.ActualSettledAmount)}",
+                referenceText: $"RunId {FormatGuid(row.RunId)}",
+                scopeText: FormatScope(row.TenantCode, row.OfficeCode, row.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    $"청구액 {FormatMoney(row.BilledAmount)}",
+                    $"차이 {FormatMoney(row.StoredSettledAmount - row.ActualSettledAmount)}",
+                    $"거래내역 합계 {FormatMoney(row.TransactionSettledAmount)}",
+                    $"직접 결제 합계 {FormatMoney(row.DirectPaymentSettledAmount)}",
+                    string.IsNullOrWhiteSpace(row.Status) ? null : $"상태 {row.Status}",
+                    string.IsNullOrWhiteSpace(row.SettlementStatus) ? null : $"정산상태 {row.SettlementStatus}")))
+            .ToList();
+    }
+
+    private async Task<List<RentalBillingRunSettlementMismatchRow>> LoadRentalBillingRunSettlementMismatchRowsAsync(CancellationToken cancellationToken)
+    {
+        var profiles = await _officeScopeService.ApplyRentalBillingProfileScope(
+                _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking())
+            .Where(profile => !profile.IsDeleted)
+            .Select(profile => new
+            {
+                profile.Id,
+                profile.TenantCode,
+                profile.OfficeCode,
+                profile.ResponsibleOfficeCode,
+                profile.CustomerName,
+                profile.ProfileKey,
+                profile.BillingRunsJson
+            })
+            .ToListAsync(cancellationToken);
+        var profileIds = profiles.Select(profile => profile.Id).Distinct().ToList();
+        if (profileIds.Count == 0)
+            return [];
+
+        var transactions = await _dbContext.Transactions.IgnoreQueryFilters().AsNoTracking()
+            .Where(transaction =>
+                !transaction.IsDeleted &&
+                transaction.LinkedRentalBillingProfileId.HasValue &&
+                profileIds.Contains(transaction.LinkedRentalBillingProfileId.Value))
+            .Select(transaction => new
+            {
+                transaction.Id,
+                ProfileId = transaction.LinkedRentalBillingProfileId!.Value,
+                RunId = transaction.LinkedRentalBillingRunId,
+                Amount = transaction.SettlementAmount
+            })
+            .ToListAsync(cancellationToken);
+
+        var transactionKeys = transactions
+            .Select(transaction => (PaymentId: transaction.Id, transaction.ProfileId))
+            .ToHashSet();
+
+        var directPayments = await (
+                from payment in _dbContext.Payments.IgnoreQueryFilters().AsNoTracking().Where(payment => !payment.IsDeleted)
+                join invoice in _dbContext.Invoices.IgnoreQueryFilters().AsNoTracking().Where(invoice =>
+                        !invoice.IsDeleted &&
+                        invoice.LinkedRentalBillingProfileId.HasValue &&
+                        profileIds.Contains(invoice.LinkedRentalBillingProfileId.Value))
+                    on payment.InvoiceId equals invoice.Id
+                select new
+                {
+                    payment.Id,
+                    ProfileId = invoice.LinkedRentalBillingProfileId!.Value,
+                    RunId = invoice.LinkedRentalBillingRunId,
+                    Amount = payment.Amount
+                })
+            .ToListAsync(cancellationToken);
+
+        var transactionSettledAmounts = transactions
+            .GroupBy(transaction => (transaction.ProfileId, RunId: NormalizeRunId(transaction.RunId)))
+            .ToDictionary(group => group.Key, group => group.Sum(transaction => transaction.Amount));
+        var directPaymentSettledAmounts = directPayments
+            .Where(payment => !transactionKeys.Contains((payment.Id, payment.ProfileId)))
+            .GroupBy(payment => (payment.ProfileId, RunId: NormalizeRunId(payment.RunId)))
+            .ToDictionary(group => group.Key, group => group.Sum(payment => payment.Amount));
+
+        var rows = new List<RentalBillingRunSettlementMismatchRow>();
+        foreach (var profile in profiles)
+        {
+            foreach (var run in ParseRentalBillingRuns(profile.BillingRunsJson))
+            {
+                var runId = NormalizeRunId(run.RunId);
+                var key = (profile.Id, RunId: runId);
+                transactionSettledAmounts.TryGetValue(key, out var transactionAmount);
+                directPaymentSettledAmounts.TryGetValue(key, out var directPaymentAmount);
+                var actualAmount = transactionAmount + directPaymentAmount;
+                if (!AmountDiffers(run.SettledAmount, actualAmount))
+                    continue;
+
+                rows.Add(new RentalBillingRunSettlementMismatchRow(
+                    profile.Id,
+                    profile.TenantCode,
+                    profile.OfficeCode,
+                    profile.ResponsibleOfficeCode,
+                    FirstNonEmpty(profile.CustomerName, profile.ProfileKey, FormatGuid(profile.Id)),
+                    runId,
+                    run.RunKey,
+                    run.ScheduledDate,
+                    run.BilledAmount,
+                    run.SettledAmount,
+                    actualAmount,
+                    transactionAmount,
+                    directPaymentAmount,
+                    run.Status,
+                    run.SettlementStatus));
+            }
+        }
+
+        return rows
+            .OrderBy(row => row.ProfileDisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.ScheduledDate)
+            .ThenBy(row => row.RunKey, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     private async Task<List<IntegrityIssueDetailRowDto>> LoadOrphanTransactionAttachmentDetailsAsync(CancellationToken cancellationToken)
     {
         var attachments = await (
@@ -2257,6 +2383,24 @@ public sealed class IntegrityController : ControllerBase
         }
     }
 
+    private static List<RentalBillingRunSettlementSnapshot> ParseRentalBillingRuns(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return [];
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<RentalBillingRunSettlementSnapshot>>(json, RentalTemplateJsonOptions) ?? [];
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static Guid NormalizeRunId(Guid? runId)
+        => runId.HasValue && runId.Value != Guid.Empty ? runId.Value : Guid.Empty;
+
     private static decimal ResolveTemplateMonthlyAmount(RentalBillingTemplateItemSnapshot item)
     {
         var quantity = item.Quantity <= 0m ? 1m : item.Quantity;
@@ -2547,6 +2691,7 @@ public sealed class IntegrityController : ControllerBase
             "orphan_payment_invoice_refs" => new IntegrityIssueDefinition("orphan_payment_invoice_refs", "Error", "전표가 없는 수금/지급 참조가 존재합니다."),
             "deleted_payment_missing_invoice_rows" => new IntegrityIssueDefinition("deleted_payment_missing_invoice_rows", "Error", "영구 삭제된 전표의 삭제 결제 잔여 행이 존재합니다."),
             "rental_invoice_deleted_payment_detached_transaction" => new IntegrityIssueDefinition("rental_invoice_deleted_payment_detached_transaction", "Error", "활성 렌탈 전표에 삭제 상태 수금/지급과 전표 링크가 끊긴 활성 거래내역이 함께 남아 있습니다."),
+            "rental_billing_run_settlement_mismatch" => new IntegrityIssueDefinition("rental_billing_run_settlement_mismatch", "Error", "렌탈 청구 run의 저장 정산금액과 실제 활성 수금/거래내역 합계가 다릅니다."),
             "orphan_attachment_transaction_refs" => new IntegrityIssueDefinition("orphan_attachment_transaction_refs", "Error", "거래내역이 없는 증빙 첨부가 존재합니다."),
             "deleted_transaction_attachment_missing_transaction_rows" => new IntegrityIssueDefinition("deleted_transaction_attachment_missing_transaction_rows", "Error", "영구 삭제된 거래내역의 삭제 첨부 잔여 행이 존재합니다."),
             "orphan_payment_attachment_refs" => new IntegrityIssueDefinition("orphan_payment_attachment_refs", "Error", "결제내역이 없는 결제 첨부가 존재합니다."),
@@ -2967,6 +3112,34 @@ public sealed class IntegrityController : ControllerBase
         List<RentalAsset> LinkedAssets,
         decimal TemplateMonthlyAmount,
         decimal AssetMonthlyAmount);
+
+    private sealed record RentalBillingRunSettlementMismatchRow(
+        Guid ProfileId,
+        string TenantCode,
+        string OfficeCode,
+        string ResponsibleOfficeCode,
+        string ProfileDisplayName,
+        Guid RunId,
+        string RunKey,
+        DateOnly ScheduledDate,
+        decimal BilledAmount,
+        decimal StoredSettledAmount,
+        decimal ActualSettledAmount,
+        decimal TransactionSettledAmount,
+        decimal DirectPaymentSettledAmount,
+        string Status,
+        string SettlementStatus);
+
+    private sealed class RentalBillingRunSettlementSnapshot
+    {
+        public Guid RunId { get; set; }
+        public string RunKey { get; set; } = string.Empty;
+        public DateOnly ScheduledDate { get; set; }
+        public decimal BilledAmount { get; set; }
+        public decimal SettledAmount { get; set; }
+        public string Status { get; set; } = string.Empty;
+        public string SettlementStatus { get; set; } = string.Empty;
+    }
 
     private sealed class RentalBillingTemplateItemSnapshot
     {

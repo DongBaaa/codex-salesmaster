@@ -707,6 +707,96 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FlagsRentalBillingRunSettlementMismatch()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Settlement mismatch customer",
+            NameMatchKey = "SETTLEMENTMISMATCHCUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"profile-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = "Settlement mismatch customer",
+            MonthlyAmount = 100_000m,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new ServerRentalBillingRunSnapshot
+                {
+                    RunId = runId,
+                    RunKey = "2026-06",
+                    ScheduledDate = new DateOnly(2026, 6, 25),
+                    PeriodStartDate = new DateOnly(2026, 6, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    PeriodLabel = "2026-06",
+                    Status = "완료",
+                    BilledAmount = 100_000m,
+                    SettledAmount = 100_000m,
+                    SettlementStatus = "입금확인",
+                    SettledDate = new DateOnly(2026, 6, 26)
+                }
+            })
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = transactionId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 26),
+            TransactionKind = "렌탈수금",
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId,
+            BankReceipt = 60_000m,
+            ReceiptTotal = 60_000m,
+            SettlementAmount = 60_000m,
+            IsDeleted = false
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issue = Assert.Single(payload.Issues, current => current.Code == "rental_billing_run_settlement_mismatch");
+
+        Assert.Equal("Error", issue.Severity);
+        Assert.Equal(1, issue.Count);
+
+        var detailsResponse = await controller.GetReportDetails("rental_billing_run_settlement_mismatch", CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+        var row = Assert.Single(details.Rows);
+
+        Assert.Equal(FormatGuidForTest(profileId), row.EntityIdText);
+        Assert.Contains(FormatGuidForTest(runId), row.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains("100,000", row.SecondaryText, StringComparison.Ordinal);
+        Assert.Contains("60,000", row.SecondaryText, StringComparison.Ordinal);
+        Assert.Contains("거래내역 합계 60,000", row.DetailText, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task GetReport_FlagsRestoredRentalInvoiceWithDeletedPaymentAndDetachedTransaction()
     {
         var currentUser = CreateAdminUser();
@@ -2080,6 +2170,21 @@ public sealed class IntegrityControllerTests : IDisposable
 
     private static string FormatGuidForTest(Guid value)
         => value.ToString("D");
+
+    private sealed class ServerRentalBillingRunSnapshot
+    {
+        public Guid RunId { get; set; }
+        public string RunKey { get; set; } = string.Empty;
+        public DateOnly ScheduledDate { get; set; }
+        public DateOnly PeriodStartDate { get; set; }
+        public DateOnly PeriodEndDate { get; set; }
+        public string PeriodLabel { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public decimal BilledAmount { get; set; }
+        public decimal SettledAmount { get; set; }
+        public string SettlementStatus { get; set; } = string.Empty;
+        public DateOnly? SettledDate { get; set; }
+    }
 
     private sealed class TestCurrentUserContext : ICurrentUserContext
     {
