@@ -4312,6 +4312,8 @@ public sealed class SyncController : ControllerBase
                     continue;
                 }
 
+                AddClientConflict(dto, nameof(Payment),
+                    $"Referenced invoice was not found: {dto.InvoiceId}.", result);
                 continue;
             }
 

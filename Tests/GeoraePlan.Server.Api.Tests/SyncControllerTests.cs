@@ -4898,6 +4898,40 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsNewPayment_WhenInvoiceIsMissing()
+    {
+        var missingInvoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-payment-missing-invoice",
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = paymentId,
+                    InvoiceId = missingInvoiceId,
+                    PaymentDate = new DateOnly(2026, 6, 19),
+                    Amount = 8000m,
+                    Note = "new payment missing invoice",
+                    CreatedAtUtc = new DateTime(2026, 6, 19, 0, 3, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 19, 0, 3, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(Payment) &&
+            conflict.Reason.Contains("Referenced invoice was not found", StringComparison.OrdinalIgnoreCase));
+        Assert.Empty(await _dbContext.Payments.IgnoreQueryFilters().ToListAsync());
+    }
+
+    [Fact]
     public async Task Push_DeletesExistingPayment_WhenInvoiceReferenceIsMissing()
     {
         var paymentId = Guid.NewGuid();
