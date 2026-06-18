@@ -1971,6 +1971,169 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsCurrentRentalAssignmentHistory_WhenCustomerOrBillingProfileIsMissingOrDeleted()
+    {
+        var asset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "RENTAL-HISTORY-STALE-CURRENT-ASSET",
+            ManagementNumber = "RH-STALE-CURRENT",
+            ItemName = "Stale current copier",
+            MachineNumber = "STALE-CURRENT-001",
+            MonthlyFee = 100m
+        };
+        var deletedCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Deleted current history customer",
+            NameMatchKey = "DELETEDCURRENTHISTORYCUSTOMER",
+            TradeType = "매출",
+            IsDeleted = true
+        };
+        _dbContext.RentalAssets.Add(asset);
+        _dbContext.Customers.Add(deletedCustomer);
+        await _dbContext.SaveChangesAsync();
+
+        var deletedCustomerHistoryId = Guid.NewGuid();
+        var missingProfileHistoryId = Guid.NewGuid();
+        var missingProfileId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "rental-history-stale-current-reference-device",
+            RentalAssetAssignmentHistories =
+            [
+                new RentalAssetAssignmentHistoryDto
+                {
+                    Id = deletedCustomerHistoryId,
+                    AssetId = asset.Id,
+                    CustomerId = deletedCustomer.Id,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    CustomerName = deletedCustomer.NameOriginal,
+                    ItemName = asset.ItemName,
+                    MachineNumber = asset.MachineNumber,
+                    ManagementNumber = asset.ManagementNumber,
+                    MonthlyFee = asset.MonthlyFee,
+                    IsCurrent = true,
+                    LinkedAtUtc = DateTime.UtcNow
+                },
+                new RentalAssetAssignmentHistoryDto
+                {
+                    Id = missingProfileHistoryId,
+                    AssetId = asset.Id,
+                    BillingProfileId = missingProfileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    BillingProfileDisplay = "missing profile",
+                    ItemName = asset.ItemName,
+                    MachineNumber = asset.MachineNumber,
+                    ManagementNumber = asset.ManagementNumber,
+                    MonthlyFee = asset.MonthlyFee,
+                    IsCurrent = true,
+                    LinkedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(2, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(RentalAssetAssignmentHistory), StringComparison.Ordinal) &&
+            conflict.Reason.Contains("Referenced customer is missing or deleted", StringComparison.Ordinal));
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(RentalAssetAssignmentHistory), StringComparison.Ordinal) &&
+            conflict.Reason.Contains("Referenced rental billing profile is missing or deleted", StringComparison.Ordinal));
+        Assert.False(await _dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+            .AnyAsync(row => row.Id == deletedCustomerHistoryId || row.Id == missingProfileHistoryId));
+    }
+
+    [Fact]
+    public async Task Push_StoresAndPullsCurrentRentalAssignmentHistory_WithMergedActiveCustomerReference()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Merged active history customer",
+            NameMatchKey = "MERGEDACTIVEHISTORYCUSTOMER",
+            TradeType = "매출"
+        };
+        var asset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "RENTAL-HISTORY-MERGED-CUSTOMER-ASSET",
+            ManagementNumber = "RH-MERGED-CUSTOMER",
+            ItemName = "Merged customer copier",
+            MachineNumber = "MERGED-CUSTOMER-001",
+            MonthlyFee = 100m
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.RentalAssets.Add(asset);
+        await _dbContext.SaveChangesAsync();
+
+        var historyId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "rental-history-merged-customer-device",
+            RentalAssetAssignmentHistories =
+            [
+                new RentalAssetAssignmentHistoryDto
+                {
+                    Id = historyId,
+                    AssetId = asset.Id,
+                    CustomerId = customer.Id,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    CustomerName = customer.NameOriginal,
+                    ItemName = asset.ItemName,
+                    MachineNumber = asset.MachineNumber,
+                    ManagementNumber = asset.ManagementNumber,
+                    MonthlyFee = asset.MonthlyFee,
+                    IsCurrent = true,
+                    LinkedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityId == historyId &&
+            string.Equals(revision.EntityName, nameof(RentalAssetAssignmentHistory), StringComparison.Ordinal));
+
+        var stored = await _dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == historyId);
+        Assert.Equal(customer.Id, stored.CustomerId);
+        Assert.Equal(customer.NameOriginal, stored.CustomerName);
+
+        var pullResponse = await _controller.Pull(0, CancellationToken.None);
+        var pullOk = Assert.IsType<OkObjectResult>(pullResponse.Result);
+        var pull = Assert.IsType<SyncPullResponse>(pullOk.Value);
+        var pulledHistory = Assert.Single(pull.RentalAssetAssignmentHistories, row => row.Id == historyId);
+        Assert.Equal(customer.Id, pulledHistory.CustomerId);
+        Assert.Equal(customer.NameOriginal, pulledHistory.CustomerName);
+    }
+
+    [Fact]
     public async Task Push_ResolvesRentalAssetCustomerReference_ByReadableCustomerName()
     {
         var customer = new Customer

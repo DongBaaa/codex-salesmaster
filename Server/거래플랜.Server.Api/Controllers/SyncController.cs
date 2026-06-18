@@ -2845,6 +2845,13 @@ public sealed class SyncController : ControllerBase
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .FirstOrDefaultAsync(profile => profile.Id == dto.BillingProfileId.Value, cancellationToken);
+            if (dto.IsCurrent && (billingProfile is null || billingProfile.IsDeleted))
+            {
+                AddClientConflict(dto, nameof(RentalAssetAssignmentHistory),
+                    $"Referenced rental billing profile is missing or deleted: {dto.BillingProfileId.Value}.", result);
+                return false;
+            }
+
             if (billingProfile is not null &&
                 !billingProfile.IsDeleted &&
                 !_officeScopeService.CanWriteOfficeForRentals(billingProfile.ResponsibleOfficeCode, billingProfile.TenantCode))
@@ -2861,6 +2868,13 @@ public sealed class SyncController : ControllerBase
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .FirstOrDefaultAsync(current => current.Id == dto.CustomerId.Value, cancellationToken);
+            if (dto.IsCurrent && (customer is null || customer.IsDeleted))
+            {
+                AddClientConflict(dto, nameof(RentalAssetAssignmentHistory),
+                    $"Referenced customer is missing or deleted: {dto.CustomerId.Value}.", result);
+                return false;
+            }
+
             if (customer is not null &&
                 !customer.IsDeleted &&
                 !CanReadCustomerForRentalReference(customer))
