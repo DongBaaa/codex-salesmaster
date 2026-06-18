@@ -16,8 +16,10 @@ public sealed class SettingsViewModel : ObservableObject
     private string _latestVersion = "-";
     private string _updateNotes = "새 버전 확인 대기";
     private string _updateStatusMessage = "업데이트 확인 대기";
+    private string _integrityAccessText = "운영점검 권한 확인 대기";
     private bool _isUpdateAvailable;
     private bool _isCheckingForUpdate;
+    private bool _canViewIntegrityReport;
 
     public SettingsViewModel(SettingsService settings, SessionStore sessionStore, MobileAppUpdateService updateService)
     {
@@ -80,6 +82,18 @@ public sealed class SettingsViewModel : ObservableObject
         set => SetProperty(ref _isCheckingForUpdate, value);
     }
 
+    public string IntegrityAccessText
+    {
+        get => _integrityAccessText;
+        set => SetProperty(ref _integrityAccessText, value);
+    }
+
+    public bool CanViewIntegrityReport
+    {
+        get => _canViewIntegrityReport;
+        set => SetProperty(ref _canViewIntegrityReport, value);
+    }
+
     public AsyncCommand SaveCommand { get; }
     public AsyncCommand LogoutCommand { get; }
     public AsyncCommand CheckForUpdatesCommand { get; }
@@ -92,6 +106,11 @@ public sealed class SettingsViewModel : ObservableObject
         CurrentVersion = _updateService.GetCurrentVersion();
         LatestVersion = CurrentVersion;
         UpdateNotes = "새 버전 확인을 눌러 최신 APK를 조회할 수 있습니다.";
+        var session = _sessionStore.GetSnapshot();
+        CanViewIntegrityReport = session.CanViewIntegrityReport;
+        IntegrityAccessText = CanViewIntegrityReport
+            ? "운영 서버 무결성 결과를 읽기 전용으로 확인할 수 있습니다."
+            : "운영점검은 관리자 또는 Settings.Edit 권한 계정만 사용할 수 있습니다.";
         await LoadUpdateInfoAsync(userInitiated: false);
     }
 

@@ -11,6 +11,8 @@ public sealed class SessionStore
     private const string RoleKey = "session.role";
     private const string TenantCodeKey = "session.tenant";
     private const string OfficeCodeKey = "session.office";
+    private const string ScopeTypeKey = "session.scope";
+    private const string PermissionsKey = "session.permissions";
     private const string ExpiresAtUtcKey = "session.expiresAtUtc";
     private static readonly TimeSpan ExpirationSkew = TimeSpan.FromMinutes(1);
 
@@ -42,6 +44,8 @@ public sealed class SessionStore
             Role = Preferences.Default.Get(RoleKey, string.Empty),
             TenantCode = Preferences.Default.Get(TenantCodeKey, string.Empty),
             OfficeCode = Preferences.Default.Get(OfficeCodeKey, string.Empty),
+            ScopeType = Preferences.Default.Get(ScopeTypeKey, string.Empty),
+            Permissions = ReadStoredPermissions(),
             ExpiresAtUtc = ReadStoredExpirationUtc()
         };
     }
@@ -64,6 +68,8 @@ public sealed class SessionStore
         Preferences.Default.Set(RoleKey, response.User?.Role ?? string.Empty);
         Preferences.Default.Set(TenantCodeKey, response.User?.TenantCode ?? string.Empty);
         Preferences.Default.Set(OfficeCodeKey, response.User?.OfficeCode ?? string.Empty);
+        Preferences.Default.Set(ScopeTypeKey, response.User?.ScopeType ?? string.Empty);
+        Preferences.Default.Set(PermissionsKey, string.Join("\n", response.User?.Permissions ?? new List<string>()));
         Preferences.Default.Set(ExpiresAtUtcKey, response.ExpiresAtUtc.ToUniversalTime().ToString("O"));
     }
 
@@ -112,6 +118,8 @@ public sealed class SessionStore
         Preferences.Default.Set(RoleKey, role ?? string.Empty);
         Preferences.Default.Set(TenantCodeKey, tenantCode ?? string.Empty);
         Preferences.Default.Set(OfficeCodeKey, officeCode ?? string.Empty);
+        Preferences.Default.Set(ScopeTypeKey, string.Empty);
+        Preferences.Default.Set(PermissionsKey, string.Empty);
     }
 #endif
 
@@ -131,8 +139,22 @@ public sealed class SessionStore
         Preferences.Default.Remove(RoleKey);
         Preferences.Default.Remove(TenantCodeKey);
         Preferences.Default.Remove(OfficeCodeKey);
+        Preferences.Default.Remove(ScopeTypeKey);
+        Preferences.Default.Remove(PermissionsKey);
         Preferences.Default.Remove(ExpiresAtUtcKey);
         return Task.CompletedTask;
+    }
+
+    private static IReadOnlyList<string> ReadStoredPermissions()
+    {
+        var raw = Preferences.Default.Get(PermissionsKey, string.Empty);
+        if (string.IsNullOrWhiteSpace(raw))
+            return Array.Empty<string>();
+
+        return raw
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private DateTime? ResolveExpirationUtc(string token)

@@ -38,6 +38,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<RecycleBinViewModel>();
         builder.Services.AddSingleton<SyncViewModel>();
         builder.Services.AddSingleton<SettingsViewModel>();
+        builder.Services.AddSingleton<IntegrityReportViewModel>();
         builder.Services.AddTransient<InvoiceDraftViewModel>();
         builder.Services.AddTransient<PaymentDraftViewModel>();
 
@@ -52,6 +53,7 @@ public static class MauiProgram
         builder.Services.AddTransient<RecycleBinPage>();
         builder.Services.AddTransient<SyncPage>();
         builder.Services.AddTransient<SettingsPage>();
+        builder.Services.AddTransient<IntegrityReportPage>();
         builder.Services.AddTransient<InvoiceDraftPage>();
         builder.Services.AddTransient<PaymentDraftPage>();
 

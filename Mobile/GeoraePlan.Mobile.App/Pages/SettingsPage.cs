@@ -33,8 +33,19 @@ public sealed class SettingsPage : ContentPage
         var logoutButton = GeoraePlanTheme.CreateButton("로그아웃", GeoraePlanTheme.Danger);
         logoutButton.SetBinding(Button.CommandProperty, nameof(SettingsViewModel.LogoutCommand));
 
+        var integrityButton = GeoraePlanTheme.CreateButton("운영점검 / 무결성", GeoraePlanTheme.Accent);
+        integrityButton.TextColor = Colors.Black;
+        integrityButton.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.CanViewIntegrityReport));
+        integrityButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(
+                async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<IntegrityReportPage>()),
+                "운영점검 화면 이동");
+
         var statusLabel = GeoraePlanTheme.CreateStatusLabel();
         statusLabel.SetBinding(Label.TextProperty, nameof(SettingsViewModel.StatusMessage));
+
+        var integrityAccessLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: true, fontSize: 12);
+        integrityAccessLabel.SetBinding(Label.TextProperty, nameof(SettingsViewModel.IntegrityAccessText));
 
         var updateStatusLabel = GeoraePlanTheme.CreateStatusLabel();
         updateStatusLabel.SetBinding(Label.TextProperty, nameof(SettingsViewModel.UpdateStatusMessage));
@@ -54,6 +65,8 @@ public sealed class SettingsPage : ContentPage
                         GeoraePlanTheme.CreateSectionTitle("앱 설정"),
                         GeoraePlanTheme.CreateBodyText("모바일 앱은 거래플랜 운영 서버에 고정 연결됩니다."),
                         GeoraePlanTheme.CreateBodyText("연결 정보는 사용자 화면에 표시하지 않습니다."),
+                        integrityAccessLabel,
+                        integrityButton,
                         recycleBinButton,
                         logoutButton,
                         statusLabel),

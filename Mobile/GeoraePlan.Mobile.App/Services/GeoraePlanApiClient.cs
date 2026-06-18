@@ -204,6 +204,14 @@ public sealed class GeoraePlanApiClient
     public Task<AppUpdateManifestDto?> GetUpdateManifestAsync(string channel = "stable", CancellationToken ct = default)
         => GetAsync<AppUpdateManifestDto>($"updates/manifest?channel={Uri.EscapeDataString(channel)}", ct, requireAuthentication: false);
 
+    public Task<IntegrityReportDto?> GetIntegrityReportAsync(CancellationToken ct = default)
+        => GetAsync<IntegrityReportDto>("integrity/report", ct);
+
+    public Task<IntegrityIssueDetailResultDto?> GetIntegrityIssueDetailsAsync(string code, CancellationToken ct = default)
+        => GetAsync<IntegrityIssueDetailResultDto>(
+            BuildQuery("integrity/report/details", ("code", code)),
+            ct);
+
     public Task<InvoiceDto?> CreateInvoiceAsync(InvoiceDto request, CancellationToken ct = default)
         => PostAsync<InvoiceDto, InvoiceDto>("invoices", request, ct);
 

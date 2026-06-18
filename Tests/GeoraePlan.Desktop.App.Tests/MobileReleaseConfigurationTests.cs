@@ -405,6 +405,81 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("timeoutCts.CancelAfter(SessionRecoveryRequestTimeout)", recoverySource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void AndroidSettings_ExposesReadOnlyIntegrityReportForPrivilegedUsers()
+    {
+        var root = FindRepositoryRoot();
+        var apiSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "GeoraePlanApiClient.cs"));
+        var sessionSnapshotSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Models",
+            "SessionSnapshot.cs"));
+        var sessionStoreSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "SessionStore.cs"));
+        var settingsViewModelSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "SettingsViewModel.cs"));
+        var settingsPageSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Pages",
+            "SettingsPage.cs"));
+        var integrityViewModelSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "IntegrityReportViewModel.cs"));
+        var integrityPageSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Pages",
+            "IntegrityReportPage.cs"));
+        var mauiSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "MauiProgram.cs"));
+
+        Assert.Contains("GetIntegrityReportAsync", apiSource, StringComparison.Ordinal);
+        Assert.Contains("GetAsync<IntegrityReportDto>(\"integrity/report\"", apiSource, StringComparison.Ordinal);
+        Assert.Contains("GetIntegrityIssueDetailsAsync", apiSource, StringComparison.Ordinal);
+        Assert.Contains("BuildQuery(\"integrity/report/details\", (\"code\", code))", apiSource, StringComparison.Ordinal);
+        Assert.Contains("public const string SettingsEditPermission = \"Settings.Edit\";", sessionSnapshotSource, StringComparison.Ordinal);
+        Assert.Contains("public bool CanViewIntegrityReport => IsAdmin || HasPermission(SettingsEditPermission);", sessionSnapshotSource, StringComparison.Ordinal);
+        Assert.Contains("private const string PermissionsKey = \"session.permissions\";", sessionStoreSource, StringComparison.Ordinal);
+        Assert.Contains("Preferences.Default.Set(PermissionsKey, string.Join(\"\\n\", response.User?.Permissions", sessionStoreSource, StringComparison.Ordinal);
+        Assert.Contains("CanViewIntegrityReport = session.CanViewIntegrityReport;", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("운영점검은 관리자 또는 Settings.Edit 권한 계정만 사용할 수 있습니다.", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("ServiceHelper.GetRequiredService<IntegrityReportPage>()", settingsPageSource, StringComparison.Ordinal);
+        Assert.Contains("운영점검 / 무결성", settingsPageSource, StringComparison.Ordinal);
+        Assert.Contains("await _api.GetIntegrityReportAsync()", integrityViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("await _api.GetIntegrityIssueDetailsAsync(issue.Code)", integrityViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("MobileDetailPreviewLimit = 30", integrityViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("PC 운영점검", integrityViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("CreateIssueList()", integrityPageSource, StringComparison.Ordinal);
+        Assert.Contains("CreateDetailList()", integrityPageSource, StringComparison.Ordinal);
+        Assert.Contains("운영 서버의 전표·수금/지급·렌탈·첨부·품목/거래처 참조 무결성", integrityPageSource, StringComparison.Ordinal);
+        Assert.Contains("AddSingleton<IntegrityReportViewModel>()", mauiSource, StringComparison.Ordinal);
+        Assert.Contains("AddTransient<IntegrityReportPage>()", mauiSource, StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
