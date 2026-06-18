@@ -296,8 +296,13 @@ finally {
     if ($null -ne $createdItem) {
         try {
             $snapshotForDelete = Get-ItemSnapshot -ItemId $createdItem.id -Headers $headers
-            Invoke-ApiNoContent -Method 'Delete' -Path "/items/$($createdItem.id)?expectedRevision=$($snapshotForDelete.Revision)" -Headers $headers
-            $cleanup.Add("item deleted: $($createdItem.id)") | Out-Null
+            if ($snapshotForDelete.CurrentStock -ne 0 -or $snapshotForDelete.WarehouseStock -ne 0) {
+                $cleanup.Add("item cleanup skipped because stock is not zero: $($createdItem.id), current=$($snapshotForDelete.CurrentStock), warehouse=$($snapshotForDelete.WarehouseStock)") | Out-Null
+            }
+            else {
+                Invoke-ApiNoContent -Method 'Delete' -Path "/items/$($createdItem.id)?expectedRevision=$($snapshotForDelete.Revision)" -Headers $headers
+                $cleanup.Add("item deleted: $($createdItem.id)") | Out-Null
+            }
         } catch { $cleanup.Add("item cleanup failed: $($_.Exception.Message)") | Out-Null }
     }
     if ($null -ne $createdCustomer) {

@@ -37,7 +37,7 @@ services:
       Jwt__SigningKey: ${JWT_SIGNING_KEY:?set in .env}
       Jwt__ExpirationMinutes: ${JWT_EXPIRATION_MINUTES:-43200}
       Security__EnableRateLimiting: ${SECURITY_ENABLE_RATE_LIMITING:-true}
-      Security__LoginPermitLimitPerMinute: ${SECURITY_LOGIN_PERMIT_LIMIT_PER_MINUTE:-10}
+      Security__LoginPermitLimitPerMinute: ${SECURITY_LOGIN_PERMIT_LIMIT_PER_MINUTE:-60}
       Security__ApiPermitLimitPerMinute: ${SECURITY_API_PERMIT_LIMIT_PER_MINUTE:-300}
       Security__AddSecurityHeaders: ${SECURITY_ADD_SECURITY_HEADERS:-true}
       Security__RequireHttpsForwardedProto: ${SECURITY_REQUIRE_HTTPS_FORWARDED_PROTO:-true}

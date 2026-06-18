@@ -136,6 +136,8 @@ $mdPath = Join-Path $EvidenceDirectory "realtime-revision-smoke-$timestamp.md"
 $steps = New-Object System.Collections.Generic.List[object]
 $cleanup = New-Object System.Collections.Generic.List[object]
 $waitJob = $null
+$headers = $null
+$createdCustomer = $false
 $customerId = [Guid]::NewGuid()
 $suffix = $timestamp.Replace('-', '')
 
@@ -168,6 +170,7 @@ try {
         phone = '000-0000-0000'
         notes = 'created for realtime revision smoke'
     } -ExpectedStatus @(200)).Body
+    $createdCustomer = $true
     $steps.Add([pscustomobject]@{ Step = 'fixture-customer-create'; Result = 'PASS'; Id = $customer.id; Revision = [Int64]$customer.revision })
 
     $completed = Wait-Job -Job $waitJob -Timeout ($WaitTimeoutSeconds + 8)
@@ -194,6 +197,7 @@ try {
 
     if (-not $KeepTemporaryData) {
         $cleanup.Add((Remove-CustomerQuietly -CustomerId $customerId -Headers $headers))
+        $createdCustomer = $false
     }
 
     $result = [pscustomobject][ordered]@{
@@ -211,6 +215,10 @@ catch {
     $errorMessage = [string]$_.Exception.Message
     if ($waitJob -and $waitJob.State -eq 'Running') {
         Stop-Job -Job $waitJob -Force -ErrorAction SilentlyContinue
+    }
+    if (-not $KeepTemporaryData -and $createdCustomer -and $null -ne $headers) {
+        $cleanup.Add((Remove-CustomerQuietly -CustomerId $customerId -Headers $headers))
+        $createdCustomer = $false
     }
 
     $result = [pscustomobject][ordered]@{

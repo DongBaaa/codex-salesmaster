@@ -5,7 +5,7 @@ public sealed class SecurityOptions
     public const string SectionName = "Security";
 
     public bool EnableRateLimiting { get; set; } = true;
-    public int LoginPermitLimitPerMinute { get; set; } = 10;
+    public int LoginPermitLimitPerMinute { get; set; } = 60;
     public int ApiPermitLimitPerMinute { get; set; } = 300;
     public bool AddSecurityHeaders { get; set; } = true;
     public bool RequireHttpsForwardedProto { get; set; } = false;
