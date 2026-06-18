@@ -159,6 +159,50 @@ function Test-ReadyProbeSemantic {
     }
 }
 
+function Invoke-ReadyProbeWithRetry {
+    param(
+        [string]$Uri,
+        [string]$LogPath,
+        [int]$TimeoutSec = 60,
+        [int]$DelaySec = 3
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    $attempt = 0
+    $lastProbe = $null
+    $lastSemanticResult = $null
+
+    do {
+        $attempt += 1
+        $lastProbe = Invoke-TextProbe -Uri $Uri
+        $lastSemanticResult = Test-ReadyProbeSemantic -Probe $lastProbe
+        Add-Content -LiteralPath $LogPath -Encoding UTF8 -Value ("readyz attempt={0} semantic={1} status={2} error={3} body={4}" -f $attempt, $lastSemanticResult.Status, $lastProbe.StatusCode, $lastProbe.Error, $lastProbe.Content)
+
+        if ($lastSemanticResult.Status -eq 'PASS') {
+            $lastSemanticResult.Detail = ("{0}; attempts={1}" -f $lastSemanticResult.Detail, $attempt)
+            return [pscustomobject]@{
+                Probe = $lastProbe
+                SemanticResult = $lastSemanticResult
+                Attempts = $attempt
+            }
+        }
+
+        if ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds $DelaySec
+        }
+    } while ((Get-Date) -lt $deadline)
+
+    if ($null -ne $lastSemanticResult) {
+        $lastSemanticResult.Detail = ("{0}; attempts={1}; waited up to {2}s" -f $lastSemanticResult.Detail, $attempt, $TimeoutSec)
+    }
+
+    return [pscustomobject]@{
+        Probe = $lastProbe
+        SemanticResult = $lastSemanticResult
+        Attempts = $attempt
+    }
+}
+
 function Resolve-AbsolutePackageUri {
     param(
         [string]$BaseUrl,
@@ -520,8 +564,9 @@ else {
 }
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value ("healthz status={0} error={1} body={2}" -f $health.StatusCode, $health.Error, $health.Content)
 
-$ready = Invoke-TextProbe -Uri ($BaseUrl + '/readyz')
-$readySemanticResult = Test-ReadyProbeSemantic -Probe $ready
+$readyProbeResult = Invoke-ReadyProbeWithRetry -Uri ($BaseUrl + '/readyz') -LogPath $logPath
+$ready = $readyProbeResult.Probe
+$readySemanticResult = $readyProbeResult.SemanticResult
 Add-Check -Checks $checks -Name 'live readyz' -Status $readySemanticResult.Status -Detail $readySemanticResult.Detail
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value ("readyz status={0} error={1} body={2}" -f $ready.StatusCode, $ready.Error, $ready.Content)
 

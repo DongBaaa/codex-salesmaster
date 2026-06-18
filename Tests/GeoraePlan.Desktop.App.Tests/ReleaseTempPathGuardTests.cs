@@ -134,6 +134,9 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("Add-Check -Checks $checks -Name 'live readyz'", source, StringComparison.Ordinal);
         Assert.Contains("readyz status={0} error={1} body={2}", source, StringComparison.Ordinal);
         Assert.Contains("function Test-ReadyProbeSemantic", source, StringComparison.Ordinal);
+        Assert.Contains("function Invoke-ReadyProbeWithRetry", source, StringComparison.Ordinal);
+        Assert.Contains("readyz attempt={0} semantic={1}", source, StringComparison.Ordinal);
+        Assert.Contains("Start-Sleep -Seconds $DelaySec", source, StringComparison.Ordinal);
         Assert.Contains("$status -eq 'ready'", source, StringComparison.Ordinal);
         Assert.Contains("$dbStarted -eq $true", source, StringComparison.Ordinal);
         Assert.Contains("$dbCompleted -eq $true", source, StringComparison.Ordinal);
@@ -142,8 +145,8 @@ public sealed class ReleaseTempPathGuardTests
         AssertInOrder(
             source,
             "$health = Invoke-TextProbe -Uri ($BaseUrl + '/healthz')",
-            "$ready = Invoke-TextProbe -Uri ($BaseUrl + '/readyz')",
-            "$readySemanticResult = Test-ReadyProbeSemantic -Probe $ready",
+            "$readyProbeResult = Invoke-ReadyProbeWithRetry -Uri ($BaseUrl + '/readyz') -LogPath $logPath",
+            "$readySemanticResult = $readyProbeResult.SemanticResult",
             "$manifest = Invoke-TextProbe -Uri ($BaseUrl + \"/updates/manifest?channel=$Channel\")");
     }
 

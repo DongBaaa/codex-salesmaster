@@ -105,6 +105,15 @@ public sealed class PaymentsController : ControllerBase
             contentType = "application/octet-stream";
 
         var bytes = _fileStorage.ReadBytes(attachment.StoragePath, attachment.FileContent);
+        if (attachment.FileSize > 0 && bytes.LongLength != attachment.FileSize)
+        {
+            return NotFound(new
+            {
+                error = "attachment_content_unavailable",
+                message = "첨부 파일 내용을 찾을 수 없습니다."
+            });
+        }
+
         return File(bytes, contentType, fileName);
     }
 

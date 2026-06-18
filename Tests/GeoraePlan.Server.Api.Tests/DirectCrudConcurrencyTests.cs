@@ -1666,6 +1666,104 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PaymentsController_GetAttachmentContent_ReturnsNotFound_WhenStoredContentIsMissing()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Missing payment attachment customer",
+            NameMatchKey = "MISSINGPAYMENTATTACHMENTCUSTOMER",
+            TradeType = "Sales"
+        };
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "MISSING-PAYMENT-ATTACHMENT",
+            InvoiceDate = new DateOnly(2026, 6, 18)
+        };
+        var payment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 18),
+            Amount = 5000m,
+            Note = "missing attachment content"
+        };
+        var attachment = new PaymentAttachment
+        {
+            Id = Guid.NewGuid(),
+            PaymentId = payment.Id,
+            AttachmentType = "내역첨부",
+            FileName = "missing-receipt.pdf",
+            MimeType = "application/pdf",
+            FileSize = 12,
+            FileHash = "missing",
+            StoragePath = Path.Combine(Path.GetTempPath(), "georaeplan-missing", Guid.NewGuid().ToString("N"), "missing-receipt.pdf"),
+            FileContent = []
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(invoice);
+        dbContext.Payments.Add(payment);
+        dbContext.PaymentAttachments.Add(attachment);
+        await dbContext.SaveChangesAsync();
+
+        var controller = new PaymentsController(dbContext, new OfficeScopeService(currentUser, dbContext), new StubCentralFileStorage());
+
+        var result = await controller.GetAttachmentContent(attachment.Id, CancellationToken.None);
+
+        Assert.IsType<NotFoundObjectResult>(result);
+    }
+
+    [Fact]
+    public async Task CustomersController_DownloadContractContent_ReturnsNotFound_WhenStoredContentIsMissing()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Missing contract customer",
+            NameMatchKey = "MISSINGCONTRACTCUSTOMER",
+            TradeType = "Sales"
+        };
+        var contract = new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            ContractType = "거래계약서",
+            FileName = "missing-contract.pdf",
+            MimeType = "application/pdf",
+            FileSize = 20,
+            FileHash = "missing",
+            StoragePath = Path.Combine(Path.GetTempPath(), "georaeplan-missing", Guid.NewGuid().ToString("N"), "missing-contract.pdf"),
+            FileContent = []
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.CustomerContracts.Add(contract);
+        await dbContext.SaveChangesAsync();
+
+        var controller = new CustomersController(dbContext, new OfficeScopeService(currentUser, dbContext), new StubCentralFileStorage());
+
+        var result = await controller.DownloadContractContent(contract.Id, CancellationToken.None);
+
+        Assert.IsType<NotFoundObjectResult>(result);
+    }
+
+    [Fact]
     public async Task CompanyProfileController_Upsert_ReturnsConflict_WhenExpectedRevisionDoesNotMatch()
     {
         var currentUser = CreateAdminUser();

@@ -127,6 +127,15 @@ public sealed class CustomersController : ControllerBase
             ? "application/pdf"
             : "application/octet-stream";
         var bytes = _fileStorage.ReadBytes(contract.StoragePath, contract.FileContent);
+        if (contract.FileSize > 0 && bytes.LongLength != contract.FileSize)
+        {
+            return NotFound(new
+            {
+                error = "contract_content_unavailable",
+                message = "계약서 파일 내용을 찾을 수 없습니다."
+            });
+        }
+
         return File(bytes, contentType, fileName);
     }
 
