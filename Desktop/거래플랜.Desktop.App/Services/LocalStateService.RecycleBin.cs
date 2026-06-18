@@ -1640,7 +1640,24 @@ public sealed partial class LocalStateService
         if (hasActivePayments)
             return OfficeMutationResult.Denied("활성 수금/지급 기록이 남아 있어 전표를 영구삭제할 수 없습니다.");
 
+        var deletedPayments = await _db.Payments
+            .IgnoreQueryFilters()
+            .Where(current => invoiceIds.Contains(current.InvoiceId) && current.IsDeleted)
+            .ToListAsync(ct);
+
         var now = DateTime.UtcNow;
+        foreach (var payment in deletedPayments)
+        {
+            AddPurgeAudit(nameof(LocalPayment), payment.Id, new
+            {
+                payment.InvoiceId,
+                payment.PaymentDate,
+                payment.Amount,
+                Reason = "LinkedInvoicePurge"
+            }, session, now);
+        }
+
+        _db.Payments.RemoveRange(deletedPayments);
         _db.Invoices.RemoveRange(groupInvoices);
         AddPurgeAudit(nameof(LocalInvoice), target.Id, new
         {

@@ -1740,13 +1740,39 @@ public sealed class RecycleBinController : ControllerBase
         if (hasActivePayments)
             return (false, "활성 수금/지급 기록이 남아 있어 전표를 영구삭제할 수 없습니다.");
 
-        await TouchPurgeRecordsAsync(
-            invoiceGroup
-                .Select(current => CreatePurgeRecord("invoice", current.Id, current.TenantCode, current.ResponsibleOfficeCode))
-                .ToList(),
-            cancellationToken);
+        var deletedPayments = await _dbContext.Payments
+            .IgnoreQueryFilters()
+            .Where(current => invoiceIds.Contains(current.InvoiceId) && current.IsDeleted)
+            .ToListAsync(cancellationToken);
+        var deletedPaymentIds = deletedPayments.Select(current => current.Id).Distinct().ToList();
+        var paymentAttachments = deletedPaymentIds.Count == 0
+            ? new List<PaymentAttachment>()
+            : await _dbContext.PaymentAttachments
+                .IgnoreQueryFilters()
+                .Where(current => deletedPaymentIds.Contains(current.PaymentId))
+                .ToListAsync(cancellationToken);
+        var paymentAttachmentPaths = paymentAttachments
+            .Select(current => current.StoragePath)
+            .ToList();
+
+        var purgeRecords = invoiceGroup
+            .Select(current => CreatePurgeRecord("invoice", current.Id, current.TenantCode, current.ResponsibleOfficeCode))
+            .ToList();
+        purgeRecords.AddRange(deletedPayments.Select(payment =>
+        {
+            var paymentInvoice = invoiceGroup.First(current => current.Id == payment.InvoiceId);
+            return CreatePurgeRecord("payment", payment.Id, paymentInvoice.TenantCode, paymentInvoice.ResponsibleOfficeCode);
+        }));
+
+        await TouchPurgeRecordsAsync(purgeRecords, cancellationToken);
+        _dbContext.PaymentAttachments.RemoveRange(paymentAttachments);
+        _dbContext.Payments.RemoveRange(deletedPayments);
         _dbContext.Invoices.RemoveRange(invoiceGroup);
         await _dbContext.SaveChangesAsync(cancellationToken);
+
+        foreach (var attachmentPath in paymentAttachmentPaths)
+            _fileStorage.DeleteIfExists(attachmentPath);
+
         return (true, "전표를 영구삭제했습니다.");
     }
 

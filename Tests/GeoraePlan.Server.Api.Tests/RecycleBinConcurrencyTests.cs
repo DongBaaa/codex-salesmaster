@@ -416,6 +416,74 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PurgeInvoice_RemovesDeletedLinkedPaymentsAndAttachmentStorage()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        const string paymentAttachmentPath = "payments/test/purge-invoice-linked-payment.bin";
+        var customer = CreateScopedCustomer("전표 영구삭제 연결 수금 거래처", OfficeCodeCatalog.Usenet);
+        customer.Id = customerId;
+        var invoice = CreateScopedInvoice(customerId, OfficeCodeCatalog.Usenet, "INV-PURGE-DELETED-PAYMENT");
+        invoice.Id = invoiceId;
+        invoice.VersionGroupId = invoiceId;
+        invoice.VersionNumber = 1;
+        invoice.IsLatestVersion = true;
+        invoice.IsDeleted = true;
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(invoice);
+        dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 6, 18),
+            Amount = 1000m,
+            IsDeleted = true
+        });
+        dbContext.PaymentAttachments.Add(new PaymentAttachment
+        {
+            Id = Guid.NewGuid(),
+            PaymentId = paymentId,
+            FileName = "purge-invoice-linked-payment.bin",
+            StoragePath = paymentAttachmentPath,
+            IsDeleted = true
+        });
+        await dbContext.SaveChangesAsync();
+
+        var fileStorage = new StubCentralFileStorage();
+        var controller = CreateController(dbContext, currentUser, fileStorage);
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = invoiceId,
+                        Kind = "invoice"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success, item.Message);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.False(await dbContext.Invoices.IgnoreQueryFilters().AnyAsync(current => current.Id == invoiceId));
+        Assert.False(await dbContext.Payments.IgnoreQueryFilters().AnyAsync(current => current.Id == paymentId));
+        Assert.False(await dbContext.PaymentAttachments.IgnoreQueryFilters().AnyAsync(current => current.PaymentId == paymentId));
+        Assert.Contains(paymentAttachmentPath, fileStorage.DeletedPaths);
+        Assert.True(await dbContext.RecycleBinPurgeRecords.AnyAsync(current => current.Kind == "invoice" && current.EntityId == invoiceId));
+        Assert.True(await dbContext.RecycleBinPurgeRecords.AnyAsync(current => current.Kind == "payment" && current.EntityId == paymentId));
+    }
+
+    [Fact]
     public async Task RestorePayment_RejectsLinkedDeletedCustomerOutsideCustomerWriteScope()
     {
         var currentUser = CreateOfficeOnlyUser();

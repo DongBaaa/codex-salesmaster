@@ -1467,6 +1467,65 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     [Fact]
+    public async Task PermanentlyDeleteInvoice_AddsPurgeAuditForDeletedLinkedPayments()
+    {
+        PrepareAppRoot("georaeplan-invoice-purge-linked-payment-audit");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var invoiceId = Guid.NewGuid();
+            var paymentId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(customerId, "Invoice purge linked payment customer"));
+            db.Invoices.Add(CreateInvoice(
+                invoiceId,
+                customerId,
+                OfficeCodeCatalog.Usenet,
+                "LOCAL-INV-PURGE-DELETED-PAYMENT",
+                invoiceId,
+                versionNumber: 1,
+                isDeleted: true,
+                isLatestVersion: true));
+            db.Payments.Add(new LocalPayment
+            {
+                Id = paymentId,
+                InvoiceId = invoiceId,
+                PaymentDate = new DateOnly(2026, 6, 18),
+                Amount = 1000m,
+                IsDeleted = true
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var purge = await local.PermanentlyDeleteRecycleBinEntryAsync(
+                RecycleBinEntityKind.Invoice,
+                invoiceId,
+                session);
+
+            Assert.True(purge.Success, purge.Message);
+            Assert.False(await db.Invoices.IgnoreQueryFilters().AnyAsync(current => current.Id == invoiceId));
+            Assert.False(await db.Payments.IgnoreQueryFilters().AnyAsync(current => current.Id == paymentId));
+            Assert.True(await db.AuditLogs.AnyAsync(current =>
+                current.Action == "Purge" &&
+                current.EntityName == nameof(LocalInvoice) &&
+                current.EntityId == invoiceId.ToString("D")));
+            Assert.True(await db.AuditLogs.AnyAsync(current =>
+                current.Action == "Purge" &&
+                current.EntityName == nameof(LocalPayment) &&
+                current.EntityId == paymentId.ToString("D")));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ServerPurgeTransaction_RentalReceipt_RebuildsRunSettlementAndRemovesDerivedPayment()
     {
         PrepareAppRoot("georaeplan-rental-purge-transaction-run-settlement");
