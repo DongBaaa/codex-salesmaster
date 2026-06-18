@@ -945,8 +945,48 @@ public sealed class RecycleBinController : ControllerBase
         if (!invoiceGroupRestore.Success)
             return (false, invoiceGroupRestore.Message);
 
+        var invoiceGroup = await GetInvoiceGroupAsync(invoice, cancellationToken);
+        var invoiceIds = invoiceGroup
+            .Select(current => current.Id)
+            .Distinct()
+            .ToList();
+        var invoiceMap = invoiceGroup.ToDictionary(current => current.Id);
+        var rentalSettlementTargets = new List<(Guid ProfileId, Guid? RunId)>();
+        foreach (var current in invoiceGroup)
+            AddRentalSettlementTarget(current, rentalSettlementTargets);
+
+        var deletedPayments = await _dbContext.Payments
+            .IgnoreQueryFilters()
+            .Where(current => invoiceIds.Contains(current.InvoiceId) && current.IsDeleted)
+            .ToListAsync(cancellationToken);
+        var restoredLinkedPaymentCount = 0;
+        var restoredLinkedTransactionCount = 0;
+        var relinkedTransactionCount = 0;
+        foreach (var payment in deletedPayments)
+        {
+            if (!invoiceMap.TryGetValue(payment.InvoiceId, out var paymentInvoice))
+                continue;
+
+            var linkedTransactionRestore = await RestoreLinkedTransactionForPaymentAsync(payment, paymentInvoice, cancellationToken);
+            if (!linkedTransactionRestore.Success)
+                return (false, linkedTransactionRestore.Message);
+            if (linkedTransactionRestore.RentalProfileId is Guid linkedRentalProfileId && linkedRentalProfileId != Guid.Empty)
+                rentalSettlementTargets.Add((linkedRentalProfileId, linkedTransactionRestore.RentalRunId));
+
+            payment.IsDeleted = false;
+            restoredLinkedPaymentCount++;
+            if (linkedTransactionRestore.TransactionRestored)
+                restoredLinkedTransactionCount++;
+            if (linkedTransactionRestore.TransactionRelinked)
+                relinkedTransactionCount++;
+        }
+
         await _dbContext.SaveChangesAsync(cancellationToken);
-        return (true, invoiceGroupRestore.CustomerRestored
+        await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(rentalSettlementTargets, cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return (true, restoredLinkedPaymentCount > 0 || restoredLinkedTransactionCount > 0 || relinkedTransactionCount > 0
+            ? "전표를 복원하고 연결된 수금/지급 기록과 거래내역도 함께 활성화했습니다."
+            : invoiceGroupRestore.CustomerRestored
             ? "전표를 복원하고 연결된 거래처도 함께 활성화했습니다."
             : "전표를 복원했습니다.");
     }

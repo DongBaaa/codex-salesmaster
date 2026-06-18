@@ -1597,9 +1597,15 @@ public sealed partial class LocalStateService
         if (!invoiceGroupRestore.Success)
             return OfficeMutationResult.Denied(invoiceGroupRestore.Message);
 
+        var linkedPaymentRestore = await RestoreDeletedPaymentsForRestoredInvoiceGroupAsync(target, session, ct);
+        if (!linkedPaymentRestore.Success)
+            return OfficeMutationResult.Denied(linkedPaymentRestore.Message);
+
         return OfficeMutationResult.Ok(
             target.Id,
-            invoiceGroupRestore.CustomerRestored
+            linkedPaymentRestore.RestoredOrRelinked
+                ? "전표를 복원하고 연결된 수금/지급 기록과 거래내역도 함께 활성화했습니다."
+                : invoiceGroupRestore.CustomerRestored
                 ? "전표를 복원하고 연결된 거래처도 함께 활성화했습니다."
                 : "전표를 휴지통에서 복원했습니다.");
     }
@@ -1723,20 +1729,14 @@ public sealed partial class LocalStateService
             invoiceRestored = true;
         }
 
-        var now = DateTime.UtcNow;
-        RestoreEntity(payment, now);
-        AddRestoreAudit(nameof(LocalPayment), payment.Id, new
-        {
-            payment.InvoiceId,
-            payment.PaymentDate,
-            payment.Amount
-        }, session, now);
+        var linkedPaymentRestore = await RestoreDeletedPaymentsForRestoredInvoiceGroupAsync(invoice, session, ct, paymentId);
+        if (!linkedPaymentRestore.Success)
+            return OfficeMutationResult.Denied(linkedPaymentRestore.Message);
 
-        await _db.SaveChangesAsync(ct);
         return OfficeMutationResult.Ok(
             payment.Id,
-            customerRestored || invoiceRestored
-                ? "수금/지급 기록을 복원하고 연결 전표도 함께 활성화했습니다."
+            linkedPaymentRestore.RestoredOrRelinked || customerRestored || invoiceRestored
+                ? "수금/지급 기록을 복원하고 연결 전표/거래내역도 함께 활성화했습니다."
                 : "수금/지급 기록을 휴지통에서 복원했습니다.");
     }
 
@@ -1989,6 +1989,145 @@ public sealed partial class LocalStateService
         }, ct);
 
         return (true, customerRestored, string.Empty);
+    }
+
+    private async Task<(bool Success, bool RestoredOrRelinked, string Message)> RestoreDeletedPaymentsForRestoredInvoiceGroupAsync(
+        LocalInvoice target,
+        SessionState session,
+        CancellationToken ct,
+        Guid? onlyPaymentId = null)
+    {
+        var groupInvoices = await LoadInvoiceGroupForRecycleBinAsync(target, ct);
+        var invoiceIds = groupInvoices.Select(current => current.Id).Distinct().ToList();
+        if (invoiceIds.Count == 0)
+            return (true, false, string.Empty);
+
+        var invoiceMap = groupInvoices.ToDictionary(current => current.Id);
+        var deletedPayments = await _db.Payments
+            .IgnoreQueryFilters()
+            .Where(current =>
+                invoiceIds.Contains(current.InvoiceId) &&
+                current.IsDeleted &&
+                (!onlyPaymentId.HasValue || current.Id == onlyPaymentId.Value))
+            .ToListAsync(ct);
+        if (deletedPayments.Count == 0)
+            return (true, false, string.Empty);
+
+        var now = DateTime.UtcNow;
+        var restoredOrRelinked = false;
+        var rentalSettlementTargets = new List<(Guid ProfileId, Guid? RunId)>();
+        foreach (var invoice in groupInvoices)
+        {
+            if (invoice.LinkedRentalBillingProfileId is Guid profileId && profileId != Guid.Empty)
+                rentalSettlementTargets.Add((profileId, invoice.LinkedRentalBillingRunId));
+        }
+
+        foreach (var payment in deletedPayments)
+        {
+            if (!invoiceMap.TryGetValue(payment.InvoiceId, out var invoice))
+                continue;
+            if (!CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode))
+                return (false, false, "권한이 없어 연결 수금/지급 기록을 복원할 수 없습니다.");
+
+            var linkedTransaction = await _db.Transactions
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == payment.Id, ct);
+            if (linkedTransaction is not null)
+            {
+                if (!CanWriteOfficeScope(session, linkedTransaction.ResponsibleOfficeCode))
+                    return (false, false, "권한이 없어 연결 거래내역을 복원하거나 전표와 재연결할 수 없습니다.");
+
+                var transactionRelinked = false;
+                if (linkedTransaction.LinkedInvoiceId != payment.InvoiceId)
+                {
+                    if (linkedTransaction.LinkedInvoiceId.HasValue && linkedTransaction.LinkedInvoiceId.Value != Guid.Empty)
+                        return (false, false, "연동 거래내역의 전표 연결이 수금/지급 기록과 일치하지 않아 복원할 수 없습니다.");
+
+                    linkedTransaction.LinkedInvoiceId = payment.InvoiceId;
+                    linkedTransaction.LinkedInvoiceNumber = string.IsNullOrWhiteSpace(invoice.InvoiceNumber)
+                        ? invoice.LocalTempNumber
+                        : invoice.InvoiceNumber;
+                    transactionRelinked = true;
+                }
+
+                if (linkedTransaction.SettlementAmount != payment.Amount)
+                {
+                    linkedTransaction.SettlementAmount = payment.Amount;
+                    transactionRelinked = true;
+                }
+
+                if (invoice.LinkedRentalBillingProfileId is Guid invoiceRentalProfileId && invoiceRentalProfileId != Guid.Empty)
+                {
+                    if (linkedTransaction.LinkedRentalBillingProfileId != invoiceRentalProfileId)
+                    {
+                        linkedTransaction.LinkedRentalBillingProfileId = invoiceRentalProfileId;
+                        transactionRelinked = true;
+                    }
+                    if (linkedTransaction.LinkedRentalBillingRunId != invoice.LinkedRentalBillingRunId)
+                    {
+                        linkedTransaction.LinkedRentalBillingRunId = invoice.LinkedRentalBillingRunId;
+                        transactionRelinked = true;
+                    }
+                    if (!PaymentFlowConstants.IsRentalSettlementKind(linkedTransaction.TransactionKind))
+                    {
+                        linkedTransaction.TransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt;
+                        transactionRelinked = true;
+                    }
+                }
+                else
+                {
+                    var preferInvoicePayment = invoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement;
+                    var normalizedKind = NormalizeLinkedInvoiceTransactionKind(linkedTransaction.TransactionKind, preferInvoicePayment);
+                    if (!string.Equals(linkedTransaction.TransactionKind, normalizedKind, StringComparison.OrdinalIgnoreCase))
+                    {
+                        linkedTransaction.TransactionKind = normalizedKind;
+                        transactionRelinked = true;
+                    }
+                }
+
+                if (linkedTransaction.IsDeleted)
+                {
+                    RestoreEntity(linkedTransaction, now);
+                    AddRestoreAudit(nameof(LocalTransaction), linkedTransaction.Id, new
+                    {
+                        linkedTransaction.CustomerId,
+                        linkedTransaction.TransactionDate,
+                        linkedTransaction.TransactionKind,
+                        Reason = "InvoiceRestore"
+                    }, session, now);
+                    restoredOrRelinked = true;
+                }
+                else if (transactionRelinked)
+                {
+                    linkedTransaction.IsDirty = true;
+                    linkedTransaction.UpdatedAtUtc = now;
+                    restoredOrRelinked = true;
+                }
+
+                if (linkedTransaction.LinkedRentalBillingProfileId is Guid linkedRentalProfileId && linkedRentalProfileId != Guid.Empty)
+                    rentalSettlementTargets.Add((linkedRentalProfileId, linkedTransaction.LinkedRentalBillingRunId));
+            }
+
+            RestoreEntity(payment, now);
+            AddRestoreAudit(nameof(LocalPayment), payment.Id, new
+            {
+                payment.InvoiceId,
+                payment.PaymentDate,
+                payment.Amount,
+                Reason = "InvoiceRestore"
+            }, session, now);
+            restoredOrRelinked = true;
+        }
+
+        await _db.SaveChangesAsync(ct);
+        foreach (var targetKey in rentalSettlementTargets
+                     .Where(current => current.ProfileId != Guid.Empty)
+                     .Distinct())
+        {
+            await RecalculateRentalSettlementAsync(targetKey.ProfileId, targetKey.RunId, ct);
+        }
+
+        return (true, restoredOrRelinked, string.Empty);
     }
 
     private Task<List<LocalInvoice>> LoadInvoiceGroupForRecycleBinAsync(LocalInvoice target, CancellationToken ct)
