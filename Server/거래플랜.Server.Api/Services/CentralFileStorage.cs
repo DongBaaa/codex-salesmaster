@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using System.Security.Cryptography;
 
 namespace 거래플랜.Server.Api.Services;
 
@@ -51,6 +52,71 @@ public sealed class CentralFileStorage : ICentralFileStorage
         }
 
         return fallback ?? [];
+    }
+
+    public FileStorageInspectionResult Inspect(string? storedPath, bool computeHash = false)
+    {
+        if (string.IsNullOrWhiteSpace(storedPath))
+        {
+            return new FileStorageInspectionResult(
+                HasStoredPath: false,
+                IsSafePath: false,
+                Exists: false,
+                Length: null,
+                Hash: string.Empty,
+                Error: string.Empty);
+        }
+
+        if (!TryResolveSafeStoredPath(storedPath, out var safePath))
+        {
+            return new FileStorageInspectionResult(
+                HasStoredPath: true,
+                IsSafePath: false,
+                Exists: false,
+                Length: null,
+                Hash: string.Empty,
+                Error: "unsafe_storage_path");
+        }
+
+        if (!File.Exists(safePath))
+        {
+            return new FileStorageInspectionResult(
+                HasStoredPath: true,
+                IsSafePath: true,
+                Exists: false,
+                Length: null,
+                Hash: string.Empty,
+                Error: "stored_file_not_found");
+        }
+
+        try
+        {
+            var fileInfo = new FileInfo(safePath);
+            var hash = string.Empty;
+            if (computeHash)
+            {
+                using var stream = File.OpenRead(safePath);
+                hash = Convert.ToHexString(SHA256.HashData(stream));
+            }
+
+            return new FileStorageInspectionResult(
+                HasStoredPath: true,
+                IsSafePath: true,
+                Exists: true,
+                Length: fileInfo.Length,
+                Hash: hash,
+                Error: string.Empty);
+        }
+        catch (Exception ex)
+        {
+            return new FileStorageInspectionResult(
+                HasStoredPath: true,
+                IsSafePath: true,
+                Exists: false,
+                Length: null,
+                Hash: string.Empty,
+                Error: ex.GetType().Name);
+        }
     }
 
     public void DeleteIfExists(string? storedPath)

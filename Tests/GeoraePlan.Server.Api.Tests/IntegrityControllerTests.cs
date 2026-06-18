@@ -8,6 +8,10 @@ using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
+using System.Security.Cryptography;
 using Xunit;
 
 namespace GeoraePlan.Server.Api.Tests;
@@ -15,11 +19,13 @@ namespace GeoraePlan.Server.Api.Tests;
 public sealed class IntegrityControllerTests : IDisposable
 {
     private readonly SqliteConnection _connection;
+    private readonly string _fileStorageRoot;
 
     public IntegrityControllerTests()
     {
         _connection = new SqliteConnection("Data Source=:memory:");
         _connection.Open();
+        _fileStorageRoot = Path.Combine(Path.GetTempPath(), "georaeplan-integrity-file-storage-tests", Guid.NewGuid().ToString("N"));
     }
 
     [Fact]
@@ -226,9 +232,7 @@ public sealed class IntegrityControllerTests : IDisposable
 
         await dbContext.SaveChangesAsync();
 
-        var controller = new IntegrityController(
-            dbContext,
-            new OfficeScopeService(currentUser, dbContext));
+        var controller = CreateController(dbContext, currentUser);
 
         var response = await controller.GetReport(CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);
@@ -333,9 +337,7 @@ public sealed class IntegrityControllerTests : IDisposable
         });
         await dbContext.SaveChangesAsync();
 
-        var controller = new IntegrityController(
-            dbContext,
-            new OfficeScopeService(currentUser, dbContext));
+        var controller = CreateController(dbContext, currentUser);
 
         var response = await controller.GetReport(CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);
@@ -436,9 +438,7 @@ public sealed class IntegrityControllerTests : IDisposable
         });
         await dbContext.SaveChangesAsync();
 
-        var controller = new IntegrityController(
-            dbContext,
-            new OfficeScopeService(currentUser, dbContext));
+        var controller = CreateController(dbContext, currentUser);
 
         var response = await controller.GetReport(CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);
@@ -457,6 +457,178 @@ public sealed class IntegrityControllerTests : IDisposable
         Assert.Contains(details.Rows, row => row.PrimaryText == "contract-residue.pdf" && row.DetailText.Contains("DB FileContent 4 bytes", StringComparison.Ordinal));
         Assert.Contains(details.Rows, row => row.PrimaryText == "transaction-residue.pdf" && row.DetailText.Contains("DB FileContent 3 bytes", StringComparison.Ordinal));
         Assert.Contains(details.Rows, row => row.PrimaryText == "payment-residue.pdf" && row.DetailText.Contains("DB FileContent 2 bytes", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task GetReport_FlagsStoredFilesMissingFromCentralStorage()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "저장파일 누락 거래처",
+            NameMatchKey = "STORAGEFILEMISSINGCUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.CustomerContracts.Add(new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customerId,
+            ContractType = "거래계약서",
+            FileName = "contract-storage-missing.pdf",
+            FileSize = 12,
+            StoragePath = Path.Combine(_fileStorageRoot, "missing-contract.pdf"),
+            FileContent = []
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = transactionId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 14),
+            TransactionKind = "수금"
+        });
+        dbContext.TransactionAttachments.Add(new TransactionAttachment
+        {
+            Id = Guid.NewGuid(),
+            TransactionId = transactionId,
+            FileName = "transaction-storage-missing.pdf",
+            FileSize = 24,
+            StoragePath = Path.Combine(_fileStorageRoot, "missing-transaction.pdf"),
+            FileContent = []
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "INV-STORAGE-MISSING",
+            InvoiceDate = new DateOnly(2026, 6, 14)
+        });
+        dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 6, 14),
+            Amount = 50000m
+        });
+        dbContext.PaymentAttachments.Add(new PaymentAttachment
+        {
+            Id = Guid.NewGuid(),
+            PaymentId = paymentId,
+            FileName = "payment-storage-missing.pdf",
+            FileSize = 36,
+            StoragePath = Path.Combine(_fileStorageRoot, "missing-payment.pdf"),
+            FileContent = []
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issue = Assert.Single(payload.Issues, current => current.Code == "file_storage_missing");
+
+        Assert.Equal("Error", issue.Severity);
+        Assert.Equal(3, issue.Count);
+        Assert.DoesNotContain(payload.Issues, current => current.Code == "file_content_unavailable");
+
+        var detailsResponse = await controller.GetReportDetails("file_storage_missing", CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+
+        Assert.Equal(3, details.DetailCount);
+        Assert.All(details.Rows, row =>
+        {
+            Assert.Contains("저장파일 없음", row.DetailText, StringComparison.Ordinal);
+            Assert.Contains("stored_file_not_found", row.DetailText, StringComparison.Ordinal);
+        });
+    }
+
+    [Fact]
+    public async Task GetReport_FlagsStoredFileSizeAndHashMismatch()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var contractId = Guid.NewGuid();
+        var storedBytes = new byte[] { 1, 2, 3 };
+        var actualHash = Convert.ToHexString(SHA256.HashData(storedBytes));
+        var wrongHash = Convert.ToHexString(SHA256.HashData(new byte[] { 9, 9, 9 }));
+        var storedPath = await CreateFileStorage().SaveBytesAsync(
+            "customer-contracts",
+            customerId.ToString("N"),
+            contractId,
+            "contract-storage-mismatch.pdf",
+            storedBytes);
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "저장파일 불일치 거래처",
+            NameMatchKey = "STORAGEFILEMISMATCHCUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.CustomerContracts.Add(new CustomerContract
+        {
+            Id = contractId,
+            CustomerId = customerId,
+            ContractType = "거래계약서",
+            FileName = "contract-storage-mismatch.pdf",
+            FileSize = 999,
+            FileHash = wrongHash,
+            StoragePath = storedPath,
+            FileContent = []
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var sizeIssue = Assert.Single(payload.Issues, current => current.Code == "file_storage_size_mismatch");
+        var hashIssue = Assert.Single(payload.Issues, current => current.Code == "file_storage_hash_mismatch");
+
+        Assert.Equal("Error", sizeIssue.Severity);
+        Assert.Equal(1, sizeIssue.Count);
+        Assert.Equal("Error", hashIssue.Severity);
+        Assert.Equal(1, hashIssue.Count);
+
+        var sizeDetailsResponse = await controller.GetReportDetails("file_storage_size_mismatch", CancellationToken.None);
+        var sizeDetailsOk = Assert.IsType<OkObjectResult>(sizeDetailsResponse.Result);
+        var sizeDetails = Assert.IsType<IntegrityIssueDetailResultDto>(sizeDetailsOk.Value);
+        var sizeRow = Assert.Single(sizeDetails.Rows);
+
+        Assert.Contains("FileSize 999 bytes", sizeRow.DetailText, StringComparison.Ordinal);
+        Assert.Contains("저장파일 크기 3 bytes", sizeRow.DetailText, StringComparison.Ordinal);
+
+        var hashDetailsResponse = await controller.GetReportDetails("file_storage_hash_mismatch", CancellationToken.None);
+        var hashDetailsOk = Assert.IsType<OkObjectResult>(hashDetailsResponse.Result);
+        var hashDetails = Assert.IsType<IntegrityIssueDetailResultDto>(hashDetailsOk.Value);
+        var hashRow = Assert.Single(hashDetails.Rows);
+
+        Assert.Contains($"FileHash {wrongHash}", hashRow.DetailText, StringComparison.Ordinal);
+        Assert.Contains($"저장파일 SHA256 {actualHash}", hashRow.DetailText, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -488,9 +660,7 @@ public sealed class IntegrityControllerTests : IDisposable
             });
         await dbContext.SaveChangesAsync();
 
-        var controller = new IntegrityController(
-            dbContext,
-            new OfficeScopeService(currentUser, dbContext));
+        var controller = CreateController(dbContext, currentUser);
 
         var response = await controller.GetReport(CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);
@@ -533,9 +703,7 @@ public sealed class IntegrityControllerTests : IDisposable
             });
         await dbContext.SaveChangesAsync();
 
-        var controller = new IntegrityController(
-            dbContext,
-            new OfficeScopeService(currentUser, dbContext));
+        var controller = CreateController(dbContext, currentUser);
 
         var response = await controller.GetReport(CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);
@@ -574,9 +742,7 @@ public sealed class IntegrityControllerTests : IDisposable
             });
         await dbContext.SaveChangesAsync();
 
-        var controller = new IntegrityController(
-            dbContext,
-            new OfficeScopeService(currentUser, dbContext));
+        var controller = CreateController(dbContext, currentUser);
 
         var response = await controller.GetReport(CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);
@@ -644,9 +810,7 @@ public sealed class IntegrityControllerTests : IDisposable
             });
         await dbContext.SaveChangesAsync();
 
-        var controller = new IntegrityController(
-            dbContext,
-            new OfficeScopeService(currentUser, dbContext));
+        var controller = CreateController(dbContext, currentUser);
 
         var response = await controller.GetReport(CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);
@@ -693,9 +857,7 @@ public sealed class IntegrityControllerTests : IDisposable
             });
         await dbContext.SaveChangesAsync();
 
-        var controller = new IntegrityController(
-            dbContext,
-            new OfficeScopeService(currentUser, dbContext));
+        var controller = CreateController(dbContext, currentUser);
 
         var response = await controller.GetReport(CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);
@@ -724,9 +886,7 @@ public sealed class IntegrityControllerTests : IDisposable
         });
         await dbContext.SaveChangesAsync();
 
-        var controller = new IntegrityController(
-            dbContext,
-            new OfficeScopeService(currentUser, dbContext));
+        var controller = CreateController(dbContext, currentUser);
 
         var response = await controller.GetReport(CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);
@@ -864,9 +1024,7 @@ public sealed class IntegrityControllerTests : IDisposable
         });
         await dbContext.SaveChangesAsync();
 
-        var controller = new IntegrityController(
-            dbContext,
-            new OfficeScopeService(currentUser, dbContext));
+        var controller = CreateController(dbContext, currentUser);
 
         var response = await controller.GetReport(CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);
@@ -949,9 +1107,7 @@ public sealed class IntegrityControllerTests : IDisposable
         });
         await dbContext.SaveChangesAsync();
 
-        var controller = new IntegrityController(
-            dbContext,
-            new OfficeScopeService(currentUser, dbContext));
+        var controller = CreateController(dbContext, currentUser);
 
         var response = await controller.GetReport(CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);
@@ -997,9 +1153,7 @@ public sealed class IntegrityControllerTests : IDisposable
         });
         await dbContext.SaveChangesAsync();
 
-        var controller = new IntegrityController(
-            dbContext,
-            new OfficeScopeService(currentUser, dbContext));
+        var controller = CreateController(dbContext, currentUser);
 
         var detailsResponse = await controller.GetReportDetails("rental_profile_customer_unlinked", CancellationToken.None);
         var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
@@ -1078,9 +1232,7 @@ public sealed class IntegrityControllerTests : IDisposable
         });
         await dbContext.SaveChangesAsync();
 
-        var controller = new IntegrityController(
-            dbContext,
-            new OfficeScopeService(currentUser, dbContext));
+        var controller = CreateController(dbContext, currentUser);
 
         var reportResponse = await controller.GetReport(CancellationToken.None);
         var reportOk = Assert.IsType<OkObjectResult>(reportResponse.Result);
@@ -1139,9 +1291,7 @@ public sealed class IntegrityControllerTests : IDisposable
             });
         await dbContext.SaveChangesAsync();
 
-        var controller = new IntegrityController(
-            dbContext,
-            new OfficeScopeService(currentUser, dbContext));
+        var controller = CreateController(dbContext, currentUser);
 
         var response = await controller.GetReportDetails("duplicate_rental_asset_keys", CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);
@@ -1200,9 +1350,7 @@ public sealed class IntegrityControllerTests : IDisposable
             });
         await dbContext.SaveChangesAsync();
 
-        var controller = new IntegrityController(
-            dbContext,
-            new OfficeScopeService(currentUser, dbContext));
+        var controller = CreateController(dbContext, currentUser);
 
         var response = await controller.GetReportDetails("item_stock_snapshot_mismatch", CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);
@@ -1246,9 +1394,7 @@ public sealed class IntegrityControllerTests : IDisposable
         });
         await dbContext.SaveChangesAsync();
 
-        var controller = new IntegrityController(
-            dbContext,
-            new OfficeScopeService(currentUser, dbContext));
+        var controller = CreateController(dbContext, currentUser);
 
         var response = await controller.GetReportDetails("deleted_item_stock_residue", CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);
@@ -1266,6 +1412,8 @@ public sealed class IntegrityControllerTests : IDisposable
     public void Dispose()
     {
         _connection.Dispose();
+        if (Directory.Exists(_fileStorageRoot))
+            Directory.Delete(_fileStorageRoot, recursive: true);
     }
 
     private AppDbContext CreateDbContext(TestCurrentUserContext currentUser)
@@ -1279,6 +1427,14 @@ public sealed class IntegrityControllerTests : IDisposable
         dbContext.Database.EnsureCreated();
         return dbContext;
     }
+
+    private IntegrityController CreateController(AppDbContext dbContext, TestCurrentUserContext currentUser)
+        => new(dbContext, new OfficeScopeService(currentUser, dbContext), CreateFileStorage());
+
+    private CentralFileStorage CreateFileStorage()
+        => new(
+            Options.Create(new CentralFileStorageOptions { RootPath = _fileStorageRoot }),
+            new TestHostEnvironment());
 
     private static TestCurrentUserContext CreateAdminUser()
         => new()
@@ -1303,5 +1459,13 @@ public sealed class IntegrityControllerTests : IDisposable
 
         public bool HasPermission(string permission)
             => IsAdmin || IsGodMode || Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private sealed class TestHostEnvironment : IHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = "Test";
+        public string ApplicationName { get; set; } = "GeoraePlan.Server.Api.Tests";
+        public string ContentRootPath { get; set; } = Path.GetTempPath();
+        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
     }
 }

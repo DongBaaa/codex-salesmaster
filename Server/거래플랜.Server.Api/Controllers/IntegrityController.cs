@@ -22,11 +22,16 @@ public sealed class IntegrityController : ControllerBase
 
     private readonly AppDbContext _dbContext;
     private readonly OfficeScopeService _officeScopeService;
+    private readonly ICentralFileStorage _fileStorage;
 
-    public IntegrityController(AppDbContext dbContext, OfficeScopeService officeScopeService)
+    public IntegrityController(
+        AppDbContext dbContext,
+        OfficeScopeService officeScopeService,
+        ICentralFileStorage fileStorage)
     {
         _dbContext = dbContext;
         _officeScopeService = officeScopeService;
+        _fileStorage = fileStorage;
     }
 
     [HttpGet("report")]
@@ -240,6 +245,24 @@ public sealed class IntegrityController : ControllerBase
             fileStorageIssueCandidates.Count(HasDbFileContentResidue),
             "Warning",
             "파일 본문이 DB에 남아 저장소 이동이 완료되지 않은 첨부/계약서가 있습니다.");
+        AddIssue(
+            issues,
+            "file_storage_missing",
+            fileStorageIssueCandidates.Count(IsStoredFileMissing),
+            "Error",
+            "저장소 경로가 있으나 실제 저장 파일을 읽을 수 없는 첨부/계약서가 있습니다.");
+        AddIssue(
+            issues,
+            "file_storage_size_mismatch",
+            fileStorageIssueCandidates.Count(IsStoredFileSizeMismatch),
+            "Error",
+            "저장소 실제 파일 크기와 DB 파일 크기가 다른 첨부/계약서가 있습니다.");
+        AddIssue(
+            issues,
+            "file_storage_hash_mismatch",
+            fileStorageIssueCandidates.Count(IsStoredFileHashMismatch),
+            "Error",
+            "저장소 실제 파일 SHA256과 DB 파일 해시가 다른 첨부/계약서가 있습니다.");
 
         var report = new IntegrityReportDto
         {
@@ -309,6 +332,9 @@ public sealed class IntegrityController : ControllerBase
             "orphan_payment_attachment_refs" => await LoadOrphanPaymentAttachmentDetailsAsync(cancellationToken),
             "file_content_unavailable" => await LoadFileContentUnavailableDetailsAsync(cancellationToken),
             "file_content_db_residue" => await LoadFileContentDbResidueDetailsAsync(cancellationToken),
+            "file_storage_missing" => await LoadStoredFileMissingDetailsAsync(cancellationToken),
+            "file_storage_size_mismatch" => await LoadStoredFileSizeMismatchDetailsAsync(cancellationToken),
+            "file_storage_hash_mismatch" => await LoadStoredFileHashMismatchDetailsAsync(cancellationToken),
             _ => []
         };
     }
@@ -1297,6 +1323,24 @@ public sealed class IntegrityController : ControllerBase
             .ToList();
     }
 
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadStoredFileMissingDetailsAsync(CancellationToken cancellationToken)
+    {
+        var candidates = await LoadFileStorageIssueCandidatesAsync(cancellationToken);
+        return CreateFileStorageIssueDetails(candidates, IsStoredFileMissing);
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadStoredFileSizeMismatchDetailsAsync(CancellationToken cancellationToken)
+    {
+        var candidates = await LoadFileStorageIssueCandidatesAsync(cancellationToken);
+        return CreateFileStorageIssueDetails(candidates, IsStoredFileSizeMismatch);
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadStoredFileHashMismatchDetailsAsync(CancellationToken cancellationToken)
+    {
+        var candidates = await LoadFileStorageIssueCandidatesAsync(cancellationToken);
+        return CreateFileStorageIssueDetails(candidates, IsStoredFileHashMismatch);
+    }
+
     private async Task<List<FileStorageIssueCandidate>> LoadFileStorageIssueCandidatesAsync(CancellationToken cancellationToken)
     {
         var candidates = new List<FileStorageIssueCandidate>();
@@ -1313,6 +1357,7 @@ public sealed class IntegrityController : ControllerBase
                 contract.Description,
                 contract.UploadedAtUtc,
                 contract.FileSize,
+                contract.FileHash,
                 contract.StoragePath,
                 FileContentLength = contract.FileContent.Length,
                 CustomerName = contract.Customer == null ? string.Empty : contract.Customer.NameOriginal,
@@ -1330,8 +1375,10 @@ public sealed class IntegrityController : ControllerBase
             ReferenceText: $"거래처 {FirstNonEmpty(contract.CustomerName, FormatGuid(contract.CustomerId))}",
             ScopeText: CombineParts(FormatScope(contract.TenantCode, contract.OfficeCode, contract.ResponsibleOfficeCode), $"업로드 {FormatUtcDateTime(contract.UploadedAtUtc)}"),
             FileSize: contract.FileSize,
+            FileHash: contract.FileHash,
             StoragePath: contract.StoragePath,
-            FileContentLength: contract.FileContentLength)));
+            FileContentLength: contract.FileContentLength,
+            StorageInspection: InspectStoredFile(contract.StoragePath, contract.FileHash))));
 
         var transactionAttachmentRows = await _officeScopeService
             .ApplyTransactionAttachmentScope(_dbContext.TransactionAttachments.IgnoreQueryFilters().AsNoTracking())
@@ -1345,6 +1392,7 @@ public sealed class IntegrityController : ControllerBase
                 attachment.Description,
                 attachment.UploadedAtUtc,
                 attachment.FileSize,
+                attachment.FileHash,
                 attachment.StoragePath,
                 FileContentLength = attachment.FileContent.Length,
                 TransactionDate = attachment.Transaction == null ? (DateOnly?)null : attachment.Transaction.TransactionDate,
@@ -1369,8 +1417,10 @@ public sealed class IntegrityController : ControllerBase
                 : $"거래 {FormatGuid(attachment.TransactionId)}",
             ScopeText: CombineParts(FormatScope(attachment.TenantCode, attachment.OfficeCode, attachment.ResponsibleOfficeCode), $"업로드 {FormatUtcDateTime(attachment.UploadedAtUtc)}"),
             FileSize: attachment.FileSize,
+            FileHash: attachment.FileHash,
             StoragePath: attachment.StoragePath,
-            FileContentLength: attachment.FileContentLength)));
+            FileContentLength: attachment.FileContentLength,
+            StorageInspection: InspectStoredFile(attachment.StoragePath, attachment.FileHash))));
 
         var scopedPayments = _officeScopeService
             .ApplyPaymentScope(_dbContext.Payments.IgnoreQueryFilters().AsNoTracking())
@@ -1387,6 +1437,7 @@ public sealed class IntegrityController : ControllerBase
                     attachment.Description,
                     attachment.UploadedAtUtc,
                     attachment.FileSize,
+                    attachment.FileHash,
                     attachment.StoragePath,
                     FileContentLength = attachment.FileContent.Length,
                     payment.PaymentDate,
@@ -1409,8 +1460,10 @@ public sealed class IntegrityController : ControllerBase
                 string.IsNullOrWhiteSpace(attachment.InvoiceNumber) ? null : $"전표 {attachment.InvoiceNumber}"),
             ScopeText: CombineParts(FormatScope(attachment.TenantCode, attachment.OfficeCode, attachment.ResponsibleOfficeCode), $"업로드 {FormatUtcDateTime(attachment.UploadedAtUtc)}"),
             FileSize: attachment.FileSize,
+            FileHash: attachment.FileHash,
             StoragePath: attachment.StoragePath,
-            FileContentLength: attachment.FileContentLength)));
+            FileContentLength: attachment.FileContentLength,
+            StorageInspection: InspectStoredFile(attachment.StoragePath, attachment.FileHash))));
 
         return candidates;
     }
@@ -1984,6 +2037,9 @@ public sealed class IntegrityController : ControllerBase
             "orphan_payment_attachment_refs" => new IntegrityIssueDefinition("orphan_payment_attachment_refs", "Error", "결제내역이 없는 결제 첨부가 존재합니다."),
             "file_content_unavailable" => new IntegrityIssueDefinition("file_content_unavailable", "Error", "파일 크기는 있으나 저장소 경로와 DB 파일 본문이 모두 비어 있는 첨부/계약서가 있습니다."),
             "file_content_db_residue" => new IntegrityIssueDefinition("file_content_db_residue", "Warning", "파일 본문이 DB에 남아 저장소 이동이 완료되지 않은 첨부/계약서가 있습니다."),
+            "file_storage_missing" => new IntegrityIssueDefinition("file_storage_missing", "Error", "저장소 경로가 있으나 실제 저장 파일을 읽을 수 없는 첨부/계약서가 있습니다."),
+            "file_storage_size_mismatch" => new IntegrityIssueDefinition("file_storage_size_mismatch", "Error", "저장소 실제 파일 크기와 DB 파일 크기가 다른 첨부/계약서가 있습니다."),
+            "file_storage_hash_mismatch" => new IntegrityIssueDefinition("file_storage_hash_mismatch", "Error", "저장소 실제 파일 SHA256과 DB 파일 해시가 다른 첨부/계약서가 있습니다."),
             _ => new IntegrityIssueDefinition(string.Empty, string.Empty, string.Empty)
         };
 
@@ -2052,9 +2108,26 @@ public sealed class IntegrityController : ControllerBase
             scopeText: candidate.ScopeText,
             detailText: CombineParts(
                 $"FileSize {candidate.FileSize:N0} bytes",
+                string.IsNullOrWhiteSpace(candidate.FileHash) ? null : $"FileHash {candidate.FileHash}",
                 string.IsNullOrWhiteSpace(candidate.StoragePath) ? "StoragePath 비어 있음" : $"StoragePath {candidate.StoragePath}",
+                FormatStorageInspection(candidate.StorageInspection),
                 $"DB FileContent {candidate.FileContentLength:N0} bytes"));
     }
+
+    private static List<IntegrityIssueDetailRowDto> CreateFileStorageIssueDetails(
+        IEnumerable<FileStorageIssueCandidate> candidates,
+        Func<FileStorageIssueCandidate, bool> predicate)
+    {
+        return candidates
+            .Where(predicate)
+            .OrderBy(candidate => candidate.EntityType, StringComparer.Ordinal)
+            .ThenBy(candidate => candidate.PrimaryText, StringComparer.OrdinalIgnoreCase)
+            .Select(CreateFileStorageIssueDetailRow)
+            .ToList();
+    }
+
+    private FileStorageInspectionResult InspectStoredFile(string? storagePath, string? fileHash)
+        => _fileStorage.Inspect(storagePath, computeHash: IsSha256Hex(fileHash));
 
     private static bool IsFileContentUnavailable(FileStorageIssueCandidate candidate)
         => candidate.FileSize > 0 &&
@@ -2063,6 +2136,52 @@ public sealed class IntegrityController : ControllerBase
 
     private static bool HasDbFileContentResidue(FileStorageIssueCandidate candidate)
         => candidate.FileContentLength > 0;
+
+    private static bool IsStoredFileMissing(FileStorageIssueCandidate candidate)
+        => candidate.FileSize > 0 &&
+           !string.IsNullOrWhiteSpace(candidate.StoragePath) &&
+           (!candidate.StorageInspection.IsSafePath || !candidate.StorageInspection.Exists);
+
+    private static bool IsStoredFileSizeMismatch(FileStorageIssueCandidate candidate)
+        => candidate.FileSize > 0 &&
+           candidate.StorageInspection.Exists &&
+           candidate.StorageInspection.Length.HasValue &&
+           candidate.StorageInspection.Length.Value != candidate.FileSize;
+
+    private static bool IsStoredFileHashMismatch(FileStorageIssueCandidate candidate)
+        => IsSha256Hex(candidate.FileHash) &&
+           candidate.StorageInspection.Exists &&
+           !string.IsNullOrWhiteSpace(candidate.StorageInspection.Hash) &&
+           !string.Equals(candidate.StorageInspection.Hash, candidate.FileHash.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSha256Hex(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        var trimmed = value.Trim();
+        if (trimmed.Length != 64)
+            return false;
+
+        return trimmed.All(character =>
+            (character >= '0' && character <= '9') ||
+            (character >= 'a' && character <= 'f') ||
+            (character >= 'A' && character <= 'F'));
+    }
+
+    private static string FormatStorageInspection(FileStorageInspectionResult inspection)
+    {
+        if (!inspection.HasStoredPath)
+            return "저장파일 경로 없음";
+        if (!inspection.IsSafePath)
+            return CombineParts("저장파일 경로 불안전", inspection.Error);
+        if (!inspection.Exists)
+            return CombineParts("저장파일 없음", inspection.Error);
+
+        return CombineParts(
+            inspection.Length.HasValue ? $"저장파일 크기 {inspection.Length.Value:N0} bytes" : null,
+            string.IsNullOrWhiteSpace(inspection.Hash) ? null : $"저장파일 SHA256 {inspection.Hash}");
+    }
 
     private static string FormatScope(params string?[] parts)
         => string.Join(" / ", parts.Where(part => !string.IsNullOrWhiteSpace(part)).Select(part => part!.Trim()));
@@ -2149,8 +2268,10 @@ public sealed class IntegrityController : ControllerBase
         string ReferenceText,
         string ScopeText,
         long FileSize,
+        string FileHash,
         string StoragePath,
-        int FileContentLength);
+        int FileContentLength,
+        FileStorageInspectionResult StorageInspection);
 
     private sealed record NegativeStockInvoiceEvidence(
         Guid ItemId,

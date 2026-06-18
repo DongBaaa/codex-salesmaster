@@ -2,6 +2,7 @@ using 거래플랜.Server.Api.Services;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using System.Security.Cryptography;
 using Xunit;
 
 namespace GeoraePlan.Server.Api.Tests;
@@ -43,6 +44,43 @@ public sealed class CentralFileStorageTests : IDisposable
         var bytes = service.ReadBytes(Path.Combine(_rootPath, "missing.bin"), fallback);
 
         Assert.Equal(fallback, bytes);
+    }
+
+    [Fact]
+    public async Task Inspect_ReturnsStoredFileLengthAndHash_WhenFileExists()
+    {
+        var service = CreateService();
+        var bytes = new byte[] { 10, 20, 30 };
+        var expectedHash = Convert.ToHexString(SHA256.HashData(bytes));
+        var storedPath = await service.SaveBytesAsync("contracts", "customer-1", Guid.NewGuid(), "sample.pdf", bytes);
+
+        var result = service.Inspect(storedPath, computeHash: true);
+
+        Assert.True(result.HasStoredPath);
+        Assert.True(result.IsSafePath);
+        Assert.True(result.Exists);
+        Assert.Equal(bytes.Length, result.Length);
+        Assert.Equal(expectedHash, result.Hash);
+        Assert.Equal(string.Empty, result.Error);
+    }
+
+    [Fact]
+    public void Inspect_ReportsMissingAndUnsafeStoredPaths()
+    {
+        var service = CreateService();
+
+        var missing = service.Inspect(Path.Combine(_rootPath, "missing.bin"));
+        var unsafePath = service.Inspect(Path.Combine(Path.GetTempPath(), "outside-georaeplan.bin"));
+
+        Assert.True(missing.HasStoredPath);
+        Assert.True(missing.IsSafePath);
+        Assert.False(missing.Exists);
+        Assert.Equal("stored_file_not_found", missing.Error);
+
+        Assert.True(unsafePath.HasStoredPath);
+        Assert.False(unsafePath.IsSafePath);
+        Assert.False(unsafePath.Exists);
+        Assert.Equal("unsafe_storage_path", unsafePath.Error);
     }
 
     private CentralFileStorage CreateService()
