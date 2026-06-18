@@ -420,6 +420,88 @@ public sealed class DataIntegrityIssueServicePerformanceTests
     }
 
     [Fact]
+    public async Task ScanAsync_FindsRentalBillingProfileSummaryMismatch()
+    {
+        PrepareAppRoot("georaeplan-integrity-rental-profile-summary-mismatch");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var profileId = Guid.NewGuid();
+            var runId = Guid.NewGuid();
+            var transactionId = Guid.NewGuid();
+
+            db.Customers.Add(CreateCustomer(customerId, OfficeCodeCatalog.Usenet, "Profile summary mismatch customer"));
+            var profile = CreateProfile(profileId, 9402, OfficeCodeCatalog.Usenet, customerId, "Profile summary mismatch customer");
+            profile.BillingStatus = PaymentFlowConstants.BillingStatusInProgress;
+            profile.SettlementStatus = PaymentFlowConstants.SettlementStatusPending;
+            profile.CompletionStatus = PaymentFlowConstants.CompletionPending;
+            profile.SettledAmount = 0m;
+            profile.OutstandingAmount = 100_000m;
+            profile.BillingRunsJson = JsonSerializer.Serialize(new List<RentalBillingRunModel>
+            {
+                new()
+                {
+                    RunId = runId,
+                    RunKey = "2026-06",
+                    ScheduledDate = new DateOnly(2026, 6, 25),
+                    PeriodStartDate = new DateOnly(2026, 6, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    PeriodLabel = "2026-06",
+                    Status = PaymentFlowConstants.BillingStatusCompleted,
+                    BilledAmount = 100_000m,
+                    SettledAmount = 100_000m,
+                    SettlementStatus = PaymentFlowConstants.SettlementStatusConfirmed,
+                    SettledDate = new DateOnly(2026, 6, 26)
+                }
+            });
+            db.RentalBillingProfiles.Add(profile);
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = transactionId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 26),
+                TransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt,
+                LinkedRentalBillingProfileId = profileId,
+                LinkedRentalBillingRunId = runId,
+                BankReceipt = 100_000m,
+                ReceiptTotal = 100_000m,
+                SettlementAmount = 100_000m,
+                IsDeleted = false,
+                IsDirty = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateAdminSession());
+            var issue = Assert.Single(result.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.RentalBillingProfileSummaryMismatch);
+
+            Assert.Equal(profileId, issue.EntityId);
+            Assert.Equal("Error", issue.Severity);
+            Assert.Equal(DataIntegrityDirectActionKind.OpenRentalBillingProfile, issue.DirectActionKind);
+            Assert.Contains(runId.ToString("D"), issue.ReviewInfo, StringComparison.Ordinal);
+            Assert.Contains("프로필 저장 정산 0", issue.CurrentValue, StringComparison.Ordinal);
+            Assert.Contains("대표 run 실제 정산 100,000", issue.ExpectedValue, StringComparison.Ordinal);
+            Assert.DoesNotContain(result.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.RentalBillingRunSettlementMismatch);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ScanAsync_FindsRestoredRentalInvoiceWithDeletedPaymentAndDetachedTransaction()
     {
         PrepareAppRoot("georaeplan-integrity-rental-invoice-detached-payment");

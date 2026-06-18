@@ -1408,6 +1408,145 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task InvoicesController_Update_RentalBillingInvoice_RecalculatesBilledAndOutstandingAmounts()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Server rental update customer",
+            NameMatchKey = "SERVERRENTALUPDATECUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"profile-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = "Server rental update customer",
+            BillingStatus = "청구중",
+            SettlementStatus = "부분입금",
+            CompletionStatus = "미완료",
+            MonthlyAmount = 100_000m,
+            SettledAmount = 50_000m,
+            OutstandingAmount = 50_000m,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new ServerRentalBillingRunSnapshot
+                {
+                    RunId = runId,
+                    RunKey = "2026-06",
+                    ScheduledDate = new DateOnly(2026, 6, 25),
+                    PeriodStartDate = new DateOnly(2026, 6, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    PeriodLabel = "2026-06",
+                    Status = "청구중",
+                    BilledAmount = 100_000m,
+                    SettledAmount = 50_000m,
+                    SettlementStatus = "부분입금",
+                    SettledDate = new DateOnly(2026, 6, 26)
+                }
+            })
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "RENTAL-UPD-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 25),
+            TotalAmount = 100_000m,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId
+        });
+        dbContext.InvoiceLines.Add(new InvoiceLine
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoiceId,
+            ItemNameOriginal = "Rental billing item",
+            Unit = "EA",
+            Quantity = 1m,
+            UnitPrice = 100_000m,
+            LineAmount = 100_000m
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 26),
+            TransactionKind = "렌탈수금",
+            LinkedInvoiceId = invoiceId,
+            LinkedInvoiceNumber = "RENTAL-UPD-001",
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId,
+            BankReceipt = 50_000m,
+            ReceiptTotal = 50_000m,
+            SettlementAmount = 50_000m
+        });
+        await dbContext.SaveChangesAsync();
+
+        var storedInvoice = await dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Include(invoice => invoice.Customer)
+            .Include(invoice => invoice.Lines)
+            .SingleAsync(invoice => invoice.Id == invoiceId);
+        var updateDto = storedInvoice.ToDto();
+        updateDto.ExpectedRevision = storedInvoice.Revision;
+        updateDto.Lines[0].UnitPrice = 120_000m;
+        updateDto.Lines[0].LineAmount = 120_000m;
+
+        var controller = new InvoicesController(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
+
+        var updateResponse = await controller.Update(invoiceId, updateDto, CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(updateResponse.Result);
+        var updatedInvoice = await dbContext.Invoices.IgnoreQueryFilters().AsNoTracking().SingleAsync(invoice => invoice.Id == invoiceId);
+        Assert.Equal(120_000m, updatedInvoice.TotalAmount);
+        var updatedProfile = await dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal(50_000m, updatedProfile.SettledAmount);
+        Assert.Equal(70_000m, updatedProfile.OutstandingAmount);
+        Assert.Equal("부분입금", updatedProfile.SettlementStatus);
+        Assert.Equal("미완료", updatedProfile.CompletionStatus);
+        var updatedRun = Assert.Single(JsonSerializer.Deserialize<List<ServerRentalBillingRunSnapshot>>(updatedProfile.BillingRunsJson) ?? []);
+        Assert.Equal(120_000m, updatedRun.BilledAmount);
+        Assert.Equal(50_000m, updatedRun.SettledAmount);
+        Assert.Equal("부분입금", updatedRun.SettlementStatus);
+        Assert.Equal("청구중", updatedRun.Status);
+    }
+
+    [Fact]
     public async Task InvoicesController_SalesCreate_AllowsNegativeWarehouseStockWhenInventoryIsShort()
     {
         var currentUser = CreateAdminUser();
@@ -2199,7 +2338,8 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             new RevisionClock(),
             new InventoryLedgerService(dbContext),
             new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
-            new RentalAssignmentHistoryService(dbContext));
+            new RentalAssignmentHistoryService(dbContext),
+            new RentalSettlementRecalculationService(dbContext));
 
     private static IFormFile CreateFormFile(string fileName, string contentType, string content)
     {

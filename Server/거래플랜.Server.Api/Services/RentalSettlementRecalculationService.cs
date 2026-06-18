@@ -122,7 +122,7 @@ public sealed class RentalSettlementRecalculationService
             return;
 
         var settledAmount = await GetRentalSettledAmountCoreAsync(billingProfileId, billingRunId, cancellationToken);
-        var billedAmount = ResolveBillingRunAmount(profile, billingRunId);
+        var billedAmount = await ResolveBillingRunAmountAsync(profile, billingRunId, cancellationToken);
         profile.SettledAmount = settledAmount;
         profile.OutstandingAmount = Math.Max(0m, billedAmount - settledAmount);
         profile.SettlementStatus = DetermineRentalSettlementStatus(profile.BillingMethod, settledAmount, billedAmount);
@@ -186,6 +186,7 @@ public sealed class RentalSettlementRecalculationService
                 on payment.InvoiceId equals invoice.Id
             where !payment.IsDeleted &&
                   !invoice.IsDeleted &&
+                  invoice.IsLatestVersion &&
                   invoice.LinkedRentalBillingProfileId == billingProfileId &&
                   !_dbContext.Transactions.IgnoreQueryFilters().AsNoTracking().Any(transaction =>
                       !transaction.IsDeleted &&
@@ -226,6 +227,7 @@ public sealed class RentalSettlementRecalculationService
                 on payment.InvoiceId equals invoice.Id
             where !payment.IsDeleted &&
                   !invoice.IsDeleted &&
+                  invoice.IsLatestVersion &&
                   invoice.LinkedRentalBillingProfileId == billingProfileId &&
                   !_dbContext.Transactions.IgnoreQueryFilters().AsNoTracking().Any(transaction =>
                       !transaction.IsDeleted &&
@@ -250,10 +252,26 @@ public sealed class RentalSettlementRecalculationService
             .FirstOrDefault();
     }
 
-    private static decimal ResolveBillingRunAmount(RentalBillingProfile profile, Guid? billingRunId)
+    private async Task<decimal> ResolveBillingRunAmountAsync(
+        RentalBillingProfile profile,
+        Guid? billingRunId,
+        CancellationToken cancellationToken)
     {
         if (!billingRunId.HasValue || billingRunId.Value == Guid.Empty)
             return Math.Max(0m, profile.MonthlyAmount);
+
+        var activeInvoiceAmount = await _dbContext.Invoices.IgnoreQueryFilters().AsNoTracking()
+            .Where(invoice =>
+                !invoice.IsDeleted &&
+                invoice.IsLatestVersion &&
+                invoice.LinkedRentalBillingProfileId == profile.Id &&
+                invoice.LinkedRentalBillingRunId == billingRunId.Value)
+            .OrderByDescending(invoice => invoice.UpdatedAtUtc)
+            .ThenByDescending(invoice => invoice.Revision)
+            .Select(invoice => (decimal?)invoice.TotalAmount)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (activeInvoiceAmount.HasValue && activeInvoiceAmount.Value > 0m)
+            return activeInvoiceAmount.Value;
 
         var run = DeserializeBillingRuns(profile.BillingRunsJson)
             .FirstOrDefault(current => current.RunId == billingRunId.Value);

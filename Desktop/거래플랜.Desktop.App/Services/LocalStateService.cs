@@ -2664,11 +2664,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 		newInvoice.Lines = CloneLines(validLines, targetInvoiceId);
 		List<LocalPayment> requestedPayments = (invoice.Payments ?? new List<LocalPayment>()).Where((LocalPayment p) => !p.IsDeleted).ToList();
-		if (requestedPayments.Count > 0)
+		bool relinkRentalSettlementRecordsToNewVersion = latest != null && (IsRentalBillingInvoice(latest) || IsRentalBillingInvoice(newInvoice));
+		if (!relinkRentalSettlementRecordsToNewVersion && requestedPayments.Count > 0)
 		{
 			newInvoice.Payments = ClonePayments(requestedPayments, targetInvoiceId, now);
 		}
-		else if (latest != null)
+		else if (!relinkRentalSettlementRecordsToNewVersion && latest != null)
 		{
 			List<LocalPayment> latestPayments = latest.Payments.Where((LocalPayment payment) => !payment.IsDeleted).ToList();
 			newInvoice.Payments = ClonePayments(latestPayments, targetInvoiceId, now);
@@ -2695,9 +2696,66 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			AfterJson = afterJson,
 			CreatedAtUtc = now
 		});
+		var rentalSettlementTargets = BuildRentalSettlementTargetsForInvoiceSave(latest, newInvoice);
+		if (relinkRentalSettlementRecordsToNewVersion && latest != null)
+		{
+			await RelinkInvoiceSettlementRecordsToNewVersionAsync(latest.Id, newInvoice.Id, newInvoice.InvoiceNumber, now, ct);
+		}
 		await _db.SaveChangesAsync(ct);
 		await RebuildInventorySnapshotsAsync(context, ct);
+		await RecalculateRentalSettlementsAsync(rentalSettlementTargets, ct, markDirty: true);
 		return InvoiceSaveResult.Ok(newInvoice.Id, newInvoice.ConcurrencyStamp, (latest == null) ? "전표를 저장했습니다." : $"전표 {newInvoice.VersionNumber}차 버전으로 저장했습니다.");
+	}
+
+	private static bool IsRentalBillingInvoice(LocalInvoice? invoice)
+	{
+		return invoice?.LinkedRentalBillingProfileId is Guid profileId && profileId != Guid.Empty;
+	}
+
+	private async Task RelinkInvoiceSettlementRecordsToNewVersionAsync(
+		Guid previousInvoiceId,
+		Guid newInvoiceId,
+		string invoiceNumber,
+		DateTime updatedAtUtc,
+		CancellationToken ct)
+	{
+		var payments = await _db.Payments.IgnoreQueryFilters()
+			.Where(payment => !payment.IsDeleted && payment.InvoiceId == previousInvoiceId)
+			.ToListAsync(ct);
+		foreach (var payment in payments)
+		{
+			payment.InvoiceId = newInvoiceId;
+			payment.IsDirty = true;
+			payment.UpdatedAtUtc = updatedAtUtc;
+		}
+
+		var transactions = await _db.Transactions.IgnoreQueryFilters()
+			.Where(transaction => !transaction.IsDeleted && transaction.LinkedInvoiceId == previousInvoiceId)
+			.ToListAsync(ct);
+		foreach (var transaction in transactions)
+		{
+			transaction.LinkedInvoiceId = newInvoiceId;
+			transaction.LinkedInvoiceNumber = invoiceNumber;
+			transaction.IsDirty = true;
+			transaction.UpdatedAtUtc = updatedAtUtc;
+		}
+	}
+
+	private static List<(Guid ProfileId, Guid? RunId)> BuildRentalSettlementTargetsForInvoiceSave(LocalInvoice? previousInvoice, LocalInvoice newInvoice)
+	{
+		var targets = new List<(Guid ProfileId, Guid? RunId)>();
+		AddRentalSettlementTarget(targets, previousInvoice?.LinkedRentalBillingProfileId, previousInvoice?.LinkedRentalBillingRunId);
+		AddRentalSettlementTarget(targets, newInvoice.LinkedRentalBillingProfileId, newInvoice.LinkedRentalBillingRunId);
+		return targets.Distinct().ToList();
+	}
+
+	private static void AddRentalSettlementTarget(List<(Guid ProfileId, Guid? RunId)> targets, Guid? profileId, Guid? runId)
+	{
+		if (!profileId.HasValue || profileId.Value == Guid.Empty)
+		{
+			return;
+		}
+		targets.Add((profileId.Value, runId));
 	}
 
 	private static bool CanAutoRebaseInvoiceOnLatestSameUserSave(InvoiceSaveContext context, LocalInvoice latest)
@@ -4433,7 +4491,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return new RentalSettlementSummary();
 		}
 		decimal settledAmount = await GetRentalSettledAmountCoreAsync(billingProfileId, billingRunId, ct);
-		decimal billedAmount = ResolveBillingRunAmount(profile, billingRunId, billedAmountOverride);
+		decimal billedAmount = await ResolveBillingRunAmountAsync(profile, billingRunId, billedAmountOverride, ct);
 		decimal outstandingAmount = Math.Max(0m, billedAmount - settledAmount);
 		return new RentalSettlementSummary
 		{
@@ -4925,6 +4983,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				on payment.InvoiceId equals invoice.Id
 			where !payment.IsDeleted &&
 			      !invoice.IsDeleted &&
+			      invoice.IsLatestVersion &&
 			      invoice.LinkedRentalBillingProfileId == billingProfileId &&
 			      !_db.Transactions.IgnoreQueryFilters().AsNoTracking().Any(transaction =>
 				      !transaction.IsDeleted &&
@@ -4967,6 +5026,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				on payment.InvoiceId equals invoice.Id
 			where !payment.IsDeleted &&
 			      !invoice.IsDeleted &&
+			      invoice.IsLatestVersion &&
 			      invoice.LinkedRentalBillingProfileId == billingProfileId &&
 			      !_db.Transactions.IgnoreQueryFilters().AsNoTracking().Any(transaction =>
 				      !transaction.IsDeleted &&
@@ -5198,7 +5258,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return;
 		}
 		decimal settledAmount = await GetRentalSettledAmountCoreAsync(billingProfileId, billingRunId, ct);
-		decimal billedAmount = ResolveBillingRunAmount(profile, billingRunId, null);
+		decimal billedAmount = await ResolveBillingRunAmountAsync(profile, billingRunId, null, ct);
 		profile.SettledAmount = settledAmount;
 		profile.OutstandingAmount = Math.Max(0m, billedAmount - settledAmount);
 		profile.SettlementStatus = DetermineRentalSettlementStatus(profile.BillingMethod, settledAmount, billedAmount);
@@ -5248,7 +5308,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		await _db.SaveChangesAsync(ct);
 	}
 
-	private static decimal ResolveBillingRunAmount(LocalRentalBillingProfile profile, Guid? billingRunId, decimal? billedAmountOverride)
+	private async Task<decimal> ResolveBillingRunAmountAsync(LocalRentalBillingProfile profile, Guid? billingRunId, decimal? billedAmountOverride, CancellationToken ct)
 	{
 		if (billedAmountOverride.HasValue && billedAmountOverride.Value > 0m)
 		{
@@ -5257,6 +5317,19 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		if (!billingRunId.HasValue || billingRunId.Value == Guid.Empty)
 		{
 			return Math.Max(0m, profile.MonthlyAmount);
+		}
+		var activeInvoiceAmount = await _db.Invoices.IgnoreQueryFilters().AsNoTracking()
+			.Where((LocalInvoice invoice) => !invoice.IsDeleted &&
+			                                invoice.IsLatestVersion &&
+			                                invoice.LinkedRentalBillingProfileId == profile.Id &&
+			                                invoice.LinkedRentalBillingRunId == billingRunId.Value)
+			.OrderByDescending((LocalInvoice invoice) => invoice.LastSavedAtUtc)
+			.ThenByDescending((LocalInvoice invoice) => invoice.UpdatedAtUtc)
+			.Select((LocalInvoice invoice) => (decimal?)invoice.TotalAmount)
+			.FirstOrDefaultAsync(ct);
+		if (activeInvoiceAmount.HasValue && activeInvoiceAmount.Value > 0m)
+		{
+			return activeInvoiceAmount.Value;
 		}
 		var rentalBillingRunModel = DeserializeBillingRuns(profile.BillingRunsJson).FirstOrDefault((RentalBillingRunModel current) => current.RunId == billingRunId.Value);
 		return (rentalBillingRunModel == null) ? Math.Max(0m, profile.MonthlyAmount) : Math.Max(0m, rentalBillingRunModel.BilledAmount);

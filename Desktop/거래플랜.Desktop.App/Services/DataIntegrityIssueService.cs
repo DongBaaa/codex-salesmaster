@@ -39,6 +39,7 @@ public static class DataIntegrityIssueCodes
     public const string RentalAssignmentHistoricalStaleReference = "rental_assignment_historical_stale_reference";
     public const string RentalAssetMultipleCurrentAssignments = "rental_asset_multiple_current_assignments";
     public const string RentalBillingRunSettlementMismatch = "rental_billing_run_settlement_mismatch";
+    public const string RentalBillingProfileSummaryMismatch = "rental_billing_profile_summary_mismatch";
     public const string CustomerDuplicateCandidate = "customer_duplicate_candidate";
     public const string ItemDuplicateCandidate = "item_duplicate_candidate";
     public const string WarehouseDuplicateCandidate = "warehouse_duplicate_candidate";
@@ -324,6 +325,13 @@ public sealed class DataIntegrityIssueService
             "렌탈 청구",
             "렌탈 청구 run의 저장 정산금액과 실제 활성 수금/거래내역 합계가 다릅니다.",
             "청구관리에서 해당 청구월의 전표/수금/거래내역을 확인하고 정산 재계산이 필요한지 점검하세요."),
+        [DataIntegrityIssueCodes.RentalBillingProfileSummaryMismatch] = new(
+            DataIntegrityIssueCodes.RentalBillingProfileSummaryMismatch,
+            "렌탈 청구 프로필 요약 불일치",
+            "Error",
+            "렌탈 청구",
+            "렌탈 청구 프로필 요약 정산/미수금액이 대표 청구 run의 실제 입금 근거와 다릅니다.",
+            "청구관리에서 대표 청구월의 전표/수금/거래내역을 확인하고 프로필 요약 재계산이 필요한지 점검하세요."),
         [DataIntegrityIssueCodes.CustomerDuplicateCandidate] = new(
             DataIntegrityIssueCodes.CustomerDuplicateCandidate,
             "거래처 중복 후보",
@@ -616,6 +624,14 @@ public sealed class DataIntegrityIssueService
             "Integrity scan rental billing run settlement mismatch",
             stepStopwatch,
             $"issues={rentalBillingRunSettlementMismatchIssues.Count:N0}");
+
+        stepStopwatch.Restart();
+        var rentalBillingProfileSummaryMismatchIssues = await LoadRentalBillingProfileSummaryMismatchIssuesAsync(scopedProfiles, session, ct);
+        details.AddRange(rentalBillingProfileSummaryMismatchIssues);
+        LogIntegrityScanStep(
+            "Integrity scan rental billing profile summary mismatch",
+            stepStopwatch,
+            $"issues={rentalBillingProfileSummaryMismatchIssues.Count:N0}");
 
         stepStopwatch.Restart();
         var deletedItemStockResidueIssues = await LoadDeletedItemStockResidueIssuesAsync(session, ct);
@@ -1409,7 +1425,13 @@ public sealed class DataIntegrityIssueService
             ItemName = profile.ItemName,
             InstallSiteName = profile.InstallSiteName,
             ManagementCompanyCode = profile.ManagementCompanyCode,
+            BillingMethod = profile.BillingMethod,
+            BillingStatus = profile.BillingStatus,
             MonthlyAmount = profile.MonthlyAmount,
+            SettlementStatus = profile.SettlementStatus,
+            CompletionStatus = profile.CompletionStatus,
+            SettledAmount = profile.SettledAmount,
+            OutstandingAmount = profile.OutstandingAmount,
             ResponsibleOfficeCode = profile.ResponsibleOfficeCode,
             BillingTemplateJson = profile.BillingTemplateJson,
             BillingRunsJson = profile.BillingRunsJson,
@@ -1823,6 +1845,7 @@ public sealed class DataIntegrityIssueService
                 from payment in _db.Payments.IgnoreQueryFilters().AsNoTracking().Where(payment => !payment.IsDeleted)
                 join invoice in _db.Invoices.IgnoreQueryFilters().AsNoTracking().Where(invoice =>
                         !invoice.IsDeleted &&
+                        invoice.IsLatestVersion &&
                         invoice.LinkedRentalBillingProfileId.HasValue &&
                         profileIds.Contains(invoice.LinkedRentalBillingProfileId.Value))
                     on payment.InvoiceId equals invoice.Id
@@ -1882,6 +1905,147 @@ public sealed class DataIntegrityIssueService
                         string.IsNullOrWhiteSpace(run.SettlementStatus) ? "SettlementStatus -" : $"SettlementStatus {run.SettlementStatus}"
                     }));
             }
+        }
+
+        return issues;
+    }
+
+    private async Task<List<DataIntegrityIssueDetail>> LoadRentalBillingProfileSummaryMismatchIssuesAsync(
+        IReadOnlyCollection<LocalRentalBillingProfile> profiles,
+        SessionState session,
+        CancellationToken ct)
+    {
+        var profileIds = profiles.Select(profile => profile.Id).Distinct().ToList();
+        if (profileIds.Count == 0)
+            return [];
+
+        var transactions = await _db.Transactions.IgnoreQueryFilters().AsNoTracking()
+            .Where(transaction =>
+                !transaction.IsDeleted &&
+                transaction.LinkedRentalBillingProfileId.HasValue &&
+                profileIds.Contains(transaction.LinkedRentalBillingProfileId.Value))
+            .Select(transaction => new
+            {
+                transaction.Id,
+                ProfileId = transaction.LinkedRentalBillingProfileId!.Value,
+                RunId = transaction.LinkedRentalBillingRunId,
+                Amount = transaction.SettlementAmount
+            })
+            .ToListAsync(ct);
+
+        var transactionKeys = transactions
+            .Select(transaction => (PaymentId: transaction.Id, transaction.ProfileId))
+            .ToHashSet();
+
+        var directPayments = await (
+                from payment in _db.Payments.IgnoreQueryFilters().AsNoTracking().Where(payment => !payment.IsDeleted)
+                join invoice in _db.Invoices.IgnoreQueryFilters().AsNoTracking().Where(invoice =>
+                        !invoice.IsDeleted &&
+                        invoice.IsLatestVersion &&
+                        invoice.LinkedRentalBillingProfileId.HasValue &&
+                        profileIds.Contains(invoice.LinkedRentalBillingProfileId.Value))
+                    on payment.InvoiceId equals invoice.Id
+                select new
+                {
+                    payment.Id,
+                    ProfileId = invoice.LinkedRentalBillingProfileId!.Value,
+                    RunId = invoice.LinkedRentalBillingRunId,
+                    Amount = payment.Amount
+                })
+            .ToListAsync(ct);
+
+        var invoices = await _db.Invoices.IgnoreQueryFilters().AsNoTracking()
+            .Where(invoice =>
+                !invoice.IsDeleted &&
+                invoice.IsLatestVersion &&
+                invoice.LinkedRentalBillingProfileId.HasValue &&
+                profileIds.Contains(invoice.LinkedRentalBillingProfileId.Value))
+            .Select(invoice => new
+            {
+                ProfileId = invoice.LinkedRentalBillingProfileId!.Value,
+                RunId = invoice.LinkedRentalBillingRunId
+            })
+            .ToListAsync(ct);
+
+        var transactionSettledAmounts = transactions
+            .GroupBy(transaction => (transaction.ProfileId, RunId: NormalizeRunId(transaction.RunId)))
+            .ToDictionary(group => group.Key, group => group.Sum(transaction => transaction.Amount));
+        var directPaymentSettledAmounts = directPayments
+            .Where(payment => !transactionKeys.Contains((payment.Id, payment.ProfileId)))
+            .GroupBy(payment => (payment.ProfileId, RunId: NormalizeRunId(payment.RunId)))
+            .ToDictionary(group => group.Key, group => group.Sum(payment => payment.Amount));
+        var invoicedRunKeys = invoices
+            .GroupBy(invoice => (invoice.ProfileId, RunId: NormalizeRunId(invoice.RunId)))
+            .Select(group => group.Key)
+            .ToHashSet();
+
+        var issues = new List<DataIntegrityIssueDetail>();
+        foreach (var profile in profiles)
+        {
+            var activeRuns = ParseRentalBillingRuns(profile.BillingRunsJson)
+                .Where(run => run.RunId != Guid.Empty)
+                .OrderByDescending(run => run.ScheduledDate)
+                .ThenByDescending(run => run.PeriodEndDate)
+                .ToList();
+            if (activeRuns.Count == 0)
+                continue;
+
+            var activeRunIds = new HashSet<Guid>(
+                transactionSettledAmounts
+                    .Where(pair => pair.Key.ProfileId == profile.Id && pair.Value > 0m && pair.Key.RunId != Guid.Empty)
+                    .Select(pair => pair.Key.RunId)
+                    .Concat(directPaymentSettledAmounts
+                        .Where(pair => pair.Key.ProfileId == profile.Id && pair.Value > 0m && pair.Key.RunId != Guid.Empty)
+                        .Select(pair => pair.Key.RunId))
+                    .Concat(invoicedRunKeys
+                        .Where(key => key.ProfileId == profile.Id && key.RunId != Guid.Empty)
+                        .Select(key => key.RunId)));
+
+            var representativeRun = activeRuns.FirstOrDefault(run => activeRunIds.Contains(run.RunId)) ?? activeRuns.First();
+            var runId = NormalizeRunId(representativeRun.RunId);
+            var key = (profile.Id, RunId: runId);
+            transactionSettledAmounts.TryGetValue(key, out var transactionAmount);
+            directPaymentSettledAmounts.TryGetValue(key, out var directPaymentAmount);
+            var expectedBilledAmount = Math.Max(0m, representativeRun.BilledAmount);
+            var expectedSettledAmount = transactionAmount + directPaymentAmount;
+            var expectedOutstandingAmount = Math.Max(0m, expectedBilledAmount - expectedSettledAmount);
+            if (!AmountDiffers(profile.SettledAmount, expectedSettledAmount) &&
+                !AmountDiffers(profile.OutstandingAmount, expectedOutstandingAmount))
+            {
+                continue;
+            }
+
+            var profileDisplay = BuildProfileDisplay(profile);
+            AddGeneralIssue(
+                issues,
+                DataIntegrityIssueCodes.RentalBillingProfileSummaryMismatch,
+                entityType: "렌탈 청구 프로필",
+                entityId: profile.Id,
+                customerName: profile.CustomerName,
+                officeCode: ResolveProfileOfficeCode(profile),
+                currentValue: $"프로필 저장 정산 {profile.SettledAmount:N0} / 저장 미수 {profile.OutstandingAmount:N0}",
+                expectedValue: $"대표 run 실제 정산 {expectedSettledAmount:N0} / 실제 미수 {expectedOutstandingAmount:N0}",
+                message: $"{profileDisplay}의 프로필 요약 정산/미수금액이 대표 청구 run 실제 입금 근거와 다릅니다.",
+                directActionKind: DataIntegrityDirectActionKind.OpenRentalBillingProfile,
+                relatedEntityIds: new[] { runId },
+                reviewInfo: string.Join(" / ", new[]
+                {
+                    $"ProfileId {profile.Id:D}",
+                    $"RunId {runId:D}",
+                    $"RunKey {NormalizeDisplay(representativeRun.RunKey, "-")}",
+                    $"Billed {expectedBilledAmount:N0}",
+                    $"ProfileSettled {profile.SettledAmount:N0}",
+                    $"ExpectedSettled {expectedSettledAmount:N0}",
+                    $"ProfileOutstanding {profile.OutstandingAmount:N0}",
+                    $"ExpectedOutstanding {expectedOutstandingAmount:N0}",
+                    $"Transaction {transactionAmount:N0}",
+                    $"DirectPayment {directPaymentAmount:N0}",
+                    string.IsNullOrWhiteSpace(profile.BillingStatus) ? "ProfileBillingStatus -" : $"ProfileBillingStatus {profile.BillingStatus}",
+                    string.IsNullOrWhiteSpace(profile.SettlementStatus) ? "ProfileSettlementStatus -" : $"ProfileSettlementStatus {profile.SettlementStatus}",
+                    string.IsNullOrWhiteSpace(profile.CompletionStatus) ? "ProfileCompletionStatus -" : $"ProfileCompletionStatus {profile.CompletionStatus}",
+                    string.IsNullOrWhiteSpace(representativeRun.Status) ? "RunStatus -" : $"RunStatus {representativeRun.Status}",
+                    string.IsNullOrWhiteSpace(representativeRun.SettlementStatus) ? "RunSettlementStatus -" : $"RunSettlementStatus {representativeRun.SettlementStatus}"
+                }));
         }
 
         return issues;

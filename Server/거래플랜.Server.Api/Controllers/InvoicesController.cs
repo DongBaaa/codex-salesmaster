@@ -130,6 +130,8 @@ public sealed class InvoicesController : ControllerBase
 
         _dbContext.Invoices.Add(entity);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await RecalculateRentalSettlementsForInvoiceSaveAsync(null, entity, cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
         await _inventoryLedgerService.RebuildAsync(cancellationToken);
         return Ok(entity.ToDto());
     }
@@ -175,6 +177,12 @@ public sealed class InvoicesController : ControllerBase
         if (await ValidateLinkedRentalBillingProfileScopeAsync(dto, cancellationToken) is { } rentalProfileScopeError)
             return rentalProfileScopeError;
 
+        var previousRentalTarget = new Invoice
+        {
+            LinkedRentalBillingProfileId = entity.LinkedRentalBillingProfileId,
+            LinkedRentalBillingRunId = entity.LinkedRentalBillingRunId
+        };
+
         entity.Apply(dto);
         _dbContext.InvoiceLines.RemoveRange(entity.Lines);
         entity.Lines.Clear();
@@ -186,6 +194,8 @@ public sealed class InvoicesController : ControllerBase
             currentStockDeltas,
             cancellationToken);
 
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        await RecalculateRentalSettlementsForInvoiceSaveAsync(previousRentalTarget, entity, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _inventoryLedgerService.RebuildAsync(cancellationToken);
         return Ok(entity.ToDto());
@@ -224,6 +234,25 @@ public sealed class InvoicesController : ControllerBase
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _inventoryLedgerService.RebuildAsync(cancellationToken);
         return NoContent();
+    }
+
+    private async Task RecalculateRentalSettlementsForInvoiceSaveAsync(
+        Invoice? previousInvoice,
+        Invoice currentInvoice,
+        CancellationToken cancellationToken)
+    {
+        var targets = new List<(Guid ProfileId, Guid? RunId)>();
+        AddRentalSettlementTarget(targets, previousInvoice?.LinkedRentalBillingProfileId, previousInvoice?.LinkedRentalBillingRunId);
+        AddRentalSettlementTarget(targets, currentInvoice.LinkedRentalBillingProfileId, currentInvoice.LinkedRentalBillingRunId);
+        await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(targets.Distinct().ToList(), cancellationToken);
+    }
+
+    private static void AddRentalSettlementTarget(List<(Guid ProfileId, Guid? RunId)> targets, Guid? profileId, Guid? runId)
+    {
+        if (!profileId.HasValue || profileId.Value == Guid.Empty)
+            return;
+
+        targets.Add((profileId.Value, runId));
     }
 
     private async Task<ActionResult?> ValidateInvoiceLineItemScopeAsync(

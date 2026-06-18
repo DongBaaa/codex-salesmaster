@@ -33,6 +33,7 @@ public sealed class SyncController : ControllerBase
     private readonly InventoryLedgerService _inventoryLedgerService;
     private readonly InvoiceStockSnapshotService _invoiceStockSnapshotService;
     private readonly RentalAssignmentHistoryService _rentalAssignmentHistoryService;
+    private readonly RentalSettlementRecalculationService _rentalSettlementRecalculationService;
 
     public SyncController(
         AppDbContext dbContext,
@@ -43,7 +44,8 @@ public sealed class SyncController : ControllerBase
         RevisionClock revisionClock,
         InventoryLedgerService inventoryLedgerService,
         InvoiceStockSnapshotService invoiceStockSnapshotService,
-        RentalAssignmentHistoryService rentalAssignmentHistoryService)
+        RentalAssignmentHistoryService rentalAssignmentHistoryService,
+        RentalSettlementRecalculationService rentalSettlementRecalculationService)
     {
         _dbContext = dbContext;
         _currentUserContext = currentUserContext;
@@ -54,6 +56,7 @@ public sealed class SyncController : ControllerBase
         _inventoryLedgerService = inventoryLedgerService;
         _invoiceStockSnapshotService = invoiceStockSnapshotService;
         _rentalAssignmentHistoryService = rentalAssignmentHistoryService;
+        _rentalSettlementRecalculationService = rentalSettlementRecalculationService;
     }
 
     [HttpGet("status")]
@@ -356,7 +359,7 @@ public sealed class SyncController : ControllerBase
                 await _dbContext.SaveChangesAsync(cancellationToken);
             }
             var validInvoices = await FilterValidInvoicesAsync(request.Invoices ?? [], result, cancellationToken);
-            await UpsertInvoicesAsync(validInvoices, result, deviceId, cancellationToken);
+            var invoiceRentalSettlementTargets = await UpsertInvoicesAsync(validInvoices, result, deviceId, cancellationToken);
             if (validInvoices.Count > 0)
             {
                 await _dbContext.SaveChangesAsync(cancellationToken);
@@ -364,6 +367,8 @@ public sealed class SyncController : ControllerBase
             }
             var scopedTransactions = await PrepareScopedTransactionsAsync(request.Transactions ?? [], result, cancellationToken);
             var validTransactions = await FilterValidTransactionsAsync(scopedTransactions, result, cancellationToken);
+            var transactionRentalSettlementTargets =
+                await LoadRentalSettlementTargetsForTransactionsAsync(validTransactions, cancellationToken);
             await UpsertEntitiesAsync(validTransactions, _dbContext.Transactions,
                 (e, d) => e.Apply(d), d => new TransactionRecord { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
             if (validTransactions.Count > 0)
@@ -421,10 +426,22 @@ public sealed class SyncController : ControllerBase
                 await UpsertEntitiesAsync(validRentalBillingLogs, _dbContext.RentalBillingLogs,
                     (e, d) => e.Apply(d), d => new RentalBillingLog { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
                 var validPayments = await FilterValidPaymentsAsync(request.Payments ?? [], result, cancellationToken);
+                var paymentRentalSettlementTargets =
+                    await LoadRentalSettlementTargetsForPaymentsAsync(validPayments, cancellationToken);
                 await UpsertEntitiesAsync(validPayments, _dbContext.Payments,
                     (e, d) => e.Apply(d), d => new Payment { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
 
                 await _dbContext.SaveChangesAsync(cancellationToken);
+                var rentalSettlementTargets = invoiceRentalSettlementTargets
+                    .Concat(transactionRentalSettlementTargets)
+                    .Concat(paymentRentalSettlementTargets)
+                    .Distinct()
+                    .ToList();
+                if (rentalSettlementTargets.Count > 0)
+                {
+                    await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(rentalSettlementTargets, cancellationToken);
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+                }
                 await PopulateAcceptedRevisionsAsync(result, validRentalAssets, _dbContext.RentalAssets, nameof(RentalAsset), cancellationToken);
                 await PopulateAcceptedRevisionsAsync(result, scopedRentalAssignmentHistories, _dbContext.RentalAssetAssignmentHistories, nameof(RentalAssetAssignmentHistory), cancellationToken);
                 await PopulateAcceptedRevisionsAsync(result, validRentalBillingLogs, _dbContext.RentalBillingLogs, nameof(RentalBillingLog), cancellationToken);
@@ -850,8 +867,9 @@ public sealed class SyncController : ControllerBase
         }
     }
 
-    private async Task UpsertInvoicesAsync(IEnumerable<InvoiceDto> payload, SyncPushResult result, string deviceId, CancellationToken cancellationToken)
+    private async Task<List<(Guid ProfileId, Guid? RunId)>> UpsertInvoicesAsync(IEnumerable<InvoiceDto> payload, SyncPushResult result, string deviceId, CancellationToken cancellationToken)
     {
+        var rentalSettlementTargets = new List<(Guid ProfileId, Guid? RunId)>();
         foreach (var dto in payload)
         {
             if (await TryAcceptDuplicateMutationAsync(dto, nameof(Invoice), deviceId, result, cancellationToken))
@@ -879,6 +897,7 @@ public sealed class SyncController : ControllerBase
 
                 ApplyInvoiceLines(entity, dto.Lines ?? []);
                 _dbContext.Invoices.Add(entity);
+                AddRentalSettlementTarget(rentalSettlementTargets, entity.LinkedRentalBillingProfileId, entity.LinkedRentalBillingRunId);
                 RegisterProcessedMutation(dto, nameof(Invoice), deviceId);
                 await ResolveHistoricalConflictsAsync(nameof(Invoice), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
                 result.AcceptedCount++;
@@ -906,12 +925,14 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
+            AddRentalSettlementTarget(rentalSettlementTargets, entity.LinkedRentalBillingProfileId, entity.LinkedRentalBillingRunId);
             entity.Apply(dto);
             if (string.IsNullOrWhiteSpace(entity.InvoiceNumber))
             {
                 entity.InvoiceNumber = await _invoiceNumberService.GenerateAsync(entity.CustomerId, entity.InvoiceDate, cancellationToken);
                 result.AssignedInvoiceNumbers[dto.Id] = entity.InvoiceNumber;
             }
+            AddRentalSettlementTarget(rentalSettlementTargets, entity.LinkedRentalBillingProfileId, entity.LinkedRentalBillingRunId);
 
             _dbContext.InvoiceLines.RemoveRange(entity.Lines);
             entity.Lines.Clear();
@@ -920,6 +941,106 @@ public sealed class SyncController : ControllerBase
             await ResolveHistoricalConflictsAsync(nameof(Invoice), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
             result.AcceptedCount++;
         }
+
+        return rentalSettlementTargets.Distinct().ToList();
+    }
+
+    private async Task<List<(Guid ProfileId, Guid? RunId)>> LoadRentalSettlementTargetsForTransactionsAsync(
+        IEnumerable<TransactionDto> payload,
+        CancellationToken cancellationToken)
+    {
+        var targets = new List<(Guid ProfileId, Guid? RunId)>();
+        var transactions = (payload ?? Enumerable.Empty<TransactionDto>()).ToList();
+        var transactionIds = transactions
+            .Select(transaction => transaction.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+
+        if (transactionIds.Count > 0)
+        {
+            var existingTargets = await _dbContext.Transactions.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(transaction => transactionIds.Contains(transaction.Id) &&
+                                      transaction.LinkedRentalBillingProfileId.HasValue &&
+                                      transaction.LinkedRentalBillingProfileId.Value != Guid.Empty)
+                .Select(transaction => new
+                {
+                    ProfileId = transaction.LinkedRentalBillingProfileId!.Value,
+                    RunId = transaction.LinkedRentalBillingRunId
+                })
+                .ToListAsync(cancellationToken);
+
+            foreach (var target in existingTargets)
+                AddRentalSettlementTarget(targets, target.ProfileId, target.RunId);
+        }
+
+        foreach (var transaction in transactions)
+            AddRentalSettlementTarget(targets, transaction.LinkedRentalBillingProfileId, transaction.LinkedRentalBillingRunId);
+
+        return targets.Distinct().ToList();
+    }
+
+    private async Task<List<(Guid ProfileId, Guid? RunId)>> LoadRentalSettlementTargetsForPaymentsAsync(
+        IEnumerable<PaymentDto> payload,
+        CancellationToken cancellationToken)
+    {
+        var invoiceIds = new HashSet<Guid>();
+        var payments = (payload ?? Enumerable.Empty<PaymentDto>()).ToList();
+        foreach (var payment in payments)
+        {
+            if (payment.InvoiceId != Guid.Empty)
+                invoiceIds.Add(payment.InvoiceId);
+        }
+
+        var paymentIds = payments
+            .Select(payment => payment.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+
+        if (paymentIds.Count > 0)
+        {
+            var existingInvoiceIds = await _dbContext.Payments.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(payment => paymentIds.Contains(payment.Id))
+                .Select(payment => payment.InvoiceId)
+                .ToListAsync(cancellationToken);
+            foreach (var invoiceId in existingInvoiceIds)
+            {
+                if (invoiceId != Guid.Empty)
+                    invoiceIds.Add(invoiceId);
+            }
+        }
+
+        if (invoiceIds.Count == 0)
+            return [];
+
+        var targets = await _dbContext.Invoices.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(invoice => invoiceIds.Contains(invoice.Id) &&
+                              invoice.LinkedRentalBillingProfileId.HasValue &&
+                              invoice.LinkedRentalBillingProfileId.Value != Guid.Empty)
+            .Select(invoice => new
+            {
+                ProfileId = invoice.LinkedRentalBillingProfileId!.Value,
+                RunId = invoice.LinkedRentalBillingRunId
+            })
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        return targets
+            .Select(target => (target.ProfileId, target.RunId))
+            .Distinct()
+            .ToList();
+    }
+
+    private static void AddRentalSettlementTarget(List<(Guid ProfileId, Guid? RunId)> targets, Guid? profileId, Guid? runId)
+    {
+        if (!profileId.HasValue || profileId.Value == Guid.Empty)
+            return;
+
+        targets.Add((profileId.Value, runId));
     }
 
     private async Task<List<CustomerMasterDto>> PrepareScopedCustomerMastersAsync(

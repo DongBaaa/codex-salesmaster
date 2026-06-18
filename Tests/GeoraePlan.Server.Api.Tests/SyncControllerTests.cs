@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Cryptography;
+using System.Text.Json;
 using Xunit;
 
 namespace GeoraePlan.Server.Api.Tests;
@@ -51,7 +52,8 @@ public sealed class SyncControllerTests : IDisposable
             revisionClock,
             new InventoryLedgerService(_dbContext),
             new InvoiceStockSnapshotService(_dbContext, revisionClock),
-            new RentalAssignmentHistoryService(_dbContext));
+            new RentalAssignmentHistoryService(_dbContext),
+            new RentalSettlementRecalculationService(_dbContext));
     }
 
     [Fact]
@@ -4201,6 +4203,231 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RentalTransactionOnly_RecalculatesRentalSettlement()
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-RENTAL-TX-CUSTOMER",
+            NameMatchKey = "SYNCRENTALTXCUSTOMER",
+            TradeType = "매출"
+        });
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"profile-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = "SYNC-RENTAL-TX-CUSTOMER",
+            BillingStatus = "청구중",
+            SettlementStatus = "미입금",
+            CompletionStatus = "미완료",
+            MonthlyAmount = 100_000m,
+            SettledAmount = 0m,
+            OutstandingAmount = 100_000m,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new SyncRentalBillingRunSnapshot
+                {
+                    RunId = runId,
+                    RunKey = "2026-06",
+                    ScheduledDate = new DateOnly(2026, 6, 25),
+                    PeriodStartDate = new DateOnly(2026, 6, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    PeriodLabel = "2026-06",
+                    Status = "청구중",
+                    BilledAmount = 100_000m,
+                    SettledAmount = 0m,
+                    SettlementStatus = "미입금"
+                }
+            })
+        });
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-RENTAL-TX-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 25),
+            TotalAmount = 100_000m,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-rental-transaction-only",
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = transactionId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 6, 26),
+                    TransactionKind = "렌탈수금",
+                    LinkedInvoiceId = invoiceId,
+                    LinkedInvoiceNumber = "SYNC-RENTAL-TX-001",
+                    LinkedRentalBillingProfileId = profileId,
+                    LinkedRentalBillingRunId = runId,
+                    BankReceipt = 40_000m,
+                    ReceiptTotal = 40_000m,
+                    SettlementAmount = 40_000m,
+                    CreatedAtUtc = new DateTime(2026, 6, 26, 1, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 26, 1, 1, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        var updatedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal(40_000m, updatedProfile.SettledAmount);
+        Assert.Equal(60_000m, updatedProfile.OutstandingAmount);
+        Assert.Equal("부분입금", updatedProfile.SettlementStatus);
+        var updatedRun = Assert.Single(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(updatedProfile.BillingRunsJson) ?? []);
+        Assert.Equal(100_000m, updatedRun.BilledAmount);
+        Assert.Equal(40_000m, updatedRun.SettledAmount);
+        Assert.Equal("부분입금", updatedRun.SettlementStatus);
+    }
+
+    [Fact]
+    public async Task Push_RentalPaymentOnly_RecalculatesRentalSettlement()
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-RENTAL-PAYMENT-CUSTOMER",
+            NameMatchKey = "SYNCRENTALPAYMENTCUSTOMER",
+            TradeType = "매출"
+        });
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"profile-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = "SYNC-RENTAL-PAYMENT-CUSTOMER",
+            BillingStatus = "청구중",
+            SettlementStatus = "미입금",
+            CompletionStatus = "미완료",
+            MonthlyAmount = 100_000m,
+            SettledAmount = 0m,
+            OutstandingAmount = 100_000m,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new SyncRentalBillingRunSnapshot
+                {
+                    RunId = runId,
+                    RunKey = "2026-06",
+                    ScheduledDate = new DateOnly(2026, 6, 25),
+                    PeriodStartDate = new DateOnly(2026, 6, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    PeriodLabel = "2026-06",
+                    Status = "청구중",
+                    BilledAmount = 100_000m,
+                    SettledAmount = 0m,
+                    SettlementStatus = "미입금"
+                }
+            })
+        });
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-RENTAL-PAY-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 25),
+            TotalAmount = 100_000m,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-rental-payment-only",
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = paymentId,
+                    InvoiceId = invoiceId,
+                    PaymentDate = new DateOnly(2026, 6, 27),
+                    Amount = 35_000m,
+                    Note = "direct rental payment sync",
+                    CreatedAtUtc = new DateTime(2026, 6, 27, 1, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 27, 1, 1, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        var updatedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal(35_000m, updatedProfile.SettledAmount);
+        Assert.Equal(65_000m, updatedProfile.OutstandingAmount);
+        Assert.Equal("부분입금", updatedProfile.SettlementStatus);
+        var updatedRun = Assert.Single(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(updatedProfile.BillingRunsJson) ?? []);
+        Assert.Equal(100_000m, updatedRun.BilledAmount);
+        Assert.Equal(35_000m, updatedRun.SettledAmount);
+        Assert.Equal("부분입금", updatedRun.SettlementStatus);
+    }
+
+    [Fact]
     public async Task Push_NormalizesUnspecifiedPurchaseReceivedAtUtc_ForInvoice()
     {
         var customer = new Customer
@@ -6108,11 +6335,27 @@ public sealed class SyncControllerTests : IDisposable
             revisionClock,
             new InventoryLedgerService(dbContext),
             new InvoiceStockSnapshotService(dbContext, revisionClock),
-            new RentalAssignmentHistoryService(dbContext));
+            new RentalAssignmentHistoryService(dbContext),
+            new RentalSettlementRecalculationService(dbContext));
     }
 
     private static string ComputeTestSha256Hex(byte[] content)
         => Convert.ToHexString(SHA256.HashData(content));
+
+    private sealed class SyncRentalBillingRunSnapshot
+    {
+        public Guid RunId { get; set; }
+        public string RunKey { get; set; } = string.Empty;
+        public DateOnly ScheduledDate { get; set; }
+        public DateOnly PeriodStartDate { get; set; }
+        public DateOnly PeriodEndDate { get; set; }
+        public string PeriodLabel { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public decimal BilledAmount { get; set; }
+        public decimal SettledAmount { get; set; }
+        public string SettlementStatus { get; set; } = string.Empty;
+        public DateOnly? SettledDate { get; set; }
+    }
 
     private sealed class TestCurrentUserContext : ICurrentUserContext
     {
