@@ -19,6 +19,22 @@ public sealed class IntegrityController : ControllerBase
     {
         PropertyNameCaseInsensitive = true
     };
+    private static readonly HashSet<string> AllowedEvidenceAttachmentExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".heic", ".heif"
+    };
+    private static readonly HashSet<string> AllowedEvidenceAttachmentContentTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "application/pdf",
+        "image/png",
+        "image/jpeg",
+        "image/bmp",
+        "image/gif",
+        "image/webp",
+        "image/tiff",
+        "image/heic",
+        "image/heif"
+    };
 
     private readonly AppDbContext _dbContext;
     private readonly OfficeScopeService _officeScopeService;
@@ -418,6 +434,9 @@ public sealed class IntegrityController : ControllerBase
             : 0;
         AddIssue(issues, "deleted_payment_attachment_missing_payment_rows", deletedPaymentAttachmentMissingPaymentRowCount, "Error", "영구 삭제된 결제의 삭제 첨부 잔여 행이 존재합니다.");
 
+        var unsupportedAttachmentFileTypeCount = (await LoadUnsupportedAttachmentFileTypeDetailsAsync(cancellationToken)).Count;
+        AddIssue(issues, "unsupported_attachment_file_type", unsupportedAttachmentFileTypeCount, "Warning", "PDF/이미지 정책과 맞지 않는 거래/결제 증빙 첨부가 있습니다.");
+
         var customerContractMissingCustomerRowCount = _officeScopeService.HasGlobalDataScope
             ? await _dbContext.CustomerContracts
                 .IgnoreQueryFilters()
@@ -546,6 +565,7 @@ public sealed class IntegrityController : ControllerBase
             "deleted_transaction_attachment_missing_transaction_rows" => await LoadDeletedTransactionAttachmentMissingTransactionRowDetailsAsync(cancellationToken),
             "orphan_payment_attachment_refs" => await LoadOrphanPaymentAttachmentDetailsAsync(cancellationToken),
             "deleted_payment_attachment_missing_payment_rows" => await LoadDeletedPaymentAttachmentMissingPaymentRowDetailsAsync(cancellationToken),
+            "unsupported_attachment_file_type" => await LoadUnsupportedAttachmentFileTypeDetailsAsync(cancellationToken),
             "customer_contract_missing_customer_rows" => await LoadCustomerContractMissingCustomerRowDetailsAsync(cancellationToken),
             "rental_billing_log_missing_profile_rows" => await LoadRentalBillingLogMissingProfileRowDetailsAsync(cancellationToken),
             "file_content_unavailable" => await LoadFileContentUnavailableDetailsAsync(cancellationToken),
@@ -2460,6 +2480,104 @@ public sealed class IntegrityController : ControllerBase
             .ToList();
     }
 
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadUnsupportedAttachmentFileTypeDetailsAsync(CancellationToken cancellationToken)
+    {
+        var rows = new List<AttachmentFileTypeIssueRow>();
+
+        var transactionAttachmentRows = await _officeScopeService
+            .ApplyTransactionAttachmentScope(_dbContext.TransactionAttachments.IgnoreQueryFilters().AsNoTracking())
+            .Where(attachment => !attachment.IsDeleted && attachment.Transaction != null && !attachment.Transaction.IsDeleted)
+            .Select(attachment => new
+            {
+                attachment.Id,
+                attachment.FileName,
+                attachment.MimeType,
+                attachment.AttachmentType,
+                attachment.Description,
+                attachment.FileSize,
+                attachment.UploadedAtUtc,
+                attachment.TransactionId,
+                TransactionDate = attachment.Transaction == null ? (DateOnly?)null : attachment.Transaction.TransactionDate,
+                TransactionKind = attachment.Transaction == null ? string.Empty : attachment.Transaction.TransactionKind,
+                LinkedInvoiceNumber = attachment.Transaction == null ? string.Empty : attachment.Transaction.LinkedInvoiceNumber,
+                TenantCode = attachment.Transaction == null ? string.Empty : attachment.Transaction.TenantCode,
+                OfficeCode = attachment.Transaction == null ? string.Empty : attachment.Transaction.OfficeCode,
+                ResponsibleOfficeCode = attachment.Transaction == null ? string.Empty : attachment.Transaction.ResponsibleOfficeCode
+            })
+            .ToListAsync(cancellationToken);
+
+        rows.AddRange(transactionAttachmentRows.Select(attachment => new AttachmentFileTypeIssueRow(
+            EntityType: "거래첨부",
+            EntityId: attachment.Id,
+            FileName: attachment.FileName,
+            MimeType: attachment.MimeType,
+            SecondaryText: CombineParts(attachment.AttachmentType, attachment.Description),
+            ReferenceText: attachment.TransactionDate.HasValue
+                ? CombineParts(
+                    $"거래 {FormatDate(attachment.TransactionDate.Value)}",
+                    attachment.TransactionKind,
+                    string.IsNullOrWhiteSpace(attachment.LinkedInvoiceNumber) ? null : $"전표 {attachment.LinkedInvoiceNumber}")
+                : $"거래 {FormatGuid(attachment.TransactionId)}",
+            ScopeText: CombineParts(
+                FormatScope(attachment.TenantCode, attachment.OfficeCode, attachment.ResponsibleOfficeCode),
+                $"업로드 {FormatUtcDateTime(attachment.UploadedAtUtc)}"),
+            FileSize: attachment.FileSize)));
+
+        var scopedPayments = _officeScopeService
+            .ApplyPaymentScope(_dbContext.Payments.IgnoreQueryFilters().AsNoTracking())
+            .Where(payment => !payment.IsDeleted);
+        var paymentAttachmentRows = await (
+                from attachment in _dbContext.PaymentAttachments.IgnoreQueryFilters().AsNoTracking().Where(attachment => !attachment.IsDeleted)
+                join payment in scopedPayments on attachment.PaymentId equals payment.Id
+                select new
+                {
+                    attachment.Id,
+                    attachment.FileName,
+                    attachment.MimeType,
+                    attachment.AttachmentType,
+                    attachment.Description,
+                    attachment.FileSize,
+                    attachment.UploadedAtUtc,
+                    payment.PaymentDate,
+                    payment.Amount,
+                    InvoiceNumber = payment.Invoice == null ? string.Empty : payment.Invoice.InvoiceNumber,
+                    TenantCode = payment.Invoice == null ? string.Empty : payment.Invoice.TenantCode,
+                    OfficeCode = payment.Invoice == null ? string.Empty : payment.Invoice.OfficeCode,
+                    ResponsibleOfficeCode = payment.Invoice == null ? string.Empty : payment.Invoice.ResponsibleOfficeCode
+                })
+            .ToListAsync(cancellationToken);
+
+        rows.AddRange(paymentAttachmentRows.Select(attachment => new AttachmentFileTypeIssueRow(
+            EntityType: "결제첨부",
+            EntityId: attachment.Id,
+            FileName: attachment.FileName,
+            MimeType: attachment.MimeType,
+            SecondaryText: CombineParts(attachment.AttachmentType, attachment.Description),
+            ReferenceText: CombineParts(
+                $"결제 {FormatDate(attachment.PaymentDate)}",
+                $"금액 {FormatMoney(attachment.Amount)}",
+                string.IsNullOrWhiteSpace(attachment.InvoiceNumber) ? null : $"전표 {attachment.InvoiceNumber}"),
+            ScopeText: CombineParts(
+                FormatScope(attachment.TenantCode, attachment.OfficeCode, attachment.ResponsibleOfficeCode),
+                $"업로드 {FormatUtcDateTime(attachment.UploadedAtUtc)}"),
+            FileSize: attachment.FileSize)));
+
+        return rows
+            .Where(row => !IsAllowedEvidenceAttachmentFileType(row.FileName, row.MimeType))
+            .OrderBy(row => row.EntityType, StringComparer.Ordinal)
+            .ThenBy(row => row.FileName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.EntityId)
+            .Select(row => CreateDetailRow(
+                entityType: row.EntityType,
+                entityIdText: FormatGuid(row.EntityId),
+                primaryText: FirstNonEmpty(row.FileName, FormatGuid(row.EntityId)),
+                secondaryText: row.SecondaryText,
+                referenceText: row.ReferenceText,
+                scopeText: row.ScopeText,
+                detailText: BuildUnsupportedAttachmentFileTypeDetail(row)))
+            .ToList();
+    }
+
     private async Task<List<IntegrityIssueDetailRowDto>> LoadCustomerContractMissingCustomerRowDetailsAsync(CancellationToken cancellationToken)
     {
         if (!_officeScopeService.HasGlobalDataScope)
@@ -3288,6 +3406,7 @@ public sealed class IntegrityController : ControllerBase
             "deleted_transaction_attachment_missing_transaction_rows" => new IntegrityIssueDefinition("deleted_transaction_attachment_missing_transaction_rows", "Error", "영구 삭제된 거래내역의 삭제 첨부 잔여 행이 존재합니다."),
             "orphan_payment_attachment_refs" => new IntegrityIssueDefinition("orphan_payment_attachment_refs", "Error", "결제내역이 없는 결제 첨부가 존재합니다."),
             "deleted_payment_attachment_missing_payment_rows" => new IntegrityIssueDefinition("deleted_payment_attachment_missing_payment_rows", "Error", "영구 삭제된 결제의 삭제 첨부 잔여 행이 존재합니다."),
+            "unsupported_attachment_file_type" => new IntegrityIssueDefinition("unsupported_attachment_file_type", "Warning", "PDF/이미지 정책과 맞지 않는 거래/결제 증빙 첨부가 있습니다."),
             "customer_contract_missing_customer_rows" => new IntegrityIssueDefinition("customer_contract_missing_customer_rows", "Error", "부모 거래처 행이 없는 계약/첨부가 존재합니다."),
             "rental_billing_log_missing_profile_rows" => new IntegrityIssueDefinition("rental_billing_log_missing_profile_rows", "Error", "부모 청구 프로필 행이 없는 렌탈 청구 로그가 존재합니다."),
             "file_content_unavailable" => new IntegrityIssueDefinition("file_content_unavailable", "Error", "파일 크기는 있으나 저장소 경로와 DB 파일 본문이 모두 비어 있는 첨부/계약서가 있습니다."),
@@ -3552,6 +3671,62 @@ public sealed class IntegrityController : ControllerBase
             (character >= 'A' && character <= 'F'));
     }
 
+    private static bool IsAllowedEvidenceAttachmentFileType(string? fileName, string? mimeType)
+    {
+        var safeFileName = Path.GetFileName(fileName ?? string.Empty);
+        var extension = Path.GetExtension(safeFileName);
+        if (string.IsNullOrWhiteSpace(safeFileName) || !AllowedEvidenceAttachmentExtensions.Contains(extension))
+            return false;
+
+        var normalizedMimeType = NormalizeEvidenceAttachmentContentType(mimeType, safeFileName);
+        if (AllowedEvidenceAttachmentContentTypes.Contains(normalizedMimeType))
+            return true;
+
+        return string.Equals(normalizedMimeType, "application/octet-stream", StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(extension, ".pdf", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildUnsupportedAttachmentFileTypeDetail(AttachmentFileTypeIssueRow row)
+    {
+        var safeFileName = Path.GetFileName(row.FileName ?? string.Empty);
+        var extension = Path.GetExtension(safeFileName);
+        var normalizedMimeType = NormalizeEvidenceAttachmentContentType(row.MimeType, safeFileName);
+        var hasUnsupportedExtension = string.IsNullOrWhiteSpace(safeFileName) ||
+                                      !AllowedEvidenceAttachmentExtensions.Contains(extension);
+        var hasUnsupportedMimeType =
+            !AllowedEvidenceAttachmentContentTypes.Contains(normalizedMimeType) &&
+            !(string.Equals(normalizedMimeType, "application/octet-stream", StringComparison.OrdinalIgnoreCase) &&
+              string.Equals(extension, ".pdf", StringComparison.OrdinalIgnoreCase));
+
+        return CombineParts(
+            hasUnsupportedExtension
+                ? $"지원하지 않는 확장자 {FirstNonEmpty(extension, "(없음)")}"
+                : null,
+            hasUnsupportedMimeType ? "지원하지 않는 MIME" : null,
+            string.IsNullOrWhiteSpace(row.MimeType) ? "MimeType 비어 있음" : $"MimeType {row.MimeType.Trim()}",
+            row.FileSize > 0 ? $"크기 {row.FileSize:N0} bytes" : null);
+    }
+
+    private static string NormalizeEvidenceAttachmentContentType(string? contentType, string fileName)
+    {
+        if (!string.IsNullOrWhiteSpace(contentType))
+            return contentType.Split(';', 2, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)[0].Trim();
+
+        return Path.GetExtension(fileName).ToLowerInvariant() switch
+        {
+            ".pdf" => "application/pdf",
+            ".png" => "image/png",
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".bmp" => "image/bmp",
+            ".gif" => "image/gif",
+            ".webp" => "image/webp",
+            ".tif" or ".tiff" => "image/tiff",
+            ".heic" => "image/heic",
+            ".heif" => "image/heif",
+            _ => "application/octet-stream"
+        };
+    }
+
     private static string FormatStorageInspection(FileStorageInspectionResult inspection)
     {
         if (!inspection.HasStoredPath)
@@ -3672,6 +3847,16 @@ public sealed class IntegrityController : ControllerBase
         string StoragePath,
         int FileContentLength,
         FileStorageInspectionResult StorageInspection);
+
+    private sealed record AttachmentFileTypeIssueRow(
+        string EntityType,
+        Guid EntityId,
+        string FileName,
+        string MimeType,
+        string SecondaryText,
+        string ReferenceText,
+        string ScopeText,
+        long FileSize);
 
     private sealed record NegativeStockInvoiceEvidence(
         Guid ItemId,

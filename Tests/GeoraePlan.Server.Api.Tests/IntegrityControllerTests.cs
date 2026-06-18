@@ -1610,6 +1610,272 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FlagsUnsupportedAttachmentFileTypes()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "지원 외 첨부 거래처",
+            NameMatchKey = "UNSUPPORTEDATTACHMENTCUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = transactionId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 19),
+            TransactionKind = "수금"
+        });
+        dbContext.TransactionAttachments.AddRange(
+            new TransactionAttachment
+            {
+                Id = Guid.NewGuid(),
+                TransactionId = transactionId,
+                FileName = "valid-receipt.pdf",
+                MimeType = "application/octet-stream",
+                FileSize = 4,
+                FileContent = [1, 2, 3, 4]
+            },
+            new TransactionAttachment
+            {
+                Id = Guid.NewGuid(),
+                TransactionId = transactionId,
+                FileName = "payload.exe",
+                MimeType = "application/octet-stream",
+                FileSize = 4,
+                FileContent = [0x4D, 0x5A, 0x90, 0x00]
+            });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "INV-UNSUPPORTED-ATTACHMENT",
+            InvoiceDate = new DateOnly(2026, 6, 19)
+        });
+        dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 6, 19),
+            Amount = 10000m
+        });
+        dbContext.PaymentAttachments.AddRange(
+            new PaymentAttachment
+            {
+                Id = Guid.NewGuid(),
+                PaymentId = paymentId,
+                FileName = "valid-payment.jpg",
+                MimeType = "image/jpeg",
+                FileSize = 3,
+                FileContent = [1, 2, 3]
+            },
+            new PaymentAttachment
+            {
+                Id = Guid.NewGuid(),
+                PaymentId = paymentId,
+                FileName = "payment-proof.jpg",
+                MimeType = "application/octet-stream",
+                FileSize = 3,
+                FileContent = [1, 2, 3]
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issue = Assert.Single(payload.Issues, current => current.Code == "unsupported_attachment_file_type");
+
+        Assert.Equal("Warning", issue.Severity);
+        Assert.Equal(2, issue.Count);
+
+        var detailsResponse = await controller.GetReportDetails("unsupported_attachment_file_type", CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+
+        Assert.Equal(2, details.DetailCount);
+        Assert.Contains(details.Rows, row =>
+            row.PrimaryText == "payload.exe" &&
+            row.DetailText.Contains("MimeType application/octet-stream", StringComparison.Ordinal));
+        Assert.Contains(details.Rows, row =>
+            row.PrimaryText == "payment-proof.jpg" &&
+            row.DetailText.Contains("지원하지 않는 MIME", StringComparison.Ordinal));
+        Assert.DoesNotContain(details.Rows, row => row.PrimaryText == "valid-receipt.pdf");
+        Assert.DoesNotContain(details.Rows, row => row.PrimaryText == "valid-payment.jpg");
+    }
+
+    [Fact]
+    public async Task GetReport_FiltersUnsupportedAttachmentFileTypesByParentScope()
+    {
+        var currentUser = CreateOfficeScopedUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var inScopeCustomerId = Guid.NewGuid();
+        var outOfScopeCustomerId = Guid.NewGuid();
+        var inScopeTransactionId = Guid.NewGuid();
+        var outOfScopeTransactionId = Guid.NewGuid();
+        var inScopeInvoiceId = Guid.NewGuid();
+        var outOfScopeInvoiceId = Guid.NewGuid();
+        var inScopePaymentId = Guid.NewGuid();
+        var outOfScopePaymentId = Guid.NewGuid();
+
+        dbContext.Customers.AddRange(
+            new Customer
+            {
+                Id = inScopeCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "지원 외 첨부 범위 내",
+                NameMatchKey = "UNSUPPORTEDATTACHMENTSCOPEIN",
+                TradeType = "매출"
+            },
+            new Customer
+            {
+                Id = outOfScopeCustomerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                NameOriginal = "지원 외 첨부 범위 밖",
+                NameMatchKey = "UNSUPPORTEDATTACHMENTSCOPEOUT",
+                TradeType = "매출"
+            });
+        dbContext.Transactions.AddRange(
+            new TransactionRecord
+            {
+                Id = inScopeTransactionId,
+                CustomerId = inScopeCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 20),
+                TransactionKind = "수금"
+            },
+            new TransactionRecord
+            {
+                Id = outOfScopeTransactionId,
+                CustomerId = outOfScopeCustomerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                TransactionDate = new DateOnly(2026, 6, 20),
+                TransactionKind = "수금"
+            });
+        dbContext.TransactionAttachments.AddRange(
+            new TransactionAttachment
+            {
+                Id = Guid.NewGuid(),
+                TransactionId = inScopeTransactionId,
+                FileName = "in-scope-unsupported.exe",
+                MimeType = "application/octet-stream",
+                FileSize = 4,
+                FileContent = [1, 2, 3, 4]
+            },
+            new TransactionAttachment
+            {
+                Id = Guid.NewGuid(),
+                TransactionId = outOfScopeTransactionId,
+                FileName = "out-scope-unsupported.exe",
+                MimeType = "application/octet-stream",
+                FileSize = 4,
+                FileContent = [1, 2, 3, 4]
+            });
+        dbContext.Invoices.AddRange(
+            new Invoice
+            {
+                Id = inScopeInvoiceId,
+                CustomerId = inScopeCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "INV-IN-SCOPE-UNSUPPORTED",
+                InvoiceDate = new DateOnly(2026, 6, 20)
+            },
+            new Invoice
+            {
+                Id = outOfScopeInvoiceId,
+                CustomerId = outOfScopeCustomerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                InvoiceNumber = "INV-OUT-SCOPE-UNSUPPORTED",
+                InvoiceDate = new DateOnly(2026, 6, 20)
+            });
+        dbContext.Payments.AddRange(
+            new Payment
+            {
+                Id = inScopePaymentId,
+                InvoiceId = inScopeInvoiceId,
+                PaymentDate = new DateOnly(2026, 6, 20),
+                Amount = 11000m
+            },
+            new Payment
+            {
+                Id = outOfScopePaymentId,
+                InvoiceId = outOfScopeInvoiceId,
+                PaymentDate = new DateOnly(2026, 6, 20),
+                Amount = 22000m
+            });
+        dbContext.PaymentAttachments.AddRange(
+            new PaymentAttachment
+            {
+                Id = Guid.NewGuid(),
+                PaymentId = inScopePaymentId,
+                FileName = "in-scope-payment.exe",
+                MimeType = "application/octet-stream",
+                FileSize = 4,
+                FileContent = [1, 2, 3, 4]
+            },
+            new PaymentAttachment
+            {
+                Id = Guid.NewGuid(),
+                PaymentId = outOfScopePaymentId,
+                FileName = "out-scope-payment.exe",
+                MimeType = "application/octet-stream",
+                FileSize = 4,
+                FileContent = [1, 2, 3, 4]
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issue = Assert.Single(payload.Issues, current => current.Code == "unsupported_attachment_file_type");
+
+        Assert.Equal(2, issue.Count);
+
+        var detailsResponse = await controller.GetReportDetails("unsupported_attachment_file_type", CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+
+        Assert.Equal(2, details.DetailCount);
+        Assert.Contains(details.Rows, row => row.PrimaryText == "in-scope-unsupported.exe");
+        Assert.Contains(details.Rows, row => row.PrimaryText == "in-scope-payment.exe");
+        Assert.DoesNotContain(details.Rows, row => row.PrimaryText == "out-scope-unsupported.exe");
+        Assert.DoesNotContain(details.Rows, row => row.PrimaryText == "out-scope-payment.exe");
+    }
+
+    [Fact]
     public async Task GetReport_FlagsAttachmentsWithFileSizeButNoReadableContent()
     {
         var currentUser = CreateAdminUser();
