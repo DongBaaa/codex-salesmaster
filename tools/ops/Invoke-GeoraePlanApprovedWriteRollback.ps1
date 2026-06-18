@@ -444,5 +444,3 @@ Set-Content -LiteralPath $mdPath -Value $lines -Encoding UTF8
 Write-Host "approved_write_rollback_report=$mdPath"
 Write-Host "approved_write_rollback_json=$jsonPath"
 Write-Host "result=PASS"
-
-
