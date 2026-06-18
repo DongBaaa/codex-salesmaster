@@ -36,6 +36,7 @@ public static class DataIntegrityIssueCodes
     public const string RentalBillableAssetWithoutMonthlyFee = "rental_billable_asset_without_monthly_fee";
     public const string RentalAssetMissingBillingProfile = "rental_asset_missing_billing_profile";
     public const string RentalAssignmentMissingReference = "rental_assignment_missing_reference";
+    public const string RentalAssignmentHistoricalStaleReference = "rental_assignment_historical_stale_reference";
     public const string RentalAssetMultipleCurrentAssignments = "rental_asset_multiple_current_assignments";
     public const string CustomerDuplicateCandidate = "customer_duplicate_candidate";
     public const string ItemDuplicateCandidate = "item_duplicate_candidate";
@@ -298,8 +299,15 @@ public sealed class DataIntegrityIssueService
             "임대이력 참조 누락",
             "Error",
             "렌탈 이력",
-            "렌탈 임대이력이 존재하지 않거나 삭제된 자산/거래처/청구 프로필을 참조합니다.",
-            "임대이력 상세를 확인한 뒤 자산·거래처·청구 프로필을 재연결하거나 과거 이력으로 보존 처리하세요."),
+            "렌탈 임대이력이 존재하지 않거나 삭제된 자산을 참조하거나, 현재 임대이력이 삭제된 거래처/청구 프로필을 참조합니다.",
+            "현재 이력은 자산·거래처·청구 프로필을 재연결하고, 자산이 없는 이력은 동기화 진단에서 원본을 확인하세요."),
+        [DataIntegrityIssueCodes.RentalAssignmentHistoricalStaleReference] = new(
+            DataIntegrityIssueCodes.RentalAssignmentHistoricalStaleReference,
+            "과거 임대이력 참조 보존",
+            "Info",
+            "렌탈 이력",
+            "과거 렌탈 임대이력의 거래처/청구 프로필 참조가 현재 마스터에서 사라졌지만 스냅샷 표시값은 남아 있습니다.",
+            "현재 청구·설치 흐름에는 영향을 주지 않는 과거 이력입니다. 필요 시 백업 기준으로 과거 참조 정리 여부를 검토하세요."),
         [DataIntegrityIssueCodes.RentalAssetMultipleCurrentAssignments] = new(
             DataIntegrityIssueCodes.RentalAssetMultipleCurrentAssignments,
             "현재 임대이력 중복",
@@ -625,20 +633,38 @@ public sealed class DataIntegrityIssueService
             if (history.BillingProfileId.HasValue && history.BillingProfileId.Value != Guid.Empty)
                 activeProfilesById.TryGetValue(history.BillingProfileId.Value, out historyProfile);
 
-            var missingReferences = new List<string>();
+            var missingCriticalReferences = new List<string>();
+            var staleHistoricalReferences = new List<string>();
             if (history.AssetId == Guid.Empty || historyAsset is null)
-                missingReferences.Add($"자산 {FormatNullableGuid(history.AssetId)}");
+                missingCriticalReferences.Add($"자산 {FormatNullableGuid(history.AssetId)}");
             if (history.CustomerId.HasValue && history.CustomerId.Value != Guid.Empty && !activeCustomersById.ContainsKey(history.CustomerId.Value))
-                missingReferences.Add($"거래처 {history.CustomerId.Value:D}");
+            {
+                if (history.IsCurrent)
+                    missingCriticalReferences.Add($"거래처 {history.CustomerId.Value:D}");
+                else
+                    staleHistoricalReferences.Add($"거래처 {history.CustomerId.Value:D}");
+            }
             if (history.BillingProfileId.HasValue && history.BillingProfileId.Value != Guid.Empty && historyProfile is null)
-                missingReferences.Add($"청구 프로필 {history.BillingProfileId.Value:D}");
+            {
+                if (history.IsCurrent)
+                    missingCriticalReferences.Add($"청구 프로필 {history.BillingProfileId.Value:D}");
+                else
+                    staleHistoricalReferences.Add($"청구 프로필 {history.BillingProfileId.Value:D}");
+            }
 
-            if (missingReferences.Count > 0)
+            if (missingCriticalReferences.Count > 0)
             {
                 AddHistoryIssue(details, DataIntegrityIssueCodes.RentalAssignmentMissingReference, history, historyAsset, historyProfile,
-                    currentValue: string.Join(" / ", missingReferences),
-                    expectedValue: "활성 자산·거래처·청구 프로필 참조",
+                    currentValue: string.Join(" / ", missingCriticalReferences),
+                    expectedValue: history.IsCurrent ? "현재 자산·거래처·청구 프로필 참조" : "자산 참조",
                     message: $"{BuildHistoryDisplay(history)} 임대이력이 누락/삭제된 참조를 포함합니다.");
+            }
+            else if (staleHistoricalReferences.Count > 0)
+            {
+                AddHistoryIssue(details, DataIntegrityIssueCodes.RentalAssignmentHistoricalStaleReference, history, historyAsset, historyProfile,
+                    currentValue: string.Join(" / ", staleHistoricalReferences),
+                    expectedValue: "과거 이력 스냅샷 표시값 보존",
+                    message: $"{BuildHistoryDisplay(history)} 과거 임대이력의 마스터 참조가 현재 DB에서 사라졌지만 표시값은 보존되어 있습니다.");
             }
         }
 

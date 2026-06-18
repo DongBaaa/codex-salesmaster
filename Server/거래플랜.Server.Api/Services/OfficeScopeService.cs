@@ -397,6 +397,18 @@ public sealed class OfficeScopeService
             readableOffices.Contains(entity.ResponsibleOfficeCode));
     }
 
+    public IQueryable<RentalAssetAssignmentHistory> ApplyRentalAssignmentHistoryScope(IQueryable<RentalAssetAssignmentHistory> query)
+    {
+        if (HasGlobalDataScope || HasAdministrativeRentalScope)
+            return query;
+
+        var tenantCode = CurrentTenantCode;
+        var readableOffices = ResolveReadableOfficeCodes(DataArea.Rentals);
+        return query.Where(entity =>
+            entity.TenantCode == tenantCode &&
+            readableOffices.Contains(entity.ResponsibleOfficeCode));
+    }
+
     public IQueryable<RentalBillingLog> ApplyRentalBillingLogScope(IQueryable<RentalBillingLog> query)
     {
         if (HasGlobalDataScope || HasAdministrativeRentalScope)

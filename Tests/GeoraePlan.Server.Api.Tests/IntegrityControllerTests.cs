@@ -487,6 +487,226 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FlagsRentalAssignmentHistoryMissingReferencesAndMultipleCurrentRows()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        var missingAssetId = Guid.NewGuid();
+        var missingCustomerId = Guid.NewGuid();
+        var missingProfileId = Guid.NewGuid();
+        var missingHistoryId = Guid.NewGuid();
+        var duplicateAssetId = Guid.NewGuid();
+        var duplicateHistoryId1 = Guid.NewGuid();
+        var duplicateHistoryId2 = Guid.NewGuid();
+
+        dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = duplicateAssetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "ASSET-CURRENT-DUP",
+            ManagementId = "CURRENT-DUP",
+            ManagementNumber = "CURRENT-DUP",
+            CustomerName = "Current Duplicate Customer",
+            ItemName = "Copier",
+            MonthlyFee = 100000m
+        });
+        dbContext.RentalAssetAssignmentHistories.AddRange(
+            new RentalAssetAssignmentHistory
+            {
+                Id = missingHistoryId,
+                AssetId = missingAssetId,
+                CustomerId = missingCustomerId,
+                BillingProfileId = missingProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Missing History Customer",
+                InstallLocation = "Missing Site",
+                BillingProfileDisplay = "Missing Profile",
+                ItemName = "Missing History Copier",
+                MachineNumber = "MISSING-SN",
+                ManagementNumber = "HIST-MISSING",
+                MonthlyFee = 100000m,
+                ContractStartDate = new DateOnly(2026, 6, 1),
+                IsCurrent = true,
+                LinkedAtUtc = new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc)
+            },
+            new RentalAssetAssignmentHistory
+            {
+                Id = duplicateHistoryId1,
+                AssetId = duplicateAssetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Current Duplicate Customer",
+                ItemName = "Copier",
+                ManagementNumber = "CURRENT-DUP-1",
+                MonthlyFee = 100000m,
+                IsCurrent = true,
+                LinkedAtUtc = new DateTime(2026, 6, 2, 0, 0, 0, DateTimeKind.Utc)
+            },
+            new RentalAssetAssignmentHistory
+            {
+                Id = duplicateHistoryId2,
+                AssetId = duplicateAssetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Current Duplicate Customer",
+                ItemName = "Copier",
+                ManagementNumber = "CURRENT-DUP-2",
+                MonthlyFee = 100000m,
+                IsCurrent = true,
+                LinkedAtUtc = new DateTime(2026, 6, 3, 0, 0, 0, DateTimeKind.Utc)
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issues = payload.Issues.ToDictionary(issue => issue.Code, StringComparer.OrdinalIgnoreCase);
+
+        Assert.Equal(1, issues["rental_assignment_missing_reference_rows"].Count);
+        Assert.Equal(2, issues["rental_asset_multiple_current_assignments"].Count);
+
+        var missingDetails = await GetSingleDetailRowAsync(controller, "rental_assignment_missing_reference_rows");
+        Assert.Equal(FormatGuidForTest(missingHistoryId), missingDetails.EntityIdText);
+        Assert.Contains(FormatGuidForTest(missingAssetId), missingDetails.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains(FormatGuidForTest(missingCustomerId), missingDetails.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains(FormatGuidForTest(missingProfileId), missingDetails.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains("100,000", missingDetails.DetailText, StringComparison.Ordinal);
+
+        var duplicateDetailsResponse = await controller.GetReportDetails("rental_asset_multiple_current_assignments", CancellationToken.None);
+        var duplicateDetailsOk = Assert.IsType<OkObjectResult>(duplicateDetailsResponse.Result);
+        var duplicateDetails = Assert.IsType<IntegrityIssueDetailResultDto>(duplicateDetailsOk.Value);
+        Assert.Equal(2, duplicateDetails.DetailCount);
+        Assert.Contains(duplicateDetails.Rows, row => row.EntityIdText == FormatGuidForTest(duplicateHistoryId1));
+        Assert.Contains(duplicateDetails.Rows, row => row.EntityIdText == FormatGuidForTest(duplicateHistoryId2));
+        Assert.All(duplicateDetails.Rows, row =>
+        {
+            Assert.Contains(FormatGuidForTest(duplicateAssetId), row.ReferenceText, StringComparison.Ordinal);
+            Assert.Contains("2", row.ReferenceText, StringComparison.Ordinal);
+        });
+    }
+
+    [Fact]
+    public async Task GetReport_ClassifiesPastRentalAssignmentStaleReferencesAsInfo()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        var assetId = Guid.NewGuid();
+        var missingCustomerId = Guid.NewGuid();
+        var missingProfileId = Guid.NewGuid();
+        var historyId = Guid.NewGuid();
+
+        dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "ASSET-PAST-STALE",
+            ManagementId = "PAST-STALE",
+            ManagementNumber = "PAST-STALE",
+            CustomerName = "Past Snapshot Customer",
+            ItemName = "Copier",
+            MonthlyFee = 100000m
+        });
+        dbContext.RentalAssetAssignmentHistories.Add(new RentalAssetAssignmentHistory
+        {
+            Id = historyId,
+            AssetId = assetId,
+            CustomerId = missingCustomerId,
+            BillingProfileId = missingProfileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            CustomerName = "Past Snapshot Customer",
+            BillingProfileDisplay = "Past Snapshot Profile",
+            ItemName = "Copier",
+            ManagementNumber = "PAST-STALE",
+            MonthlyFee = 100000m,
+            IsCurrent = false,
+            LinkedAtUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            UnlinkedAtUtc = new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc)
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+
+        Assert.DoesNotContain(payload.Issues, issue => issue.Code == "rental_assignment_missing_reference_rows");
+        var staleIssue = Assert.Single(payload.Issues, issue => issue.Code == "rental_assignment_historical_stale_reference_rows");
+        Assert.Equal("Info", staleIssue.Severity);
+        Assert.Equal(1, staleIssue.Count);
+
+        var details = await GetSingleDetailRowAsync(controller, "rental_assignment_historical_stale_reference_rows");
+        Assert.Equal(FormatGuidForTest(historyId), details.EntityIdText);
+        Assert.Contains(FormatGuidForTest(missingCustomerId), details.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains(FormatGuidForTest(missingProfileId), details.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains("100,000", details.DetailText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetReport_FiltersRentalAssignmentHistoryIssuesByOfficeScope()
+    {
+        var currentUser = CreateOfficeScopedUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        var scopedHistoryId = Guid.NewGuid();
+
+        dbContext.RentalAssetAssignmentHistories.AddRange(
+            new RentalAssetAssignmentHistory
+            {
+                Id = scopedHistoryId,
+                AssetId = Guid.NewGuid(),
+                BillingProfileId = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Scoped Missing History",
+                ItemName = "Scoped Copier",
+                ManagementNumber = "SCOPED-HIST",
+                IsCurrent = true,
+                LinkedAtUtc = new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc)
+            },
+            new RentalAssetAssignmentHistory
+            {
+                Id = Guid.NewGuid(),
+                AssetId = Guid.NewGuid(),
+                BillingProfileId = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                CustomerName = "Outside Missing History",
+                ItemName = "Outside Copier",
+                ManagementNumber = "OUTSIDE-HIST",
+                IsCurrent = true,
+                LinkedAtUtc = new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc)
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issue = Assert.Single(payload.Issues, current => current.Code == "rental_assignment_missing_reference_rows");
+        Assert.Equal(1, issue.Count);
+
+        var row = await GetSingleDetailRowAsync(controller, "rental_assignment_missing_reference_rows");
+        Assert.Equal(FormatGuidForTest(scopedHistoryId), row.EntityIdText);
+        Assert.Contains(OfficeCodeCatalog.Usenet, row.ScopeText, StringComparison.Ordinal);
+        Assert.DoesNotContain(OfficeCodeCatalog.Yeonsu, row.ScopeText, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task GetReport_FlagsDeletedPaymentResiduesWithHardMissingParents()
     {
         var currentUser = CreateAdminUser();

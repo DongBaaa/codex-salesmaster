@@ -456,6 +456,72 @@ public sealed class DataIntegrityIssueServicePerformanceTests
     }
 
     [Fact]
+    public async Task ScanAsync_ClassifiesPastRentalAssignmentStaleReferencesAsInfo()
+    {
+        PrepareAppRoot("georaeplan-integrity-past-rental-assignment-stale-reference");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var activeCustomerId = Guid.NewGuid();
+            var activeProfileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var missingCustomerId = Guid.NewGuid();
+            var missingProfileId = Guid.NewGuid();
+            var historyId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(activeCustomerId, OfficeCodeCatalog.Usenet, "Active Rental Customer"));
+            db.RentalBillingProfiles.Add(CreateProfile(activeProfileId, 9101, OfficeCodeCatalog.Usenet, activeCustomerId, "Active Rental Customer"));
+            db.RentalAssets.Add(CreateLinkedAsset(activeProfileId, 9101, OfficeCodeCatalog.Usenet, activeCustomerId, "Active Rental Customer", assetId));
+            db.RentalAssetAssignmentHistories.Add(new LocalRentalAssetAssignmentHistory
+            {
+                Id = historyId,
+                AssetId = assetId,
+                CustomerId = missingCustomerId,
+                BillingProfileId = missingProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Past Snapshot Customer",
+                InstallLocation = "Past Site",
+                BillingProfileDisplay = "Past Snapshot Profile",
+                ItemName = "Past Copier",
+                MachineNumber = "PAST-SN",
+                ManagementNumber = "PAST-HIST",
+                MonthlyFee = 100_000m,
+                IsCurrent = false,
+                LinkedAtUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+                UnlinkedAtUtc = new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc),
+                IsDeleted = false,
+                IsDirty = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateAdminSession());
+
+            Assert.DoesNotContain(result.Issues, issue =>
+                issue.Code == DataIntegrityIssueCodes.RentalAssignmentMissingReference &&
+                issue.EntityId == historyId);
+            var staleIssue = Assert.Single(result.Issues, issue =>
+                issue.Code == DataIntegrityIssueCodes.RentalAssignmentHistoricalStaleReference &&
+                issue.EntityId == historyId);
+
+            Assert.Equal("Info", staleIssue.Severity);
+            Assert.Contains(missingCustomerId.ToString("D"), staleIssue.CurrentValue, StringComparison.Ordinal);
+            Assert.Contains(missingProfileId.ToString("D"), staleIssue.CurrentValue, StringComparison.Ordinal);
+            Assert.Equal(DataIntegrityDirectActionKind.OpenRentalAsset, staleIssue.DirectActionKind);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ScanAsync_PrefiltersMasterDataSourceLoadByOperationalScope()
     {
         PrepareAppRoot("georaeplan-integrity-master-scope-prefilter");

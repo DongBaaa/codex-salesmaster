@@ -220,6 +220,40 @@ public sealed class IntegrityController : ControllerBase
             .CountAsync(asset => !_dbContext.Items.IgnoreQueryFilters().Any(item => !item.IsDeleted && item.Id == asset.ItemId), cancellationToken);
         AddIssue(issues, "orphan_rental_asset_item_refs", orphanRentalAssetItemCount, "Error", "품목이 없는 렌탈 자산 연결이 존재합니다.");
 
+        var scopedRentalAssignmentHistories = _officeScopeService.ApplyRentalAssignmentHistoryScope(
+            _dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().AsNoTracking());
+        var rentalAssignmentMissingReferenceCount = await scopedRentalAssignmentHistories
+            .Where(history => !history.IsDeleted)
+            .CountAsync(history =>
+                    history.AssetId == Guid.Empty ||
+                    !_dbContext.RentalAssets.IgnoreQueryFilters().Any(asset => !asset.IsDeleted && asset.Id == history.AssetId) ||
+                    (history.IsCurrent &&
+                     ((history.CustomerId.HasValue && history.CustomerId.Value != Guid.Empty &&
+                       !_dbContext.Customers.IgnoreQueryFilters().Any(customer => !customer.IsDeleted && customer.Id == history.CustomerId.Value)) ||
+                      (history.BillingProfileId.HasValue && history.BillingProfileId.Value != Guid.Empty &&
+                       !_dbContext.RentalBillingProfiles.IgnoreQueryFilters().Any(profile => !profile.IsDeleted && profile.Id == history.BillingProfileId.Value)))),
+                cancellationToken);
+        AddIssue(issues, "rental_assignment_missing_reference_rows", rentalAssignmentMissingReferenceCount, "Error", "렌탈 임대이력이 존재하지 않거나 삭제된 자산/거래처/청구 프로필을 참조합니다.");
+
+        var rentalAssignmentHistoricalStaleReferenceCount = await scopedRentalAssignmentHistories
+            .Where(history => !history.IsDeleted && !history.IsCurrent && history.AssetId != Guid.Empty)
+            .Where(history => _dbContext.RentalAssets.IgnoreQueryFilters().Any(asset => !asset.IsDeleted && asset.Id == history.AssetId))
+            .CountAsync(history =>
+                    (history.CustomerId.HasValue && history.CustomerId.Value != Guid.Empty &&
+                     !_dbContext.Customers.IgnoreQueryFilters().Any(customer => !customer.IsDeleted && customer.Id == history.CustomerId.Value)) ||
+                    (history.BillingProfileId.HasValue && history.BillingProfileId.Value != Guid.Empty &&
+                     !_dbContext.RentalBillingProfiles.IgnoreQueryFilters().Any(profile => !profile.IsDeleted && profile.Id == history.BillingProfileId.Value)),
+                cancellationToken);
+        AddIssue(issues, "rental_assignment_historical_stale_reference_rows", rentalAssignmentHistoricalStaleReferenceCount, "Info", "과거 렌탈 임대이력의 거래처/청구 프로필 참조가 현재 마스터에서 사라졌지만 스냅샷 표시값은 남아 있습니다.");
+
+        var rentalAssetMultipleCurrentAssignmentCount = await scopedRentalAssignmentHistories
+            .Where(history => !history.IsDeleted && history.IsCurrent && history.AssetId != Guid.Empty)
+            .GroupBy(history => history.AssetId)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Count())
+            .SumAsync(cancellationToken);
+        AddIssue(issues, "rental_asset_multiple_current_assignments", rentalAssetMultipleCurrentAssignmentCount, "Error", "하나의 렌탈 자산에 현재 임대중으로 표시된 이력이 여러 개 있습니다.");
+
         var orphanTransactionInvoiceCount = await _officeScopeService.ApplyTransactionScope(_dbContext.Transactions.IgnoreQueryFilters().AsNoTracking())
             .Where(transaction => !transaction.IsDeleted && transaction.LinkedInvoiceId.HasValue)
             .CountAsync(transaction => !_dbContext.Invoices.IgnoreQueryFilters().Any(invoice => !invoice.IsDeleted && invoice.Id == transaction.LinkedInvoiceId), cancellationToken);
@@ -378,6 +412,9 @@ public sealed class IntegrityController : ControllerBase
             "orphan_rental_asset_customer_refs" => await LoadOrphanRentalAssetCustomerDetailsAsync(cancellationToken),
             "orphan_rental_asset_profile_refs" => await LoadOrphanRentalAssetProfileDetailsAsync(cancellationToken),
             "orphan_rental_asset_item_refs" => await LoadOrphanRentalAssetItemDetailsAsync(cancellationToken),
+            "rental_assignment_missing_reference_rows" => await LoadRentalAssignmentMissingReferenceDetailsAsync(cancellationToken),
+            "rental_assignment_historical_stale_reference_rows" => await LoadRentalAssignmentHistoricalStaleReferenceDetailsAsync(cancellationToken),
+            "rental_asset_multiple_current_assignments" => await LoadRentalAssetMultipleCurrentAssignmentDetailsAsync(cancellationToken),
             "orphan_transaction_invoice_refs" => await LoadOrphanTransactionInvoiceDetailsAsync(cancellationToken),
             "orphan_payment_invoice_refs" => await LoadOrphanPaymentInvoiceDetailsAsync(cancellationToken),
             "deleted_payment_missing_invoice_rows" => await LoadDeletedPaymentMissingInvoiceRowDetailsAsync(cancellationToken),
@@ -1311,6 +1348,121 @@ public sealed class IntegrityController : ControllerBase
                     string.IsNullOrWhiteSpace(FirstNonEmpty(asset.InstallLocation, asset.CurrentLocation, asset.InstallSiteName))
                         ? null
                         : $"설치위치 {FirstNonEmpty(asset.InstallLocation, asset.CurrentLocation, asset.InstallSiteName)}")))
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalAssignmentMissingReferenceDetailsAsync(CancellationToken cancellationToken)
+    {
+        var histories = await _officeScopeService.ApplyRentalAssignmentHistoryScope(
+                _dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().AsNoTracking())
+            .Where(history => !history.IsDeleted)
+            .Where(history =>
+                history.AssetId == Guid.Empty ||
+                !_dbContext.RentalAssets.IgnoreQueryFilters().Any(asset => !asset.IsDeleted && asset.Id == history.AssetId) ||
+                (history.IsCurrent &&
+                 ((history.CustomerId.HasValue && history.CustomerId.Value != Guid.Empty &&
+                   !_dbContext.Customers.IgnoreQueryFilters().Any(customer => !customer.IsDeleted && customer.Id == history.CustomerId.Value)) ||
+                  (history.BillingProfileId.HasValue && history.BillingProfileId.Value != Guid.Empty &&
+                   !_dbContext.RentalBillingProfiles.IgnoreQueryFilters().Any(profile => !profile.IsDeleted && profile.Id == history.BillingProfileId.Value)))))
+            .OrderBy(history => history.ResponsibleOfficeCode)
+            .ThenBy(history => history.ManagementNumber)
+            .ThenBy(history => history.LinkedAtUtc)
+            .ThenBy(history => history.Id)
+            .ToListAsync(cancellationToken);
+
+        var activeAssetIds = await LoadActiveRentalAssetIdsAsync(histories.Select(history => history.AssetId), cancellationToken);
+        var activeCustomerIds = await LoadActiveCustomerIdsAsync(histories.Select(history => history.CustomerId), cancellationToken);
+        var activeProfileIds = await LoadActiveRentalBillingProfileIdsAsync(histories.Select(history => history.BillingProfileId), cancellationToken);
+
+        return histories
+            .Select(history => CreateDetailRow(
+                entityType: "렌탈 임대이력",
+                entityIdText: FormatGuid(history.Id),
+                primaryText: BuildRentalAssignmentHistoryDisplay(history),
+                secondaryText: CombineParts(history.CustomerName, history.ItemName, history.ManagementNumber),
+                referenceText: BuildRentalAssignmentMissingReferenceText(history, activeAssetIds, activeCustomerIds, activeProfileIds),
+                scopeText: FormatScope(history.TenantCode, history.OfficeCode, history.ResponsibleOfficeCode),
+                detailText: BuildRentalAssignmentHistoryDetailText(history)))
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalAssignmentHistoricalStaleReferenceDetailsAsync(CancellationToken cancellationToken)
+    {
+        var histories = await _officeScopeService.ApplyRentalAssignmentHistoryScope(
+                _dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().AsNoTracking())
+            .Where(history => !history.IsDeleted && !history.IsCurrent && history.AssetId != Guid.Empty)
+            .Where(history => _dbContext.RentalAssets.IgnoreQueryFilters().Any(asset => !asset.IsDeleted && asset.Id == history.AssetId))
+            .Where(history =>
+                (history.CustomerId.HasValue && history.CustomerId.Value != Guid.Empty &&
+                 !_dbContext.Customers.IgnoreQueryFilters().Any(customer => !customer.IsDeleted && customer.Id == history.CustomerId.Value)) ||
+                (history.BillingProfileId.HasValue && history.BillingProfileId.Value != Guid.Empty &&
+                 !_dbContext.RentalBillingProfiles.IgnoreQueryFilters().Any(profile => !profile.IsDeleted && profile.Id == history.BillingProfileId.Value)))
+            .OrderBy(history => history.ResponsibleOfficeCode)
+            .ThenBy(history => history.ManagementNumber)
+            .ThenBy(history => history.LinkedAtUtc)
+            .ThenBy(history => history.Id)
+            .ToListAsync(cancellationToken);
+
+        var activeAssetIds = await LoadActiveRentalAssetIdsAsync(histories.Select(history => history.AssetId), cancellationToken);
+        var activeCustomerIds = await LoadActiveCustomerIdsAsync(histories.Select(history => history.CustomerId), cancellationToken);
+        var activeProfileIds = await LoadActiveRentalBillingProfileIdsAsync(histories.Select(history => history.BillingProfileId), cancellationToken);
+
+        return histories
+            .Select(history => CreateDetailRow(
+                entityType: "과거 렌탈 임대이력",
+                entityIdText: FormatGuid(history.Id),
+                primaryText: BuildRentalAssignmentHistoryDisplay(history),
+                secondaryText: CombineParts(history.CustomerName, history.ItemName, history.ManagementNumber),
+                referenceText: BuildRentalAssignmentMissingReferenceText(history, activeAssetIds, activeCustomerIds, activeProfileIds),
+                scopeText: FormatScope(history.TenantCode, history.OfficeCode, history.ResponsibleOfficeCode),
+                detailText: CombineParts("과거 스냅샷 표시값 유지", BuildRentalAssignmentHistoryDetailText(history))))
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalAssetMultipleCurrentAssignmentDetailsAsync(CancellationToken cancellationToken)
+    {
+        var scopedCurrentHistories = _officeScopeService.ApplyRentalAssignmentHistoryScope(
+                _dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().AsNoTracking())
+            .Where(history => !history.IsDeleted && history.IsCurrent && history.AssetId != Guid.Empty);
+
+        var duplicateRows = await scopedCurrentHistories
+            .GroupBy(history => history.AssetId)
+            .Where(group => group.Count() > 1)
+            .Select(group => new { AssetId = group.Key, Count = group.Count() })
+            .ToListAsync(cancellationToken);
+        if (duplicateRows.Count == 0)
+            return [];
+
+        var duplicateAssetIds = duplicateRows.Select(row => row.AssetId).ToList();
+        var duplicateCounts = duplicateRows.ToDictionary(row => row.AssetId, row => row.Count);
+        var assets = await _dbContext.RentalAssets
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(asset => duplicateAssetIds.Contains(asset.Id))
+            .ToDictionaryAsync(asset => asset.Id, cancellationToken);
+        var histories = await scopedCurrentHistories
+            .Where(history => duplicateAssetIds.Contains(history.AssetId))
+            .OrderBy(history => history.AssetId)
+            .ThenByDescending(history => history.LinkedAtUtc)
+            .ThenBy(history => history.Id)
+            .ToListAsync(cancellationToken);
+
+        return histories
+            .Select(history =>
+            {
+                assets.TryGetValue(history.AssetId, out var asset);
+                var duplicateCount = duplicateCounts.TryGetValue(history.AssetId, out var count) ? count : 0;
+                return CreateDetailRow(
+                    entityType: "렌탈 임대이력",
+                    entityIdText: FormatGuid(history.Id),
+                    primaryText: BuildRentalAssignmentHistoryDisplay(history),
+                    secondaryText: CombineParts(history.CustomerName, history.ItemName, history.ManagementNumber),
+                    referenceText: $"현재 이력 {duplicateCount:N0}건 / 자산 {FormatGuid(history.AssetId)}",
+                    scopeText: FormatScope(history.TenantCode, history.OfficeCode, history.ResponsibleOfficeCode),
+                    detailText: CombineParts(
+                        asset is null ? "자산 행 확인 필요" : $"자산 {FirstNonEmpty(asset.ManagementNumber, asset.AssetKey, FormatGuid(asset.Id))}",
+                        BuildRentalAssignmentHistoryDetailText(history)));
+            })
             .ToList();
     }
 
@@ -2297,6 +2449,9 @@ public sealed class IntegrityController : ControllerBase
             "orphan_rental_asset_customer_refs" => new IntegrityIssueDefinition("orphan_rental_asset_customer_refs", "Error", "거래처가 없는 렌탈 자산 참조가 존재합니다."),
             "orphan_rental_asset_profile_refs" => new IntegrityIssueDefinition("orphan_rental_asset_profile_refs", "Error", "렌탈 청구 프로필이 없는 자산 연결이 존재합니다."),
             "orphan_rental_asset_item_refs" => new IntegrityIssueDefinition("orphan_rental_asset_item_refs", "Error", "품목이 없는 렌탈 자산 연결이 존재합니다."),
+            "rental_assignment_missing_reference_rows" => new IntegrityIssueDefinition("rental_assignment_missing_reference_rows", "Error", "렌탈 임대이력이 존재하지 않거나 삭제된 자산/거래처/청구 프로필을 참조합니다."),
+            "rental_assignment_historical_stale_reference_rows" => new IntegrityIssueDefinition("rental_assignment_historical_stale_reference_rows", "Info", "과거 렌탈 임대이력의 거래처/청구 프로필 참조가 현재 마스터에서 사라졌지만 스냅샷 표시값은 남아 있습니다."),
+            "rental_asset_multiple_current_assignments" => new IntegrityIssueDefinition("rental_asset_multiple_current_assignments", "Error", "하나의 렌탈 자산에 현재 임대중으로 표시된 이력이 여러 개 있습니다."),
             "orphan_transaction_invoice_refs" => new IntegrityIssueDefinition("orphan_transaction_invoice_refs", "Error", "전표가 없는 거래/수금 참조가 존재합니다."),
             "orphan_payment_invoice_refs" => new IntegrityIssueDefinition("orphan_payment_invoice_refs", "Error", "전표가 없는 수금/지급 참조가 존재합니다."),
             "deleted_payment_missing_invoice_rows" => new IntegrityIssueDefinition("deleted_payment_missing_invoice_rows", "Error", "영구 삭제된 전표의 삭제 결제 잔여 행이 존재합니다."),
@@ -2346,6 +2501,105 @@ public sealed class IntegrityController : ControllerBase
             normalizedSourceOfficeCode,
             normalizedTargetOfficeCode);
     }
+
+    private async Task<HashSet<Guid>> LoadActiveRentalAssetIdsAsync(IEnumerable<Guid> ids, CancellationToken cancellationToken)
+    {
+        var targetIds = ids
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (targetIds.Count == 0)
+            return [];
+
+        var activeIds = await _dbContext.RentalAssets
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(asset => !asset.IsDeleted && targetIds.Contains(asset.Id))
+            .Select(asset => asset.Id)
+            .ToListAsync(cancellationToken);
+        return activeIds.ToHashSet();
+    }
+
+    private async Task<HashSet<Guid>> LoadActiveCustomerIdsAsync(IEnumerable<Guid?> ids, CancellationToken cancellationToken)
+    {
+        var targetIds = ids
+            .Where(id => id.HasValue && id.Value != Guid.Empty)
+            .Select(id => id!.Value)
+            .Distinct()
+            .ToList();
+        if (targetIds.Count == 0)
+            return [];
+
+        var activeIds = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(customer => !customer.IsDeleted && targetIds.Contains(customer.Id))
+            .Select(customer => customer.Id)
+            .ToListAsync(cancellationToken);
+        return activeIds.ToHashSet();
+    }
+
+    private async Task<HashSet<Guid>> LoadActiveRentalBillingProfileIdsAsync(IEnumerable<Guid?> ids, CancellationToken cancellationToken)
+    {
+        var targetIds = ids
+            .Where(id => id.HasValue && id.Value != Guid.Empty)
+            .Select(id => id!.Value)
+            .Distinct()
+            .ToList();
+        if (targetIds.Count == 0)
+            return [];
+
+        var activeIds = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(profile => !profile.IsDeleted && targetIds.Contains(profile.Id))
+            .Select(profile => profile.Id)
+            .ToListAsync(cancellationToken);
+        return activeIds.ToHashSet();
+    }
+
+    private static string BuildRentalAssignmentHistoryDisplay(RentalAssetAssignmentHistory history)
+    {
+        var number = FirstNonEmpty(history.ManagementNumber, history.MachineNumber, history.AssetId == Guid.Empty ? string.Empty : FormatGuid(history.AssetId));
+        var customer = FirstNonEmpty(history.CustomerName, "거래처 미지정");
+        var item = FirstNonEmpty(history.ItemName, "품목 미지정");
+        var period = string.Join("~", new[]
+        {
+            history.ContractStartDate.HasValue ? FormatDate(history.ContractStartDate.Value) : string.Empty,
+            history.ContractEndDate.HasValue ? FormatDate(history.ContractEndDate.Value) : string.Empty
+        }.Where(value => !string.IsNullOrWhiteSpace(value)));
+
+        return CombineParts(number, customer, item, period);
+    }
+
+    private static string BuildRentalAssignmentMissingReferenceText(
+        RentalAssetAssignmentHistory history,
+        ISet<Guid> activeAssetIds,
+        ISet<Guid> activeCustomerIds,
+        ISet<Guid> activeProfileIds)
+    {
+        var missingReferences = new List<string>();
+        if (history.AssetId == Guid.Empty || !activeAssetIds.Contains(history.AssetId))
+            missingReferences.Add($"자산 {FormatGuid(history.AssetId)}");
+        if (history.CustomerId.HasValue && history.CustomerId.Value != Guid.Empty && !activeCustomerIds.Contains(history.CustomerId.Value))
+            missingReferences.Add($"거래처 {FormatGuid(history.CustomerId.Value)}");
+        if (history.BillingProfileId.HasValue && history.BillingProfileId.Value != Guid.Empty && !activeProfileIds.Contains(history.BillingProfileId.Value))
+            missingReferences.Add($"청구프로필 {FormatGuid(history.BillingProfileId.Value)}");
+
+        return missingReferences.Count == 0
+            ? "참조 정상"
+            : string.Join(" / ", missingReferences);
+    }
+
+    private static string BuildRentalAssignmentHistoryDetailText(RentalAssetAssignmentHistory history)
+        => CombineParts(
+            history.IsCurrent ? "현재이력" : "과거이력",
+            $"월요금 {FormatMoney(history.MonthlyFee)}",
+            $"연결일 {FormatUtcDateTime(history.LinkedAtUtc)}",
+            history.UnlinkedAtUtc.HasValue ? $"해제일 {FormatUtcDateTime(history.UnlinkedAtUtc.Value)}" : null,
+            string.IsNullOrWhiteSpace(history.BillingProfileDisplay) ? null : $"청구표시 {history.BillingProfileDisplay}",
+            string.IsNullOrWhiteSpace(history.InstallLocation) ? null : $"설치위치 {history.InstallLocation}",
+            string.IsNullOrWhiteSpace(history.ChangeReason) ? null : $"사유 {history.ChangeReason}");
 
     private static IntegrityIssueDetailRowDto CreateDetailRow(
         string entityType,
