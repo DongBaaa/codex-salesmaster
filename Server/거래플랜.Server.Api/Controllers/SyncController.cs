@@ -335,11 +335,17 @@ public sealed class SyncController : ControllerBase
             }
             var scopedItems = await PrepareScopedItemsAsync(request.Items ?? [], result, cancellationToken);
             await EnsureItemCategoryOptionsForItemsAsync(scopedItems, cancellationToken);
+            var deletedItemIds = scopedItems
+                .Where(item => item.IsDeleted && item.Id != Guid.Empty)
+                .Select(item => item.Id)
+                .Distinct()
+                .ToList();
             await UpsertEntitiesAsync(scopedItems, _dbContext.Items,
                 (e, d) => e.Apply(d), d => new Item { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
             if (scopedItems.Count > 0)
             {
                 await _dbContext.SaveChangesAsync(cancellationToken);
+                await RemoveWarehouseStocksForDeletedItemsAsync(deletedItemIds, cancellationToken);
                 await RemoveSupersededPurgeRecordsAsync("item", scopedItems, cancellationToken);
             }
             var itemWarehouseStockResult = await UpsertItemWarehouseStocksAsync(request.ItemWarehouseStocks ?? [], result, cancellationToken);
@@ -1169,6 +1175,31 @@ public sealed class SyncController : ControllerBase
         }
 
         return scoped.Values.ToList();
+    }
+
+    private async Task RemoveWarehouseStocksForDeletedItemsAsync(
+        IReadOnlyCollection<Guid> requestedItemIds,
+        CancellationToken cancellationToken)
+    {
+        if (requestedItemIds.Count == 0)
+            return;
+
+        var deletedItemIds = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .Where(item => requestedItemIds.Contains(item.Id) && item.IsDeleted)
+            .Select(item => item.Id)
+            .ToListAsync(cancellationToken);
+        if (deletedItemIds.Count == 0)
+            return;
+
+        var staleRows = await _dbContext.ItemWarehouseStocks
+            .IgnoreQueryFilters()
+            .Where(stock => deletedItemIds.Contains(stock.ItemId))
+            .ToListAsync(cancellationToken);
+        if (staleRows.Count == 0)
+            return;
+
+        _dbContext.ItemWarehouseStocks.RemoveRange(staleRows);
     }
 
     private async Task EnsureItemCategoryOptionsForItemsAsync(

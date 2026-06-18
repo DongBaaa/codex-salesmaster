@@ -5719,6 +5719,90 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RemovesWarehouseStockRows_WhenItemDeletedBySync()
+    {
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Sync deleted stock item",
+            NameMatchKey = "SYNCDELETEDSTOCKITEM",
+            SpecificationOriginal = "A",
+            SpecificationMatchKey = "A",
+            Unit = "EA",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 8m,
+            CreatedAtUtc = DateTime.UtcNow.AddMinutes(-10),
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5)
+        };
+        _dbContext.Items.Add(item);
+        _dbContext.ItemWarehouseStocks.AddRange(
+            new ItemWarehouseStock
+            {
+                ItemId = item.Id,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 5m,
+                UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-4),
+                Revision = 10
+            },
+            new ItemWarehouseStock
+            {
+                ItemId = item.Id,
+                WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                Quantity = 3m,
+                UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-3),
+                Revision = 11
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var expectedRevision = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .Where(current => current.Id == item.Id)
+            .Select(current => current.Revision)
+            .SingleAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-sync-delete-item-stock-cleanup",
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = item.Id,
+                    TenantCode = item.TenantCode,
+                    OfficeCode = item.OfficeCode,
+                    NameOriginal = item.NameOriginal,
+                    NameMatchKey = item.NameMatchKey,
+                    SpecificationOriginal = item.SpecificationOriginal,
+                    SpecificationMatchKey = item.SpecificationMatchKey,
+                    Unit = item.Unit,
+                    ItemKind = item.ItemKind,
+                    TrackingType = item.TrackingType,
+                    IsDeleted = true,
+                    ExpectedRevision = expectedRevision,
+                    CreatedAtUtc = item.CreatedAtUtc,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.True(await _dbContext.Items
+            .IgnoreQueryFilters()
+            .Where(current => current.Id == item.Id)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+        Assert.False(await _dbContext.ItemWarehouseStocks
+            .IgnoreQueryFilters()
+            .AnyAsync(stock => stock.ItemId == item.Id));
+    }
+
+    [Fact]
     public async Task Pull_ExcludesWarehouseStockRows_ForDeletedItems()
     {
         var scopedUser = new TestCurrentUserContext
