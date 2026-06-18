@@ -8367,6 +8367,12 @@ public sealed class SyncService : IDisposable
 
     private async Task UpsertPulledInvoicesAsync(IReadOnlyList<InvoiceDto> dtos, CancellationToken ct)
     {
+        if (dtos.Count == 0)
+            return;
+
+        var deletedInvoiceSideEffects = new List<(Guid InvoiceId, DateTime UpdatedAtUtc, long Revision)>();
+        var rentalSettlementTargets = new List<(Guid ProfileId, Guid? RunId)>();
+
         foreach (var dto in dtos)
         {
             var local = LocalMappings.ToLocal(dto);
@@ -8380,9 +8386,13 @@ public sealed class SyncService : IDisposable
             if (existing is null)
             {
                 _db.Invoices.Add(local);
+                AddPulledInvoiceRentalTarget(local, rentalSettlementTargets);
+                if (local.IsDeleted)
+                    deletedInvoiceSideEffects.Add((local.Id, local.UpdatedAtUtc, local.Revision));
             }
             else if (!existing.IsDirty)
             {
+                AddPulledInvoiceRentalTarget(existing, rentalSettlementTargets);
                 _db.Entry(existing).CurrentValues.SetValues(local);
 
                 foreach (var line in local.Lines)
@@ -8405,9 +8415,24 @@ public sealed class SyncService : IDisposable
                     else
                         _db.Entry(exPay).CurrentValues.SetValues(pay);
                 }
+
+                AddPulledInvoiceRentalTarget(local, rentalSettlementTargets);
+                if (local.IsDeleted)
+                    deletedInvoiceSideEffects.Add((local.Id, local.UpdatedAtUtc, local.Revision));
             }
         }
         await _db.SaveChangesAsync(ct);
+
+        await _local.ApplyPulledInvoiceDeleteSideEffectsAsync(deletedInvoiceSideEffects, ct);
+        await _local.RecalculateRentalSettlementsAsync(rentalSettlementTargets, ct, markDirty: false);
+    }
+
+    private static void AddPulledInvoiceRentalTarget(
+        LocalInvoice invoice,
+        ICollection<(Guid ProfileId, Guid? RunId)> targets)
+    {
+        if (invoice.LinkedRentalBillingProfileId is Guid profileId && profileId != Guid.Empty)
+            targets.Add((profileId, invoice.LinkedRentalBillingRunId));
     }
 
     private async Task ApplyPulledPurgeRecordsAsync(

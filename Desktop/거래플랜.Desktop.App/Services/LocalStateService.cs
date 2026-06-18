@@ -2949,6 +2949,33 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 	}
 
+	public async Task ApplyPulledInvoiceDeleteSideEffectsAsync(
+		IEnumerable<(Guid InvoiceId, DateTime UpdatedAtUtc, long Revision)> invoices,
+		CancellationToken ct = default(CancellationToken))
+	{
+		var deleteRecords = (invoices ?? Enumerable.Empty<(Guid InvoiceId, DateTime UpdatedAtUtc, long Revision)>())
+			.Where(record => record.InvoiceId != Guid.Empty)
+			.GroupBy(record => record.InvoiceId)
+			.Select(group => group
+				.OrderByDescending(record => record.Revision)
+				.ThenByDescending(record => record.UpdatedAtUtc)
+				.First())
+			.ToList();
+		if (deleteRecords.Count == 0)
+		{
+			return;
+		}
+
+		var invoiceIds = deleteRecords.Select(record => record.InvoiceId).ToList();
+		var updatedAtUtc = deleteRecords.Max(record => record.UpdatedAtUtc);
+		var revision = deleteRecords.Max(record => record.Revision);
+		var rentalSettlementTargets = await LoadRentalSettlementTargetsForInvoiceDeleteAsync(invoiceIds, ct);
+		await DetachTransactionsFromInvoicesAsync(invoiceIds, updatedAtUtc, ct, markDirty: false, revision: revision);
+		await MarkPaymentsDeletedForInvoicesAsync(invoiceIds, updatedAtUtc, ct, markDirty: false, revision: revision);
+		await _db.SaveChangesAsync(ct);
+		await RecalculateRentalSettlementsAsync(rentalSettlementTargets, ct, markDirty: false);
+	}
+
 	public async Task ReconcilePulledTransactionSideEffectsAsync(IEnumerable<Guid> transactionIds, CancellationToken ct = default(CancellationToken))
 	{
 		List<Guid> targetTransactionIds = (transactionIds ?? Enumerable.Empty<Guid>())
@@ -5056,7 +5083,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 	}
 
-	private async Task DetachTransactionsFromInvoicesAsync(IReadOnlyCollection<Guid> invoiceIds, DateTime updatedAtUtc, CancellationToken ct)
+	private async Task DetachTransactionsFromInvoicesAsync(IReadOnlyCollection<Guid> invoiceIds, DateTime updatedAtUtc, CancellationToken ct, bool markDirty = true, long? revision = null)
 	{
 		if (invoiceIds == null || invoiceIds.Count == 0)
 		{
@@ -5066,6 +5093,11 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			where localTransaction.LinkedInvoiceId.HasValue && invoiceIds.Contains(localTransaction.LinkedInvoiceId.Value)
 			select localTransaction).ToListAsync(ct))
 		{
+			if (!markDirty && transaction.IsDirty)
+			{
+				continue;
+			}
+
 			transaction.LinkedInvoiceId = null;
 			transaction.SettlementAmount = 0m;
 			if (string.Equals(transaction.TransactionKind, "전표수금", StringComparison.OrdinalIgnoreCase))
@@ -5076,8 +5108,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			{
 				transaction.TransactionKind = "일반지급";
 			}
-			transaction.IsDirty = true;
+			transaction.IsDirty = markDirty;
 			transaction.UpdatedAtUtc = updatedAtUtc;
+			if (!markDirty && revision.HasValue)
+			{
+				transaction.Revision = Math.Max(transaction.Revision, revision.Value);
+			}
 		}
 	}
 
@@ -5124,7 +5160,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			.ToList();
 	}
 
-	private async Task MarkPaymentsDeletedForInvoicesAsync(IReadOnlyCollection<Guid> invoiceIds, DateTime updatedAtUtc, CancellationToken ct)
+	private async Task MarkPaymentsDeletedForInvoicesAsync(IReadOnlyCollection<Guid> invoiceIds, DateTime updatedAtUtc, CancellationToken ct, bool markDirty = true, long? revision = null)
 	{
 		if (invoiceIds == null || invoiceIds.Count == 0)
 		{
@@ -5134,9 +5170,18 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			where invoiceIds.Contains(localPayment.InvoiceId)
 			select localPayment).ToListAsync(ct))
 		{
+			if (!markDirty && payment.IsDirty)
+			{
+				continue;
+			}
+
 			payment.IsDeleted = true;
-			payment.IsDirty = true;
+			payment.IsDirty = markDirty;
 			payment.UpdatedAtUtc = updatedAtUtc;
+			if (!markDirty && revision.HasValue)
+			{
+				payment.Revision = Math.Max(payment.Revision, revision.Value);
+			}
 		}
 	}
 
