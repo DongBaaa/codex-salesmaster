@@ -10,7 +10,8 @@
     [string]$Password = '1234',
     [string]$EvidenceDirectory,
     [switch]$SkipInstall,
-    [switch]$KeepTemporaryData
+    [switch]$KeepTemporaryData,
+    [switch]$ExerciseOfflineDirtySync
 )
 
 $ErrorActionPreference = 'Stop'
@@ -69,6 +70,23 @@ function Resolve-ApkPath {
     throw "설치할 APK 파일을 찾지 못했습니다: $mobileOut"
 }
 
+function Assert-LocalDirtySyncTarget {
+    param([string]$BaseUrl)
+
+    $uri = $null
+    if (-not [Uri]::TryCreate($BaseUrl, [UriKind]::Absolute, [ref]$uri)) {
+        throw "오프라인 dirty 동기화 검증 BaseUrl이 올바른 URI가 아닙니다: $BaseUrl"
+    }
+
+    $isLoopbackHost = [string]::Equals($uri.Host, '127.0.0.1', [StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($uri.Host, 'localhost', [StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($uri.Host, '::1', [StringComparison]::OrdinalIgnoreCase)
+
+    if (-not $isLoopbackHost) {
+        throw "오프라인 dirty 동기화 검증은 로컬 테스트 API에서만 허용됩니다. 현재 BaseUrl: $BaseUrl"
+    }
+}
+
 function Invoke-Adb {
     param(
         [Parameter(Mandatory = $true)][string]$AdbPath,
@@ -89,6 +107,22 @@ function Invoke-Adb {
         throw "adb 실패: adb $($Arguments -join ' ')`n$output"
     }
     return $output
+}
+
+function Set-MobileDiagnosticNetworkFault {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$PackageName,
+        [string]$Target
+    )
+
+    $script = "mkdir -p files/diagnostics && printf NETWORK\|$Target > files/diagnostics/next-fault.txt && cat files/diagnostics/next-fault.txt"
+    $quotedScript = "'$script'"
+    $output = Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'run-as', $PackageName, 'sh', '-c', $quotedScript)
+    if (($output -join "`n") -notmatch "NETWORK\|$([regex]::Escape($Target))") {
+        throw "모바일 진단 네트워크 fault 설정 확인 실패: $($output -join ' ')"
+    }
 }
 
 function Install-MobileApk {
@@ -436,6 +470,97 @@ function Tap-BottomTab {
     $x = [int]($Screen.Width * $XRatio)
     $y = [int]($Screen.Height * 0.95)
     Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $x -Y $y
+}
+
+function Open-BottomTabAndAssert {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$EvidenceDirectory,
+        [string]$Timestamp,
+        [object]$Screen,
+        [string]$TabText,
+        [double]$FallbackXRatio,
+        [string]$StepName,
+        [string[]]$Needles,
+        [System.Collections.Generic.List[object]]$Steps
+    )
+
+    Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-write-e2e-$Timestamp-before-$StepName" | Out-Null
+    Tap-BottomTab -AdbPath $AdbPath -DeviceId $DeviceId -Screen $Screen -XRatio $FallbackXRatio
+    Start-Sleep -Seconds 1
+
+    $afterTapDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-write-e2e-$Timestamp-after-tap-$StepName"
+    $missingAfterTap = @()
+    foreach ($needle in $Needles) {
+        if (-not $afterTapDump.Content.Contains($needle)) {
+            $missingAfterTap += $needle
+        }
+    }
+
+    if ($missingAfterTap.Count -gt 0 -and
+        ($afterTapDump.Content.Contains('design_bottom_sheet') -or $afterTapDump.Content.Contains('touch_outside'))) {
+        $tabPoint = Get-NodeCenterByText -Content $afterTapDump.Content -Text $TabText -ClassName 'android.widget.TextView'
+        if (-not $tabPoint) {
+            $tabPoint = Get-NodeCenterByText -Content $afterTapDump.Content -Text $TabText -ClassName ''
+        }
+
+        if ($tabPoint) {
+            Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $tabPoint.X -Y $tabPoint.Y
+            Start-Sleep -Seconds 1
+        }
+    }
+
+    $dump = Wait-UiContainsAll `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-write-e2e-$Timestamp-$StepName" `
+        -Needles $Needles `
+        -StepName $StepName `
+        -TimeoutSeconds 90
+
+    $Steps.Add([pscustomobject]@{ Step = $StepName; Result = 'PASS'; Detail = $dump.Path })
+    return $dump
+}
+
+function Invoke-SyncNowAndAssert {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$EvidenceDirectory,
+        [string]$Timestamp,
+        [string]$SyncContent,
+        [System.Collections.Generic.List[object]]$Steps
+    )
+
+    $point = Get-NodeCenterByText -Content $SyncContent -Text '권장 동기화 실행' -ClassName 'android.widget.Button'
+    if (-not $point) {
+        $point = Get-NodeCenterByText -Content $SyncContent -Text '권장 동기화 실행' -ClassName ''
+    }
+    if (-not $point) {
+        $freshDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-write-e2e-$Timestamp-sync-now-before-tap"
+        $point = Get-NodeCenterByText -Content $freshDump.Content -Text '권장 동기화 실행' -ClassName 'android.widget.Button'
+        if (-not $point) {
+            $point = Get-NodeCenterByText -Content $freshDump.Content -Text '권장 동기화 실행' -ClassName ''
+        }
+    }
+    if (-not $point) {
+        throw '동기화 화면에서 권장 동기화 실행 버튼을 찾지 못했습니다.'
+    }
+
+    Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $point.X -Y $point.Y
+    $dump = Wait-UiContainsAll `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-write-e2e-$Timestamp-sync-now" `
+        -Needles @('권장 동기화 완료', '저장 대기: 전표 0건', '서버에서 받기', '서버에 올리기') `
+        -StepName 'sync-now' `
+        -TimeoutSeconds 150
+
+    $Steps.Add([pscustomobject]@{ Step = 'sync-now'; Result = 'PASS'; Detail = $dump.Path })
+    return $dump
 }
 
 function Dismiss-AndroidAnrDialog {
@@ -812,6 +937,10 @@ $resultStatus = 'FAIL'
 $errorMessage = $null
 
 try {
+    if ($ExerciseOfflineDirtySync) {
+        Assert-LocalDirtySyncTarget -BaseUrl $BaseUrl
+    }
+
     $headers = New-ApiSession -BaseUrl $BaseUrl -Username $Username -Password $Password
     $steps.Add([pscustomobject]@{ Step = 'api-login'; Result = 'PASS'; Detail = $BaseUrl })
 
@@ -972,12 +1101,58 @@ try {
         throw "추가 품목 반영 확인 실패. 찾지 못한 문구: $($fixture.ItemName)"
     }
     Assert-UiContains -Content $lineDump.Content -Needles @($saveButtonText) -StepName '전표 저장 버튼'
+    if ($ExerciseOfflineDirtySync) {
+        Set-MobileDiagnosticNetworkFault -AdbPath $resolvedAdb -DeviceId $deviceId -PackageName $PackageName -Target 'invoices'
+        $steps.Add([pscustomobject]@{ Step = 'mobile-network-fault-before-save'; Result = 'PASS'; Detail = 'NETWORK|invoices' })
+    }
+
     Tap-Point -AdbPath $resolvedAdb -DeviceId $deviceId -X $saveButtonPoint.X -Y $saveButtonPoint.Y
-    Start-Sleep -Seconds 10
+    Start-Sleep -Seconds 6
 
     $afterSaveDump = Get-UiDump -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-write-e2e-$timestamp-after-save"
-    $createdInvoice = Wait-TestInvoiceCreated -BaseUrl $BaseUrl -Headers $headers -CustomerId $fixture.Customer.id -CustomerName $fixture.CustomerName -ItemName $fixture.ItemName -VoucherKind $VoucherKind
-    $steps.Add([pscustomobject]@{ Step = "mobile-$voucherSlug-invoice-create"; Result = 'PASS'; Detail = "invoice=$($createdInvoice.id), total=$($createdInvoice.totalAmount), dump=$($afterSaveDump.Path)" })
+
+    if ($ExerciseOfflineDirtySync) {
+        Assert-UiContains -Content $afterSaveDump.Content -Needles @('오프라인/재시도 대기') -StepName '오프라인 저장 dirty 대기'
+        $steps.Add([pscustomobject]@{ Step = 'mobile-offline-invoice-pending'; Result = 'PASS'; Detail = $afterSaveDump.Path })
+
+        $matchesBeforeSync = Get-TestInvoices -BaseUrl $BaseUrl -Headers $headers -CustomerId $fixture.Customer.id -Query $fixture.CustomerName |
+            Where-Object {
+                $_.customerId -eq $fixture.Customer.id -and
+                $_.voucherType -eq $VoucherKind -and
+                @($_.lines) | Where-Object { $_.itemId -eq $fixture.Item.id -or $_.itemNameOriginal -eq $fixture.ItemName }
+            }
+        if (@($matchesBeforeSync).Count -gt 0) {
+            throw '오프라인 저장 직후 서버에서 테스트 전표가 이미 조회되었습니다.'
+        }
+        $steps.Add([pscustomobject]@{ Step = 'server-invoice-absent-before-sync'; Result = 'PASS'; Detail = $fixture.Customer.id })
+
+        $syncDump = Open-BottomTabAndAssert `
+            -AdbPath $resolvedAdb `
+            -DeviceId $deviceId `
+            -EvidenceDirectory $EvidenceDirectory `
+            -Timestamp $timestamp `
+            -Screen $screen `
+            -TabText '동기화' `
+            -FallbackXRatio 0.84 `
+            -StepName 'sync-status-before-dirty-push' `
+            -Needles @('동기화 상태', '저장 대기: 전표 1건', '권장 동기화 실행', '서버에서 받기', '서버에 올리기') `
+            -Steps $steps
+
+        Invoke-SyncNowAndAssert `
+            -AdbPath $resolvedAdb `
+            -DeviceId $deviceId `
+            -EvidenceDirectory $EvidenceDirectory `
+            -Timestamp $timestamp `
+            -SyncContent $syncDump.Content `
+            -Steps $steps | Out-Null
+
+        $createdInvoice = Wait-TestInvoiceCreated -BaseUrl $BaseUrl -Headers $headers -CustomerId $fixture.Customer.id -CustomerName $fixture.CustomerName -ItemName $fixture.ItemName -VoucherKind $VoucherKind
+        $steps.Add([pscustomobject]@{ Step = "mobile-$voucherSlug-invoice-dirty-push"; Result = 'PASS'; Detail = "invoice=$($createdInvoice.id), total=$($createdInvoice.totalAmount), dump=$($afterSaveDump.Path)" })
+    }
+    else {
+        $createdInvoice = Wait-TestInvoiceCreated -BaseUrl $BaseUrl -Headers $headers -CustomerId $fixture.Customer.id -CustomerName $fixture.CustomerName -ItemName $fixture.ItemName -VoucherKind $VoucherKind
+        $steps.Add([pscustomobject]@{ Step = "mobile-$voucherSlug-invoice-create"; Result = 'PASS'; Detail = "invoice=$($createdInvoice.id), total=$($createdInvoice.totalAmount), dump=$($afterSaveDump.Path)" })
+    }
 
     $resultStatus = 'PASS'
 }
@@ -1004,6 +1179,7 @@ $result = [pscustomobject]@{
     BaseUrl = $BaseUrl
     PackageName = $PackageName
     VoucherKind = $VoucherKind
+    ExerciseOfflineDirtySync = [bool]$ExerciseOfflineDirtySync
     Result = $resultStatus
     Error = $errorMessage
     Fixture = if ($fixture) { [pscustomobject]@{ CustomerId = $fixture.Customer.id; CustomerName = $fixture.CustomerName; ItemId = $fixture.Item.id; ItemName = $fixture.ItemName } } else { $null }
@@ -1023,6 +1199,7 @@ $mdLines = @(
     "- API: $BaseUrl",
     "- 패키지: $PackageName",
     "- 전표유형: $VoucherKind",
+    "- 오프라인 dirty 동기화 실행: $([bool]$ExerciseOfflineDirtySync)",
     "- 결과: $resultStatus",
     "- 오류: $errorMessage",
     '',

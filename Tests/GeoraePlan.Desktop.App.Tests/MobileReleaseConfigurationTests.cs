@@ -178,6 +178,28 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("수동 동기화 실기동 검증은 로컬 테스트 API에서만 허용됩니다.", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void AndroidWriteE2E_CoversOfflineDirtySyncPush()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "mobile",
+            "Invoke-GeoraePlanAndroidWriteE2E.ps1"));
+
+        Assert.Contains("[switch]$ExerciseOfflineDirtySync", source, StringComparison.Ordinal);
+        Assert.Contains("Assert-LocalDirtySyncTarget -BaseUrl $BaseUrl", source, StringComparison.Ordinal);
+        Assert.Contains("Set-MobileDiagnosticNetworkFault", source, StringComparison.Ordinal);
+        Assert.Contains("NETWORK|invoices", source, StringComparison.Ordinal);
+        Assert.Contains("'오프라인/재시도 대기'", source, StringComparison.Ordinal);
+        Assert.Contains("mobile-offline-invoice-pending", source, StringComparison.Ordinal);
+        Assert.Contains("server-invoice-absent-before-sync", source, StringComparison.Ordinal);
+        Assert.Contains("'저장 대기: 전표 1건'", source, StringComparison.Ordinal);
+        Assert.Contains("Invoke-SyncNowAndAssert", source, StringComparison.Ordinal);
+        Assert.Contains("mobile-$voucherSlug-invoice-dirty-push", source, StringComparison.Ordinal);
+        Assert.Contains("오프라인 dirty 동기화 검증은 로컬 테스트 API에서만 허용됩니다.", source, StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
