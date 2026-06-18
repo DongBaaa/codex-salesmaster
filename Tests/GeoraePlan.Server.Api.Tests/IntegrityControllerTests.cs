@@ -487,6 +487,79 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FiltersDuplicateRentalKeysByOfficeScope()
+    {
+        var currentUser = CreateOfficeScopedUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        dbContext.RentalBillingProfiles.AddRange(
+            new RentalBillingProfile
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = "PROFILE-CROSS-TENANT",
+                CustomerName = "Only Scoped",
+                ItemName = "Scoped Copier C"
+            },
+            new RentalBillingProfile
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                ProfileKey = "PROFILE-CROSS-TENANT",
+                CustomerName = "Out Cross",
+                ItemName = "Itworld Copier C"
+            });
+
+        dbContext.RentalAssets.AddRange(
+            new RentalAsset
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "ASSET-CROSS-TENANT",
+                ManagementNumber = "USENET-CROSS-001",
+                CustomerName = "Only Scoped",
+                ItemName = "Scoped Copier C"
+            },
+            new RentalAsset
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                AssetKey = "ASSET-CROSS-TENANT",
+                ManagementNumber = "ITWORLD-CROSS-001",
+                CustomerName = "Out Cross",
+                ItemName = "Itworld Copier C"
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var reportResponse = await controller.GetReport(CancellationToken.None);
+        var reportOk = Assert.IsType<OkObjectResult>(reportResponse.Result);
+        var report = Assert.IsType<IntegrityReportDto>(reportOk.Value);
+
+        Assert.DoesNotContain(report.Issues, issue => issue.Code == "duplicate_rental_profile_keys");
+        Assert.DoesNotContain(report.Issues, issue => issue.Code == "duplicate_rental_asset_keys");
+
+        var profileDetailsResponse = await controller.GetReportDetails("duplicate_rental_profile_keys", CancellationToken.None);
+        var profileDetailsOk = Assert.IsType<OkObjectResult>(profileDetailsResponse.Result);
+        var profileDetails = Assert.IsType<IntegrityIssueDetailResultDto>(profileDetailsOk.Value);
+        Assert.Empty(profileDetails.Rows);
+
+        var assetDetailsResponse = await controller.GetReportDetails("duplicate_rental_asset_keys", CancellationToken.None);
+        var assetDetailsOk = Assert.IsType<OkObjectResult>(assetDetailsResponse.Result);
+        var assetDetails = Assert.IsType<IntegrityIssueDetailResultDto>(assetDetailsOk.Value);
+        Assert.Empty(assetDetails.Rows);
+    }
+
+    [Fact]
     public async Task GetReport_FlagsRentalAssignmentHistoryMissingReferencesAndMultipleCurrentRows()
     {
         var currentUser = CreateAdminUser();

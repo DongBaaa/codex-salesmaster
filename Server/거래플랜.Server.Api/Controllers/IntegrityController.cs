@@ -39,9 +39,8 @@ public sealed class IntegrityController : ControllerBase
     {
         var issues = new List<IntegrityIssueDto>();
 
-        var duplicateProfileKeyCount = await _dbContext.RentalBillingProfiles
-            .IgnoreQueryFilters()
-            .AsNoTracking()
+        var duplicateProfileKeyCount = await _officeScopeService.ApplyRentalBillingProfileScope(
+                _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking())
             .Where(profile => !profile.IsDeleted && !string.IsNullOrWhiteSpace(profile.ProfileKey))
             .GroupBy(profile => profile.ProfileKey)
             .Where(group => group.Count() > 1)
@@ -49,9 +48,8 @@ public sealed class IntegrityController : ControllerBase
             .SumAsync(cancellationToken);
         AddIssue(issues, "duplicate_rental_profile_keys", duplicateProfileKeyCount, "Error", "중복된 렌탈 청구 프로필 키가 존재합니다.");
 
-        var duplicateAssetKeyCount = await _dbContext.RentalAssets
-            .IgnoreQueryFilters()
-            .AsNoTracking()
+        var duplicateAssetKeyCount = await _officeScopeService.ApplyRentalAssetScope(
+                _dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking())
             .Where(asset => !asset.IsDeleted && !string.IsNullOrWhiteSpace(asset.AssetKey))
             .GroupBy(asset => asset.AssetKey)
             .Where(group => group.Count() > 1)
@@ -473,9 +471,10 @@ public sealed class IntegrityController : ControllerBase
 
     private async Task<List<IntegrityIssueDetailRowDto>> LoadDuplicateRentalProfileKeyDetailsAsync(CancellationToken cancellationToken)
     {
-        var duplicateKeys = await _dbContext.RentalBillingProfiles
-            .IgnoreQueryFilters()
-            .AsNoTracking()
+        var scopedProfiles = _officeScopeService.ApplyRentalBillingProfileScope(
+            _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking());
+
+        var duplicateKeys = await scopedProfiles
             .Where(profile => !profile.IsDeleted && !string.IsNullOrWhiteSpace(profile.ProfileKey))
             .GroupBy(profile => profile.ProfileKey)
             .Where(group => group.Count() > 1)
@@ -485,9 +484,7 @@ public sealed class IntegrityController : ControllerBase
         if (duplicateKeys.Count == 0)
             return [];
 
-        var profiles = await _dbContext.RentalBillingProfiles
-            .IgnoreQueryFilters()
-            .AsNoTracking()
+        var profiles = await scopedProfiles
             .Where(profile => !profile.IsDeleted && duplicateKeys.Contains(profile.ProfileKey))
             .OrderBy(profile => profile.ProfileKey)
             .ThenBy(profile => profile.CustomerName)
@@ -511,9 +508,10 @@ public sealed class IntegrityController : ControllerBase
 
     private async Task<List<IntegrityIssueDetailRowDto>> LoadDuplicateRentalAssetKeyDetailsAsync(CancellationToken cancellationToken)
     {
-        var duplicateKeys = await _dbContext.RentalAssets
-            .IgnoreQueryFilters()
-            .AsNoTracking()
+        var scopedAssets = _officeScopeService.ApplyRentalAssetScope(
+            _dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking());
+
+        var duplicateKeys = await scopedAssets
             .Where(asset => !asset.IsDeleted && !string.IsNullOrWhiteSpace(asset.AssetKey))
             .GroupBy(asset => asset.AssetKey)
             .Where(group => group.Count() > 1)
@@ -523,9 +521,7 @@ public sealed class IntegrityController : ControllerBase
         if (duplicateKeys.Count == 0)
             return [];
 
-        var assets = await _dbContext.RentalAssets
-            .IgnoreQueryFilters()
-            .AsNoTracking()
+        var assets = await scopedAssets
             .Where(asset => !asset.IsDeleted && duplicateKeys.Contains(asset.AssetKey))
             .OrderBy(asset => asset.AssetKey)
             .ThenBy(asset => asset.ManagementNumber)
