@@ -644,6 +644,15 @@ function Remove-TestData {
             try {
                 $latestItem = Invoke-Api -Method Get -BaseUrl $BaseUrl -Relative "items/$($Fixture.Item.id)" -Headers $Headers -IgnoreNotFound
                 if ($latestItem) {
+                    if ([decimal]$latestItem.currentStock -ne 0) {
+                        $stockResetPayload = $latestItem | ConvertTo-Json -Depth 30 | ConvertFrom-Json
+                        $stockResetPayload.currentStock = 0
+                        $stockResetPayload.expectedRevision = [long]$latestItem.revision
+                        $stockResetPayload.mutationId = ([guid]::NewGuid()).ToString()
+                        $stockResetPayload.mutationCreatedAtUtc = [DateTime]::UtcNow.ToString('o')
+                        $latestItem = Invoke-Api -Method Put -BaseUrl $BaseUrl -Relative "items/$($stockResetPayload.id)" -Headers $Headers -Body $stockResetPayload
+                        $CleanupSteps.Add([pscustomobject]@{ Target = 'item-stock'; Id = $latestItem.id; Result = 'reset-current-stock' })
+                    }
                     Invoke-Api -Method Delete -BaseUrl $BaseUrl -Relative ("items/$($latestItem.id)?expectedRevision=$($latestItem.revision)") -Headers $Headers -IgnoreNotFound | Out-Null
                     $CleanupSteps.Add([pscustomobject]@{ Target = 'item'; Id = $latestItem.id; Result = 'deleted' })
                 }
