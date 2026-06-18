@@ -1,4 +1,5 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
+using System.IO;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Data;
@@ -52,6 +53,7 @@ public static class DataIntegrityIssueCodes
     public const string InvoiceLinkedTransactionPaymentMismatch = "invoice_linked_transaction_payment_mismatch";
     public const string RentalInvoiceDeletedPaymentDetachedTransaction = "rental_invoice_deleted_payment_detached_transaction";
     public const string TransactionAttachmentMissingTransactionReference = "transaction_attachment_missing_transaction_reference";
+    public const string MissingAttachmentFiles = "missing_attachment_files";
     public const string RentalBillingLogMissingProfileReference = "rental_billing_log_missing_profile_reference";
     public const string InventoryTransferLineMissingTransferReference = "inventory_transfer_line_missing_transfer_reference";
     public const string InventoryDeletedItemStockResidue = "inventory_deleted_item_stock_residue";
@@ -418,6 +420,13 @@ public sealed class DataIntegrityIssueService
             "회계경리",
             "거래첨부 행이 현재 로컬 DB에 존재하지 않는 거래내역 ID를 참조합니다.",
             "동기화 진단에서 서버 상태와 휴지통 영구삭제 이력을 확인한 뒤 거래첨부 잔여 행을 정리하세요."),
+        [DataIntegrityIssueCodes.MissingAttachmentFiles] = new(
+            DataIntegrityIssueCodes.MissingAttachmentFiles,
+            "거래첨부 로컬 파일 누락",
+            "Error",
+            "회계경리",
+            "거래첨부 행은 존재하지만 PC 로컬 저장 파일이 없거나 경로가 비어 있어 첨부 열기/동기화 재검증이 필요합니다.",
+            "동기화 진단에서 첨부를 다시 내려받거나 원본 파일을 재첨부한 뒤 운영점검을 다시 실행하세요."),
         [DataIntegrityIssueCodes.RentalBillingLogMissingProfileReference] = new(
             DataIntegrityIssueCodes.RentalBillingLogMissingProfileReference,
             "청구로그 청구 프로필 참조 누락",
@@ -704,6 +713,14 @@ public sealed class DataIntegrityIssueService
             "Integrity scan hard-missing child references",
             stepStopwatch,
             $"issues={hardMissingChildReferenceIssues.Count:N0}");
+
+        stepStopwatch.Restart();
+        var missingAttachmentFileIssues = await LoadMissingAttachmentFileIssuesAsync(session, ct);
+        details.AddRange(missingAttachmentFileIssues);
+        LogIntegrityScanStep(
+            "Integrity scan missing attachment files",
+            stepStopwatch,
+            $"issues={missingAttachmentFileIssues.Count:N0}");
 
         stepStopwatch.Restart();
         foreach (var history in scopedAssignmentHistories)
@@ -1682,6 +1699,58 @@ public sealed class DataIntegrityIssueService
                 expectedValue: "삭제 품목 현재고 0 / 창고별 재고 행 없음",
                 message: $"{NormalizeDisplay(item.NameOriginal, "품목")} 삭제 품목에 재고 잔여가 남아 있습니다. {stockBreakdown}",
                 directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
+        }
+
+        return issues;
+    }
+
+    private async Task<List<DataIntegrityIssueDetail>> LoadMissingAttachmentFileIssuesAsync(SessionState session, CancellationToken ct)
+    {
+        var rows = await (
+                from attachment in _db.TransactionAttachments.IgnoreQueryFilters().AsNoTracking()
+                join transaction in _db.Transactions.IgnoreQueryFilters().AsNoTracking()
+                    on attachment.TransactionId equals transaction.Id
+                where !attachment.IsDeleted &&
+                      !transaction.IsDeleted &&
+                      attachment.FileSize > 0
+                orderby attachment.UploadedAtUtc, attachment.Id
+                select new
+                {
+                    attachment.Id,
+                    attachment.TransactionId,
+                    attachment.AttachmentType,
+                    attachment.FileName,
+                    attachment.StoredPath,
+                    attachment.FileSize,
+                    attachment.VerificationStatus,
+                    TransactionTenantCode = transaction.TenantCode,
+                    TransactionOfficeCode = transaction.ResponsibleOfficeCode,
+                    transaction.TransactionDate,
+                    transaction.TransactionKind
+                })
+            .ToListAsync(ct);
+
+        var issues = new List<DataIntegrityIssueDetail>();
+        foreach (var row in rows)
+        {
+            if (!IsInSessionScope(row.TransactionTenantCode, row.TransactionOfficeCode, session) ||
+                HasReadableLocalAttachmentFile(row.StoredPath))
+            {
+                continue;
+            }
+
+            AddGeneralIssue(
+                issues,
+                DataIntegrityIssueCodes.MissingAttachmentFiles,
+                entityType: "거래첨부",
+                entityId: row.Id,
+                officeCode: OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(row.TransactionOfficeCode, session.OfficeCode),
+                currentValue: $"TransactionId {row.TransactionId:D} / 파일 {NormalizeDisplay(row.FileName, "파일명 없음")} / 크기 {row.FileSize:N0} bytes / 경로 {NormalizeDisplay(row.StoredPath, "경로 없음")}",
+                expectedValue: "StoredPath 실제 파일 존재",
+                message: $"{NormalizeDisplay(row.FileName, "거래첨부")} 행 {row.Id:N}의 로컬 저장 파일을 찾을 수 없습니다.",
+                directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics,
+                relatedEntityIds: [row.TransactionId],
+                reviewInfo: $"거래일 {row.TransactionDate:yyyy-MM-dd} / 구분 {PaymentFlowConstants.GetTransactionKindDisplayName(row.TransactionKind)} / 첨부유형 {NormalizeDisplay(row.AttachmentType, "기타")} / 확인상태 {NormalizeDisplay(row.VerificationStatus, "미확인")}");
         }
 
         return issues;
@@ -3877,6 +3946,12 @@ public sealed class DataIntegrityIssueService
     {
         var trimmed = (value ?? string.Empty).Trim();
         return string.IsNullOrWhiteSpace(trimmed) ? fallback : trimmed;
+    }
+
+    private static bool HasReadableLocalAttachmentFile(string? storedPath)
+    {
+        var trimmed = (storedPath ?? string.Empty).Trim();
+        return !string.IsNullOrWhiteSpace(trimmed) && File.Exists(trimmed);
     }
 
     private static string FormatMoney(decimal value)

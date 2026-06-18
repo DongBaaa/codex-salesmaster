@@ -840,6 +840,182 @@ public sealed class DataIntegrityIssueServicePerformanceTests
     }
 
     [Fact]
+    public async Task ScanAsync_FindsTransactionAttachmentsWhoseLocalFilesAreMissing()
+    {
+        PrepareAppRoot("georaeplan-integrity-missing-attachment-files");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var appRoot = Environment.GetEnvironmentVariable("GEORAEPLAN_APP_ROOT")
+                          ?? Path.Combine(Path.GetTempPath(), "georaeplan-integrity-missing-attachment-files-fallback");
+            Directory.CreateDirectory(appRoot);
+
+            var usenetCustomerId = Guid.NewGuid();
+            var usenetTransactionId = Guid.NewGuid();
+            var missingAttachmentId = Guid.NewGuid();
+            var blankPathAttachmentId = Guid.NewGuid();
+            var existingAttachmentId = Guid.NewGuid();
+            var zeroSizeAttachmentId = Guid.NewGuid();
+            var yeonsuCustomerId = Guid.NewGuid();
+            var yeonsuTransactionId = Guid.NewGuid();
+            var yeonsuAttachmentId = Guid.NewGuid();
+            var existingFilePath = Path.Combine(appRoot, "existing-transaction-attachment.pdf");
+            var missingFilePath = Path.Combine(appRoot, "missing-transaction-attachment.pdf");
+            var yeonsuMissingFilePath = Path.Combine(appRoot, "yeonsu-missing-transaction-attachment.pdf");
+            await File.WriteAllBytesAsync(existingFilePath, [1, 2, 3, 4]);
+
+            db.Customers.AddRange(
+                CreateCustomer(usenetCustomerId, OfficeCodeCatalog.Usenet, "Missing Attachment Customer"),
+                CreateCustomer(yeonsuCustomerId, OfficeCodeCatalog.Yeonsu, "Yeonsu Missing Attachment Customer"));
+
+            db.Transactions.AddRange(
+                new LocalTransaction
+                {
+                    Id = usenetTransactionId,
+                    CustomerId = usenetCustomerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 6, 21),
+                    TransactionKind = PaymentFlowConstants.TransactionKindReceipt,
+                    BankReceipt = 88_000m,
+                    ReceiptTotal = 88_000m,
+                    IsDeleted = false,
+                    IsDirty = false,
+                    CreatedAtUtc = DateTime.UtcNow,
+                    UpdatedAtUtc = DateTime.UtcNow
+                },
+                new LocalTransaction
+                {
+                    Id = yeonsuTransactionId,
+                    CustomerId = yeonsuCustomerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    TransactionDate = new DateOnly(2026, 6, 22),
+                    TransactionKind = PaymentFlowConstants.TransactionKindReceipt,
+                    BankReceipt = 99_000m,
+                    ReceiptTotal = 99_000m,
+                    IsDeleted = false,
+                    IsDirty = false,
+                    CreatedAtUtc = DateTime.UtcNow,
+                    UpdatedAtUtc = DateTime.UtcNow
+                });
+
+            db.TransactionAttachments.AddRange(
+                new LocalTransactionAttachment
+                {
+                    Id = missingAttachmentId,
+                    TransactionId = usenetTransactionId,
+                    AttachmentType = "입금증",
+                    FileName = "missing-transaction-attachment.pdf",
+                    StoredPath = missingFilePath,
+                    FileSize = 512,
+                    VerificationStatus = "미확인",
+                    IsDeleted = false,
+                    IsDirty = false,
+                    UploadedAtUtc = DateTime.UtcNow,
+                    CreatedAtUtc = DateTime.UtcNow,
+                    UpdatedAtUtc = DateTime.UtcNow
+                },
+                new LocalTransactionAttachment
+                {
+                    Id = blankPathAttachmentId,
+                    TransactionId = usenetTransactionId,
+                    AttachmentType = "입금증",
+                    FileName = "blank-path-transaction-attachment.pdf",
+                    StoredPath = string.Empty,
+                    FileSize = 128,
+                    VerificationStatus = "미확인",
+                    IsDeleted = false,
+                    IsDirty = false,
+                    UploadedAtUtc = DateTime.UtcNow.AddSeconds(1),
+                    CreatedAtUtc = DateTime.UtcNow,
+                    UpdatedAtUtc = DateTime.UtcNow
+                },
+                new LocalTransactionAttachment
+                {
+                    Id = existingAttachmentId,
+                    TransactionId = usenetTransactionId,
+                    AttachmentType = "입금증",
+                    FileName = "existing-transaction-attachment.pdf",
+                    StoredPath = existingFilePath,
+                    FileSize = 4,
+                    VerificationStatus = "미확인",
+                    IsDeleted = false,
+                    IsDirty = false,
+                    UploadedAtUtc = DateTime.UtcNow.AddSeconds(2),
+                    CreatedAtUtc = DateTime.UtcNow,
+                    UpdatedAtUtc = DateTime.UtcNow
+                },
+                new LocalTransactionAttachment
+                {
+                    Id = zeroSizeAttachmentId,
+                    TransactionId = usenetTransactionId,
+                    AttachmentType = "메모",
+                    FileName = "zero-size-note.txt",
+                    StoredPath = string.Empty,
+                    FileSize = 0,
+                    VerificationStatus = "미확인",
+                    IsDeleted = false,
+                    IsDirty = false,
+                    UploadedAtUtc = DateTime.UtcNow.AddSeconds(3),
+                    CreatedAtUtc = DateTime.UtcNow,
+                    UpdatedAtUtc = DateTime.UtcNow
+                },
+                new LocalTransactionAttachment
+                {
+                    Id = yeonsuAttachmentId,
+                    TransactionId = yeonsuTransactionId,
+                    AttachmentType = "입금증",
+                    FileName = "yeonsu-missing-transaction-attachment.pdf",
+                    StoredPath = yeonsuMissingFilePath,
+                    FileSize = 256,
+                    VerificationStatus = "미확인",
+                    IsDeleted = false,
+                    IsDirty = false,
+                    UploadedAtUtc = DateTime.UtcNow.AddSeconds(4),
+                    CreatedAtUtc = DateTime.UtcNow,
+                    UpdatedAtUtc = DateTime.UtcNow
+                });
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateAdminSession());
+            var issues = result.Issues
+                .Where(current => current.Code == DataIntegrityIssueCodes.MissingAttachmentFiles)
+                .OrderBy(current => current.CurrentValue, StringComparer.Ordinal)
+                .ToList();
+
+            Assert.Equal(2, issues.Count);
+            Assert.Contains(issues, issue =>
+                issue.EntityId == missingAttachmentId &&
+                issue.CurrentValue.Contains(missingFilePath, StringComparison.Ordinal) &&
+                issue.RelatedEntityIds.Contains(usenetTransactionId));
+            Assert.Contains(issues, issue =>
+                issue.EntityId == blankPathAttachmentId &&
+                issue.CurrentValue.Contains("경로 없음", StringComparison.Ordinal));
+            Assert.DoesNotContain(issues, issue => issue.EntityId == existingAttachmentId);
+            Assert.DoesNotContain(issues, issue => issue.EntityId == zeroSizeAttachmentId);
+            Assert.DoesNotContain(issues, issue => issue.EntityId == yeonsuAttachmentId);
+            Assert.All(issues, issue =>
+            {
+                Assert.Equal("Error", issue.Severity);
+                Assert.Equal(DataIntegrityDirectActionKind.OpenSyncDiagnostics, issue.DirectActionKind);
+                Assert.Contains("거래일", issue.ReviewInfo, StringComparison.Ordinal);
+            });
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ScanAsync_ClassifiesPastRentalAssignmentStaleReferencesAsInfo()
     {
         PrepareAppRoot("georaeplan-integrity-past-rental-assignment-stale-reference");
