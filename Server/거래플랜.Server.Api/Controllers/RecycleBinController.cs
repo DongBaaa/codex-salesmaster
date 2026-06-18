@@ -22,19 +22,22 @@ public sealed class RecycleBinController : ControllerBase
     private readonly ICentralFileStorage _fileStorage;
     private readonly InventoryLedgerService _inventoryLedgerService;
     private readonly InvoiceStockSnapshotService _invoiceStockSnapshotService;
+    private readonly RentalSettlementRecalculationService _rentalSettlementRecalculationService;
 
     public RecycleBinController(
         AppDbContext dbContext,
         OfficeScopeService officeScopeService,
         ICentralFileStorage fileStorage,
         InventoryLedgerService inventoryLedgerService,
-        InvoiceStockSnapshotService invoiceStockSnapshotService)
+        InvoiceStockSnapshotService invoiceStockSnapshotService,
+        RentalSettlementRecalculationService rentalSettlementRecalculationService)
     {
         _dbContext = dbContext;
         _officeScopeService = officeScopeService;
         _fileStorage = fileStorage;
         _inventoryLedgerService = inventoryLedgerService;
         _invoiceStockSnapshotService = invoiceStockSnapshotService;
+        _rentalSettlementRecalculationService = rentalSettlementRecalculationService;
     }
 
     [HttpGet]
@@ -998,14 +1001,21 @@ public sealed class RecycleBinController : ControllerBase
             customerRestored = true;
         }
 
-        var linkedTransactionRestore = await RestoreLinkedTransactionForPaymentAsync(payment, cancellationToken);
+        var rentalSettlementTargets = new List<(Guid ProfileId, Guid? RunId)>();
+        AddRentalSettlementTarget(invoice, rentalSettlementTargets);
+
+        var linkedTransactionRestore = await RestoreLinkedTransactionForPaymentAsync(payment, invoice, cancellationToken);
         if (!linkedTransactionRestore.Success)
             return (false, linkedTransactionRestore.Message);
         customerRestored = linkedTransactionRestore.CustomerRestored || customerRestored;
+        if (linkedTransactionRestore.RentalProfileId is Guid linkedRentalProfileId && linkedRentalProfileId != Guid.Empty)
+            rentalSettlementTargets.Add((linkedRentalProfileId, linkedTransactionRestore.RentalRunId));
 
         payment.IsDeleted = false;
         await _dbContext.SaveChangesAsync(cancellationToken);
-        return (true, customerRestored || invoiceRestored || linkedTransactionRestore.TransactionRestored
+        await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(rentalSettlementTargets, cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return (true, customerRestored || invoiceRestored || linkedTransactionRestore.TransactionRestored || linkedTransactionRestore.TransactionRelinked
             ? "수금/지급 기록을 복원하고 연결 거래내역/전표도 함께 활성화했습니다."
             : "수금/지급 기록을 복원했습니다.");
     }
@@ -1072,49 +1082,78 @@ public sealed class RecycleBinController : ControllerBase
         if (!linkedPaymentRestore.Success)
             return (false, linkedPaymentRestore.Message);
 
+        var rentalSettlementTargets = new List<(Guid ProfileId, Guid? RunId)>();
+        AddRentalSettlementTarget(transaction, rentalSettlementTargets);
+
         transaction.IsDeleted = false;
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(rentalSettlementTargets, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return (true, customerRestored || invoiceRestored || linkedPaymentRestore.PaymentRestored
             ? "거래내역을 복원하고 연결된 거래처/전표/수금·지급 기록을 함께 활성화했습니다."
             : "거래내역을 복원했습니다.");
     }
 
-    private async Task<(bool Success, bool TransactionRestored, bool CustomerRestored, string Message)> RestoreLinkedTransactionForPaymentAsync(
+    private async Task<(bool Success, bool TransactionRestored, bool TransactionRelinked, bool CustomerRestored, Guid? RentalProfileId, Guid? RentalRunId, string Message)> RestoreLinkedTransactionForPaymentAsync(
         Payment payment,
+        Invoice invoice,
         CancellationToken cancellationToken)
     {
         var linkedTransaction = await _dbContext.Transactions
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == payment.Id, cancellationToken);
         if (linkedTransaction is null)
-            return (true, false, false, string.Empty);
+            return (true, false, false, false, null, null, string.Empty);
 
         if (linkedTransaction.LinkedInvoiceId != payment.InvoiceId)
-            return (false, false, false, "연동 거래내역의 전표 연결이 수금/지급 기록과 일치하지 않아 복원할 수 없습니다.");
+        {
+            if (linkedTransaction.LinkedInvoiceId.HasValue && linkedTransaction.LinkedInvoiceId.Value != Guid.Empty)
+                return (false, false, false, false, null, null, "연동 거래내역의 전표 연결이 수금/지급 기록과 일치하지 않아 복원할 수 없습니다.");
+
+            linkedTransaction.LinkedInvoiceId = payment.InvoiceId;
+            linkedTransaction.LinkedInvoiceNumber = invoice.InvoiceNumber;
+            linkedTransaction.SettlementAmount = payment.Amount;
+            if (invoice.LinkedRentalBillingProfileId is Guid invoiceRentalProfileId && invoiceRentalProfileId != Guid.Empty)
+            {
+                linkedTransaction.LinkedRentalBillingProfileId = invoiceRentalProfileId;
+                linkedTransaction.LinkedRentalBillingRunId = invoice.LinkedRentalBillingRunId;
+                linkedTransaction.TransactionKind = "렌탈수금";
+            }
+            else if (invoice.VoucherType == VoucherType.Purchase)
+            {
+                linkedTransaction.TransactionKind = "전표지급";
+            }
+            else
+            {
+                linkedTransaction.TransactionKind = "전표수금";
+            }
+        }
         if (!_officeScopeService.CanWriteOfficeForPayments(linkedTransaction.ResponsibleOfficeCode, linkedTransaction.TenantCode))
-            return (false, false, false, "현재 계정으로 연동 거래내역을 복원할 수 없습니다.");
+            return (false, false, false, false, null, null, "현재 계정으로 연동 거래내역을 복원할 수 없습니다.");
+        var transactionRelinked = linkedTransaction.LinkedInvoiceId == payment.InvoiceId &&
+                                  linkedTransaction.SettlementAmount == payment.Amount;
         if (!linkedTransaction.IsDeleted)
-            return (true, false, false, string.Empty);
+            return (true, false, transactionRelinked, false, linkedTransaction.LinkedRentalBillingProfileId, linkedTransaction.LinkedRentalBillingRunId, string.Empty);
 
         var customer = await _dbContext.Customers
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == linkedTransaction.CustomerId, cancellationToken);
         if (customer is null)
-            return (false, false, false, "연동 거래내역의 거래처를 찾을 수 없습니다.");
+            return (false, false, false, false, null, null, "연동 거래내역의 거래처를 찾을 수 없습니다.");
 
         var customerRestored = false;
         if (customer.IsDeleted)
         {
             var customerScopeCheck = EnsureCanRestoreLinkedCustomer(customer);
             if (!customerScopeCheck.Success)
-                return (false, false, false, customerScopeCheck.Message);
+                return (false, false, false, false, null, null, customerScopeCheck.Message);
 
             customer.IsDeleted = false;
             customerRestored = true;
         }
 
         linkedTransaction.IsDeleted = false;
-        return (true, true, customerRestored, string.Empty);
+        return (true, true, transactionRelinked, customerRestored, linkedTransaction.LinkedRentalBillingProfileId, linkedTransaction.LinkedRentalBillingRunId, string.Empty);
     }
 
     private async Task<(bool Success, bool PaymentRestored, string Message)> RestoreLinkedPaymentForTransactionAsync(
@@ -1142,6 +1181,22 @@ public sealed class RecycleBinController : ControllerBase
 
         linkedPayment.IsDeleted = false;
         return (true, true, string.Empty);
+    }
+
+    private static void AddRentalSettlementTarget(
+        Invoice? invoice,
+        ICollection<(Guid ProfileId, Guid? RunId)> targets)
+    {
+        if (invoice?.LinkedRentalBillingProfileId is Guid profileId && profileId != Guid.Empty)
+            targets.Add((profileId, invoice.LinkedRentalBillingRunId));
+    }
+
+    private static void AddRentalSettlementTarget(
+        TransactionRecord? transaction,
+        ICollection<(Guid ProfileId, Guid? RunId)> targets)
+    {
+        if (transaction?.LinkedRentalBillingProfileId is Guid profileId && profileId != Guid.Empty)
+            targets.Add((profileId, transaction.LinkedRentalBillingRunId));
     }
 
     private async Task<(bool Success, string Message)> RestoreRentalBillingProfileAsync(RecycleBinMutationTargetDto target, CancellationToken cancellationToken)

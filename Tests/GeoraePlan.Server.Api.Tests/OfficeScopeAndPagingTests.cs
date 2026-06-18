@@ -725,7 +725,8 @@ public sealed class OfficeScopeAndPagingTests : IDisposable
             new InvoiceNumberService(dbContext),
             new OfficeScopeService(currentUser, dbContext),
             new InventoryLedgerService(dbContext),
-            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
 
         var response = await controller.GetAll(null, null, 200, CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);

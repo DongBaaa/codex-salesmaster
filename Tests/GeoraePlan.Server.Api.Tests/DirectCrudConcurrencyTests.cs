@@ -345,7 +345,8 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             new StubInvoiceNumberService(),
             new OfficeScopeService(currentUser, dbContext),
             new InventoryLedgerService(dbContext),
-            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
 
         var response = await controller.Update(stored.Id, dto, CancellationToken.None);
 
@@ -428,7 +429,8 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             new StubInvoiceNumberService(),
             new OfficeScopeService(currentUser, dbContext),
             new InventoryLedgerService(dbContext),
-            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
         var paymentController = new PaymentsController(dbContext, new OfficeScopeService(currentUser, dbContext), new StubCentralFileStorage());
 
         var customerDto = (await dbContext.Customers.IgnoreQueryFilters().SingleAsync(row => row.Id == customer.Id)).ToDto();
@@ -536,7 +538,8 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             new StubInvoiceNumberService(),
             new OfficeScopeService(currentUser, dbContext),
             new InventoryLedgerService(dbContext),
-            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
 
         var response = await controller.Create(dto, CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);
@@ -629,7 +632,8 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             new StubInvoiceNumberService(),
             new OfficeScopeService(currentUser, dbContext),
             new InventoryLedgerService(dbContext),
-            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
 
         var response = await controller.Create(dto, CancellationToken.None);
 
@@ -713,7 +717,8 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             new StubInvoiceNumberService(),
             new OfficeScopeService(currentUser, dbContext),
             new InventoryLedgerService(dbContext),
-            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
 
         var response = await controller.Create(dto, CancellationToken.None);
 
@@ -1183,7 +1188,8 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             new StubInvoiceNumberService(),
             new OfficeScopeService(currentUser, dbContext),
             new InventoryLedgerService(dbContext),
-            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
         var invoiceId = Guid.NewGuid();
         var lineId = Guid.NewGuid();
         var createDto = new InvoiceDto
@@ -1376,7 +1382,8 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             new StubInvoiceNumberService(),
             new OfficeScopeService(currentUser, dbContext),
             new InventoryLedgerService(dbContext),
-            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
 
         var deleteResponse = await controller.Delete(invoiceId, storedInvoice.Revision, CancellationToken.None);
 
@@ -1443,7 +1450,8 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             new StubInvoiceNumberService(),
             new OfficeScopeService(currentUser, dbContext),
             new InventoryLedgerService(dbContext),
-            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
         var invoiceId = Guid.NewGuid();
 
         var response = await controller.Create(new InvoiceDto
@@ -1528,7 +1536,8 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             new StubInvoiceNumberService(),
             new OfficeScopeService(currentUser, dbContext),
             new InventoryLedgerService(dbContext),
-            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
         var invoiceId = Guid.NewGuid();
         var lineId = Guid.NewGuid();
         var createDto = new InvoiceDto

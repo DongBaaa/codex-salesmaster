@@ -128,6 +128,7 @@ builder.Services.AddScoped<ICurrentUserContext, HttpCurrentUserContext>();
 builder.Services.AddScoped<OfficeScopeService>();
 builder.Services.AddScoped<InventoryLedgerService>();
 builder.Services.AddScoped<InvoiceStockSnapshotService>();
+builder.Services.AddScoped<RentalSettlementRecalculationService>();
 builder.Services.AddScoped<RentalAssignmentHistoryService>();
 builder.Services.AddScoped<IJwtTokenFactory, JwtTokenFactory>();
 builder.Services.AddScoped<IActiveUserSessionValidator, ActiveUserSessionValidator>();

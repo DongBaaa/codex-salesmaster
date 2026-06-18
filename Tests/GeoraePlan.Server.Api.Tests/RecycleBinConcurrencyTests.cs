@@ -6,6 +6,7 @@ using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 using Xunit;
 
 namespace GeoraePlan.Server.Api.Tests;
@@ -1129,6 +1130,172 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task RestorePayment_AfterRentalInvoiceDelete_RelinksActiveTransactionAndRecalculatesSettlement()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+        var invoiceNumber = "RECYCLE-RENTAL-RESTORE-001";
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Recycle rental restore customer",
+            NameMatchKey = "RECYCLERENTALRESTORECUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"profile-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = "Recycle rental restore customer",
+            BillingStatus = "완료",
+            SettlementStatus = "입금확인",
+            CompletionStatus = "완료",
+            MonthlyAmount = 100_000m,
+            SettledAmount = 100_000m,
+            OutstandingAmount = 0m,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new ServerRentalBillingRunSnapshot
+                {
+                    RunId = runId,
+                    RunKey = "2026-05",
+                    ScheduledDate = new DateOnly(2026, 5, 25),
+                    PeriodStartDate = new DateOnly(2026, 5, 1),
+                    PeriodEndDate = new DateOnly(2026, 5, 31),
+                    PeriodLabel = "2026-05",
+                    Status = "완료",
+                    BilledAmount = 100_000m,
+                    SettledAmount = 100_000m,
+                    SettlementStatus = "입금확인",
+                    SettledDate = new DateOnly(2026, 5, 26)
+                }
+            })
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = invoiceNumber,
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 5, 25),
+            TotalAmount = 100_000m,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = transactionId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 5, 26),
+            TransactionKind = "렌탈수금",
+            LinkedInvoiceId = invoiceId,
+            LinkedInvoiceNumber = invoiceNumber,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId,
+            BankReceipt = 100_000m,
+            ReceiptTotal = 100_000m,
+            SettlementAmount = 100_000m
+        });
+        dbContext.Payments.Add(new Payment
+        {
+            Id = transactionId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 5, 26),
+            Amount = 100_000m,
+            Note = "linked rental payment"
+        });
+        await dbContext.SaveChangesAsync();
+
+        var storedInvoice = await dbContext.Invoices.IgnoreQueryFilters().SingleAsync(invoice => invoice.Id == invoiceId);
+        var invoiceController = new InvoicesController(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
+        Assert.IsType<NoContentResult>(await invoiceController.Delete(invoiceId, storedInvoice.Revision, CancellationToken.None));
+
+        dbContext.ChangeTracker.Clear();
+        Assert.True(await dbContext.Payments.IgnoreQueryFilters()
+            .Where(payment => payment.Id == transactionId)
+            .Select(payment => payment.IsDeleted)
+            .SingleAsync());
+        var detached = await dbContext.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(transaction => transaction.Id == transactionId);
+        Assert.Null(detached.LinkedInvoiceId);
+        Assert.Equal(0m, detached.SettlementAmount);
+
+        var recycleController = CreateController(dbContext, currentUser);
+        var response = await recycleController.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = transactionId,
+                        Kind = "payment"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success, item.Message);
+        Assert.Equal(1, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        var restoredInvoice = await dbContext.Invoices.IgnoreQueryFilters().AsNoTracking().SingleAsync(invoice => invoice.Id == invoiceId);
+        Assert.False(restoredInvoice.IsDeleted);
+        var restoredPayment = await dbContext.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(payment => payment.Id == transactionId);
+        Assert.False(restoredPayment.IsDeleted);
+        var relinkedTransaction = await dbContext.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(transaction => transaction.Id == transactionId);
+        Assert.False(relinkedTransaction.IsDeleted);
+        Assert.Equal(invoiceId, relinkedTransaction.LinkedInvoiceId);
+        Assert.Equal(invoiceNumber, relinkedTransaction.LinkedInvoiceNumber);
+        Assert.Equal(100_000m, relinkedTransaction.SettlementAmount);
+
+        var restoredProfile = await dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal(100_000m, restoredProfile.SettledAmount);
+        Assert.Equal(0m, restoredProfile.OutstandingAmount);
+        Assert.Equal("완료", restoredProfile.CompletionStatus);
+        var restoredRun = Assert.Single(JsonSerializer.Deserialize<List<ServerRentalBillingRunSnapshot>>(restoredProfile.BillingRunsJson) ?? []);
+        Assert.Equal(100_000m, restoredRun.SettledAmount);
+        Assert.Equal("완료", restoredRun.Status);
+        Assert.Equal("입금확인", restoredRun.SettlementStatus);
+        Assert.Equal(new DateOnly(2026, 5, 26), restoredRun.SettledDate);
+    }
+
+    [Fact]
     public async Task RestoreTransaction_RestoresLinkedDeletedPayment()
     {
         var currentUser = CreateOfficeOnlyUser();
@@ -1693,7 +1860,8 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
             new OfficeScopeService(currentUser, dbContext),
             fileStorage ?? new StubCentralFileStorage(),
             new InventoryLedgerService(dbContext),
-            new InvoiceStockSnapshotService(dbContext, new RevisionClock()));
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
 
     private AppDbContext CreateDbContext(TestCurrentUserContext currentUser)
     {
@@ -1725,6 +1893,27 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
             ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
             IsAdmin = false
         };
+
+    private sealed class ServerRentalBillingRunSnapshot
+    {
+        public Guid RunId { get; set; }
+        public string RunKey { get; set; } = string.Empty;
+        public DateOnly ScheduledDate { get; set; }
+        public DateOnly PeriodStartDate { get; set; }
+        public DateOnly PeriodEndDate { get; set; }
+        public string PeriodLabel { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public decimal BilledAmount { get; set; }
+        public decimal SettledAmount { get; set; }
+        public string SettlementStatus { get; set; } = string.Empty;
+        public DateOnly? SettledDate { get; set; }
+    }
+
+    private sealed class StubInvoiceNumberService : IInvoiceNumberService
+    {
+        public Task<string> GenerateAsync(Guid customerId, DateOnly invoiceDate, CancellationToken cancellationToken = default)
+            => Task.FromResult($"TEST-{invoiceDate:yyyyMMdd}-0001");
+    }
 
     private static Customer CreateDeletedCustomerOutsideCurrentOffice()
         => new()
