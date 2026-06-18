@@ -7,7 +7,9 @@
     [string]$Password = '1234',
     [string]$EvidenceDirectory,
     [switch]$SkipInstall,
-    [switch]$IncludeDraftScreens
+    [switch]$IncludeDraftScreens,
+    [switch]$ExerciseSyncNow,
+    [string]$SyncExerciseBaseUrl = 'http://127.0.0.1:19080'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -64,6 +66,31 @@ function Resolve-ApkPath {
     }
 
     throw "설치할 APK 파일을 찾지 못했습니다: $mobileOut"
+}
+
+function Assert-LocalSyncExerciseTarget {
+    param([string]$BaseUrl)
+
+    $uri = $null
+    if (-not [Uri]::TryCreate($BaseUrl, [UriKind]::Absolute, [ref]$uri)) {
+        throw "수동 동기화 실기동 검증 BaseUrl이 올바른 URI가 아닙니다: $BaseUrl"
+    }
+
+    $isLoopbackHost = [string]::Equals($uri.Host, '127.0.0.1', [StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($uri.Host, 'localhost', [StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($uri.Host, '::1', [StringComparison]::OrdinalIgnoreCase)
+
+    if (-not $isLoopbackHost) {
+        throw "수동 동기화 실기동 검증은 로컬 테스트 API에서만 허용됩니다. 현재 BaseUrl: $BaseUrl"
+    }
+
+    $healthUri = $uri.ToString().TrimEnd('/') + '/healthz'
+    try {
+        Invoke-RestMethod -Method Get -Uri $healthUri -TimeoutSec 10 | Out-Null
+    }
+    catch {
+        throw "로컬 테스트 API healthz 확인 실패: $healthUri`n$($_.Exception.Message)"
+    }
 }
 
 function Invoke-Adb {
@@ -588,6 +615,45 @@ function Open-BottomTabAndAssert {
     return $dump
 }
 
+function Invoke-SyncNowAndAssert {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$EvidenceDirectory,
+        [string]$Timestamp,
+        [string]$SyncContent,
+        [System.Collections.Generic.List[object]]$Steps
+    )
+
+    $point = Get-NodeCenterByText -Content $SyncContent -Text '권장 동기화 실행' -ClassName 'android.widget.Button'
+    if (-not $point) {
+        $point = Get-NodeCenterByText -Content $SyncContent -Text '권장 동기화 실행' -ClassName ''
+    }
+    if (-not $point) {
+        $freshDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-smoke-$Timestamp-sync-now-before-tap"
+        $point = Get-NodeCenterByText -Content $freshDump.Content -Text '권장 동기화 실행' -ClassName 'android.widget.Button'
+        if (-not $point) {
+            $point = Get-NodeCenterByText -Content $freshDump.Content -Text '권장 동기화 실행' -ClassName ''
+        }
+    }
+    if (-not $point) {
+        throw '동기화 화면에서 권장 동기화 실행 버튼을 찾지 못했습니다.'
+    }
+
+    Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $point.X -Y $point.Y
+    $dump = Wait-UiContainsAll `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-smoke-$Timestamp-sync-now" `
+        -Needles @('권장 동기화 완료', '저장 대기: 전표 0건', '서버에서 받기', '서버에 올리기') `
+        -StepName 'sync-now' `
+        -TimeoutSeconds 120
+
+    $Steps.Add([pscustomobject]@{ Step = 'sync-now'; Result = 'PASS'; Detail = $dump.Path })
+    return $dump
+}
+
 function Open-HomeActionAndAssert {
     param(
         [string]$AdbPath,
@@ -624,6 +690,10 @@ if ([string]::IsNullOrWhiteSpace($EvidenceDirectory)) {
     $EvidenceDirectory = Join-Path $ProjectRoot '테스트 시행\기록'
 }
 New-Item -ItemType Directory -Force -Path $EvidenceDirectory | Out-Null
+
+if ($ExerciseSyncNow) {
+    Assert-LocalSyncExerciseTarget -BaseUrl $SyncExerciseBaseUrl
+}
 
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $resolvedAdb = Resolve-AdbPath -RequestedPath $AdbPath
@@ -797,7 +867,7 @@ Open-BottomTabAndAssert `
     -Needles @('전표', '판매 작성', '구매 작성', '수금/지급') `
     -Steps $steps | Out-Null
 
-Open-BottomTabAndAssert `
+$syncDump = Open-BottomTabAndAssert `
     -AdbPath $resolvedAdb `
     -DeviceId $deviceId `
     -EvidenceDirectory $EvidenceDirectory `
@@ -807,13 +877,24 @@ Open-BottomTabAndAssert `
     -FallbackXRatio 0.84 `
     -StepName 'sync-status' `
     -Needles @('동기화 상태', '마지막 서버 변경번호', '저장 대기', '권장 동기화 실행', '서버에서 받기', '서버에 올리기') `
-    -Steps $steps | Out-Null
+    -Steps $steps
+
+if ($ExerciseSyncNow) {
+    Invoke-SyncNowAndAssert `
+        -AdbPath $resolvedAdb `
+        -DeviceId $deviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Timestamp $timestamp `
+        -SyncContent $syncDump.Content `
+        -Steps $steps | Out-Null
+}
 
 $result = [pscustomobject]@{
     CreatedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     PackageName = $PackageName
     DeviceId = $deviceId
     ApkPath = $resolvedApk
+    ExerciseSyncNow = [bool]$ExerciseSyncNow
     Result = 'PASS'
     Steps = $steps
 }
@@ -829,6 +910,7 @@ $mdLines = @(
     "- 기기: $deviceId",
     "- 패키지: $PackageName",
     "- APK: $resolvedApk",
+    "- 수동 동기화 실행: $([bool]$ExerciseSyncNow)",
     "- 결과: PASS",
     '',
     '## 단계',

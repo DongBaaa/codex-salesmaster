@@ -170,6 +170,12 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("'서버에 올리기'", source, StringComparison.Ordinal);
         Assert.Contains("$tabPoint = Get-NodeCenterByText -Content $afterTapDump.Content -Text $TabText", source, StringComparison.Ordinal);
         Assert.Contains("design_bottom_sheet", source, StringComparison.Ordinal);
+        Assert.Contains("[switch]$ExerciseSyncNow", source, StringComparison.Ordinal);
+        Assert.Contains("Assert-LocalSyncExerciseTarget -BaseUrl $SyncExerciseBaseUrl", source, StringComparison.Ordinal);
+        Assert.Contains("Invoke-SyncNowAndAssert", source, StringComparison.Ordinal);
+        Assert.Contains("sync-now-before-tap", source, StringComparison.Ordinal);
+        Assert.Contains("'권장 동기화 완료'", source, StringComparison.Ordinal);
+        Assert.Contains("수동 동기화 실기동 검증은 로컬 테스트 API에서만 허용됩니다.", source, StringComparison.Ordinal);
     }
 
     private static string FindRepositoryRoot()
