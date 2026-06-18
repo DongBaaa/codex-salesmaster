@@ -29,14 +29,21 @@ function Resolve-GeoraePlanTempRoot {
         [string]$ProjectRoot
     )
 
+    $effectiveProjectRoot = $ProjectRoot
+    if ([string]::IsNullOrWhiteSpace($effectiveProjectRoot) -and -not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+        $candidateProjectRoot = Join-Path $PSScriptRoot '..\..'
+        if (Test-Path -LiteralPath $candidateProjectRoot) {
+            $effectiveProjectRoot = (Resolve-Path -LiteralPath $candidateProjectRoot).Path
+        }
+    }
+
     $candidates = New-Object System.Collections.Generic.List[string]
     if (-not [string]::IsNullOrWhiteSpace($env:GEORAEPLAN_TEMP_ROOT)) {
         $candidates.Add($env:GEORAEPLAN_TEMP_ROOT)
     }
-    if (-not [string]::IsNullOrWhiteSpace($ProjectRoot)) {
-        $candidates.Add((Join-Path $ProjectRoot 'temp'))
+    if (-not [string]::IsNullOrWhiteSpace($effectiveProjectRoot)) {
+        $candidates.Add((Join-Path $effectiveProjectRoot 'temp'))
     }
-    $candidates.Add((Join-Path 'D:\거래플랜' 'temp'))
     if (-not [string]::IsNullOrWhiteSpace($env:TEMP)) {
         $candidates.Add($env:TEMP)
     }

@@ -253,6 +253,11 @@ if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = Resolve-ProjectRoot -ScriptPath $MyInvocation.MyCommand.Path
 }
 
+$tempInitializer = Join-Path $ProjectRoot 'tools\common\Initialize-GeoraePlanTemp.ps1'
+if (Test-Path -LiteralPath $tempInitializer) {
+    . $tempInitializer -ProjectRoot $ProjectRoot
+}
+
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot = Join-Path $ProjectRoot '배포\업데이트'
 }
