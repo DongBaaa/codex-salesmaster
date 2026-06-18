@@ -151,6 +151,27 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("CachePdfAsync(_customerId, contract, downloadedPath)", contractsViewModelSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void AndroidSmoke_CoversSyncTabStatus()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "mobile",
+            "Invoke-GeoraePlanAndroidSmoke.ps1"));
+
+        Assert.Contains("-TabText '동기화'", source, StringComparison.Ordinal);
+        Assert.Contains("-StepName 'sync-status'", source, StringComparison.Ordinal);
+        Assert.Contains("'동기화 상태'", source, StringComparison.Ordinal);
+        Assert.Contains("'마지막 서버 변경번호'", source, StringComparison.Ordinal);
+        Assert.Contains("'저장 대기'", source, StringComparison.Ordinal);
+        Assert.Contains("'권장 동기화 실행'", source, StringComparison.Ordinal);
+        Assert.Contains("'서버에서 받기'", source, StringComparison.Ordinal);
+        Assert.Contains("'서버에 올리기'", source, StringComparison.Ordinal);
+        Assert.Contains("$tabPoint = Get-NodeCenterByText -Content $afterTapDump.Content -Text $TabText", source, StringComparison.Ordinal);
+        Assert.Contains("design_bottom_sheet", source, StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

@@ -554,6 +554,27 @@ function Open-BottomTabAndAssert {
     Tap-BottomTab -AdbPath $AdbPath -DeviceId $DeviceId -Screen $Screen -XRatio $FallbackXRatio
     Start-Sleep -Seconds 1
 
+    $afterTapDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-smoke-$Timestamp-after-tap-$StepName"
+    $missingAfterTap = @()
+    foreach ($needle in $Needles) {
+        if (-not $afterTapDump.Content.Contains($needle)) {
+            $missingAfterTap += $needle
+        }
+    }
+
+    if ($missingAfterTap.Count -gt 0 -and
+        ($afterTapDump.Content.Contains('design_bottom_sheet') -or $afterTapDump.Content.Contains('touch_outside'))) {
+        $tabPoint = Get-NodeCenterByText -Content $afterTapDump.Content -Text $TabText -ClassName 'android.widget.TextView'
+        if (-not $tabPoint) {
+            $tabPoint = Get-NodeCenterByText -Content $afterTapDump.Content -Text $TabText -ClassName ''
+        }
+
+        if ($tabPoint) {
+            Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $tabPoint.X -Y $tabPoint.Y
+            Start-Sleep -Seconds 1
+        }
+    }
+
     $dump = Wait-UiContainsAll `
         -AdbPath $AdbPath `
         -DeviceId $DeviceId `
@@ -774,6 +795,18 @@ Open-BottomTabAndAssert `
     -FallbackXRatio 0.70 `
     -StepName 'invoices' `
     -Needles @('전표', '판매 작성', '구매 작성', '수금/지급') `
+    -Steps $steps | Out-Null
+
+Open-BottomTabAndAssert `
+    -AdbPath $resolvedAdb `
+    -DeviceId $deviceId `
+    -EvidenceDirectory $EvidenceDirectory `
+    -Timestamp $timestamp `
+    -Screen $screen `
+    -TabText '동기화' `
+    -FallbackXRatio 0.84 `
+    -StepName 'sync-status' `
+    -Needles @('동기화 상태', '마지막 서버 변경번호', '저장 대기', '권장 동기화 실행', '서버에서 받기', '서버에 올리기') `
     -Steps $steps | Out-Null
 
 $result = [pscustomobject]@{
