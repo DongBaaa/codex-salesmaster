@@ -180,10 +180,7 @@ public sealed class IntegrityController : ControllerBase
             AmountDiffers(row.Profile.MonthlyAmount, row.TemplateMonthlyAmount));
         AddIssue(issues, "rental_profile_monthly_amount_mismatch", rentalProfileMonthlyAmountMismatchCount, "Warning", "렌탈 청구 프로필 월 기준금액과 청구 품목 합계가 다릅니다.");
 
-        var rentalProfileAssetMonthlyAmountMismatchCount = rentalTemplateScanRows.Count(row =>
-            row.LinkedAssets.Count > 0 &&
-            row.LinkedAssetMonthlyAmount > 0m &&
-            AmountDiffers(row.Profile.MonthlyAmount, row.LinkedAssetMonthlyAmount));
+        var rentalProfileAssetMonthlyAmountMismatchCount = rentalTemplateScanRows.Count(ShouldWarnRentalProfileAssetMonthlyMismatch);
         AddIssue(issues, "rental_profile_asset_monthly_amount_mismatch", rentalProfileAssetMonthlyAmountMismatchCount, "Warning", "렌탈 청구 프로필 월 기준금액과 연결 자산 월요금 합계가 다릅니다.");
 
         var rentalAssetTemplateMonthlyMismatchCount = CountRentalAssetTemplateMonthlyMismatches(rentalTemplateScanRows);
@@ -934,12 +931,11 @@ public sealed class IntegrityController : ControllerBase
             .Where(key => !string.IsNullOrWhiteSpace(key))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-        List<Customer> customerCandidates = customerCandidateKeys.Count == 0
-            ? []
-            : await _officeScopeService.ApplyCustomerScope(_dbContext.Customers.IgnoreQueryFilters().AsNoTracking())
-                .Where(customer => !customer.IsDeleted && customerCandidateKeys.Contains(customer.NameMatchKey))
-                .ToListAsync(cancellationToken);
-        var customerCandidatesByKey = customerCandidates
+        var scopedCustomers = await _officeScopeService.ApplyCustomerScope(_dbContext.Customers.IgnoreQueryFilters().AsNoTracking())
+            .Where(customer => !customer.IsDeleted)
+            .ToListAsync(cancellationToken);
+        var customerCandidatesByKey = scopedCustomers
+            .Where(customer => customerCandidateKeys.Contains(customer.NameMatchKey))
             .GroupBy(customer => customer.NameMatchKey, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
 
@@ -951,6 +947,9 @@ public sealed class IntegrityController : ControllerBase
                 List<Customer> candidates = string.IsNullOrWhiteSpace(candidateKey)
                     ? []
                     : customerCandidatesByKey.GetValueOrDefault(candidateKey) ?? [];
+                List<Customer> similarCandidates = candidates.Count == 0
+                    ? FindSimilarRentalCustomers(profile, assets, scopedCustomers)
+                    : [];
                 var assetSummary = assets.Count == 0
                     ? "연결 장비 없음"
                     : "연결 장비 " + string.Join("; ", assets
@@ -964,7 +963,13 @@ public sealed class IntegrityController : ControllerBase
                             string.IsNullOrWhiteSpace(asset.InstallLocation) ? asset.InstallSiteName : asset.InstallLocation,
                             $"월요금 {FormatMoney(asset.MonthlyFee)}")));
                 var candidateSummary = candidates.Count == 0
-                    ? "일치 거래처 없음"
+                    ? similarCandidates.Count == 0
+                        ? "일치/유사 거래처 없음"
+                        : "유사 거래처 " + string.Join(", ", similarCandidates
+                            .OrderBy(customer => customer.ResponsibleOfficeCode, StringComparer.OrdinalIgnoreCase)
+                            .ThenBy(customer => customer.NameOriginal, StringComparer.OrdinalIgnoreCase)
+                            .Take(4)
+                            .Select(customer => CombineParts(customer.NameOriginal, customer.ResponsibleOfficeCode, FormatGuid(customer.Id))))
                     : "일치 거래처 " + string.Join(", ", candidates
                         .OrderBy(customer => customer.ResponsibleOfficeCode, StringComparer.OrdinalIgnoreCase)
                         .ThenBy(customer => customer.NameOriginal, StringComparer.OrdinalIgnoreCase)
@@ -1015,7 +1020,7 @@ public sealed class IntegrityController : ControllerBase
         var rows = await LoadRentalTemplateScanRowsAsync(cancellationToken);
 
         return rows
-            .Where(row => row.LinkedAssets.Count > 0 && row.LinkedAssetMonthlyAmount > 0m && AmountDiffers(row.Profile.MonthlyAmount, row.LinkedAssetMonthlyAmount))
+            .Where(ShouldWarnRentalProfileAssetMonthlyMismatch)
             .OrderBy(row => row.Profile.CustomerName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(row => row.Profile.ProfileKey, StringComparer.OrdinalIgnoreCase)
             .Select(row => CreateDetailRow(
@@ -1446,6 +1451,25 @@ public sealed class IntegrityController : ControllerBase
     private static int CountRentalAssetTemplateMonthlyMismatches(IEnumerable<RentalTemplateScanRow> rows)
         => rows.SelectMany(CreateRentalAssetTemplateMonthlyMismatchRows).Count();
 
+    private static bool ShouldWarnRentalProfileAssetMonthlyMismatch(RentalTemplateScanRow row)
+    {
+        if (row.LinkedAssets.Count == 0 ||
+            row.LinkedAssetMonthlyAmount <= 0m ||
+            !AmountDiffers(row.Profile.MonthlyAmount, row.LinkedAssetMonthlyAmount))
+        {
+            return false;
+        }
+
+        if (row.TemplateParseSucceeded &&
+            row.TemplateItems.Count > 0 &&
+            !AmountDiffers(row.Profile.MonthlyAmount, row.TemplateMonthlyAmount))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
     private static IEnumerable<RentalAssetTemplateMonthlyMismatchRow> CreateRentalAssetTemplateMonthlyMismatchRows(RentalTemplateScanRow row)
     {
         if (!row.TemplateParseSucceeded)
@@ -1527,6 +1551,145 @@ public sealed class IntegrityController : ControllerBase
 
     private static bool AmountDiffers(decimal left, decimal right)
         => Math.Abs(left - right) >= 1m;
+
+    private static List<Customer> FindSimilarRentalCustomers(
+        RentalBillingProfile profile,
+        IReadOnlyCollection<RentalAsset> assets,
+        IReadOnlyCollection<Customer> customers)
+    {
+        var candidateKeys = BuildSimilarCustomerCandidateKeys(
+            [profile.CustomerName, .. assets.SelectMany(asset => new[]
+            {
+                asset.CustomerName,
+                asset.CurrentCustomerName,
+                asset.LastCustomerName
+            })]);
+        if (candidateKeys.Count == 0)
+            return [];
+
+        return customers
+            .Select(customer => new
+            {
+                Customer = customer,
+                Score = GetBestCustomerSimilarityScore(candidateKeys, customer)
+            })
+            .Where(row => row.Score >= 0)
+            .OrderBy(row => row.Score)
+            .ThenBy(row => row.Customer.ResponsibleOfficeCode, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.Customer.NameOriginal, StringComparer.OrdinalIgnoreCase)
+            .Take(8)
+            .Select(row => row.Customer)
+            .ToList();
+    }
+
+    private static List<string> BuildSimilarCustomerCandidateKeys(IEnumerable<string?> names)
+    {
+        var keys = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in names)
+        {
+            foreach (var key in new[]
+            {
+                NormalizeComparableCustomerKey(name),
+                NormalizeComparableCustomerKey(ExtractBracketSuffix(name))
+            })
+            {
+                if (key.Length >= 4 && seen.Add(key))
+                    keys.Add(key);
+            }
+        }
+
+        return keys;
+    }
+
+    private static int GetBestCustomerSimilarityScore(IReadOnlyCollection<string> candidateKeys, Customer customer)
+    {
+        var customerKeys = BuildSimilarCustomerCandidateKeys([
+            customer.NameOriginal,
+            customer.NameMatchKey
+        ]);
+        var best = -1;
+        foreach (var candidateKey in candidateKeys)
+        {
+            foreach (var customerKey in customerKeys)
+            {
+                var score = GetCustomerSimilarityScore(candidateKey, customerKey);
+                if (score < 0)
+                    continue;
+
+                if (best < 0 || score < best)
+                    best = score;
+            }
+        }
+
+        return best;
+    }
+
+    private static int GetCustomerSimilarityScore(string left, string right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+            return -1;
+
+        if (string.Equals(left, right, StringComparison.OrdinalIgnoreCase))
+            return 0;
+
+        var shorter = left.Length <= right.Length ? left : right;
+        var longer = left.Length > right.Length ? left : right;
+        if (shorter.Length >= 4 &&
+            longer.Contains(shorter, StringComparison.OrdinalIgnoreCase) &&
+            shorter.Length >= Math.Max(4, longer.Length / 2))
+        {
+            return longer.Length - shorter.Length;
+        }
+
+        var distance = ComputeLevenshteinDistance(left, right);
+        var allowedDistance = longer.Length <= 8
+            ? 1
+            : Math.Min(4, Math.Max(2, longer.Length / 4));
+        return distance <= allowedDistance ? distance : -1;
+    }
+
+    private static string NormalizeComparableCustomerKey(string? value)
+        => RentalCatalogValueNormalizer.NormalizeLooseKey(value);
+
+    private static string ExtractBracketSuffix(string? value)
+    {
+        var text = (value ?? string.Empty).Trim();
+        var bracketIndex = text.LastIndexOf(']');
+        if (bracketIndex >= 0 && bracketIndex + 1 < text.Length)
+            return text[(bracketIndex + 1)..].Trim();
+
+        return string.Empty;
+    }
+
+    private static int ComputeLevenshteinDistance(string left, string right)
+    {
+        if (left.Length == 0)
+            return right.Length;
+        if (right.Length == 0)
+            return left.Length;
+
+        var previous = new int[right.Length + 1];
+        var current = new int[right.Length + 1];
+        for (var j = 0; j <= right.Length; j++)
+            previous[j] = j;
+
+        for (var i = 1; i <= left.Length; i++)
+        {
+            current[0] = i;
+            for (var j = 1; j <= right.Length; j++)
+            {
+                var substitutionCost = char.ToUpperInvariant(left[i - 1]) == char.ToUpperInvariant(right[j - 1]) ? 0 : 1;
+                current[j] = Math.Min(
+                    Math.Min(current[j - 1] + 1, previous[j] + 1),
+                    previous[j - 1] + substitutionCost);
+            }
+
+            (previous, current) = (current, previous);
+        }
+
+        return previous[right.Length];
+    }
 
     private static string BuildAssetMonthlyBreakdown(IReadOnlyCollection<RentalAsset> assets)
     {

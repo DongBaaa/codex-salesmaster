@@ -251,6 +251,31 @@ function Get-TargetCount {
     return @($value).Count
 }
 
+function Get-NormalizedIntegrityWarningCodes {
+    param([string[]]$Codes)
+
+    $result = New-Object System.Collections.Generic.List[string]
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in @($Codes)) {
+        foreach ($part in ([string]$entry -split ',')) {
+            $code = $part.Trim()
+            if (-not [string]::IsNullOrWhiteSpace($code) -and $seen.Add($code)) {
+                $result.Add($code) | Out-Null
+            }
+        }
+    }
+
+    return @($result)
+}
+
+function Test-RequiredIntegrityAccount {
+    param([string]$Alias)
+
+    return [string]::Equals($Alias, 'ADMIN', [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($Alias, 'ITWORLD', [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($Alias, 'USENET', [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 $resolvedRoot = Resolve-ProjectRoot -ExplicitProjectRoot $ProjectRoot
 if ([string]::IsNullOrWhiteSpace($ApprovedTargetsPath)) {
     $ApprovedTargetsPath = Join-Path $resolvedRoot '운영검증-승인대상.json'
@@ -267,13 +292,14 @@ $logPath = Join-Path $OutputDirectory 'operational-gate.log'
 $reportPath = Join-Path $OutputDirectory 'operational-gate-report.md'
 $checks = New-Object System.Collections.Generic.List[object]
 $BaseUrl = $BaseUrl.TrimEnd('/')
+$normalizedAllowedIntegrityWarningCodes = @(Get-NormalizedIntegrityWarningCodes -Codes $AllowedIntegrityWarningCodes)
 
 "# operational gate log $(Get-Date -Format o)" | Set-Content -LiteralPath $logPath -Encoding UTF8
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "ProjectRoot=$resolvedRoot"
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "BaseUrl=$BaseUrl"
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "Channel=$Channel"
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "FailOnIntegrityWarnings=$([bool]$FailOnIntegrityWarnings)"
-Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "AllowedIntegrityWarningCodes=$($AllowedIntegrityWarningCodes -join ',')"
+Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "AllowedIntegrityWarningCodes=$($normalizedAllowedIntegrityWarningCodes -join ',')"
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "SkipWriteSafetyChecks=$([bool]$SkipWriteSafetyChecks)"
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "SecretPathExists=$(Test-Path -LiteralPath $SecretPath)"
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "ApprovedTargetsPath=$ApprovedTargetsPath exists=$(Test-Path -LiteralPath $ApprovedTargetsPath)"
@@ -412,7 +438,7 @@ else {
                 $integrityWarnings = @($integrityIssues | Where-Object { [string]$_.severity -eq 'Warning' })
                 $integrityInfos = @($integrityIssues | Where-Object { [string]$_.severity -eq 'Info' })
                 $allowedWarningCodeSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-                foreach ($code in $AllowedIntegrityWarningCodes) {
+                foreach ($code in $normalizedAllowedIntegrityWarningCodes) {
                     if (-not [string]::IsNullOrWhiteSpace($code)) {
                         [void]$allowedWarningCodeSet.Add($code.Trim())
                     }
@@ -431,8 +457,8 @@ else {
                 $summaryLines.Add(('- OfficeCode: `{0}`' -f ([string](Get-JsonPropertyValue -Object $integrity.Body -Name 'officeCode')))) | Out-Null
                 $summaryLines.Add(('- Error: `{0}` / Warning: `{1}` / Info: `{2}`' -f $integrityErrors.Count, $integrityWarnings.Count, $integrityInfos.Count)) | Out-Null
                 $summaryLines.Add(('- Warning 실패 처리: `{0}` / 차단 Warning: `{1}`' -f ([bool]$FailOnIntegrityWarnings), $blockingIntegrityWarnings.Count)) | Out-Null
-                if ($AllowedIntegrityWarningCodes.Count -gt 0) {
-                    $summaryLines.Add(('- 허용 Warning 코드: `{0}`' -f ($AllowedIntegrityWarningCodes -join ', '))) | Out-Null
+                if ($normalizedAllowedIntegrityWarningCodes.Count -gt 0) {
+                    $summaryLines.Add(('- 허용 Warning 코드: `{0}`' -f ($normalizedAllowedIntegrityWarningCodes -join ', '))) | Out-Null
                 }
                 $summaryLines.Add('') | Out-Null
                 $summaryLines.Add('| 심각도 | 코드 | 건수 | 메시지 |') | Out-Null
@@ -462,6 +488,187 @@ else {
     catch {
         Add-Check -Checks $checks -Name 'integrity report' -Status 'FAIL' -Detail $_.Exception.Message
     }
+}
+
+$integrityScopeReportDirectory = Join-Path $OutputDirectory 'integrity-scope-reports'
+$integrityScopeSummaryPath = Join-Path $OutputDirectory 'integrity-scope-summary.md'
+$integrityScopeRows = New-Object System.Collections.Generic.List[object]
+$integrityScopeFailures = New-Object System.Collections.Generic.List[string]
+$integrityScopeBlockingErrors = New-Object System.Collections.Generic.List[string]
+$integrityScopeBlockingWarnings = New-Object System.Collections.Generic.List[string]
+$integrityScopeAccessibleReportCount = 0
+$integrityScopeWarningCount = 0
+$integrityScopeAllowedWarningCodes = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($code in $normalizedAllowedIntegrityWarningCodes) {
+    if (-not [string]::IsNullOrWhiteSpace($code)) {
+        [void]$integrityScopeAllowedWarningCodes.Add($code.Trim())
+    }
+}
+
+New-Item -ItemType Directory -Force -Path $integrityScopeReportDirectory | Out-Null
+foreach ($credential in @($itworld, $usenet, $yeonsu, $admin)) {
+    if ($null -eq $credential -or
+        [string]::IsNullOrWhiteSpace([string]$credential.Username) -or
+        [string]::IsNullOrWhiteSpace([string]$credential.Password)) {
+        continue
+    }
+
+    $alias = [string]$credential.Alias
+    try {
+        $login = Invoke-JsonApi `
+            -Method 'POST' `
+            -Uri ($BaseUrl + '/auth/login') `
+            -Body @{ username = [string]$credential.Username; password = [string]$credential.Password } `
+            -TimeoutSec 20
+
+        $token = if ($login.Success -and $null -ne $login.Body) { [string](Get-JsonPropertyValue -Object $login.Body -Name 'token') } else { '' }
+        if (-not $login.Success -or [string]::IsNullOrWhiteSpace($token)) {
+            $status = if (Test-RequiredIntegrityAccount -Alias $alias) { 'FAIL' } else { 'SKIP' }
+            $detail = "login failed status=$($login.StatusCode) error=$($login.Error)"
+            $integrityScopeRows.Add([pscustomobject]@{
+                Account = $alias
+                Status = $status
+                Http = $login.StatusCode
+                Tenant = ''
+                Office = ''
+                ErrorCount = $null
+                WarningCount = $null
+                InfoCount = $null
+                Issues = $detail
+            }) | Out-Null
+            if ($status -eq 'FAIL') {
+                $integrityScopeFailures.Add("$alias $detail") | Out-Null
+            }
+            continue
+        }
+
+        $integrity = Invoke-JsonApi `
+            -Method 'GET' `
+            -Uri ($BaseUrl + '/integrity/report') `
+            -Headers @{ Authorization = "Bearer $token" } `
+            -TimeoutSec 120
+
+        if (-not $integrity.Success -or $null -eq $integrity.Body) {
+            $isRequiredIntegrityAccount = Test-RequiredIntegrityAccount -Alias $alias
+            $status = if ($integrity.StatusCode -eq 403 -and -not $isRequiredIntegrityAccount) { 'SKIP' } else { 'FAIL' }
+            $detail = if ($integrity.StatusCode -eq 403 -and -not $isRequiredIntegrityAccount) {
+                'integrity/report permission denied; account is not expected to run settings integrity checks'
+            }
+            elseif ($integrity.StatusCode -eq 403) {
+                'integrity/report permission denied for required integrity account'
+            }
+            else {
+                "query failed status=$($integrity.StatusCode) error=$($integrity.Error)"
+            }
+            $integrityScopeRows.Add([pscustomobject]@{
+                Account = $alias
+                Status = $status
+                Http = $integrity.StatusCode
+                Tenant = ''
+                Office = ''
+                ErrorCount = $null
+                WarningCount = $null
+                InfoCount = $null
+                Issues = $detail
+            }) | Out-Null
+            if ($status -eq 'FAIL') {
+                $integrityScopeFailures.Add("$alias $detail") | Out-Null
+            }
+            continue
+        }
+
+        $integrityScopeAccessibleReportCount++
+        $issues = @($integrity.Body.issues)
+        $errors = @($issues | Where-Object { [string]$_.severity -eq 'Error' })
+        $warnings = @($issues | Where-Object { [string]$_.severity -eq 'Warning' })
+        $infos = @($issues | Where-Object { [string]$_.severity -eq 'Info' })
+        $blockingWarnings = @($warnings | Where-Object {
+            $code = [string]$_.code
+            [string]::IsNullOrWhiteSpace($code) -or -not $integrityScopeAllowedWarningCodes.Contains($code.Trim())
+        })
+        $integrityScopeWarningCount += $warnings.Count
+
+        $accountReportPath = Join-Path $integrityScopeReportDirectory ("integrity-$($alias.ToLowerInvariant()).json")
+        $integrity.Body | ConvertTo-Json -Depth 80 | Set-Content -LiteralPath $accountReportPath -Encoding UTF8
+
+        foreach ($errorIssue in $errors) {
+            $integrityScopeBlockingErrors.Add(('{0}:{1}({2})' -f $alias, [string]$errorIssue.code, [int]$errorIssue.count)) | Out-Null
+        }
+        if ($FailOnIntegrityWarnings) {
+            foreach ($warningIssue in $blockingWarnings) {
+                $integrityScopeBlockingWarnings.Add(('{0}:{1}({2})' -f $alias, [string]$warningIssue.code, [int]$warningIssue.count)) | Out-Null
+            }
+        }
+
+        $issueText = (@($issues | ForEach-Object { '{0}:{1}={2}' -f ([string]$_.severity), ([string]$_.code), ([int]$_.count) }) -join '; ')
+        $integrityScopeRows.Add([pscustomobject]@{
+            Account = $alias
+            Status = 'OK'
+            Http = 200
+            Tenant = [string](Get-JsonPropertyValue -Object $integrity.Body -Name 'tenantCode')
+            Office = [string](Get-JsonPropertyValue -Object $integrity.Body -Name 'officeCode')
+            ErrorCount = $errors.Count
+            WarningCount = $warnings.Count
+            InfoCount = $infos.Count
+            Issues = $issueText
+        }) | Out-Null
+    }
+    catch {
+        $detail = $_.Exception.Message
+        $status = if ($alias -in @('ITWORLD', 'USENET')) { 'FAIL' } else { 'SKIP' }
+        $integrityScopeRows.Add([pscustomobject]@{
+            Account = $alias
+            Status = $status
+            Http = 0
+            Tenant = ''
+            Office = ''
+            ErrorCount = $null
+            WarningCount = $null
+            InfoCount = $null
+            Issues = $detail
+        }) | Out-Null
+        if ($status -eq 'FAIL') {
+            $integrityScopeFailures.Add("$alias $detail") | Out-Null
+        }
+    }
+}
+
+$integrityScopeLines = New-Object System.Collections.Generic.List[string]
+$integrityScopeLines.Add('# 계정별 무결성 리포트 요약') | Out-Null
+$integrityScopeLines.Add('') | Out-Null
+$integrityScopeLines.Add(('- 실행시각: {0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))) | Out-Null
+$integrityScopeLines.Add(('- 접근 가능 리포트: `{0}`' -f $integrityScopeAccessibleReportCount)) | Out-Null
+$integrityScopeLines.Add(('- Warning 실패 처리: `{0}`' -f ([bool]$FailOnIntegrityWarnings))) | Out-Null
+if ($normalizedAllowedIntegrityWarningCodes.Count -gt 0) {
+    $integrityScopeLines.Add(('- 허용 Warning 코드: `{0}`' -f ($normalizedAllowedIntegrityWarningCodes -join ', '))) | Out-Null
+}
+$integrityScopeLines.Add('') | Out-Null
+$integrityScopeLines.Add('| 계정 | 상태 | HTTP | Tenant | Office | Error | Warning | Info | Issues |') | Out-Null
+$integrityScopeLines.Add('| --- | --- | ---: | --- | --- | ---: | ---: | ---: | --- |') | Out-Null
+foreach ($row in $integrityScopeRows) {
+    $issues = ([string]$row.Issues).Replace('|', '\|')
+    $integrityScopeLines.Add(('| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} |' -f $row.Account, $row.Status, $row.Http, $row.Tenant, $row.Office, $row.ErrorCount, $row.WarningCount, $row.InfoCount, $issues)) | Out-Null
+}
+Set-Content -LiteralPath $integrityScopeSummaryPath -Value $integrityScopeLines -Encoding UTF8
+Add-Content -LiteralPath $logPath -Encoding UTF8 -Value ("integrity_scope_reports accessible={0} failures={1} errors={2} warnings={3} summary={4}" -f $integrityScopeAccessibleReportCount, $integrityScopeFailures.Count, $integrityScopeBlockingErrors.Count, $integrityScopeBlockingWarnings.Count, $integrityScopeSummaryPath)
+
+if ($integrityScopeFailures.Count -gt 0) {
+    Add-Check -Checks $checks -Name 'integrity report by account' -Status 'FAIL' -Detail ("query failures: {0}; {1}" -f ($integrityScopeFailures -join ', '), $integrityScopeSummaryPath)
+}
+elseif ($integrityScopeAccessibleReportCount -eq 0) {
+    Add-Check -Checks $checks -Name 'integrity report by account' -Status 'BLOCKED' -Detail ("no account could access /integrity/report; {0}" -f $integrityScopeSummaryPath)
+}
+elseif ($integrityScopeBlockingErrors.Count -gt 0) {
+    Add-Check -Checks $checks -Name 'integrity report by account' -Status 'FAIL' -Detail ("errors: {0}; {1}" -f ($integrityScopeBlockingErrors -join ', '), $integrityScopeSummaryPath)
+}
+elseif ($FailOnIntegrityWarnings -and $integrityScopeBlockingWarnings.Count -gt 0) {
+    Add-Check -Checks $checks -Name 'integrity report by account' -Status 'FAIL' -Detail ("blocking warnings: {0}; {1}" -f ($integrityScopeBlockingWarnings -join ', '), $integrityScopeSummaryPath)
+}
+elseif ($integrityScopeWarningCount -gt 0) {
+    Add-Check -Checks $checks -Name 'integrity report by account' -Status 'WARN' -Detail ("warnings={0}; {1}" -f $integrityScopeWarningCount, $integrityScopeSummaryPath)
+}
+else {
+    Add-Check -Checks $checks -Name 'integrity report by account' -Status 'PASS' -Detail ("accessible={0}; no errors/warnings; {1}" -f $integrityScopeAccessibleReportCount, $integrityScopeSummaryPath)
 }
 
 $rentalMonthlyRepairScript = Join-Path $resolvedRoot 'tools\maintenance\Invoke-GeoraePlanRentalMonthlyRepair.ps1'
@@ -789,8 +996,8 @@ $reportLines.Add(('- Channel: `{0}`' -f $Channel)) | Out-Null
 $reportLines.Add(('- OutputDirectory: `{0}`' -f $OutputDirectory)) | Out-Null
 $reportLines.Add(('- 무결성 Warning 실패 처리: `{0}`' -f ([bool]$FailOnIntegrityWarnings))) | Out-Null
 $reportLines.Add(('- 쓰기 안전성 점검 생략: `{0}`' -f ([bool]$SkipWriteSafetyChecks))) | Out-Null
-if ($AllowedIntegrityWarningCodes.Count -gt 0) {
-    $reportLines.Add(('- 허용 Warning 코드: `{0}`' -f ($AllowedIntegrityWarningCodes -join ', '))) | Out-Null
+if ($normalizedAllowedIntegrityWarningCodes.Count -gt 0) {
+    $reportLines.Add(('- 허용 Warning 코드: `{0}`' -f ($normalizedAllowedIntegrityWarningCodes -join ', '))) | Out-Null
 }
 $reportLines.Add('') | Out-Null
 $reportLines.Add('## 1. 체크 결과') | Out-Null

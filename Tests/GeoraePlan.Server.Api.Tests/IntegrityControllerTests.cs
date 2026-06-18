@@ -3,6 +3,7 @@ using 거래플랜.Server.Api.Controllers;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Services;
+using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
@@ -693,6 +694,115 @@ public sealed class IntegrityControllerTests : IDisposable
         var rentalDetails = Assert.IsType<IntegrityIssueDetailResultDto>(rentalDetailsOk.Value);
         Assert.Single(rentalDetails.Rows);
         Assert.Contains("자산월요금합계 3,000", rentalDetails.Rows[0].DetailText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetReport_DoesNotWarnProfileAssetMonthlyMismatch_WhenTemplateMatchesProfileAmount()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var rentalProfileId = Guid.NewGuid();
+        var rentalAssetId = Guid.NewGuid();
+        var templateJson = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                DisplayItemName = "묶음 렌탈료",
+                Quantity = 1m,
+                UnitPrice = 300_000m,
+                Amount = 300_000m
+            }
+        });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = rentalProfileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "PROFILE-BUNDLE-SELF-CONSISTENT",
+            CustomerId = Guid.NewGuid(),
+            CustomerName = "묶음 청구 거래처",
+            ItemName = "묶음 렌탈료",
+            BillingType = "묶음",
+            MonthlyAmount = 300_000m,
+            BillingTemplateJson = templateJson,
+            IsActive = true
+        });
+        dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = rentalAssetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            BillingProfileId = rentalProfileId,
+            AssetKey = "ASSET-BUNDLE-001",
+            ManagementId = "BUNDLE-001",
+            ManagementNumber = "BUNDLE-001",
+            CustomerName = "묶음 청구 거래처",
+            ItemName = "복합기",
+            MonthlyFee = 100_000m
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = new IntegrityController(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext));
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+
+        Assert.DoesNotContain(payload.Issues, issue => string.Equals(issue.Code, "rental_profile_monthly_amount_mismatch", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(payload.Issues, issue => string.Equals(issue.Code, "rental_profile_asset_monthly_amount_mismatch", StringComparison.OrdinalIgnoreCase));
+
+        var detailsResponse = await controller.GetReportDetails("rental_profile_asset_monthly_amount_mismatch", CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+        Assert.Empty(details.Rows);
+    }
+
+    [Fact]
+    public async Task GetReportDetails_ForUnlinkedRentalProfile_IncludesSimilarCustomerCandidates()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "명성다이캐스팅",
+            NameMatchKey = MatchKeyNormalizer.Normalize("명성다이캐스팅"),
+            TradeType = "매출"
+        });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "PROFILE-SIMILAR-CUSTOMER",
+            CustomerName = "명성다이케스팅",
+            ItemName = "렌탈료",
+            BillingType = "묶음",
+            MonthlyAmount = 100_000m,
+            IsActive = true
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = new IntegrityController(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext));
+
+        var detailsResponse = await controller.GetReportDetails("rental_profile_customer_unlinked", CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+        var row = Assert.Single(details.Rows);
+        Assert.Contains("유사 거래처", row.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains("명성다이캐스팅", row.ReferenceText, StringComparison.Ordinal);
     }
 
     [Fact]

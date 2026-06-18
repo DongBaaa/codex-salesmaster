@@ -220,6 +220,9 @@ function Set-NormalizedTemplateFromAssets {
     $linkedIds = @($linkedAssetMap.Keys | Sort-Object)
     $linkedMonthlyAmount = [decimal](@($linkedAssets | ForEach-Object { [Math]::Max([decimal]0, (Get-Decimal $_.monthlyFee)) }) | Measure-Object -Sum).Sum
     $templateItems = @(Get-TemplateItems -BillingTemplateJson ([string]$Profile.billingTemplateJson))
+    $originalTemplateMonthlyAmount = [decimal](@($templateItems | ForEach-Object { Get-TemplateLineAmount $_ }) | Measure-Object -Sum).Sum
+    $profileTemplateSelfConsistent = $templateItems.Count -gt 0 -and
+        (Test-DecimalEquals -Left (Get-Decimal $Profile.monthlyAmount) -Right $originalTemplateMonthlyAmount)
 
     if ($templateItems.Count -eq 0) {
         $displayItemName = $defaultItemName
@@ -324,6 +327,8 @@ function Set-NormalizedTemplateFromAssets {
         LinkedAssetMonthlyAmount = $linkedMonthlyAmount
         TemplateMonthlyAmount = $templateMonthlyAmount
         TemplateJson = $templateJson
+        OriginalTemplateMonthlyAmount = $originalTemplateMonthlyAmount
+        ProfileTemplateSelfConsistent = $profileTemplateSelfConsistent
         ExistingTemplateLinkedAssetCount = $assigned.Count
         MissingAssetCount = $missingAssets.Count
         MissingAssetMonthlyAmount = $missingAssetMonthlyAmount
@@ -362,6 +367,18 @@ function Assert-DecimalEquals {
     if ([Math]::Abs([double]($expectedDecimal - $actualDecimal)) -gt [double]$Tolerance) {
         throw "approval plan mismatch for $Name. expected=$expectedDecimal actual=$actualDecimal"
     }
+}
+
+function Test-DecimalEquals {
+    param(
+        [object]$Left,
+        [object]$Right,
+        [decimal]$Tolerance = 0.01
+    )
+
+    $leftDecimal = Get-Decimal $Left
+    $rightDecimal = Get-Decimal $Right
+    return [Math]::Abs([double]($leftDecimal - $rightDecimal)) -le [double]$Tolerance
 }
 
 function Assert-StringEquals {
@@ -478,6 +495,7 @@ foreach ($profile in @($pull.rentalBillingProfiles | Where-Object { -not $_.isDe
     $difference = $normalization.LinkedAssetMonthlyAmount - $currentMonthly
     $templateChanged = -not [string]::Equals([string]$profile.billingTemplateJson, [string]$normalization.TemplateJson, [System.StringComparison]::Ordinal)
     if ([Math]::Abs([double]$difference) -lt 0.01) { continue }
+    if ([bool]$normalization.ProfileTemplateSelfConsistent -and [int]$normalization.MissingAssetCount -eq 0) { continue }
 
     $applied = $false
     $pushRevision = [long]0
@@ -581,15 +599,15 @@ if (-not $Apply -and $rows.Count -gt 0) {
     $profileArgs = (@($rows | ForEach-Object { "'$($_.ProfileId)'" }) -join ',')
     $lines.Add('## 안전 적용 예시') | Out-Null
     $lines.Add('') | Out-Null
-    $lines.Add('운영 데이터 적용 전에는 최신 백업과 복구 가능 여부를 먼저 확인한 뒤, 아래처럼 대상 프로필을 명시해서 실행하세요.') | Out-Null
+    $lines.Add('운영 데이터 적용 전에는 최신 백업과 복구 가능 여부를 먼저 확인한 뒤, 리포트를 생성한 회사/계정과 같은 계정으로 대상 프로필을 명시해서 실행하세요.') | Out-Null
     $lines.Add('') | Out-Null
     $lines.Add('```powershell') | Out-Null
-    $lines.Add('$env:GEORAEPLAN_SCOPE_USENET_USERNAME = ''usenet''') | Out-Null
-    $lines.Add('$env:GEORAEPLAN_SCOPE_USENET_PASSWORD = ''<비밀번호>''') | Out-Null
+    $lines.Add('$env:GEORAEPLAN_RENTAL_REPAIR_USERNAME = ''<사용자명>''') | Out-Null
+    $lines.Add('$env:GEORAEPLAN_RENTAL_REPAIR_PASSWORD = ''<비밀번호>''') | Out-Null
     $lines.Add("& 'D:\거래플랜\tools\maintenance\Invoke-GeoraePlanRentalMonthlyRepair.ps1' ``") | Out-Null
     $lines.Add("  -BaseUrl '$BaseUrl' ``") | Out-Null
-    $lines.Add('  -Username $env:GEORAEPLAN_SCOPE_USENET_USERNAME `') | Out-Null
-    $lines.Add('  -Password $env:GEORAEPLAN_SCOPE_USENET_PASSWORD `') | Out-Null
+    $lines.Add('  -Username $env:GEORAEPLAN_RENTAL_REPAIR_USERNAME `') | Out-Null
+    $lines.Add('  -Password $env:GEORAEPLAN_RENTAL_REPAIR_PASSWORD `') | Out-Null
     $lines.Add("  -ProfileIds @($profileArgs) ``") | Out-Null
     $lines.Add("  -ExpectedCandidateCount $($rows.Count) ``") | Out-Null
     $lines.Add("  -ApprovalPlanPath '$jsonPath' ``") | Out-Null
