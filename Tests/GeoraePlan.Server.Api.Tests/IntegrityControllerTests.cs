@@ -894,6 +894,77 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FlagsRentalBillingRunMissingRunIdAsInfo()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Missing run id customer",
+            NameMatchKey = "MISSINGRUNIDCUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"profile-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = "Missing run id customer",
+            MonthlyAmount = 100_000m,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new ServerRentalBillingRunSnapshot
+                {
+                    RunId = Guid.Empty,
+                    RunKey = "legacy-2026-06",
+                    ScheduledDate = new DateOnly(2026, 6, 25),
+                    PeriodStartDate = new DateOnly(2026, 6, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    PeriodLabel = "2026-06",
+                    Status = "완료",
+                    BilledAmount = 100_000m,
+                    SettledAmount = 100_000m,
+                    SettlementStatus = "입금확인",
+                    SettledDate = new DateOnly(2026, 6, 26)
+                }
+            })
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issue = Assert.Single(payload.Issues, current => current.Code == "rental_billing_run_missing_run_id");
+
+        Assert.Equal("Info", issue.Severity);
+        Assert.Equal(1, issue.Count);
+        Assert.DoesNotContain(payload.Issues, current => current.Code == "rental_billing_run_settlement_mismatch");
+        Assert.DoesNotContain(payload.Issues, current => current.Code == "rental_billing_profile_summary_mismatch");
+
+        var row = await GetSingleDetailRowAsync(controller, "rental_billing_run_missing_run_id");
+
+        Assert.Equal(FormatGuidForTest(profileId), row.EntityIdText);
+        Assert.Equal("RunId 없음", row.ReferenceText);
+        Assert.Contains("legacy-2026-06", row.PrimaryText, StringComparison.Ordinal);
+        Assert.Contains("100,000", row.SecondaryText, StringComparison.Ordinal);
+        Assert.Contains("전표/수금과 안정적으로 대조할 수 없는 과거 청구 JSON", row.DetailText, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task GetReport_FlagsRestoredRentalInvoiceWithDeletedPaymentAndDetachedTransaction()
     {
         var currentUser = CreateAdminUser();

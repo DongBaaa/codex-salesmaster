@@ -297,6 +297,9 @@ public sealed class IntegrityController : ControllerBase
         var rentalBillingRunSettlementMismatchCount = (await LoadRentalBillingRunSettlementMismatchRowsAsync(cancellationToken)).Count;
         AddIssue(issues, "rental_billing_run_settlement_mismatch", rentalBillingRunSettlementMismatchCount, "Error", "렌탈 청구 run의 저장 정산금액과 실제 활성 수금/거래내역 합계가 다릅니다.");
 
+        var rentalBillingRunMissingRunIdCount = (await LoadRentalBillingRunMissingRunIdRowsAsync(cancellationToken)).Count;
+        AddIssue(issues, "rental_billing_run_missing_run_id", rentalBillingRunMissingRunIdCount, "Info", "렌탈 청구 프로필에 run ID가 비어 있는 과거 청구 JSON이 있습니다.");
+
         var rentalBillingProfileSummaryMismatchCount = (await LoadRentalBillingProfileSummaryMismatchRowsAsync(cancellationToken)).Count;
         AddIssue(issues, "rental_billing_profile_summary_mismatch", rentalBillingProfileSummaryMismatchCount, "Error", "렌탈 청구 프로필 요약 정산/미수금액이 대표 청구 run의 실제 입금 근거와 다릅니다.");
 
@@ -447,6 +450,7 @@ public sealed class IntegrityController : ControllerBase
             "deleted_payment_missing_invoice_rows" => await LoadDeletedPaymentMissingInvoiceRowDetailsAsync(cancellationToken),
             "rental_invoice_deleted_payment_detached_transaction" => await LoadRentalInvoiceDeletedPaymentDetachedTransactionDetailsAsync(cancellationToken),
             "rental_billing_run_settlement_mismatch" => await LoadRentalBillingRunSettlementMismatchDetailsAsync(cancellationToken),
+            "rental_billing_run_missing_run_id" => await LoadRentalBillingRunMissingRunIdDetailsAsync(cancellationToken),
             "rental_billing_profile_summary_mismatch" => await LoadRentalBillingProfileSummaryMismatchDetailsAsync(cancellationToken),
             "orphan_attachment_transaction_refs" => await LoadOrphanTransactionAttachmentDetailsAsync(cancellationToken),
             "deleted_transaction_attachment_missing_transaction_rows" => await LoadDeletedTransactionAttachmentMissingTransactionRowDetailsAsync(cancellationToken),
@@ -1735,6 +1739,9 @@ public sealed class IntegrityController : ControllerBase
         {
             foreach (var run in ParseRentalBillingRuns(profile.BillingRunsJson))
             {
+                if (run.RunId == Guid.Empty)
+                    continue;
+
                 var runId = NormalizeRunId(run.RunId);
                 var key = (profile.Id, RunId: runId);
                 transactionSettledAmounts.TryGetValue(key, out var transactionAmount);
@@ -1757,6 +1764,76 @@ public sealed class IntegrityController : ControllerBase
                     actualAmount,
                     transactionAmount,
                     directPaymentAmount,
+                    run.Status,
+                    run.SettlementStatus));
+            }
+        }
+
+        return rows
+            .OrderBy(row => row.ProfileDisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.ScheduledDate)
+            .ThenBy(row => row.RunKey, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalBillingRunMissingRunIdDetailsAsync(CancellationToken cancellationToken)
+    {
+        var rows = await LoadRentalBillingRunMissingRunIdRowsAsync(cancellationToken);
+        return rows
+            .Select(row => CreateDetailRow(
+                entityType: "렌탈 청구 run",
+                entityIdText: FormatGuid(row.ProfileId),
+                primaryText: CombineParts(row.ProfileDisplayName, row.RunKey, FormatDate(row.ScheduledDate)),
+                secondaryText: $"청구액 {FormatMoney(row.BilledAmount)} / 정산 {FormatMoney(row.SettledAmount)}",
+                referenceText: "RunId 없음",
+                scopeText: FormatScope(row.TenantCode, row.OfficeCode, row.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    $"프로필ID {FormatGuid(row.ProfileId)}",
+                    string.IsNullOrWhiteSpace(row.RunKey) ? "RunKey 없음" : $"RunKey {row.RunKey}",
+                    $"기간 {FormatDate(row.PeriodStartDate)}~{FormatDate(row.PeriodEndDate)}",
+                    string.IsNullOrWhiteSpace(row.Status) ? null : $"상태 {row.Status}",
+                    string.IsNullOrWhiteSpace(row.SettlementStatus) ? null : $"정산상태 {row.SettlementStatus}",
+                    "전표/수금과 안정적으로 대조할 수 없는 과거 청구 JSON입니다. 근거 확인 후 수동 정리 여부를 검토하세요.")))
+            .ToList();
+    }
+
+    private async Task<List<RentalBillingRunMissingRunIdRow>> LoadRentalBillingRunMissingRunIdRowsAsync(CancellationToken cancellationToken)
+    {
+        var profiles = await _officeScopeService.ApplyRentalBillingProfileScope(
+                _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking())
+            .Where(profile => !profile.IsDeleted)
+            .Select(profile => new
+            {
+                profile.Id,
+                profile.TenantCode,
+                profile.OfficeCode,
+                profile.ResponsibleOfficeCode,
+                profile.CustomerName,
+                profile.ProfileKey,
+                profile.BillingRunsJson
+            })
+            .ToListAsync(cancellationToken);
+
+        var rows = new List<RentalBillingRunMissingRunIdRow>();
+        foreach (var profile in profiles)
+        {
+            foreach (var run in ParseRentalBillingRuns(profile.BillingRunsJson))
+            {
+                if (run.RunId != Guid.Empty)
+                    continue;
+
+                rows.Add(new RentalBillingRunMissingRunIdRow(
+                    profile.Id,
+                    profile.TenantCode,
+                    profile.OfficeCode,
+                    profile.ResponsibleOfficeCode,
+                    FirstNonEmpty(profile.CustomerName, profile.ProfileKey, FormatGuid(profile.Id)),
+                    run.RunKey,
+                    run.ScheduledDate,
+                    run.PeriodStartDate,
+                    run.PeriodEndDate,
+                    run.BilledAmount,
+                    run.SettledAmount,
                     run.Status,
                     run.SettlementStatus));
             }
@@ -2874,6 +2951,7 @@ public sealed class IntegrityController : ControllerBase
             "deleted_payment_missing_invoice_rows" => new IntegrityIssueDefinition("deleted_payment_missing_invoice_rows", "Error", "영구 삭제된 전표의 삭제 결제 잔여 행이 존재합니다."),
             "rental_invoice_deleted_payment_detached_transaction" => new IntegrityIssueDefinition("rental_invoice_deleted_payment_detached_transaction", "Error", "활성 렌탈 전표에 삭제 상태 수금/지급과 전표 링크가 끊긴 활성 거래내역이 함께 남아 있습니다."),
             "rental_billing_run_settlement_mismatch" => new IntegrityIssueDefinition("rental_billing_run_settlement_mismatch", "Error", "렌탈 청구 run의 저장 정산금액과 실제 활성 수금/거래내역 합계가 다릅니다."),
+            "rental_billing_run_missing_run_id" => new IntegrityIssueDefinition("rental_billing_run_missing_run_id", "Info", "렌탈 청구 프로필에 run ID가 비어 있는 과거 청구 JSON이 있습니다."),
             "rental_billing_profile_summary_mismatch" => new IntegrityIssueDefinition("rental_billing_profile_summary_mismatch", "Error", "렌탈 청구 프로필 요약 정산/미수금액이 대표 청구 run의 실제 입금 근거와 다릅니다."),
             "orphan_attachment_transaction_refs" => new IntegrityIssueDefinition("orphan_attachment_transaction_refs", "Error", "거래내역이 없는 증빙 첨부가 존재합니다."),
             "deleted_transaction_attachment_missing_transaction_rows" => new IntegrityIssueDefinition("deleted_transaction_attachment_missing_transaction_rows", "Error", "영구 삭제된 거래내역의 삭제 첨부 잔여 행이 존재합니다."),
@@ -3313,6 +3391,21 @@ public sealed class IntegrityController : ControllerBase
         string Status,
         string SettlementStatus);
 
+    private sealed record RentalBillingRunMissingRunIdRow(
+        Guid ProfileId,
+        string TenantCode,
+        string OfficeCode,
+        string ResponsibleOfficeCode,
+        string ProfileDisplayName,
+        string RunKey,
+        DateOnly ScheduledDate,
+        DateOnly PeriodStartDate,
+        DateOnly PeriodEndDate,
+        decimal BilledAmount,
+        decimal SettledAmount,
+        string Status,
+        string SettlementStatus);
+
     private sealed record RentalBillingProfileSummaryMismatchRow(
         Guid ProfileId,
         string TenantCode,
@@ -3340,6 +3433,7 @@ public sealed class IntegrityController : ControllerBase
         public Guid RunId { get; set; }
         public string RunKey { get; set; } = string.Empty;
         public DateOnly ScheduledDate { get; set; }
+        public DateOnly PeriodStartDate { get; set; }
         public DateOnly PeriodEndDate { get; set; }
         public decimal BilledAmount { get; set; }
         public decimal SettledAmount { get; set; }

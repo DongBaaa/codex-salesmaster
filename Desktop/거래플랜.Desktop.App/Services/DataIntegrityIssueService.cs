@@ -39,6 +39,7 @@ public static class DataIntegrityIssueCodes
     public const string RentalAssignmentHistoricalStaleReference = "rental_assignment_historical_stale_reference";
     public const string RentalAssetMultipleCurrentAssignments = "rental_asset_multiple_current_assignments";
     public const string RentalBillingRunSettlementMismatch = "rental_billing_run_settlement_mismatch";
+    public const string RentalBillingRunMissingRunId = "rental_billing_run_missing_run_id";
     public const string RentalBillingProfileSummaryMismatch = "rental_billing_profile_summary_mismatch";
     public const string CustomerDuplicateCandidate = "customer_duplicate_candidate";
     public const string ItemDuplicateCandidate = "item_duplicate_candidate";
@@ -325,6 +326,13 @@ public sealed class DataIntegrityIssueService
             "렌탈 청구",
             "렌탈 청구 run의 저장 정산금액과 실제 활성 수금/거래내역 합계가 다릅니다.",
             "청구관리에서 해당 청구월의 전표/수금/거래내역을 확인하고 정산 재계산이 필요한지 점검하세요."),
+        [DataIntegrityIssueCodes.RentalBillingRunMissingRunId] = new(
+            DataIntegrityIssueCodes.RentalBillingRunMissingRunId,
+            "렌탈 청구 run ID 누락",
+            "Info",
+            "렌탈 청구",
+            "렌탈 청구 프로필에 run ID가 비어 있는 과거 청구 JSON이 있습니다.",
+            "청구관리에서 해당 프로필을 열고 전표/수금 근거를 확인한 뒤 필요 시 수동 정리하세요."),
         [DataIntegrityIssueCodes.RentalBillingProfileSummaryMismatch] = new(
             DataIntegrityIssueCodes.RentalBillingProfileSummaryMismatch,
             "렌탈 청구 프로필 요약 불일치",
@@ -624,6 +632,14 @@ public sealed class DataIntegrityIssueService
             "Integrity scan rental billing run settlement mismatch",
             stepStopwatch,
             $"issues={rentalBillingRunSettlementMismatchIssues.Count:N0}");
+
+        stepStopwatch.Restart();
+        var rentalBillingRunMissingRunIdIssues = LoadRentalBillingRunMissingRunIdIssues(scopedProfiles);
+        details.AddRange(rentalBillingRunMissingRunIdIssues);
+        LogIntegrityScanStep(
+            "Integrity scan rental billing run missing run id",
+            stepStopwatch,
+            $"issues={rentalBillingRunMissingRunIdIssues.Count:N0}");
 
         stepStopwatch.Restart();
         var rentalBillingProfileSummaryMismatchIssues = await LoadRentalBillingProfileSummaryMismatchIssuesAsync(scopedProfiles, session, ct);
@@ -1871,6 +1887,9 @@ public sealed class DataIntegrityIssueService
         {
             foreach (var run in ParseRentalBillingRuns(profile.BillingRunsJson))
             {
+                if (run.RunId == Guid.Empty)
+                    continue;
+
                 var runId = NormalizeRunId(run.RunId);
                 var key = (profile.Id, RunId: runId);
                 transactionSettledAmounts.TryGetValue(key, out var transactionAmount);
@@ -1901,6 +1920,48 @@ public sealed class DataIntegrityIssueService
                         $"Actual {actualAmount:N0}",
                         $"Transaction {transactionAmount:N0}",
                         $"DirectPayment {directPaymentAmount:N0}",
+                        string.IsNullOrWhiteSpace(run.Status) ? "Status -" : $"Status {run.Status}",
+                        string.IsNullOrWhiteSpace(run.SettlementStatus) ? "SettlementStatus -" : $"SettlementStatus {run.SettlementStatus}"
+                    }));
+            }
+        }
+
+        return issues;
+    }
+
+    private static List<DataIntegrityIssueDetail> LoadRentalBillingRunMissingRunIdIssues(
+        IReadOnlyCollection<LocalRentalBillingProfile> profiles)
+    {
+        var issues = new List<DataIntegrityIssueDetail>();
+        foreach (var profile in profiles)
+        {
+            foreach (var run in ParseRentalBillingRuns(profile.BillingRunsJson))
+            {
+                if (run.RunId != Guid.Empty)
+                    continue;
+
+                var profileDisplay = BuildProfileDisplay(profile);
+                AddGeneralIssue(
+                    issues,
+                    DataIntegrityIssueCodes.RentalBillingRunMissingRunId,
+                    entityType: "렌탈 청구 run",
+                    entityId: profile.Id,
+                    customerName: profile.CustomerName,
+                    officeCode: ResolveProfileOfficeCode(profile),
+                    currentValue: $"RunKey {NormalizeDisplay(run.RunKey, "없음")} / 청구일 {run.ScheduledDate:yyyy-MM-dd} / 청구액 {run.BilledAmount:N0} / 정산 {run.SettledAmount:N0}",
+                    expectedValue: "청구 run은 고유 RunId를 가져야 전표/수금/동기화 정산 비교 대상이 됩니다.",
+                    message: $"{profileDisplay}의 청구 run에 RunId가 없어 자동 정산 비교 대상에서 제외됩니다.",
+                    directActionKind: DataIntegrityDirectActionKind.OpenRentalBillingProfile,
+                    relatedEntityIds: Array.Empty<Guid>(),
+                    reviewInfo: string.Join(" / ", new[]
+                    {
+                        $"ProfileId {profile.Id:D}",
+                        "RunId 없음",
+                        $"RunKey {NormalizeDisplay(run.RunKey, "-")}",
+                        $"Scheduled {run.ScheduledDate:yyyy-MM-dd}",
+                        $"Period {run.PeriodStartDate:yyyy-MM-dd}~{run.PeriodEndDate:yyyy-MM-dd}",
+                        $"Billed {run.BilledAmount:N0}",
+                        $"Settled {run.SettledAmount:N0}",
                         string.IsNullOrWhiteSpace(run.Status) ? "Status -" : $"Status {run.Status}",
                         string.IsNullOrWhiteSpace(run.SettlementStatus) ? "SettlementStatus -" : $"SettlementStatus {run.SettlementStatus}"
                     }));

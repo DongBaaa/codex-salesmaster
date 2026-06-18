@@ -502,6 +502,64 @@ public sealed class DataIntegrityIssueServicePerformanceTests
     }
 
     [Fact]
+    public async Task ScanAsync_FindsRentalBillingRunMissingRunIdAsInfo()
+    {
+        PrepareAppRoot("georaeplan-integrity-rental-run-missing-run-id");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var profileId = Guid.NewGuid();
+
+            db.Customers.Add(CreateCustomer(customerId, OfficeCodeCatalog.Usenet, "Missing run id customer"));
+            var profile = CreateProfile(profileId, 9403, OfficeCodeCatalog.Usenet, customerId, "Missing run id customer");
+            profile.BillingRunsJson = JsonSerializer.Serialize(new List<RentalBillingRunModel>
+            {
+                new()
+                {
+                    RunId = Guid.Empty,
+                    RunKey = "legacy-2026-06",
+                    ScheduledDate = new DateOnly(2026, 6, 25),
+                    PeriodStartDate = new DateOnly(2026, 6, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    PeriodLabel = "2026-06",
+                    Status = PaymentFlowConstants.BillingStatusCompleted,
+                    BilledAmount = 100_000m,
+                    SettledAmount = 100_000m,
+                    SettlementStatus = PaymentFlowConstants.SettlementStatusConfirmed,
+                    SettledDate = new DateOnly(2026, 6, 26)
+                }
+            });
+            db.RentalBillingProfiles.Add(profile);
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateAdminSession());
+            var issue = Assert.Single(result.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.RentalBillingRunMissingRunId);
+
+            Assert.Equal(profileId, issue.EntityId);
+            Assert.Equal("Info", issue.Severity);
+            Assert.Equal(DataIntegrityDirectActionKind.OpenRentalBillingProfile, issue.DirectActionKind);
+            Assert.Contains("RunId 없음", issue.ReviewInfo, StringComparison.Ordinal);
+            Assert.Contains("legacy-2026-06", issue.CurrentValue, StringComparison.Ordinal);
+            Assert.Contains("100,000", issue.CurrentValue, StringComparison.Ordinal);
+            Assert.DoesNotContain(result.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.RentalBillingRunSettlementMismatch);
+            Assert.DoesNotContain(result.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.RentalBillingProfileSummaryMismatch);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ScanAsync_FindsRestoredRentalInvoiceWithDeletedPaymentAndDetachedTransaction()
     {
         PrepareAppRoot("georaeplan-integrity-rental-invoice-detached-payment");
