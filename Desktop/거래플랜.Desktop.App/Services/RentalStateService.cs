@@ -5043,22 +5043,101 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
     private async Task<decimal> GetRentalBillingRunSettledAmountAsync(
         Guid billingProfileId,
-        Guid billingRunId,
+        Guid? billingRunId,
         CancellationToken ct)
     {
-        if (billingProfileId == Guid.Empty || billingRunId == Guid.Empty)
+        if (billingProfileId == Guid.Empty)
             return 0m;
 
-        var amounts = await _db.Transactions
+        var transactionQuery = _db.Transactions
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(transaction =>
                 !transaction.IsDeleted &&
-                transaction.LinkedRentalBillingProfileId == billingProfileId &&
-                transaction.LinkedRentalBillingRunId == billingRunId)
-            .Select(transaction => transaction.SettlementAmount)
+                transaction.LinkedRentalBillingProfileId == billingProfileId);
+        if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
+            transactionQuery = transactionQuery.Where(transaction => transaction.LinkedRentalBillingRunId == billingRunId.Value);
+
+        var transactionSettledAmount = (await transactionQuery
+                .Select(transaction => transaction.SettlementAmount)
+                .ToListAsync(ct))
+            .Sum();
+
+        var directPaymentQuery =
+            from payment in _db.Payments.IgnoreQueryFilters().AsNoTracking()
+            join invoice in _db.Invoices.IgnoreQueryFilters().AsNoTracking()
+                on payment.InvoiceId equals invoice.Id
+            where !payment.IsDeleted &&
+                  !invoice.IsDeleted &&
+                  invoice.IsLatestVersion &&
+                  invoice.LinkedRentalBillingProfileId == billingProfileId &&
+                  !_db.Transactions.IgnoreQueryFilters().AsNoTracking().Any(transaction =>
+                      !transaction.IsDeleted &&
+                      transaction.Id == payment.Id &&
+                      transaction.LinkedRentalBillingProfileId == billingProfileId)
+            select new
+            {
+                payment.Amount,
+                invoice.LinkedRentalBillingRunId
+            };
+        if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
+            directPaymentQuery = directPaymentQuery.Where(row => row.LinkedRentalBillingRunId == billingRunId.Value);
+
+        var directPaymentSettledAmount = (await directPaymentQuery
+                .Select(row => row.Amount)
+                .ToListAsync(ct))
+            .Sum();
+
+        return Math.Max(0m, transactionSettledAmount + directPaymentSettledAmount);
+    }
+
+    private async Task<DateOnly?> GetRentalBillingRunLastSettledDateAsync(
+        Guid billingProfileId,
+        Guid? billingRunId,
+        CancellationToken ct)
+    {
+        if (billingProfileId == Guid.Empty)
+            return null;
+
+        var transactionQuery = _db.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(transaction =>
+                !transaction.IsDeleted &&
+                transaction.LinkedRentalBillingProfileId == billingProfileId);
+        if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
+            transactionQuery = transactionQuery.Where(transaction => transaction.LinkedRentalBillingRunId == billingRunId.Value);
+
+        var transactionDates = await transactionQuery
+            .Select(transaction => transaction.TransactionDate)
             .ToListAsync(ct);
-        return Math.Max(0m, amounts.Sum());
+
+        var directPaymentQuery =
+            from payment in _db.Payments.IgnoreQueryFilters().AsNoTracking()
+            join invoice in _db.Invoices.IgnoreQueryFilters().AsNoTracking()
+                on payment.InvoiceId equals invoice.Id
+            where !payment.IsDeleted &&
+                  !invoice.IsDeleted &&
+                  invoice.IsLatestVersion &&
+                  invoice.LinkedRentalBillingProfileId == billingProfileId &&
+                  !_db.Transactions.IgnoreQueryFilters().AsNoTracking().Any(transaction =>
+                      !transaction.IsDeleted &&
+                      transaction.Id == payment.Id &&
+                      transaction.LinkedRentalBillingProfileId == billingProfileId)
+            select new
+            {
+                payment.PaymentDate,
+                invoice.LinkedRentalBillingRunId
+            };
+        if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
+            directPaymentQuery = directPaymentQuery.Where(row => row.LinkedRentalBillingRunId == billingRunId.Value);
+
+        var directPaymentDates = await directPaymentQuery
+            .Select(row => row.PaymentDate)
+            .ToListAsync(ct);
+
+        var dates = transactionDates.Concat(directPaymentDates).ToList();
+        return dates.Count == 0 ? null : dates.Max();
     }
 
     public async Task<LocalMutationResult> HoldBillingAsync(
@@ -5150,15 +5229,88 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (amount < 0m)
             amount = 0m;
 
+        var normalizedNote = (note ?? string.Empty).Trim();
+        var effectiveBillingRunId = currentRun?.RunId is Guid currentRunId && currentRunId != Guid.Empty
+            ? currentRunId
+            : (Guid?)null;
+        var existingSettledAmount = await GetRentalBillingRunSettledAmountAsync(profile.Id, effectiveBillingRunId, ct);
+        if (amount < existingSettledAmount)
+            return LocalMutationResult.Denied(
+                $"이미 등록된 입금액 {existingSettledAmount:N0}원보다 낮게 수금액을 조정할 수 없습니다. 청구/입금 내역 삭제 후 다시 등록하세요.");
+
+        var settlementDelta = amount - existingSettledAmount;
+        if (settlementDelta > 0m)
+        {
+            if (_local is null)
+                return LocalMutationResult.Denied("렌탈 수금 저장 서비스를 사용할 수 없습니다.");
+
+            var customerId = profile.CustomerId;
+            if (!customerId.HasValue || customerId.Value == Guid.Empty)
+                customerId = await ResolveCustomerIdAsync(
+                    profile.CustomerName,
+                    profile.BusinessNumber,
+                    ct,
+                    preferredOfficeCode: profile.ResponsibleOfficeCode,
+                    preferredTenantCode: profile.TenantCode);
+            if (!customerId.HasValue || customerId.Value == Guid.Empty)
+                return LocalMutationResult.Denied("렌탈 수금을 연결할 거래처를 찾을 수 없습니다. 거래처를 먼저 연결하거나 등록하세요.");
+
+            profile.CustomerId = customerId;
+            profile.IsDirty = true;
+            profile.UpdatedAtUtc = DateTime.UtcNow;
+
+            var transaction = new LocalTransaction
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customerId.Value,
+                TenantCode = profile.TenantCode,
+                OfficeCode = string.IsNullOrWhiteSpace(profile.OfficeCode)
+                    ? profile.ManagementCompanyCode
+                    : profile.OfficeCode,
+                ResponsibleOfficeCode = string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
+                    ? profile.ManagementCompanyCode
+                    : profile.ResponsibleOfficeCode,
+                TransactionDate = referenceDate,
+                TransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt,
+                LinkedRentalBillingProfileId = profile.Id,
+                LinkedRentalBillingRunId = effectiveBillingRunId,
+                BankReceipt = settlementDelta,
+                ReceiptTotal = settlementDelta,
+                SettlementAmount = settlementDelta,
+                Note = normalizedNote
+            };
+
+            var saveTransactionResult = await _local.SaveTransactionAsync(transaction, session, ct);
+            if (!saveTransactionResult.Success)
+                return ConvertOfficeMutationResult(saveTransactionResult, "렌탈 수금을 저장할 수 없습니다.");
+
+            amount = await GetRentalBillingRunSettledAmountAsync(profile.Id, effectiveBillingRunId, ct);
+            if (effectiveBillingRunId.HasValue)
+                currentRun = FindBillingRunById(profile, effectiveBillingRunId);
+            billedAmount = currentRun?.BilledAmount ?? billedAmount;
+        }
+        else
+        {
+            amount = existingSettledAmount;
+        }
+
+        var lastSettledDate = amount > 0m
+            ? await GetRentalBillingRunLastSettledDateAsync(profile.Id, effectiveBillingRunId, ct)
+            : null;
+
         profile.SettledAmount = amount;
         profile.OutstandingAmount = Math.Max(0m, billedAmount - amount);
-        profile.SettlementStatus = profile.OutstandingAmount <= 0m
-            ? PaymentFlowConstants.SettlementStatusConfirmed
-            : PaymentFlowConstants.SettlementStatusPartial;
-        profile.LastSettledDate = referenceDate;
+        profile.SettlementStatus = DetermineBillingSettlementStatus(profile, amount, billedAmount);
+        profile.LastSettledDate = lastSettledDate;
+        profile.CompletionStatus = profile.OutstandingAmount <= 0m
+            ? PaymentFlowConstants.CompletionDone
+            : PaymentFlowConstants.CompletionPending;
         profile.RequiresFollowUp = profile.OutstandingAmount > 0m;
-        var normalizedNote = (note ?? string.Empty).Trim();
-        if (!string.Equals(profile.BillingStatus, PaymentFlowConstants.BillingStatusCompleted, StringComparison.OrdinalIgnoreCase))
+        if (profile.OutstandingAmount <= 0m)
+        {
+            profile.BillingStatus = PaymentFlowConstants.BillingStatusCompleted;
+        }
+        else if (!string.Equals(profile.BillingStatus, PaymentFlowConstants.BillingStatusCompleted, StringComparison.OrdinalIgnoreCase))
         {
             profile.BillingStatus = PaymentFlowConstants.BillingStatusInProgress;
         }
@@ -5167,7 +5319,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             currentRun.BilledAmount = billedAmount;
             currentRun.SettledAmount = amount;
             currentRun.SettlementStatus = profile.SettlementStatus;
-            currentRun.SettledDate = referenceDate;
+            currentRun.SettledDate = lastSettledDate;
             currentRun.Note = normalizedNote;
             currentRun.Status = profile.OutstandingAmount <= 0m
                 ? PaymentFlowConstants.BillingStatusCompleted
@@ -7606,17 +7758,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
             ?? GetNextBillingDate(profile, referenceDate)
             ?? RentalBillingScheduleRules.BuildBillingDate(referenceDate.Year, referenceDate.Month, profile.BillingDay, profile.BillingDayMode);
         var billedAmount = currentRun?.BilledAmount ?? profile.MonthlyAmount;
-        IQueryable<LocalTransaction> settlementQuery = _db.Transactions.IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(current => !current.IsDeleted && current.LinkedRentalBillingProfileId == billingProfileId);
-        if (currentRun?.RunId is Guid currentRunId && currentRunId != Guid.Empty)
-            settlementQuery = settlementQuery.Where(current => current.LinkedRentalBillingRunId == currentRunId);
-
-        var settledAmountForCompletion = (await settlementQuery
-            .Select(current => current.SettlementAmount)
-            .ToListAsync(ct))
-            .Sum();
-        settledAmountForCompletion = Math.Max(0m, settledAmountForCompletion);
+        var settledAmountForCompletion = await GetRentalBillingRunSettledAmountAsync(
+            billingProfileId,
+            currentRun?.RunId,
+            ct);
 
         var remainingAmount = Math.Max(0m, billedAmount - settledAmountForCompletion);
         if (remainingAmount > 0m)
