@@ -1530,7 +1530,7 @@ public partial class MainWindow : Window
     private async Task OpenCustomerEditorAsync(Data.LocalCustomer? customer = null, Window? ownerOverride = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
-        var vm = new CustomerEditViewModel(_local, _session);
+        var vm = new CustomerEditViewModel(_local, _session, _api);
         await OperationTiming.MeasureAsync(
             "UI",
             "거래처 등록/수정 창 초기화",
@@ -1711,7 +1711,7 @@ public partial class MainWindow : Window
             "거래처 관리 창 초기화",
             () => vm.InitializeAsync(),
             warningThreshold: TimeSpan.FromSeconds(2));
-        var win = new CustomerManagementWindow(vm, _local, _session)
+        var win = new CustomerManagementWindow(vm, _local, _session, _api)
         {
             Owner = this
         };
@@ -1757,7 +1757,7 @@ public partial class MainWindow : Window
     private async Task OpenRentalBillingWindowAsync(Guid? targetProfileId = null, Window? ownerOverride = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
-        var vm = new RentalBillingViewModel(_rental, _local, _session);
+        var vm = new RentalBillingViewModel(_rental, _local, _session, _api);
         var win = new RentalBillingWindow(vm)
         {
             Owner = ownerOverride ?? this

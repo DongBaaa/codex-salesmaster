@@ -14,16 +14,19 @@ public partial class CustomerManagementWindow : Window
     private readonly CustomerManagementViewModel _vm;
     private readonly LocalStateService _local;
     private readonly SessionState _session;
+    private readonly ErpApiClient? _api;
 
     public CustomerManagementWindow(
         CustomerManagementViewModel vm,
         LocalStateService local,
-        SessionState session)
+        SessionState session,
+        ErpApiClient? api = null)
     {
         InitializeComponent();
         _vm = vm;
         _local = local;
         _session = session;
+        _api = api;
         DataContext = vm;
         Closed += (_, _) => _vm.Dispose();
     }
@@ -32,7 +35,7 @@ public partial class CustomerManagementWindow : Window
     {
         UiTaskHelper.Run(this, async () =>
         {
-            var customerVm = new CustomerEditViewModel(_local, _session);
+            var customerVm = new CustomerEditViewModel(_local, _session, _api);
             await customerVm.LoadAsync();
             var win = new CustomerEditWindow(customerVm) { Owner = this };
             if (win.ShowDialog() == true)
@@ -98,7 +101,7 @@ public partial class CustomerManagementWindow : Window
             return;
         }
 
-        var customerVm = new CustomerEditViewModel(_local, _session);
+        var customerVm = new CustomerEditViewModel(_local, _session, _api);
         await customerVm.LoadAsync(_vm.SelectedCustomer.Source);
         var win = new CustomerEditWindow(customerVm) { Owner = this };
         if (win.ShowDialog() == true)

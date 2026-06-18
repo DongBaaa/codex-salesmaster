@@ -23,7 +23,7 @@ public sealed class MasterUiWiringGuardTests
 
         AssertContainsAll(
             code,
-            "new CustomerEditViewModel(_local, _session)",
+            "new CustomerEditViewModel(_local, _session, _api)",
             "await customerVm.LoadAsync(_vm.SelectedCustomer.Source)",
             "() => _vm.SaveOfficeChangeAsync(row)",
             "await _local.DeleteCustomerAsync(selectedCustomer.Id, _session, selectedCustomer.Source.Revision)",

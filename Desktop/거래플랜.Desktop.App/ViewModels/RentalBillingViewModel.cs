@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using 거래플랜.Desktop.App;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
@@ -20,6 +21,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private readonly RentalStateService _rental;
     private readonly LocalStateService _local;
     private readonly SessionState _session;
+    private readonly ErpApiClient? _api;
     private readonly UiDebouncer _searchDebouncer = new();
     private CancellationTokenSource? _filterReloadCts;
     private CancellationTokenSource? _candidateAssetsLoadCts;
@@ -225,11 +227,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private bool CanEditCurrentSelection => CanEditRentalProfiles && (SelectedRow is null || CanOperateScope(
         ResolveProfileOfficeCode(SelectedRow.Source, _session.OfficeCode)));
 
-    public RentalBillingViewModel(RentalStateService rental, LocalStateService local, SessionState session)
+    public RentalBillingViewModel(RentalStateService rental, LocalStateService local, SessionState session, ErpApiClient? api = null)
     {
         _rental = rental;
         _local = local;
         _session = session;
+        _api = api ?? App.TryGetService<ErpApiClient>();
 
         StatusOptions.Add(AllOption);
         StatusOptions.Add("활성");
@@ -1886,7 +1889,11 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         try
         {
-            CustomerContractPreviewService.Open(contract);
+            if (!CustomerContractContentService.HasLocalContent(contract))
+                StatusMessage = "거래처 계약서 PDF를 서버에서 내려받는 중입니다.";
+
+            var readyContract = await CustomerContractContentService.EnsureContentAsync(contract, _local, _session, _api);
+            CustomerContractPreviewService.Open(readyContract);
             StatusMessage = "거래처 계약서를 열었습니다.";
         }
         catch (Exception ex)
@@ -2613,10 +2620,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     }
 
     private static bool ContractHasPdfFile(LocalCustomerContract? contract)
-        => contract is not null &&
-           !string.IsNullOrWhiteSpace(contract.FileName) &&
-           contract.FileSize > 0 &&
-           contract.FileContent is { Length: > 0 };
+        => CustomerContractContentService.HasRegisteredFile(contract);
 
     private static bool IsA3ColorMultiFunctionAsset(LocalRentalAsset asset)
         => RentalAssetCategoryRules.IsA3ColorMultiFunctionAsset(asset);

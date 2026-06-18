@@ -65,7 +65,7 @@ public sealed partial class MainViewModel
     private bool CanOpenPreviewCustomerContract() => PreviewCustomerContract is not null;
 
     [RelayCommand(CanExecute = nameof(CanOpenPreviewCustomerContract))]
-    private void OpenPreviewCustomerContract()
+    private async Task OpenPreviewCustomerContractAsync()
     {
         var contract = PreviewCustomerContract;
         if (contract is null)
@@ -73,7 +73,8 @@ public sealed partial class MainViewModel
 
         try
         {
-            CustomerContractPreviewService.Open(contract);
+            var readyContract = await CustomerContractContentService.EnsureContentAsync(contract, _local, _session, _api);
+            CustomerContractPreviewService.Open(readyContract);
         }
         catch (Exception ex)
         {

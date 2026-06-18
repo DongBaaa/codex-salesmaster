@@ -619,20 +619,45 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	public async Task<LocalCustomerContract?> GetPreferredCustomerContractAsync(Guid customerId, SessionState session, CancellationToken ct = default(CancellationToken))
 	{
 		List<LocalCustomerContract> contracts = await GetCustomerContractsAsync(customerId, session, ct);
-		return contracts.FirstOrDefault(delegate(LocalCustomerContract contract)
+		return contracts.FirstOrDefault(contract => contract.FileSize > 0 && !string.IsNullOrWhiteSpace(contract.FileName))
+			?? contracts.FirstOrDefault();
+	}
+
+	public async Task<bool> CacheCustomerContractContentAsync(Guid contractId, byte[] fileContent, SessionState session, CancellationToken ct = default(CancellationToken))
+	{
+		if (contractId == Guid.Empty || fileContent.Length == 0)
 		{
-			int result;
-			if (contract.FileSize > 0)
+			return false;
+		}
+		var contract = await _db.CustomerContracts.IgnoreQueryFilters().FirstOrDefaultAsync((LocalCustomerContract current) => current.Id == contractId, ct);
+		if (contract == null || contract.IsDeleted)
+		{
+			return false;
+		}
+		var customer = await _db.Customers.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync((LocalCustomer current) => current.Id == contract.CustomerId, ct);
+		if (customer == null || !CanAccessCustomer(customer, session))
+		{
+			return false;
+		}
+		if (contract.FileSize > 0 && fileContent.LongLength != contract.FileSize)
+		{
+			throw new InvalidOperationException($"계약서 파일 크기가 서버 기록과 일치하지 않습니다. 기록 {contract.FileSize:N0}바이트, 실제 {fileContent.LongLength:N0}바이트입니다.");
+		}
+		if (!string.IsNullOrWhiteSpace(contract.FileHash))
+		{
+			var actualHash = ComputeFileHash(fileContent);
+			if (!string.Equals(contract.FileHash, actualHash, StringComparison.OrdinalIgnoreCase))
 			{
-				byte[] fileContent = contract.FileContent;
-				result = ((fileContent != null && fileContent.Length > 0) ? 1 : 0);
+				throw new InvalidOperationException("계약서 파일 해시가 서버 기록과 일치하지 않습니다. 운영 점검에서 파일 저장소 무결성을 확인하세요.");
 			}
-			else
-			{
-				result = 0;
-			}
-			return (byte)result != 0;
-		}) ?? contracts.FirstOrDefault();
+		}
+		contract.FileContent = fileContent;
+		contract.IsDirty = false;
+		using (SuppressSyncDispatch())
+		{
+			await _db.SaveChangesAsync(ct);
+		}
+		return true;
 	}
 
 	public async Task<LocalCustomerContract?> GetRepresentativeCustomerContractAsync(Guid customerId, SessionState session, CancellationToken ct = default(CancellationToken))

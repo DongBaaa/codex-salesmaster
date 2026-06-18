@@ -27,7 +27,7 @@ public static class CustomerContractPreviewService
     public static string MaterializePreviewFile(LocalCustomerContract contract)
     {
         if (contract.FileContent is null || contract.FileContent.Length == 0)
-            throw new InvalidOperationException("계약서 PDF 내용이 없습니다. 동기화 상태를 확인해주세요.");
+            throw new InvalidOperationException("계약서 PDF 내용이 이 PC에 없습니다. 온라인 상태에서 서버 파일 내려받기를 먼저 완료해주세요.");
 
         var previewPath = BuildPreviewPath(contract);
         Directory.CreateDirectory(Path.GetDirectoryName(previewPath)!);

@@ -6,6 +6,7 @@ using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
+using 거래플랜.Desktop.App;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
@@ -26,6 +27,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
 
     private readonly LocalStateService _local;
     private readonly SessionState _session;
+    private readonly ErpApiClient? _api;
     private string _baselineStateSignature = string.Empty;
     private long _loadedCustomerRevision;
     private Guid? _editingContractId;
@@ -85,10 +87,11 @@ public sealed partial class CustomerEditViewModel : ObservableObject
     public ObservableCollection<string> ContractTypes { get; } = new();
     public ObservableCollection<LocalCustomerContract> Contracts { get; } = new();
 
-    public CustomerEditViewModel(LocalStateService local, SessionState session)
+    public CustomerEditViewModel(LocalStateService local, SessionState session, ErpApiClient? api = null)
     {
         _local = local;
         _session = session;
+        _api = api ?? App.TryGetService<ErpApiClient>();
 
         foreach (var contractType in DefaultContractTypes)
             ContractTypes.Add(contractType);
@@ -342,7 +345,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void OpenContract()
+    private async Task OpenContractAsync()
     {
         var contract = SelectedContract;
         if (contract is null)
@@ -364,7 +367,11 @@ public sealed partial class CustomerEditViewModel : ObservableObject
 
         try
         {
-            CustomerContractPreviewService.Open(contract);
+            if (!CustomerContractContentService.HasLocalContent(contract))
+                StatusMessage = "계약서 PDF를 서버에서 내려받는 중입니다.";
+
+            var readyContract = await CustomerContractContentService.EnsureContentAsync(contract, _local, _session, _api);
+            CustomerContractPreviewService.Open(readyContract);
             StatusMessage = "계약서 PDF를 열었습니다.";
         }
         catch (Exception ex)
@@ -638,10 +645,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
     => OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(officeCode, DomainConstants.OfficeUsenet);
 
     private static bool ContractHasPdfFile(LocalCustomerContract? contract)
-        => contract is not null &&
-           !string.IsNullOrWhiteSpace(contract.FileName) &&
-           contract.FileSize > 0 &&
-           contract.FileContent is { Length: > 0 };
+        => CustomerContractContentService.HasRegisteredFile(contract);
 
     private bool HasPendingCustomerChanges
         => !string.Equals(_baselineStateSignature, BuildStateSignature(), StringComparison.Ordinal);

@@ -5609,7 +5609,7 @@ public sealed class SyncService : IDisposable
         _db.ChangeTracker.Clear();
         await UpsertPulledAsync(pull.Customers, _db.Customers, LocalMappings.ToLocal, ct);
         _db.ChangeTracker.Clear();
-        await UpsertPulledAsync(pull.CustomerContracts, _db.CustomerContracts, LocalMappings.ToLocal, ct);
+        await UpsertPulledCustomerContractsAsync(pull.CustomerContracts, ct);
         _db.ChangeTracker.Clear();
         await UpsertPulledItemsAsync(pull.Items, ct);
         _db.ChangeTracker.Clear();
@@ -5743,6 +5743,51 @@ public sealed class SyncService : IDisposable
                     profile.IsDirty = false;
                     profile.UpdatedAtUtc = now;
                 }
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task UpsertPulledCustomerContractsAsync(
+        IReadOnlyList<CustomerContractDto> dtos,
+        CancellationToken ct)
+    {
+        foreach (var dto in dtos)
+        {
+            var local = LocalMappings.ToLocal(dto);
+            local.IsDirty = false;
+            var existing = await _db.CustomerContracts.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == local.Id, ct);
+            if (existing is null)
+            {
+                _db.CustomerContracts.Add(local);
+                continue;
+            }
+
+            if (existing.IsDirty)
+                continue;
+
+            var existingFileContent = existing.FileContent;
+            var existingFileHash = existing.FileHash;
+            var existingFileSize = existing.FileSize;
+            var incomingFileContent = local.FileContent ?? [];
+            var canPreserveLocalContent =
+                !local.IsDeleted &&
+                incomingFileContent.Length == 0 &&
+                existingFileContent is { Length: > 0 } &&
+                local.FileSize > 0 &&
+                existingFileSize == local.FileSize &&
+                existingFileContent.LongLength == local.FileSize &&
+                (string.IsNullOrWhiteSpace(local.FileHash) ||
+                 string.Equals(existingFileHash, local.FileHash, StringComparison.OrdinalIgnoreCase));
+
+            _db.Entry(existing).CurrentValues.SetValues(local);
+
+            if (canPreserveLocalContent)
+            {
+                existing.FileContent = existingFileContent;
+                existing.IsDirty = false;
             }
         }
 

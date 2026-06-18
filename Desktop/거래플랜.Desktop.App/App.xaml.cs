@@ -52,6 +52,14 @@ public partial class App : Application
 
     private readonly SemaphoreSlim _saveCycleLock = new(1, 1);
 
+    public static T? TryGetService<T>() where T : class
+    {
+        if (Current is App app && app._services is not null)
+            return app._services.GetService<T>();
+
+        return null;
+    }
+
     private DispatcherTimer? _autoSaveTimer;
 
     private int _unexpectedErrorDialogOpen;

@@ -757,7 +757,7 @@ public sealed partial class EnvironmentSettingsViewModel
         {
             case DataIntegrityDirectActionKind.OpenRentalBillingProfile when issue.ProfileId.HasValue:
             {
-                var billingViewModel = new RentalBillingViewModel(_rental, _local, _session);
+                var billingViewModel = new RentalBillingViewModel(_rental, _local, _session, _api);
                 await billingViewModel.LoadAndSelectProfileAsync(issue.ProfileId.Value);
                 var window = new RentalBillingWindow(billingViewModel);
                 if (owner is not null)
@@ -802,7 +802,7 @@ public sealed partial class EnvironmentSettingsViewModel
                     break;
                 }
 
-                var customerViewModel = new CustomerEditViewModel(_local, _session);
+                var customerViewModel = new CustomerEditViewModel(_local, _session, _api);
                 await customerViewModel.LoadAsync(customer);
                 var window = new CustomerEditWindow(customerViewModel);
                 if (owner is not null)
