@@ -47,22 +47,52 @@ public sealed class UpdatesController : ControllerBase
     [HttpGet("download/{platform}/{fileName}")]
     public IActionResult DownloadPackage(string platform, string fileName)
     {
-        var normalizedPlatform = NormalizePlatform(platform);
-        if (normalizedPlatform is null)
-            return NotFound();
-
-        var safeFileName = Path.GetFileName(fileName ?? string.Empty);
-        if (string.IsNullOrWhiteSpace(safeFileName) || !string.Equals(safeFileName, fileName, StringComparison.Ordinal))
-            return NotFound();
-
-        var fullPath = Path.Combine(GetStorageRoot(), "downloads", normalizedPlatform, safeFileName);
-        if (!System.IO.File.Exists(fullPath))
+        if (!TryResolveDownloadPackagePath(platform, fileName, out var fullPath, out var safeFileName))
             return NotFound();
 
         var stream = System.IO.File.OpenRead(fullPath);
+        ApplyDownloadHeaders(safeFileName);
+        return File(stream, ResolveContentType(safeFileName));
+    }
+
+    [HttpHead("download/{platform}/{fileName}")]
+    public IActionResult HeadPackage(string platform, string fileName)
+    {
+        if (!TryResolveDownloadPackagePath(platform, fileName, out var fullPath, out var safeFileName))
+            return NotFound();
+
+        var fileInfo = new FileInfo(fullPath);
+        ApplyDownloadHeaders(safeFileName);
+        Response.ContentType = ResolveContentType(safeFileName);
+        Response.ContentLength = fileInfo.Length;
+        return new EmptyResult();
+    }
+
+    private bool TryResolveDownloadPackagePath(
+        string platform,
+        string fileName,
+        out string fullPath,
+        out string safeFileName)
+    {
+        fullPath = string.Empty;
+        safeFileName = string.Empty;
+
+        var normalizedPlatform = NormalizePlatform(platform);
+        if (normalizedPlatform is null)
+            return false;
+
+        safeFileName = Path.GetFileName(fileName ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(safeFileName) || !string.Equals(safeFileName, fileName, StringComparison.Ordinal))
+            return false;
+
+        fullPath = Path.Combine(GetStorageRoot(), "downloads", normalizedPlatform, safeFileName);
+        return System.IO.File.Exists(fullPath);
+    }
+
+    private void ApplyDownloadHeaders(string safeFileName)
+    {
         Response.Headers.CacheControl = "no-store";
         Response.Headers["X-Update-FileName"] = Uri.EscapeDataString(safeFileName);
-        return File(stream, ResolveContentType(safeFileName));
     }
 
     private void NormalizePackage(AppUpdatePackageDto? package, string platform)

@@ -84,6 +84,34 @@ public sealed class UpdatesControllerTests : IDisposable
         Assert.Equal(string.Empty, payload.Desktop.MinimumSupportedVersion);
     }
 
+    [Fact]
+    public void HeadPackage_ReturnsHeaders_ForExistingDesktopPackage()
+    {
+        const string fileName = "package.zip";
+        var packagePath = Path.Combine(_storageRoot, "downloads", "desktop", fileName);
+        File.WriteAllBytes(packagePath, [1, 2, 3, 4]);
+        var controller = CreateController();
+
+        var result = controller.HeadPackage("desktop", fileName);
+
+        Assert.IsType<EmptyResult>(result);
+        Assert.Equal(StatusCodes.Status200OK, controller.Response.StatusCode);
+        Assert.Equal("application/zip", controller.Response.ContentType);
+        Assert.Equal(4, controller.Response.ContentLength);
+        Assert.Equal("no-store", controller.Response.Headers.CacheControl.ToString());
+        Assert.Equal(fileName, Uri.UnescapeDataString(controller.Response.Headers["X-Update-FileName"].ToString()));
+    }
+
+    [Fact]
+    public void HeadPackage_ReturnsNotFound_ForPathTraversalFileName()
+    {
+        var controller = CreateController();
+
+        var result = controller.HeadPackage("desktop", "../package.zip");
+
+        Assert.IsType<NotFoundResult>(result);
+    }
+
     public void Dispose()
     {
         try

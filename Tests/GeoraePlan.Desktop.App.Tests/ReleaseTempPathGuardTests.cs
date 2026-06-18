@@ -49,11 +49,20 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("$env:GEORAEPLAN_TEMP_ROOT = $resolvedGeoraePlanTempRoot", initializeTempSource, StringComparison.Ordinal);
         Assert.Contains("$env:TEMP = $resolvedGeoraePlanTempRoot", initializeTempSource, StringComparison.Ordinal);
         Assert.Contains("$env:TMP = $resolvedGeoraePlanTempRoot", initializeTempSource, StringComparison.Ordinal);
+        Assert.Contains("$effectiveProjectRoot = $ProjectRoot", initializeTempSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Join-Path 'D:\\", initializeTempSource, StringComparison.Ordinal);
         AssertInOrder(
             initializeTempSource,
-            "Join-Path $ProjectRoot 'temp'",
-            "Join-Path 'D:\\거래플랜' 'temp'",
+            "Join-Path $effectiveProjectRoot 'temp'",
             "$env:TEMP");
+
+        var updateAssetsSource = ReadRepositoryFile(
+            "tools",
+            "release",
+            "Publish-GeoraePlanUpdateAssets.ps1");
+
+        Assert.Contains("Initialize-GeoraePlanTemp.ps1", updateAssetsSource, StringComparison.Ordinal);
+        Assert.Contains(". $tempInitializer -ProjectRoot $ProjectRoot", updateAssetsSource, StringComparison.Ordinal);
 
         var desktopInstallerSource = ReadRepositoryFile(
             "tools",
