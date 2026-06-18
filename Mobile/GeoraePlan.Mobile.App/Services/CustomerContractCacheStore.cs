@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using 거래플랜.Shared.Contracts;
 
@@ -85,23 +86,38 @@ public sealed class CustomerContractCacheStore
         {
             Directory.CreateDirectory(GetCustomerDirectory(customerId));
             await File.WriteAllBytesAsync(pdfPath, fileContent, ct);
-            return pdfPath;
+            if (await IsCachedPdfValidAsync(pdfPath, contract, ct))
+                return pdfPath;
+
+            TryDeleteFile(pdfPath);
+            return null;
         }
 
-        return File.Exists(pdfPath) ? pdfPath : null;
+        if (await IsCachedPdfValidAsync(pdfPath, contract, ct))
+            return pdfPath;
+
+        TryDeleteFile(pdfPath);
+        return null;
     }
 
-    public async Task<string> CachePdfAsync(Guid customerId, Guid contractId, string sourcePath, CancellationToken ct = default)
+    public async Task<string> CachePdfAsync(Guid customerId, CustomerContractDto contract, string sourcePath, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
             throw new FileNotFoundException("계약서 원본 파일을 찾지 못했습니다.", sourcePath);
 
-        var pdfPath = GetPdfPath(customerId, contractId);
+        var pdfPath = GetPdfPath(customerId, contract.Id);
         Directory.CreateDirectory(GetCustomerDirectory(customerId));
         await using var source = File.OpenRead(sourcePath);
         await using var destination = File.Create(pdfPath);
         await source.CopyToAsync(destination, ct);
         await destination.FlushAsync(ct);
+
+        if (!await IsCachedPdfValidAsync(pdfPath, contract, ct))
+        {
+            TryDeleteFile(pdfPath);
+            throw new InvalidDataException("계약서 PDF 캐시가 서버 파일 정보와 일치하지 않습니다. 다시 시도해 주세요.");
+        }
+
         return pdfPath;
     }
 
@@ -113,6 +129,48 @@ public sealed class CustomerContractCacheStore
 
     private string GetPdfPath(Guid customerId, Guid contractId)
         => Path.Combine(GetCustomerDirectory(customerId), $"{contractId:N}.pdf");
+
+    private static async Task<bool> IsCachedPdfValidAsync(string pdfPath, CustomerContractDto contract, CancellationToken ct)
+    {
+        if (!File.Exists(pdfPath))
+            return false;
+
+        var length = new FileInfo(pdfPath).Length;
+        if (length <= 0)
+            return false;
+
+        if (contract.FileSize > 0 && length != contract.FileSize)
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(contract.FileHash))
+        {
+            var actualSha256 = await ComputeSha256Async(pdfPath, ct);
+            if (!string.Equals(actualSha256, contract.FileHash.Trim(), StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static async Task<string> ComputeSha256Async(string path, CancellationToken ct)
+    {
+        await using var stream = File.OpenRead(path);
+        var hash = await SHA256.HashDataAsync(stream, ct);
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch
+        {
+            // Cache cleanup failure should not block a fresh server download attempt.
+        }
+    }
 
     private string BuildScopeKey()
     {

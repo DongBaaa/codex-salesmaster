@@ -97,7 +97,7 @@ public sealed class CustomerContractsViewModel : ObservableObject
             if (string.IsNullOrWhiteSpace(path))
             {
                 var downloadedPath = await _api.DownloadCustomerContractAsync(contract);
-                path = await _cacheStore.CachePdfAsync(_customerId, contract.Id, downloadedPath);
+                path = await _cacheStore.CachePdfAsync(_customerId, contract, downloadedPath);
             }
 
             await Launcher.Default.OpenAsync(new OpenFileRequest(contract.FileName, new ReadOnlyFile(path)));

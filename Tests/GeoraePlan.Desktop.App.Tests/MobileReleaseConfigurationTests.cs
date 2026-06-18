@@ -108,6 +108,49 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("TryRestoreSessionAsync($\"token:{relative}\", ct)", apiSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void MobileFileDownloads_MapServerErrorsAndValidateCachedContent()
+    {
+        var root = FindRepositoryRoot();
+        var apiSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "GeoraePlanApiClient.cs"));
+        var cacheSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "CustomerContractCacheStore.cs"));
+        var contractsViewModelSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "CustomerContractsViewModel.cs"));
+
+        Assert.Contains("TryMapServerErrorMessage(body)", apiSource, StringComparison.Ordinal);
+        Assert.Contains("\"contract_content_unavailable\"", apiSource, StringComparison.Ordinal);
+        Assert.Contains("\"attachment_content_unavailable\"", apiSource, StringComparison.Ordinal);
+        Assert.Contains("DownloadFileToCacheAsync(", apiSource, StringComparison.Ordinal);
+        Assert.Contains("ValidateDownloadedFileAsync(temporaryPath, expectedSize, expectedSha256, label, ct)", apiSource, StringComparison.Ordinal);
+        Assert.Contains("IsCachedDownloadValidAsync(cachedPath, contract.FileSize, contract.FileHash, ct)", apiSource, StringComparison.Ordinal);
+        Assert.Contains("IsCachedDownloadValidAsync(cachedPath, attachment.FileSize, attachment.FileHash, ct)", apiSource, StringComparison.Ordinal);
+        Assert.Contains("SHA256.HashDataAsync(stream, ct)", apiSource, StringComparison.Ordinal);
+        Assert.Contains("cachedPath + \".download\"", apiSource, StringComparison.Ordinal);
+        Assert.Contains("File.Move(temporaryPath, cachedPath, overwrite: true)", apiSource, StringComparison.Ordinal);
+        Assert.Contains("TryDeleteFile(temporaryPath)", apiSource, StringComparison.Ordinal);
+
+        Assert.Contains("IsCachedPdfValidAsync(pdfPath, contract, ct)", cacheSource, StringComparison.Ordinal);
+        Assert.Contains("contract.FileSize > 0 && length != contract.FileSize", cacheSource, StringComparison.Ordinal);
+        Assert.Contains("contract.FileHash.Trim()", cacheSource, StringComparison.Ordinal);
+        Assert.Contains("TryDeleteFile(pdfPath)", cacheSource, StringComparison.Ordinal);
+        Assert.Contains("CachePdfAsync(Guid customerId, CustomerContractDto contract, string sourcePath", cacheSource, StringComparison.Ordinal);
+        Assert.Contains("CachePdfAsync(_customerId, contract, downloadedPath)", contractsViewModelSource, StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

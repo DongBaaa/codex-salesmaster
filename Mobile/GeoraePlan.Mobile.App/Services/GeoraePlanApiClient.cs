@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
 using System.Text.Json;
 using GeoraePlan.Mobile.App.Models;
 using Microsoft.Maui.ApplicationModel;
@@ -72,19 +73,17 @@ public sealed class GeoraePlanApiClient
             : contract.FileName);
         var cachedPath = Path.Combine(cacheRoot, $"{contract.Id:N}_{safeName}");
 
-        if (File.Exists(cachedPath) && new FileInfo(cachedPath).Length > 0)
+        if (await IsCachedDownloadValidAsync(cachedPath, contract.FileSize, contract.FileHash, ct))
             return cachedPath;
+        TryDeleteFile(cachedPath);
 
-        using var response = await SendAsync(
-            () => CreateRequestAsync(HttpMethod.Get, $"customers/contracts/{contract.Id}/content", cancellationToken: ct),
+        await DownloadFileToCacheAsync(
             $"customers/contracts/{contract.Id}/content",
+            cachedPath,
+            contract.FileSize,
+            contract.FileHash,
+            "계약서 PDF",
             ct);
-        await EnsureSuccessAsync(response, $"customers/contracts/{contract.Id}/content", ct);
-
-        await using var source = await response.Content.ReadAsStreamAsync(ct);
-        await using var target = File.Create(cachedPath);
-        await source.CopyToAsync(target, ct);
-        await target.FlushAsync(ct);
         return cachedPath;
     }
 
@@ -130,25 +129,29 @@ public sealed class GeoraePlanApiClient
             : attachment.FileName);
         var cachedPath = Path.Combine(cacheRoot, $"{attachment.Id:N}_{safeName}");
 
-        if (File.Exists(cachedPath) && new FileInfo(cachedPath).Length > 0)
+        if (await IsCachedDownloadValidAsync(cachedPath, attachment.FileSize, attachment.FileHash, ct))
             return cachedPath;
+        TryDeleteFile(cachedPath);
 
         if (attachment.FileContent is { Length: > 0 } inlineBytes)
         {
-            await File.WriteAllBytesAsync(cachedPath, inlineBytes, ct);
+            await WriteBytesToCacheAsync(
+                cachedPath,
+                inlineBytes,
+                attachment.FileSize,
+                attachment.FileHash,
+                "첨부 파일",
+                ct);
             return cachedPath;
         }
 
-        using var response = await SendAsync(
-            () => CreateRequestAsync(HttpMethod.Get, $"payments/attachments/{attachment.Id}/content", cancellationToken: ct),
+        await DownloadFileToCacheAsync(
             $"payments/attachments/{attachment.Id}/content",
+            cachedPath,
+            attachment.FileSize,
+            attachment.FileHash,
+            "첨부 파일",
             ct);
-        await EnsureSuccessAsync(response, $"payments/attachments/{attachment.Id}/content", ct);
-
-        await using var source = await response.Content.ReadAsStreamAsync(ct);
-        await using var target = File.Create(cachedPath);
-        await source.CopyToAsync(target, ct);
-        await target.FlushAsync(ct);
         return cachedPath;
     }
 
@@ -406,22 +409,186 @@ public sealed class GeoraePlanApiClient
             return;
 
         var body = await response.Content.ReadAsStringAsync(ct);
-        if (body.Length > 200)
-            body = body[..200] + "...";
+        var mappedMessage = TryMapServerErrorMessage(body);
+        var displayBody = body;
+        if (displayBody.Length > 200)
+            displayBody = displayBody[..200] + "...";
 
         if (response.StatusCode == HttpStatusCode.Unauthorized)
         {
             await HandleAuthenticationFailureAsync();
             throw new MobileAuthenticationException(relative,
-                $"401 Unauthorized ({relative}): 서버가 Bearer 토큰을 거부했습니다. 세션이 만료되었거나 다시 로그인이 필요합니다. {body}".Trim());
+                $"401 Unauthorized ({relative}): 서버가 Bearer 토큰을 거부했습니다. 세션이 만료되었거나 다시 로그인이 필요합니다. {displayBody}".Trim());
         }
 
-        throw new HttpRequestException($"{(int)response.StatusCode} {response.ReasonPhrase} {body}".Trim(), null, response.StatusCode);
+        if (!string.IsNullOrWhiteSpace(mappedMessage))
+            throw new HttpRequestException($"{(int)response.StatusCode} {mappedMessage}".Trim(), null, response.StatusCode);
+
+        throw new HttpRequestException($"{(int)response.StatusCode} {response.ReasonPhrase} {displayBody}".Trim(), null, response.StatusCode);
     }
 
     private async Task HandleAuthenticationFailureAsync()
     {
         await _sessionStore.ClearAsync();
         MainThread.BeginInvokeOnMainThread(App.ShowLogin);
+    }
+
+    private async Task DownloadFileToCacheAsync(
+        string relative,
+        string cachedPath,
+        long expectedSize,
+        string? expectedSha256,
+        string label,
+        CancellationToken ct)
+    {
+        var temporaryPath = cachedPath + ".download";
+        TryDeleteFile(temporaryPath);
+
+        try
+        {
+            using var response = await SendAsync(
+                () => CreateRequestAsync(HttpMethod.Get, relative, cancellationToken: ct),
+                relative,
+                ct);
+            await EnsureSuccessAsync(response, relative, ct);
+
+            await using (var source = await response.Content.ReadAsStreamAsync(ct))
+            await using (var target = File.Create(temporaryPath))
+            {
+                await source.CopyToAsync(target, ct);
+                await target.FlushAsync(ct);
+            }
+
+            await ValidateDownloadedFileAsync(temporaryPath, expectedSize, expectedSha256, label, ct);
+            Directory.CreateDirectory(Path.GetDirectoryName(cachedPath)!);
+            File.Move(temporaryPath, cachedPath, overwrite: true);
+        }
+        catch
+        {
+            TryDeleteFile(temporaryPath);
+            throw;
+        }
+    }
+
+    private static async Task WriteBytesToCacheAsync(
+        string cachedPath,
+        byte[] bytes,
+        long expectedSize,
+        string? expectedSha256,
+        string label,
+        CancellationToken ct)
+    {
+        var temporaryPath = cachedPath + ".download";
+        TryDeleteFile(temporaryPath);
+
+        try
+        {
+            await File.WriteAllBytesAsync(temporaryPath, bytes, ct);
+            await ValidateDownloadedFileAsync(temporaryPath, expectedSize, expectedSha256, label, ct);
+            File.Move(temporaryPath, cachedPath, overwrite: true);
+        }
+        catch
+        {
+            TryDeleteFile(temporaryPath);
+            throw;
+        }
+    }
+
+    private static async Task<bool> IsCachedDownloadValidAsync(
+        string path,
+        long expectedSize,
+        string? expectedSha256,
+        CancellationToken ct)
+    {
+        if (!File.Exists(path))
+            return false;
+
+        var length = new FileInfo(path).Length;
+        if (length <= 0)
+            return false;
+
+        if (expectedSize > 0 && length != expectedSize)
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(expectedSha256))
+        {
+            var actualSha256 = await ComputeSha256Async(path, ct);
+            if (!string.Equals(actualSha256, expectedSha256.Trim(), StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static async Task ValidateDownloadedFileAsync(
+        string path,
+        long expectedSize,
+        string? expectedSha256,
+        string label,
+        CancellationToken ct)
+    {
+        if (!File.Exists(path))
+            throw new FileNotFoundException($"{label} 다운로드 파일을 찾지 못했습니다.", path);
+
+        var length = new FileInfo(path).Length;
+        if (length <= 0)
+            throw new InvalidDataException($"{label} 다운로드 결과가 비어 있습니다. 다시 시도해 주세요.");
+
+        if (expectedSize > 0 && length != expectedSize)
+            throw new InvalidDataException($"{label} 다운로드 크기가 서버 정보와 다릅니다. 다시 시도하거나 관리자에게 문의해 주세요.");
+
+        if (!string.IsNullOrWhiteSpace(expectedSha256))
+        {
+            var actualSha256 = await ComputeSha256Async(path, ct);
+            if (!string.Equals(actualSha256, expectedSha256.Trim(), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException($"{label} 다운로드 해시가 서버 정보와 다릅니다. 캐시를 삭제하고 다시 내려받아 주세요.");
+        }
+    }
+
+    private static async Task<string> ComputeSha256Async(string path, CancellationToken ct)
+    {
+        await using var stream = File.OpenRead(path);
+        var hash = await SHA256.HashDataAsync(stream, ct);
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private static string? TryMapServerErrorMessage(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return null;
+
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            if (!document.RootElement.TryGetProperty("error", out var errorElement))
+                return null;
+
+            var error = errorElement.GetString();
+            return error switch
+            {
+                "contract_content_unavailable" =>
+                    "계약서 파일 본문을 서버 저장소에서 찾지 못했습니다. 운영점검에서 파일 저장소 무결성을 확인하거나 계약서를 다시 등록해 주세요.",
+                "attachment_content_unavailable" =>
+                    "수금/지급 첨부 파일 본문을 서버 저장소에서 찾지 못했습니다. 운영점검에서 파일 저장소 무결성을 확인하거나 첨부를 다시 등록해 주세요.",
+                _ => null
+            };
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch
+        {
+            // Best-effort cleanup only. The next download attempt will overwrite temporary files.
+        }
     }
 }
