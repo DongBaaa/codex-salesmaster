@@ -1686,6 +1686,148 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FlagsRentalBillingManualStopStatusMismatch()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Manual stop mismatch customer",
+            NameMatchKey = "MANUALSTOPMISMATCHCUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"profile-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = "Manual stop mismatch customer",
+            MonthlyAmount = 100_000m,
+            BillingStatus = RentalBillingEvidenceStatusResolver.Cancelled,
+            SettlementStatus = "확인대기",
+            CompletionStatus = "미완료",
+            SettledAmount = 0m,
+            OutstandingAmount = 100_000m,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new ServerRentalBillingRunSnapshot
+                {
+                    RunId = runId,
+                    RunKey = "2026-06",
+                    ScheduledDate = new DateOnly(2026, 6, 25),
+                    PeriodStartDate = new DateOnly(2026, 6, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    PeriodLabel = "2026-06",
+                    Status = RentalBillingEvidenceStatusResolver.InProgress,
+                    BilledAmount = 100_000m,
+                    SettledAmount = 0m,
+                    SettlementStatus = "확인대기"
+                }
+            })
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issue = Assert.Single(payload.Issues, current => current.Code == "rental_billing_manual_stop_status_mismatch");
+
+        Assert.Equal("Warning", issue.Severity);
+        Assert.Equal(1, issue.Count);
+        Assert.DoesNotContain(payload.Issues, current => current.Code == "rental_billing_run_settlement_mismatch");
+        Assert.DoesNotContain(payload.Issues, current => current.Code == "rental_billing_profile_summary_mismatch");
+
+        var row = await GetSingleDetailRowAsync(controller, "rental_billing_manual_stop_status_mismatch");
+
+        Assert.Equal(FormatGuidForTest(profileId), row.EntityIdText);
+        Assert.Contains(FormatGuidForTest(runId), row.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains(RentalBillingEvidenceStatusResolver.Cancelled, row.DetailText, StringComparison.Ordinal);
+        Assert.Contains(RentalBillingEvidenceStatusResolver.InProgress, row.DetailText, StringComparison.Ordinal);
+        Assert.Contains("100,000", row.DetailText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetReport_DoesNotFlagManualStopProfileWithScheduledRun()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Manual stop scheduled customer",
+            NameMatchKey = "MANUALSTOPSCHEDULEDCUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"profile-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = "Manual stop scheduled customer",
+            MonthlyAmount = 150_000m,
+            BillingStatus = RentalBillingEvidenceStatusResolver.OnHold,
+            SettlementStatus = "미입금",
+            CompletionStatus = "미완료",
+            SettledAmount = 0m,
+            OutstandingAmount = 150_000m,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new ServerRentalBillingRunSnapshot
+                {
+                    RunId = runId,
+                    RunKey = "20260301-20260331",
+                    ScheduledDate = new DateOnly(2026, 3, 31),
+                    PeriodStartDate = new DateOnly(2026, 3, 1),
+                    PeriodEndDate = new DateOnly(2026, 3, 31),
+                    PeriodLabel = "2026-03",
+                    Status = "예정",
+                    BilledAmount = 150_000m,
+                    SettledAmount = 0m,
+                    SettlementStatus = "미입금"
+                }
+            })
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+
+        Assert.DoesNotContain(payload.Issues, current => current.Code == "rental_billing_manual_stop_status_mismatch");
+        Assert.DoesNotContain(payload.Issues, current => current.Code == "rental_billing_run_settlement_mismatch");
+        Assert.DoesNotContain(payload.Issues, current => current.Code == "rental_billing_profile_summary_mismatch");
+    }
+
+    [Fact]
     public async Task GetReport_FlagsRestoredRentalInvoiceWithDeletedPaymentAndDetachedTransaction()
     {
         var currentUser = CreateAdminUser();

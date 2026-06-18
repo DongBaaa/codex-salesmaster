@@ -397,6 +397,9 @@ public sealed class IntegrityController : ControllerBase
         var rentalBillingProfileSummaryMismatchCount = (await LoadRentalBillingProfileSummaryMismatchRowsAsync(cancellationToken)).Count;
         AddIssue(issues, "rental_billing_profile_summary_mismatch", rentalBillingProfileSummaryMismatchCount, "Error", "렌탈 청구 프로필 요약 정산/미수금액이 대표 청구 run의 실제 입금 근거와 다릅니다.");
 
+        var rentalBillingManualStopStatusMismatchCount = (await LoadRentalBillingManualStopStatusMismatchRowsAsync(cancellationToken)).Count;
+        AddIssue(issues, "rental_billing_manual_stop_status_mismatch", rentalBillingManualStopStatusMismatchCount, "Warning", "렌탈 청구 프로필과 미수 run의 보류/취소/활성 청구 상태가 서로 충돌합니다.");
+
         var orphanTransactionAttachmentCount = _officeScopeService.HasGlobalDataScope
             ? await _dbContext.TransactionAttachments
                 .IgnoreQueryFilters()
@@ -577,6 +580,7 @@ public sealed class IntegrityController : ControllerBase
             "rental_billing_run_settlement_mismatch" => await LoadRentalBillingRunSettlementMismatchDetailsAsync(cancellationToken),
             "rental_billing_run_missing_run_id" => await LoadRentalBillingRunMissingRunIdDetailsAsync(cancellationToken),
             "rental_billing_profile_summary_mismatch" => await LoadRentalBillingProfileSummaryMismatchDetailsAsync(cancellationToken),
+            "rental_billing_manual_stop_status_mismatch" => await LoadRentalBillingManualStopStatusMismatchDetailsAsync(cancellationToken),
             "orphan_attachment_transaction_refs" => await LoadOrphanTransactionAttachmentDetailsAsync(cancellationToken),
             "deleted_transaction_attachment_missing_transaction_rows" => await LoadDeletedTransactionAttachmentMissingTransactionRowDetailsAsync(cancellationToken),
             "orphan_payment_attachment_refs" => await LoadOrphanPaymentAttachmentDetailsAsync(cancellationToken),
@@ -2527,6 +2531,101 @@ public sealed class IntegrityController : ControllerBase
             .ToList();
     }
 
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalBillingManualStopStatusMismatchDetailsAsync(CancellationToken cancellationToken)
+    {
+        var rows = await LoadRentalBillingManualStopStatusMismatchRowsAsync(cancellationToken);
+        return rows
+            .Select(row => CreateDetailRow(
+                entityType: "렌탈 청구 run",
+                entityIdText: FormatGuid(row.ProfileId),
+                primaryText: CombineParts(row.ProfileDisplayName, row.RunKey, FormatDate(row.ScheduledDate)),
+                secondaryText: $"청구액 {FormatMoney(row.BilledAmount)} / 미수 {FormatMoney(row.OutstandingAmount)}",
+                referenceText: $"RunId {FormatGuid(row.RunId)}",
+                scopeText: FormatScope(row.TenantCode, row.OfficeCode, row.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    $"프로필 청구상태 {FirstNonEmpty(row.ProfileBillingStatus, "(비어 있음)")}",
+                    $"run 상태 {FirstNonEmpty(row.RunStatus, "(비어 있음)")}",
+                    $"청구액 {FormatMoney(row.BilledAmount)}",
+                    $"미수 {FormatMoney(row.OutstandingAmount)}",
+                    string.IsNullOrWhiteSpace(row.ProfileSettlementStatus) ? null : $"프로필 정산상태 {row.ProfileSettlementStatus}",
+                    string.IsNullOrWhiteSpace(row.RunSettlementStatus) ? null : $"run 정산상태 {row.RunSettlementStatus}",
+                    "조치: 보류/취소가 맞는 청구인지 확인 후 정산 재계산 또는 수동 상태 보정을 진행하세요.")))
+            .ToList();
+    }
+
+    private async Task<List<RentalBillingManualStopStatusMismatchRow>> LoadRentalBillingManualStopStatusMismatchRowsAsync(CancellationToken cancellationToken)
+    {
+        var profiles = await _officeScopeService.ApplyRentalBillingProfileScope(
+                _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking())
+            .Where(profile => !profile.IsDeleted)
+            .Select(profile => new
+            {
+                profile.Id,
+                profile.TenantCode,
+                profile.OfficeCode,
+                profile.ResponsibleOfficeCode,
+                profile.CustomerName,
+                profile.ProfileKey,
+                profile.BillingStatus,
+                profile.SettlementStatus,
+                profile.BillingRunsJson
+            })
+            .ToListAsync(cancellationToken);
+
+        var rows = new List<RentalBillingManualStopStatusMismatchRow>();
+        foreach (var profile in profiles)
+        {
+            var profileBillingStatus = NormalizeStatus(profile.BillingStatus);
+            var profileIsManualStop = RentalBillingEvidenceStatusResolver.IsManualStopStatus(profileBillingStatus);
+            foreach (var run in ParseRentalBillingRuns(profile.BillingRunsJson))
+            {
+                if (run.RunId == Guid.Empty)
+                    continue;
+
+                var outstandingAmount = Math.Max(0m, run.BilledAmount - run.SettledAmount);
+                if (outstandingAmount <= 0m)
+                    continue;
+
+                var runStatus = NormalizeStatus(run.Status);
+                if (string.Equals(profileBillingStatus, runStatus, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var runIsManualStop = RentalBillingEvidenceStatusResolver.IsManualStopStatus(runStatus);
+                var profileIsActiveBilling = IsActiveRentalBillingStatus(profileBillingStatus);
+                var runIsActiveBilling = IsActiveRentalBillingStatus(runStatus);
+                if (!((profileIsManualStop && runIsActiveBilling) ||
+                      (runIsManualStop && profileIsActiveBilling) ||
+                      (profileIsManualStop && runIsManualStop)))
+                {
+                    continue;
+                }
+
+                rows.Add(new RentalBillingManualStopStatusMismatchRow(
+                    profile.Id,
+                    profile.TenantCode,
+                    profile.OfficeCode,
+                    profile.ResponsibleOfficeCode,
+                    FirstNonEmpty(profile.CustomerName, profile.ProfileKey, FormatGuid(profile.Id)),
+                    NormalizeRunId(run.RunId),
+                    run.RunKey,
+                    run.ScheduledDate,
+                    run.BilledAmount,
+                    run.SettledAmount,
+                    outstandingAmount,
+                    profileBillingStatus,
+                    profile.SettlementStatus,
+                    runStatus,
+                    run.SettlementStatus));
+            }
+        }
+
+        return rows
+            .OrderBy(row => row.ProfileDisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.ScheduledDate)
+            .ThenBy(row => row.RunKey, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     private async Task<List<IntegrityIssueDetailRowDto>> LoadOrphanTransactionAttachmentDetailsAsync(CancellationToken cancellationToken)
     {
         var attachments = _officeScopeService.HasGlobalDataScope
@@ -3394,6 +3493,16 @@ public sealed class IntegrityController : ControllerBase
     private static Guid NormalizeRunId(Guid? runId)
         => runId.HasValue && runId.Value != Guid.Empty ? runId.Value : Guid.Empty;
 
+    private static string NormalizeStatus(string? status)
+        => status?.Trim() ?? string.Empty;
+
+    private static bool IsActiveRentalBillingStatus(string? status)
+    {
+        var normalizedStatus = NormalizeStatus(status);
+        return string.Equals(normalizedStatus, RentalBillingEvidenceStatusResolver.InProgress, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(normalizedStatus, RentalBillingEvidenceStatusResolver.PartiallySettled, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static decimal ResolveTemplateMonthlyAmount(RentalBillingTemplateItemSnapshot item)
     {
         var quantity = item.Quantity <= 0m ? 1m : item.Quantity;
@@ -3694,6 +3803,7 @@ public sealed class IntegrityController : ControllerBase
             "rental_billing_run_settlement_mismatch" => new IntegrityIssueDefinition("rental_billing_run_settlement_mismatch", "Error", "렌탈 청구 run의 저장 정산금액과 실제 활성 수금/거래내역 합계가 다릅니다."),
             "rental_billing_run_missing_run_id" => new IntegrityIssueDefinition("rental_billing_run_missing_run_id", "Info", "렌탈 청구 프로필에 run ID가 비어 있는 과거 청구 JSON이 있습니다."),
             "rental_billing_profile_summary_mismatch" => new IntegrityIssueDefinition("rental_billing_profile_summary_mismatch", "Error", "렌탈 청구 프로필 요약 정산/미수금액이 대표 청구 run의 실제 입금 근거와 다릅니다."),
+            "rental_billing_manual_stop_status_mismatch" => new IntegrityIssueDefinition("rental_billing_manual_stop_status_mismatch", "Warning", "렌탈 청구 프로필과 미수 run의 보류/취소/활성 청구 상태가 서로 충돌합니다."),
             "orphan_attachment_transaction_refs" => new IntegrityIssueDefinition("orphan_attachment_transaction_refs", "Error", "거래내역이 없는 증빙 첨부가 존재합니다."),
             "deleted_transaction_attachment_missing_transaction_rows" => new IntegrityIssueDefinition("deleted_transaction_attachment_missing_transaction_rows", "Error", "영구 삭제된 거래내역의 삭제 첨부 잔여 행이 존재합니다."),
             "orphan_payment_attachment_refs" => new IntegrityIssueDefinition("orphan_payment_attachment_refs", "Error", "결제내역이 없는 결제 첨부가 존재합니다."),
@@ -4352,6 +4462,23 @@ public sealed class IntegrityController : ControllerBase
         string ProfileBillingStatus,
         string ProfileSettlementStatus,
         string ProfileCompletionStatus,
+        string RunStatus,
+        string RunSettlementStatus);
+
+    private sealed record RentalBillingManualStopStatusMismatchRow(
+        Guid ProfileId,
+        string TenantCode,
+        string OfficeCode,
+        string ResponsibleOfficeCode,
+        string ProfileDisplayName,
+        Guid RunId,
+        string RunKey,
+        DateOnly ScheduledDate,
+        decimal BilledAmount,
+        decimal SettledAmount,
+        decimal OutstandingAmount,
+        string ProfileBillingStatus,
+        string ProfileSettlementStatus,
         string RunStatus,
         string RunSettlementStatus);
 
