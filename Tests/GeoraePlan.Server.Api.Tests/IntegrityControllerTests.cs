@@ -2383,6 +2383,85 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FiltersStockSnapshotMismatchByReadableWarehouseScope()
+    {
+        var currentUser = CreateOfficeScopedUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var itemId = Guid.NewGuid();
+        dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Scoped Stock Item",
+            NameMatchKey = "SCOPEDSTOCKITEM",
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 5m
+        });
+        dbContext.ItemWarehouseStocks.AddRange(
+            new ItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 5m
+            },
+            new ItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                Quantity = 3m
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var reportResponse = await controller.GetReport(CancellationToken.None);
+        var reportOk = Assert.IsType<OkObjectResult>(reportResponse.Result);
+        var report = Assert.IsType<IntegrityReportDto>(reportOk.Value);
+
+        Assert.DoesNotContain(report.Issues, issue => issue.Code == "item_stock_snapshot_mismatch");
+
+        var detailsResponse = await controller.GetReportDetails("item_stock_snapshot_mismatch", CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+
+        Assert.Empty(details.Rows);
+    }
+
+    [Fact]
+    public async Task GetReport_FiltersOrphanWarehouseStockByReadableWarehouseScope()
+    {
+        var currentUser = CreateOfficeScopedUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var missingItemId = Guid.NewGuid();
+        await dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
+        dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = missingItemId,
+            WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            Quantity = 1m
+        });
+        await dbContext.SaveChangesAsync();
+        await dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var reportResponse = await controller.GetReport(CancellationToken.None);
+        var reportOk = Assert.IsType<OkObjectResult>(reportResponse.Result);
+        var report = Assert.IsType<IntegrityReportDto>(reportOk.Value);
+
+        Assert.DoesNotContain(report.Issues, issue => issue.Code == "orphan_item_warehouse_stock_refs");
+
+        var detailsResponse = await controller.GetReportDetails("orphan_item_warehouse_stock_refs", CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+
+        Assert.Empty(details.Rows);
+    }
+
+    [Fact]
     public async Task GetReportDetails_ReturnsDeletedItemStockResidueRows()
     {
         var currentUser = CreateAdminUser();

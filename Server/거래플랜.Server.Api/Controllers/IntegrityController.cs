@@ -128,14 +128,13 @@ public sealed class IntegrityController : ControllerBase
             : 0;
         AddIssue(issues, "inventory_transfer_line_missing_transfer_rows", inventoryTransferLineMissingTransferRowCount, "Error", "부모 재고이동 문서가 없는 재고이동 세부내역이 존재합니다.");
 
-        var orphanWarehouseStockCount = await _dbContext.ItemWarehouseStocks
-            .IgnoreQueryFilters()
-            .AsNoTracking()
+        var orphanWarehouseStockCount = await _officeScopeService.ApplyWarehouseScope(
+                _dbContext.ItemWarehouseStocks.IgnoreQueryFilters().AsNoTracking())
             .CountAsync(stock => !_dbContext.Items.IgnoreQueryFilters().Any(item => !item.IsDeleted && item.Id == stock.ItemId), cancellationToken);
         AddIssue(issues, "orphan_item_warehouse_stock_refs", orphanWarehouseStockCount, "Error", "품목이 없는 창고 재고 행이 존재합니다.");
 
-        var warehouseStocks = await _dbContext.ItemWarehouseStocks
-            .AsNoTracking()
+        var warehouseStocks = await _officeScopeService.ApplyItemWarehouseStockScope(
+                _dbContext.ItemWarehouseStocks.IgnoreQueryFilters().AsNoTracking())
             .Select(stock => new
             {
                 stock.ItemId,
@@ -746,7 +745,8 @@ public sealed class IntegrityController : ControllerBase
     private async Task<List<IntegrityIssueDetailRowDto>> LoadOrphanItemWarehouseStockDetailsAsync(CancellationToken cancellationToken)
     {
         var orphanStocks = await (
-                from stock in _dbContext.ItemWarehouseStocks.IgnoreQueryFilters().AsNoTracking()
+                from stock in _officeScopeService.ApplyWarehouseScope(
+                    _dbContext.ItemWarehouseStocks.IgnoreQueryFilters().AsNoTracking())
                 join item in _dbContext.Items.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
                     on stock.ItemId equals item.Id into itemGroup
                 from item in itemGroup.DefaultIfEmpty()
@@ -841,8 +841,8 @@ public sealed class IntegrityController : ControllerBase
             .Where(item => !item.IsDeleted)
             .ToListAsync(cancellationToken);
 
-        var warehouseStocks = await _dbContext.ItemWarehouseStocks
-            .AsNoTracking()
+        var warehouseStocks = await _officeScopeService.ApplyItemWarehouseStockScope(
+                _dbContext.ItemWarehouseStocks.IgnoreQueryFilters().AsNoTracking())
             .Select(stock => new ItemWarehouseStockSnapshot(stock.ItemId, stock.WarehouseCode, stock.Quantity))
             .ToListAsync(cancellationToken);
 
