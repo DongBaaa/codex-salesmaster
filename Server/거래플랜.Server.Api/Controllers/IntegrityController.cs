@@ -218,6 +218,13 @@ public sealed class IntegrityController : ControllerBase
             .CountAsync(payment => !_dbContext.Invoices.IgnoreQueryFilters().Any(invoice => !invoice.IsDeleted && invoice.Id == payment.InvoiceId), cancellationToken);
         AddIssue(issues, "orphan_payment_invoice_refs", orphanPaymentInvoiceCount, "Error", "전표가 없는 수금/지급 참조가 존재합니다.");
 
+        var deletedPaymentMissingInvoiceRowCount = await _dbContext.Payments
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(payment => payment.IsDeleted)
+            .CountAsync(payment => !_dbContext.Invoices.IgnoreQueryFilters().Any(invoice => invoice.Id == payment.InvoiceId), cancellationToken);
+        AddIssue(issues, "deleted_payment_missing_invoice_rows", deletedPaymentMissingInvoiceRowCount, "Error", "영구 삭제된 전표의 삭제 결제 잔여 행이 존재합니다.");
+
         var orphanTransactionAttachmentCount = await _dbContext.TransactionAttachments
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -231,6 +238,13 @@ public sealed class IntegrityController : ControllerBase
             .Where(attachment => !attachment.IsDeleted)
             .CountAsync(attachment => !_dbContext.Payments.IgnoreQueryFilters().Any(payment => !payment.IsDeleted && payment.Id == attachment.PaymentId), cancellationToken);
         AddIssue(issues, "orphan_payment_attachment_refs", orphanPaymentAttachmentCount, "Error", "결제내역이 없는 결제 첨부가 존재합니다.");
+
+        var deletedPaymentAttachmentMissingPaymentRowCount = await _dbContext.PaymentAttachments
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(attachment => attachment.IsDeleted)
+            .CountAsync(attachment => !_dbContext.Payments.IgnoreQueryFilters().Any(payment => payment.Id == attachment.PaymentId), cancellationToken);
+        AddIssue(issues, "deleted_payment_attachment_missing_payment_rows", deletedPaymentAttachmentMissingPaymentRowCount, "Error", "영구 삭제된 결제의 삭제 첨부 잔여 행이 존재합니다.");
 
         var fileStorageIssueCandidates = await LoadFileStorageIssueCandidatesAsync(cancellationToken);
         AddIssue(
@@ -328,8 +342,10 @@ public sealed class IntegrityController : ControllerBase
             "orphan_rental_asset_item_refs" => await LoadOrphanRentalAssetItemDetailsAsync(cancellationToken),
             "orphan_transaction_invoice_refs" => await LoadOrphanTransactionInvoiceDetailsAsync(cancellationToken),
             "orphan_payment_invoice_refs" => await LoadOrphanPaymentInvoiceDetailsAsync(cancellationToken),
+            "deleted_payment_missing_invoice_rows" => await LoadDeletedPaymentMissingInvoiceRowDetailsAsync(cancellationToken),
             "orphan_attachment_transaction_refs" => await LoadOrphanTransactionAttachmentDetailsAsync(cancellationToken),
             "orphan_payment_attachment_refs" => await LoadOrphanPaymentAttachmentDetailsAsync(cancellationToken),
+            "deleted_payment_attachment_missing_payment_rows" => await LoadDeletedPaymentAttachmentMissingPaymentRowDetailsAsync(cancellationToken),
             "file_content_unavailable" => await LoadFileContentUnavailableDetailsAsync(cancellationToken),
             "file_content_db_residue" => await LoadFileContentDbResidueDetailsAsync(cancellationToken),
             "file_storage_missing" => await LoadStoredFileMissingDetailsAsync(cancellationToken),
@@ -1248,6 +1264,33 @@ public sealed class IntegrityController : ControllerBase
             .ToList();
     }
 
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadDeletedPaymentMissingInvoiceRowDetailsAsync(CancellationToken cancellationToken)
+    {
+        var payments = await (
+                from payment in _dbContext.Payments.IgnoreQueryFilters().AsNoTracking().Where(current => current.IsDeleted)
+                join invoice in _dbContext.Invoices.IgnoreQueryFilters().AsNoTracking()
+                    on payment.InvoiceId equals invoice.Id into invoiceGroup
+                from invoice in invoiceGroup.DefaultIfEmpty()
+                where invoice == null
+                orderby payment.PaymentDate, payment.Id
+                select payment)
+            .ToListAsync(cancellationToken);
+
+        return payments
+            .Select(payment => CreateDetailRow(
+                entityType: "삭제 결제",
+                entityIdText: FormatGuid(payment.Id),
+                primaryText: $"삭제 결제 {FormatDate(payment.PaymentDate)}",
+                secondaryText: $"금액 {FormatMoney(payment.Amount)}",
+                referenceText: $"누락 전표 행 {FormatGuid(payment.InvoiceId)}",
+                scopeText: "공통",
+                detailText: CombineParts(
+                    "삭제상태 삭제",
+                    string.IsNullOrWhiteSpace(payment.Note) ? null : $"메모 {payment.Note}",
+                    $"결제ID {FormatGuid(payment.Id)}")))
+            .ToList();
+    }
+
     private async Task<List<IntegrityIssueDetailRowDto>> LoadOrphanTransactionAttachmentDetailsAsync(CancellationToken cancellationToken)
     {
         var attachments = await (
@@ -1296,6 +1339,33 @@ public sealed class IntegrityController : ControllerBase
                 referenceText: $"누락 결제 {FormatGuid(attachment.PaymentId)}",
                 scopeText: $"업로드 {FormatUtcDateTime(attachment.UploadedAtUtc)}",
                 detailText: CombineParts(
+                    attachment.FileSize > 0 ? $"크기 {attachment.FileSize:N0} bytes" : null,
+                    string.IsNullOrWhiteSpace(attachment.StoragePath) ? null : $"경로 {attachment.StoragePath}")))
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadDeletedPaymentAttachmentMissingPaymentRowDetailsAsync(CancellationToken cancellationToken)
+    {
+        var attachments = await (
+                from attachment in _dbContext.PaymentAttachments.IgnoreQueryFilters().AsNoTracking().Where(current => current.IsDeleted)
+                join payment in _dbContext.Payments.IgnoreQueryFilters().AsNoTracking()
+                    on attachment.PaymentId equals payment.Id into paymentGroup
+                from payment in paymentGroup.DefaultIfEmpty()
+                where payment == null
+                orderby attachment.UploadedAtUtc, attachment.Id
+                select attachment)
+            .ToListAsync(cancellationToken);
+
+        return attachments
+            .Select(attachment => CreateDetailRow(
+                entityType: "삭제 결제첨부",
+                entityIdText: FormatGuid(attachment.Id),
+                primaryText: FirstNonEmpty(attachment.FileName, FormatGuid(attachment.Id)),
+                secondaryText: CombineParts(attachment.AttachmentType, attachment.Description),
+                referenceText: $"누락 결제 행 {FormatGuid(attachment.PaymentId)}",
+                scopeText: $"업로드 {FormatUtcDateTime(attachment.UploadedAtUtc)}",
+                detailText: CombineParts(
+                    "삭제상태 삭제",
                     attachment.FileSize > 0 ? $"크기 {attachment.FileSize:N0} bytes" : null,
                     string.IsNullOrWhiteSpace(attachment.StoragePath) ? null : $"경로 {attachment.StoragePath}")))
             .ToList();
@@ -2033,8 +2103,10 @@ public sealed class IntegrityController : ControllerBase
             "orphan_rental_asset_item_refs" => new IntegrityIssueDefinition("orphan_rental_asset_item_refs", "Error", "품목이 없는 렌탈 자산 연결이 존재합니다."),
             "orphan_transaction_invoice_refs" => new IntegrityIssueDefinition("orphan_transaction_invoice_refs", "Error", "전표가 없는 거래/수금 참조가 존재합니다."),
             "orphan_payment_invoice_refs" => new IntegrityIssueDefinition("orphan_payment_invoice_refs", "Error", "전표가 없는 수금/지급 참조가 존재합니다."),
+            "deleted_payment_missing_invoice_rows" => new IntegrityIssueDefinition("deleted_payment_missing_invoice_rows", "Error", "영구 삭제된 전표의 삭제 결제 잔여 행이 존재합니다."),
             "orphan_attachment_transaction_refs" => new IntegrityIssueDefinition("orphan_attachment_transaction_refs", "Error", "거래내역이 없는 증빙 첨부가 존재합니다."),
             "orphan_payment_attachment_refs" => new IntegrityIssueDefinition("orphan_payment_attachment_refs", "Error", "결제내역이 없는 결제 첨부가 존재합니다."),
+            "deleted_payment_attachment_missing_payment_rows" => new IntegrityIssueDefinition("deleted_payment_attachment_missing_payment_rows", "Error", "영구 삭제된 결제의 삭제 첨부 잔여 행이 존재합니다."),
             "file_content_unavailable" => new IntegrityIssueDefinition("file_content_unavailable", "Error", "파일 크기는 있으나 저장소 경로와 DB 파일 본문이 모두 비어 있는 첨부/계약서가 있습니다."),
             "file_content_db_residue" => new IntegrityIssueDefinition("file_content_db_residue", "Warning", "파일 본문이 DB에 남아 저장소 이동이 완료되지 않은 첨부/계약서가 있습니다."),
             "file_storage_missing" => new IntegrityIssueDefinition("file_storage_missing", "Error", "저장소 경로가 있으나 실제 저장 파일을 읽을 수 없는 첨부/계약서가 있습니다."),

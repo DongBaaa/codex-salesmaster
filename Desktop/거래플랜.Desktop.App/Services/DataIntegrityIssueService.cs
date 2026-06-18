@@ -42,6 +42,7 @@ public static class DataIntegrityIssueCodes
     public const string WarehouseDuplicateCandidate = "warehouse_duplicate_candidate";
     public const string InvoiceAmountMismatch = "invoice_amount_mismatch";
     public const string InvoiceOverSettled = "invoice_over_settled";
+    public const string PaymentMissingInvoiceReference = "payment_missing_invoice_reference";
     public const string InventoryDeletedItemStockResidue = "inventory_deleted_item_stock_residue";
     public const string InventoryStockSnapshotMismatch = "inventory_stock_snapshot_mismatch";
     public const string InventoryWarehouseReferenceMissing = "inventory_warehouse_reference_missing";
@@ -336,6 +337,13 @@ public sealed class DataIntegrityIssueService
             "회계경리",
             "전표 합계금액보다 수금 또는 지급 합계가 큽니다.",
             "수금/지급 내역 중 중복 입력이나 잘못된 금액이 있는지 확인하세요."),
+        [DataIntegrityIssueCodes.PaymentMissingInvoiceReference] = new(
+            DataIntegrityIssueCodes.PaymentMissingInvoiceReference,
+            "수금/지급 전표 참조 누락",
+            "Error",
+            "회계경리",
+            "수금/지급 행이 현재 로컬 DB에 존재하지 않는 전표 ID를 참조합니다.",
+            "동기화 진단에서 서버 상태와 휴지통 영구삭제 이력을 확인한 뒤 결제 잔여 행을 정리하세요."),
         [DataIntegrityIssueCodes.InventoryDeletedItemStockResidue] = new(
             DataIntegrityIssueCodes.InventoryDeletedItemStockResidue,
             "삭제 품목 재고 잔여",
@@ -544,6 +552,14 @@ public sealed class DataIntegrityIssueService
             "Integrity scan deleted item stock residues",
             stepStopwatch,
             $"issues={deletedItemStockResidueIssues.Count:N0}");
+
+        stepStopwatch.Restart();
+        var paymentMissingInvoiceIssues = await LoadPaymentMissingInvoiceReferenceIssuesAsync(session, ct);
+        details.AddRange(paymentMissingInvoiceIssues);
+        LogIntegrityScanStep(
+            "Integrity scan payment missing invoice references",
+            stepStopwatch,
+            $"issues={paymentMissingInvoiceIssues.Count:N0}");
 
         stepStopwatch.Restart();
         foreach (var history in scopedAssignmentHistories)
@@ -1496,6 +1512,44 @@ public sealed class DataIntegrityIssueService
                 currentValue: $"삭제 품목 현재고 {item.CurrentStock:N2} / 창고행 {stocks.Count:N0}건 / 창고합계 {stockTotal:N2}",
                 expectedValue: "삭제 품목 현재고 0 / 창고별 재고 행 없음",
                 message: $"{NormalizeDisplay(item.NameOriginal, "품목")} 삭제 품목에 재고 잔여가 남아 있습니다. {stockBreakdown}",
+                directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
+        }
+
+        return issues;
+    }
+
+    private async Task<List<DataIntegrityIssueDetail>> LoadPaymentMissingInvoiceReferenceIssuesAsync(SessionState session, CancellationToken ct)
+    {
+        if (!session.HasAdministrativePrivileges)
+            return [];
+
+        var payments = await (
+                from payment in _db.Payments.IgnoreQueryFilters().AsNoTracking()
+                join invoice in _db.Invoices.IgnoreQueryFilters().AsNoTracking()
+                    on payment.InvoiceId equals invoice.Id into invoiceGroup
+                from invoice in invoiceGroup.DefaultIfEmpty()
+                where invoice == null
+                orderby payment.PaymentDate, payment.Id
+                select payment)
+            .ToListAsync(ct);
+
+        if (payments.Count == 0)
+            return [];
+
+        var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, DomainConstants.OfficeUsenet);
+        var issues = new List<DataIntegrityIssueDetail>(payments.Count);
+        foreach (var payment in payments)
+        {
+            var deletionState = payment.IsDeleted ? "삭제" : "활성";
+            AddGeneralIssue(
+                issues,
+                DataIntegrityIssueCodes.PaymentMissingInvoiceReference,
+                entityType: "수금/지급",
+                entityId: payment.Id,
+                officeCode: officeCode,
+                currentValue: $"InvoiceId {payment.InvoiceId:D} / 금액 {payment.Amount:N0} / 삭제상태 {deletionState}",
+                expectedValue: "참조 전표 행 존재",
+                message: $"{payment.PaymentDate:yyyy-MM-dd} 수금/지급 {payment.Id:N}의 전표 참조가 현재 로컬 DB에 없습니다.",
                 directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
         }
 

@@ -260,6 +260,72 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FlagsDeletedPaymentResiduesWithHardMissingParents()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        var missingInvoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var missingPaymentId = Guid.NewGuid();
+        var attachmentId = Guid.NewGuid();
+
+        await dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
+        dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = missingInvoiceId,
+            PaymentDate = new DateOnly(2026, 6, 18),
+            Amount = 45000m,
+            Note = "hard missing invoice",
+            IsDeleted = true
+        });
+        dbContext.PaymentAttachments.Add(new PaymentAttachment
+        {
+            Id = attachmentId,
+            PaymentId = missingPaymentId,
+            FileName = "deleted-payment-attachment.pdf",
+            StoragePath = "attachments/payment/deleted-payment-attachment.pdf",
+            FileSize = 512,
+            IsDeleted = true
+        });
+        await dbContext.SaveChangesAsync();
+        await dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var paymentIssue = Assert.Single(payload.Issues, issue => issue.Code == "deleted_payment_missing_invoice_rows");
+        var attachmentIssue = Assert.Single(payload.Issues, issue => issue.Code == "deleted_payment_attachment_missing_payment_rows");
+
+        Assert.Equal("Error", paymentIssue.Severity);
+        Assert.Equal(1, paymentIssue.Count);
+        Assert.Equal("Error", attachmentIssue.Severity);
+        Assert.Equal(1, attachmentIssue.Count);
+
+        var paymentDetailsResponse = await controller.GetReportDetails("deleted_payment_missing_invoice_rows", CancellationToken.None);
+        var paymentDetailsOk = Assert.IsType<OkObjectResult>(paymentDetailsResponse.Result);
+        var paymentDetails = Assert.IsType<IntegrityIssueDetailResultDto>(paymentDetailsOk.Value);
+        var paymentRow = Assert.Single(paymentDetails.Rows);
+
+        Assert.Equal("삭제 결제", paymentRow.EntityType);
+        Assert.Equal(FormatGuidForTest(paymentId), paymentRow.EntityIdText);
+        Assert.Contains(FormatGuidForTest(missingInvoiceId), paymentRow.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains("삭제상태 삭제", paymentRow.DetailText, StringComparison.Ordinal);
+
+        var attachmentDetailsResponse = await controller.GetReportDetails("deleted_payment_attachment_missing_payment_rows", CancellationToken.None);
+        var attachmentDetailsOk = Assert.IsType<OkObjectResult>(attachmentDetailsResponse.Result);
+        var attachmentDetails = Assert.IsType<IntegrityIssueDetailResultDto>(attachmentDetailsOk.Value);
+        var attachmentRow = Assert.Single(attachmentDetails.Rows);
+
+        Assert.Equal("삭제 결제첨부", attachmentRow.EntityType);
+        Assert.Equal(FormatGuidForTest(attachmentId), attachmentRow.EntityIdText);
+        Assert.Contains(FormatGuidForTest(missingPaymentId), attachmentRow.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains("삭제상태 삭제", attachmentRow.DetailText, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task GetReport_FlagsAttachmentsWithFileSizeButNoReadableContent()
     {
         var currentUser = CreateAdminUser();
@@ -1445,6 +1511,9 @@ public sealed class IntegrityControllerTests : IDisposable
             ScopeType = TenantScopeCatalog.ScopeAdmin,
             IsAdmin = true
         };
+
+    private static string FormatGuidForTest(Guid value)
+        => value.ToString("D");
 
     private sealed class TestCurrentUserContext : ICurrentUserContext
     {

@@ -249,6 +249,52 @@ public sealed class DataIntegrityIssueServicePerformanceTests
     }
 
     [Fact]
+    public async Task ScanAsync_FindsPaymentRowsWhoseInvoiceRowIsHardMissing()
+    {
+        PrepareAppRoot("georaeplan-integrity-payment-missing-invoice");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var missingInvoiceId = Guid.NewGuid();
+            var paymentId = Guid.NewGuid();
+            await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
+            db.Payments.Add(new LocalPayment
+            {
+                Id = paymentId,
+                InvoiceId = missingInvoiceId,
+                PaymentDate = new DateOnly(2026, 6, 18),
+                Amount = 23000m,
+                Note = "hard missing invoice",
+                IsDeleted = true,
+                IsDirty = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+            await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateAdminSession());
+            var issue = Assert.Single(result.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.PaymentMissingInvoiceReference);
+
+            Assert.Equal(paymentId, issue.EntityId);
+            Assert.Equal(DataIntegrityDirectActionKind.OpenSyncDiagnostics, issue.DirectActionKind);
+            Assert.Contains(missingInvoiceId.ToString("D"), issue.CurrentValue, StringComparison.Ordinal);
+            Assert.Contains("삭제상태 삭제", issue.CurrentValue, StringComparison.Ordinal);
+            Assert.Contains("전표 참조", issue.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ScanAsync_PrefiltersMasterDataSourceLoadByOperationalScope()
     {
         PrepareAppRoot("georaeplan-integrity-master-scope-prefilter");
