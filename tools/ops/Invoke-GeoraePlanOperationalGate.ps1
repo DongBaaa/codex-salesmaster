@@ -907,6 +907,7 @@ else {
 
 $ephemeralOperationalWritesReport = ''
 $ephemeralOperationalWritesAccount = ''
+$approvedOperationalWritesReport = ''
 if ($SkipWriteSafetyChecks.IsPresent) {
     Add-Check -Checks $checks -Name 'operational writes' -Status 'PASS' -Detail 'SKIP: read-only gate mode'
 }
@@ -968,7 +969,69 @@ elseif ($UseEphemeralOperationalWrites.IsPresent) {
     }
 }
 elseif ($AllowOperationalWrites.IsPresent) {
-    Add-Check -Checks $checks -Name 'operational writes' -Status 'BLOCKED' -Detail 'This gate intentionally does not mutate production data. Use a dedicated approved write/rollback runner after all gates pass.'
+    $approvedWriteScript = Join-Path $resolvedRoot 'tools\ops\Invoke-GeoraePlanApprovedWriteRollback.ps1'
+    if (-not (Test-Path -LiteralPath $approvedWriteScript)) {
+        Add-Check -Checks $checks -Name 'operational writes' -Status 'FAIL' -Detail 'approved write/rollback script not found'
+    }
+    elseif ($null -eq $targets -or -not $hasApprovedTargets) {
+        Add-Check -Checks $checks -Name 'operational writes' -Status 'BLOCKED' -Detail 'approved target file has no existing-data targets'
+    }
+    elseif (-not $safetyBackupConfirmed -or -not $safetyRestorePossible -or [string]::IsNullOrWhiteSpace($safetyApprovedBy)) {
+        Add-Check -Checks $checks -Name 'operational writes' -Status 'BLOCKED' -Detail 'write safety metadata is incomplete'
+    }
+    elseif ([string]::IsNullOrWhiteSpace([string]$usenet.Username) -or [string]::IsNullOrWhiteSpace([string]$usenet.Password)) {
+        Add-Check -Checks $checks -Name 'operational writes' -Status 'BLOCKED' -Detail 'USENET credentials are required for approved write/rollback'
+    }
+    else {
+        $approvedWritesDirectory = Join-Path $OutputDirectory 'approved-operational-writes'
+        New-Item -ItemType Directory -Force -Path $approvedWritesDirectory | Out-Null
+        try {
+            $approvedWriteArgs = @(
+                '-NoProfile',
+                '-ExecutionPolicy', 'Bypass',
+                '-File', $approvedWriteScript,
+                '-BaseUrl', $BaseUrl,
+                '-Username', ([string]$usenet.Username),
+                '-Password', ([string]$usenet.Password),
+                '-ApprovedTargetsPath', $ApprovedTargetsPath,
+                '-EvidenceDirectory', $approvedWritesDirectory,
+                '-Apply'
+            )
+            $scriptOutput = & powershell @approvedWriteArgs 2>&1 | Out-String -Width 4096
+            Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "`n## approved operational writes"
+            Add-Content -LiteralPath $logPath -Encoding UTF8 -Value $scriptOutput
+            $reportLine = @($scriptOutput -split "`r?`n" | Where-Object { $_ -like 'approved_write_rollback_report=*' } | Select-Object -Last 1)
+            $approvedWriteReport = ''
+            if ($reportLine.Count -gt 0) {
+                $approvedWriteReport = ([string]$reportLine[0]).Substring('approved_write_rollback_report='.Length).Trim()
+            }
+            elseif (Test-Path -LiteralPath $approvedWritesDirectory) {
+                $latestReport = Get-ChildItem -LiteralPath $approvedWritesDirectory -File -Filter '*.md' -ErrorAction SilentlyContinue |
+                    Sort-Object LastWriteTime -Descending |
+                    Select-Object -First 1
+                if ($null -ne $latestReport) {
+                    $approvedWriteReport = $latestReport.FullName
+                }
+            }
+
+            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($approvedWriteReport) -and (Test-Path -LiteralPath $approvedWriteReport)) {
+                $approvedOperationalWritesReport = $approvedWriteReport
+                $reportText = Get-Content -LiteralPath $approvedWriteReport -Raw -Encoding UTF8
+                if ($reportText -match '결과: \*\*PASS\*\*') {
+                    Add-Check -Checks $checks -Name 'operational writes' -Status 'PASS' -Detail ("approved write/rollback passed: {0}" -f $approvedWriteReport)
+                }
+                else {
+                    Add-Check -Checks $checks -Name 'operational writes' -Status 'FAIL' -Detail ("approved write/rollback report is not PASS: {0}" -f $approvedWriteReport)
+                }
+            }
+            else {
+                Add-Check -Checks $checks -Name 'operational writes' -Status 'FAIL' -Detail ("approved write/rollback failed, exit={0}" -f $LASTEXITCODE)
+            }
+        }
+        catch {
+            Add-Check -Checks $checks -Name 'operational writes' -Status 'FAIL' -Detail $_.Exception.Message
+        }
+    }
 }
 else {
     Add-Check -Checks $checks -Name 'operational writes' -Status 'BLOCKED' -Detail 'AllowOperationalWrites not set; no production mutation attempted'
@@ -1060,11 +1123,12 @@ else {
 $reportLines.Add('') | Out-Null
 $reportLines.Add('## 4. 운영 데이터 변경 여부') | Out-Null
 $reportLines.Add('') | Out-Null
-$reportLines.Add('- 이 게이트는 기본적으로 운영 데이터를 변경하지 않는다.') | Out-Null
 if ($SkipWriteSafetyChecks.IsPresent) {
+    $reportLines.Add('- 이 게이트는 읽기 전용 모드로 실행되었으며 운영 데이터를 변경하지 않았다.') | Out-Null
     $reportLines.Add('- 읽기 전용 게이트 모드로 운영 데이터 쓰기/원복 검증을 생략했다.') | Out-Null
 }
 elseif ($UseEphemeralOperationalWrites.IsPresent) {
+    $reportLines.Add('- 이 게이트는 임시 데이터만 생성/수정/삭제하고 기존 운영 데이터는 직접 수정하지 않는다.') | Out-Null
     $reportLines.Add(('- 임시 데이터 생성/반복수정/삭제 smoke 실행: `{0}`' -f (-not [string]::IsNullOrWhiteSpace($ephemeralOperationalWritesReport)))) | Out-Null
     if (-not [string]::IsNullOrWhiteSpace($ephemeralOperationalWritesReport)) {
         $reportLines.Add(('- 임시 쓰기 검증 리포트: `{0}`' -f $ephemeralOperationalWritesReport)) | Out-Null
@@ -1074,7 +1138,15 @@ elseif ($UseEphemeralOperationalWrites.IsPresent) {
     }
     $reportLines.Add(('- 기존 운영 데이터 승인 대상 수정/원복은 수행하지 않음: `{0}`' -f (-not $hasApprovedTargets))) | Out-Null
 }
+elseif ($AllowOperationalWrites.IsPresent) {
+    $reportLines.Add('- 이 게이트는 승인 대상 JSON의 메모성 필드만 일시 변경한 뒤 즉시 원복한다.') | Out-Null
+    $reportLines.Add(('- 승인 대상 쓰기/원복 실행: `{0}`' -f (-not [string]::IsNullOrWhiteSpace($approvedOperationalWritesReport)))) | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace($approvedOperationalWritesReport)) {
+        $reportLines.Add(('- 승인 대상 쓰기/원복 리포트: `{0}`' -f $approvedOperationalWritesReport)) | Out-Null
+    }
+}
 else {
+    $reportLines.Add('- 이 게이트는 기본적으로 운영 데이터를 변경하지 않는다.') | Out-Null
     $reportLines.Add('- 현재 실행에서 운영 데이터 쓰기/원복은 수행되지 않았다.') | Out-Null
 }
 $reportLines.Add('- 비밀번호 원문은 보고서와 로그에 기록하지 않는다.') | Out-Null
