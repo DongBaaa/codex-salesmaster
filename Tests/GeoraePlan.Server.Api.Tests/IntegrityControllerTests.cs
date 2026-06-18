@@ -2706,6 +2706,47 @@ public sealed class IntegrityControllerTests : IDisposable
         Assert.Contains("창고행 1", row.DetailText, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task GetReport_FiltersDeletedItemStockResidueByReadableWarehouseScope()
+    {
+        var currentUser = CreateOfficeScopedUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var deletedItemId = Guid.NewGuid();
+        dbContext.Items.Add(new Item
+        {
+            Id = deletedItemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Scoped Deleted Residue Item",
+            NameMatchKey = "SCOPEDDELETEDRESIDUEITEM",
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 0m,
+            IsDeleted = true
+        });
+        dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = deletedItemId,
+            WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            Quantity = 4m
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var reportResponse = await controller.GetReport(CancellationToken.None);
+        var reportOk = Assert.IsType<OkObjectResult>(reportResponse.Result);
+        var report = Assert.IsType<IntegrityReportDto>(reportOk.Value);
+
+        Assert.DoesNotContain(report.Issues, issue => issue.Code == "deleted_item_stock_residue");
+
+        var detailsResponse = await controller.GetReportDetails("deleted_item_stock_residue", CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+
+        Assert.Empty(details.Rows);
+    }
+
     public void Dispose()
     {
         _connection.Dispose();

@@ -832,9 +832,8 @@ public sealed class IntegrityController : ControllerBase
         foreach (var batchIds in deletedItemIds.Chunk(500))
         {
             var scopedBatchIds = batchIds.ToList();
-            warehouseStocks.AddRange(await _dbContext.ItemWarehouseStocks
-                .IgnoreQueryFilters()
-                .AsNoTracking()
+            warehouseStocks.AddRange(await _officeScopeService.ApplyWarehouseScope(
+                    _dbContext.ItemWarehouseStocks.IgnoreQueryFilters().AsNoTracking())
                 .Where(stock => scopedBatchIds.Contains(stock.ItemId))
                 .Select(stock => new ItemWarehouseStockSnapshot(stock.ItemId, stock.WarehouseCode, stock.Quantity))
                 .ToListAsync(cancellationToken));
