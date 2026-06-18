@@ -1312,6 +1312,13 @@ try {
         }
         $steps.Add([pscustomobject]@{ Step = 'server-invoice-absent-before-sync'; Result = 'PASS'; Detail = $fixture.Customer.id })
 
+        $syncStatusNeedles = if ($ExerciseStoppedServerDirtySync) {
+            @('동기화 상태', '저장 대기', '권장 동기화 실행', '서버에서 받기', '서버에 올리기')
+        }
+        else {
+            @('동기화 상태', '저장 대기: 전표 1건', '권장 동기화 실행', '서버에서 받기', '서버에 올리기')
+        }
+
         $syncDump = Open-BottomTabAndAssert `
             -AdbPath $resolvedAdb `
             -DeviceId $deviceId `
@@ -1321,19 +1328,27 @@ try {
             -TabText '동기화' `
             -FallbackXRatio 0.84 `
             -StepName 'sync-status-before-dirty-push' `
-            -Needles @('동기화 상태', '저장 대기: 전표 1건', '권장 동기화 실행', '서버에서 받기', '서버에 올리기') `
+            -Needles $syncStatusNeedles `
             -Steps $steps
 
-        Invoke-SyncNowAndAssert `
-            -AdbPath $resolvedAdb `
-            -DeviceId $deviceId `
-            -EvidenceDirectory $EvidenceDirectory `
-            -Timestamp $timestamp `
-            -SyncContent $syncDump.Content `
-            -Steps $steps | Out-Null
+        if ($ExerciseStoppedServerDirtySync -and $syncDump.Content.Contains('저장 대기: 전표 0건')) {
+            $createdInvoice = Wait-TestInvoiceCreated -BaseUrl $BaseUrl -Headers $headers -CustomerId $fixture.Customer.id -CustomerName $fixture.CustomerName -ItemName $fixture.ItemName -VoucherKind $VoucherKind
+            $steps.Add([pscustomobject]@{ Step = "mobile-$voucherSlug-invoice-auto-push-after-restart"; Result = 'PASS'; Detail = "invoice=$($createdInvoice.id), total=$($createdInvoice.totalAmount), dump=$($syncDump.Path)" })
+        }
+        else {
+            Assert-UiContains -Content $syncDump.Content -Needles @('저장 대기: 전표 1건') -StepName '동기화 전 dirty 전표 1건'
 
-        $createdInvoice = Wait-TestInvoiceCreated -BaseUrl $BaseUrl -Headers $headers -CustomerId $fixture.Customer.id -CustomerName $fixture.CustomerName -ItemName $fixture.ItemName -VoucherKind $VoucherKind
-        $steps.Add([pscustomobject]@{ Step = "mobile-$voucherSlug-invoice-dirty-push"; Result = 'PASS'; Detail = "invoice=$($createdInvoice.id), total=$($createdInvoice.totalAmount), dump=$($afterSaveDump.Path)" })
+            Invoke-SyncNowAndAssert `
+                -AdbPath $resolvedAdb `
+                -DeviceId $deviceId `
+                -EvidenceDirectory $EvidenceDirectory `
+                -Timestamp $timestamp `
+                -SyncContent $syncDump.Content `
+                -Steps $steps | Out-Null
+
+            $createdInvoice = Wait-TestInvoiceCreated -BaseUrl $BaseUrl -Headers $headers -CustomerId $fixture.Customer.id -CustomerName $fixture.CustomerName -ItemName $fixture.ItemName -VoucherKind $VoucherKind
+            $steps.Add([pscustomobject]@{ Step = "mobile-$voucherSlug-invoice-dirty-push"; Result = 'PASS'; Detail = "invoice=$($createdInvoice.id), total=$($createdInvoice.totalAmount), dump=$($afterSaveDump.Path)" })
+        }
     }
     else {
         $createdInvoice = Wait-TestInvoiceCreated -BaseUrl $BaseUrl -Headers $headers -CustomerId $fixture.Customer.id -CustomerName $fixture.CustomerName -ItemName $fixture.ItemName -VoucherKind $VoucherKind

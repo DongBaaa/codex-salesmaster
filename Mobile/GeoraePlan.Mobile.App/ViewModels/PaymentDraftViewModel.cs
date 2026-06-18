@@ -321,7 +321,17 @@ public sealed class PaymentDraftViewModel : ObservableObject
             IsBusy = true;
             StatusMessage = "최신 전표 잔액을 확인하고 있습니다.";
 
-            var latestInvoice = await RefreshSelectedInvoiceForSaveAsync(SelectedInvoice);
+            InvoiceDto? latestInvoice;
+            try
+            {
+                latestInvoice = await RefreshSelectedInvoiceForSaveAsync(SelectedInvoice);
+            }
+            catch (Exception ex) when (CanQueuePaymentWithSelectedInvoiceAfterRefreshFailure(ex))
+            {
+                latestInvoice = SelectedInvoice;
+                StatusMessage = $"최신 전표 확인 지연으로 현재 화면 전표 기준 {PaymentActionText}을 동기화 대기로 저장합니다.";
+            }
+
             if (latestInvoice is null)
             {
                 StatusMessage = "선택한 전표가 최신 데이터에서 확인되지 않습니다. 전표 목록을 다시 조회한 뒤 시도하세요.";
@@ -399,6 +409,25 @@ public sealed class PaymentDraftViewModel : ObservableObject
         {
             IsBusy = false;
         }
+    }
+
+    internal static bool CanQueuePaymentWithSelectedInvoiceAfterRefreshFailure(Exception ex)
+    {
+        if (ex is TaskCanceledException or OperationCanceledException or TimeoutException)
+            return true;
+
+        if (ex is HttpRequestException httpEx)
+        {
+            return httpEx.StatusCode is null
+                or System.Net.HttpStatusCode.RequestTimeout
+                or System.Net.HttpStatusCode.TooManyRequests
+                or System.Net.HttpStatusCode.InternalServerError
+                or System.Net.HttpStatusCode.BadGateway
+                or System.Net.HttpStatusCode.ServiceUnavailable
+                or System.Net.HttpStatusCode.GatewayTimeout;
+        }
+
+        return false;
     }
 
     private async Task<InvoiceDto?> RefreshSelectedInvoiceForSaveAsync(InvoiceDto invoice)

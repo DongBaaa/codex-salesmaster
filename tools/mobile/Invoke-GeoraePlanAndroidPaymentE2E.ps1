@@ -10,7 +10,11 @@
     [string]$Password = '1234',
     [string]$EvidenceDirectory,
     [switch]$SkipInstall,
-    [switch]$KeepTemporaryData
+    [switch]$KeepTemporaryData,
+    [switch]$ExerciseStoppedServerDirtySync,
+    [string]$DotNetPath,
+    [string]$LocalApiProjectFile,
+    [int]$StoppedServerOfflineTimeoutSeconds = 45
 )
 
 $ErrorActionPreference = 'Stop'
@@ -67,6 +71,167 @@ function Resolve-ApkPath {
     }
 
     throw "설치할 APK 파일을 찾지 못했습니다: $mobileOut"
+}
+
+function Assert-LocalDirtySyncTarget {
+    param([string]$BaseUrl)
+
+    $uri = $null
+    if (-not [Uri]::TryCreate($BaseUrl, [UriKind]::Absolute, [ref]$uri)) {
+        throw "오프라인 dirty 동기화 검증 BaseUrl이 올바른 URI가 아닙니다: $BaseUrl"
+    }
+
+    $isLoopbackHost = [string]::Equals($uri.Host, '127.0.0.1', [StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($uri.Host, 'localhost', [StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($uri.Host, '::1', [StringComparison]::OrdinalIgnoreCase)
+
+    if (-not $isLoopbackHost) {
+        throw "오프라인 dirty 동기화 검증은 로컬 테스트 API에서만 허용됩니다. 현재 BaseUrl: $BaseUrl"
+    }
+}
+
+function Resolve-DotNetPath {
+    param(
+        [string]$ProjectRoot,
+        [string]$RequestedPath
+    )
+
+    foreach ($candidate in @(
+        $RequestedPath,
+        (Join-Path $ProjectRoot '.dotnet\dotnet.exe'),
+        (Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\dotnet8\dotnet.exe')
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate)) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    $command = Get-Command dotnet -ErrorAction SilentlyContinue
+    if ($null -ne $command) {
+        return $command.Source
+    }
+
+    throw 'dotnet 실행 파일을 찾지 못했습니다.'
+}
+
+function Wait-LocalApiHealth {
+    param(
+        [string]$BaseUrl,
+        [int]$TimeoutSeconds = 90
+    )
+
+    $healthUrl = $BaseUrl.TrimEnd('/') + '/healthz'
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastError = $null
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $response = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 2
+            if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 600) {
+                return
+            }
+        }
+        catch {
+            $lastError = $_.Exception.Message
+            Start-Sleep -Seconds 2
+        }
+    }
+
+    throw "로컬 테스트 API healthz 대기 실패: $healthUrl / $lastError"
+}
+
+function Stop-LocalApiForBaseUrl {
+    param(
+        [string]$BaseUrl,
+        [string]$ProjectRoot
+    )
+
+    $uri = [Uri]$BaseUrl
+    $connections = @(Get-NetTCPConnection -LocalPort $uri.Port -State Listen -ErrorAction SilentlyContinue)
+    $owners = @($connections | Select-Object -ExpandProperty OwningProcess -Unique | Where-Object { $_ -gt 0 })
+    if ($owners.Count -eq 0) {
+        throw "중단할 로컬 테스트 API 프로세스를 찾지 못했습니다: $BaseUrl"
+    }
+
+    $stopped = New-Object System.Collections.Generic.List[string]
+    foreach ($ownerProcessId in $owners) {
+        $process = Get-Process -Id $ownerProcessId -ErrorAction Stop
+        $processPath = ''
+        try { $processPath = [string]$process.Path } catch { $processPath = '' }
+
+        $isProjectProcess = -not [string]::IsNullOrWhiteSpace($processPath) -and
+            $processPath.StartsWith($ProjectRoot, [StringComparison]::OrdinalIgnoreCase)
+        $isGeoraePlanProcess = $process.ProcessName.Contains('거래플랜') -or
+            $process.ProcessName.Contains('GeoraePlan') -or
+            $processPath.Contains('거래플랜') -or
+            $processPath.Contains('GeoraePlan')
+
+        if (-not ($isProjectProcess -or $isGeoraePlanProcess)) {
+            throw "로컬 테스트 API가 아닌 프로세스는 중단하지 않습니다: pid=$ownerProcessId, name=$($process.ProcessName), path=$processPath"
+        }
+
+        Stop-Process -Id $ownerProcessId -Force -ErrorAction Stop
+        $stopped.Add("$($process.ProcessName):$ownerProcessId") | Out-Null
+    }
+
+    Start-Sleep -Seconds 3
+    return @($stopped)
+}
+
+function Start-LocalApiForBaseUrl {
+    param(
+        [string]$BaseUrl,
+        [string]$ProjectRoot,
+        [string]$DotNetPath,
+        [string]$LocalApiProjectFile,
+        [string]$Username,
+        [string]$Password,
+        [string]$EvidenceDirectory,
+        [string]$Timestamp
+    )
+
+    $resolvedDotNet = Resolve-DotNetPath -ProjectRoot $ProjectRoot -RequestedPath $DotNetPath
+    if ([string]::IsNullOrWhiteSpace($LocalApiProjectFile)) {
+        $LocalApiProjectFile = Join-Path $ProjectRoot 'Server\거래플랜.Server.Api\거래플랜.Server.Api.csproj'
+    }
+    if (-not (Test-Path -LiteralPath $LocalApiProjectFile)) {
+        throw "로컬 테스트 API 프로젝트 파일을 찾지 못했습니다: $LocalApiProjectFile"
+    }
+
+    $serverDirectory = Split-Path -Parent (Resolve-Path -LiteralPath $LocalApiProjectFile)
+    $safeBaseUrl = $BaseUrl.TrimEnd('/')
+    $env:ASPNETCORE_ENVIRONMENT = 'Development'
+    $env:ASPNETCORE_URLS = $safeBaseUrl
+    $env:Kestrel__Endpoints__Http__Url = $safeBaseUrl
+    $env:Security__RequireHttpsForwardedProto = 'false'
+    $env:Database__EnableSqliteFallback = 'true'
+    $env:SeedUsers__EnableSeedUsers = 'true'
+    if ([string]::IsNullOrWhiteSpace($env:SeedUsers__UsenetUsername)) {
+        $env:SeedUsers__UsenetUsername = $Username
+    }
+    if ([string]::IsNullOrWhiteSpace($env:SeedUsers__UsenetPassword)) {
+        $env:SeedUsers__UsenetPassword = $Password
+    }
+    $env:SeedUsers__UpdateExistingUsenetPassword = 'true'
+
+    $restartStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $stdout = Join-Path $EvidenceDirectory "mobile-payment-e2e-$Timestamp-local-api-restart-$restartStamp.out.log"
+    $stderr = Join-Path $EvidenceDirectory "mobile-payment-e2e-$Timestamp-local-api-restart-$restartStamp.err.log"
+    $process = Start-Process `
+        -FilePath $resolvedDotNet `
+        -ArgumentList @('run', '--no-launch-profile', '--project', $LocalApiProjectFile) `
+        -WorkingDirectory $serverDirectory `
+        -RedirectStandardOutput $stdout `
+        -RedirectStandardError $stderr `
+        -WindowStyle Hidden `
+        -PassThru
+
+    Wait-LocalApiHealth -BaseUrl $safeBaseUrl -TimeoutSeconds 90
+
+    return [pscustomobject]@{
+        ProcessId = $process.Id
+        StdOut = $stdout
+        StdErr = $stderr
+    }
 }
 
 function Invoke-Adb {
@@ -271,6 +436,53 @@ function Assert-UiContains {
 }
 
 
+function Wait-UiContainsAll {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$EvidenceDirectory,
+        [string]$Name,
+        [string[]]$Needles,
+        [string]$StepName,
+        [int]$TimeoutSeconds = 60
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $attempt = 0
+    $lastDump = $null
+    while ((Get-Date) -lt $deadline) {
+        $attempt++
+        $dump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "$Name-$attempt"
+        $lastDump = $dump
+        if (Dismiss-AndroidAnrDialog -AdbPath $AdbPath -DeviceId $DeviceId -Content $dump.Content) {
+            Start-Sleep -Seconds 5
+            continue
+        }
+
+        $missing = @()
+        foreach ($needle in $Needles) {
+            if (-not $dump.Content.Contains($needle)) {
+                $missing += $needle
+            }
+        }
+
+        if ($missing.Count -eq 0) {
+            Copy-Item -LiteralPath $dump.Path -Destination (Join-Path $EvidenceDirectory "$Name.xml") -Force
+            return $dump
+        }
+
+        Start-Sleep -Seconds 2
+    }
+
+    if ($lastDump) {
+        Copy-Item -LiteralPath $lastDump.Path -Destination (Join-Path $EvidenceDirectory "$Name.xml") -Force
+        Assert-UiContains -Content $lastDump.Content -Needles $Needles -StepName $StepName
+        return $lastDump
+    }
+
+    throw "$StepName 확인 실패. UI 덤프를 가져오지 못했습니다."
+}
+
 function Wait-UiReadyForLoginOrHome {
     param(
         [string]$AdbPath,
@@ -389,6 +601,97 @@ function Tap-BottomTab {
     $x = [int]($Screen.Width * $XRatio)
     $y = [int]($Screen.Height * 0.95)
     Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $x -Y $y
+}
+
+function Open-BottomTabAndAssert {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$EvidenceDirectory,
+        [string]$Timestamp,
+        [object]$Screen,
+        [string]$TabText,
+        [double]$FallbackXRatio,
+        [string]$StepName,
+        [string[]]$Needles,
+        [System.Collections.Generic.List[object]]$Steps
+    )
+
+    Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-before-$StepName" | Out-Null
+    Tap-BottomTab -AdbPath $AdbPath -DeviceId $DeviceId -Screen $Screen -XRatio $FallbackXRatio
+    Start-Sleep -Seconds 1
+
+    $afterTapDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-after-tap-$StepName"
+    $missingAfterTap = @()
+    foreach ($needle in $Needles) {
+        if (-not $afterTapDump.Content.Contains($needle)) {
+            $missingAfterTap += $needle
+        }
+    }
+
+    if ($missingAfterTap.Count -gt 0 -and
+        ($afterTapDump.Content.Contains('design_bottom_sheet') -or $afterTapDump.Content.Contains('touch_outside'))) {
+        $tabPoint = Get-NodeCenterByText -Content $afterTapDump.Content -Text $TabText -ClassName 'android.widget.TextView'
+        if (-not $tabPoint) {
+            $tabPoint = Get-NodeCenterByText -Content $afterTapDump.Content -Text $TabText -ClassName ''
+        }
+
+        if ($tabPoint) {
+            Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $tabPoint.X -Y $tabPoint.Y
+            Start-Sleep -Seconds 1
+        }
+    }
+
+    $dump = Wait-UiContainsAll `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-payment-e2e-$Timestamp-$StepName" `
+        -Needles $Needles `
+        -StepName $StepName `
+        -TimeoutSeconds 90
+
+    $Steps.Add([pscustomobject]@{ Step = $StepName; Result = 'PASS'; Detail = $dump.Path })
+    return $dump
+}
+
+function Invoke-SyncNowAndAssert {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$EvidenceDirectory,
+        [string]$Timestamp,
+        [string]$SyncContent,
+        [System.Collections.Generic.List[object]]$Steps
+    )
+
+    $point = Get-NodeCenterByText -Content $SyncContent -Text '권장 동기화 실행' -ClassName 'android.widget.Button'
+    if (-not $point) {
+        $point = Get-NodeCenterByText -Content $SyncContent -Text '권장 동기화 실행' -ClassName ''
+    }
+    if (-not $point) {
+        $freshDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-sync-now-before-tap"
+        $point = Get-NodeCenterByText -Content $freshDump.Content -Text '권장 동기화 실행' -ClassName 'android.widget.Button'
+        if (-not $point) {
+            $point = Get-NodeCenterByText -Content $freshDump.Content -Text '권장 동기화 실행' -ClassName ''
+        }
+    }
+    if (-not $point) {
+        throw '동기화 화면에서 권장 동기화 실행 버튼을 찾지 못했습니다.'
+    }
+
+    Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $point.X -Y $point.Y
+    $dump = Wait-UiContainsAll `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-payment-e2e-$Timestamp-sync-now" `
+        -Needles @('권장 동기화 완료', '수금·지급 0건', '서버에서 받기', '서버에 올리기') `
+        -StepName 'sync-now' `
+        -TimeoutSeconds 150
+
+    $Steps.Add([pscustomobject]@{ Step = 'sync-now'; Result = 'PASS'; Detail = $dump.Path })
+    return $dump
 }
 
 function Dismiss-AndroidAnrDialog {
@@ -895,10 +1198,15 @@ $fixture = $null
 $createdInvoice = $null
 $createdPayment = $null
 $createdTransaction = $null
+$localApiStoppedForExercise = $false
 $resultStatus = 'FAIL'
 $errorMessage = $null
 
 try {
+    if ($ExerciseStoppedServerDirtySync) {
+        Assert-LocalDirtySyncTarget -BaseUrl $BaseUrl
+    }
+
     $headers = New-ApiSession -BaseUrl $BaseUrl -Username $Username -Password $Password
     $steps.Add([pscustomobject]@{ Step = 'api-login'; Result = 'PASS'; Detail = $BaseUrl })
 
@@ -1021,12 +1329,95 @@ try {
         throw "$paymentSaveText 버튼을 찾지 못했습니다."
     }
 
-    Tap-Point -AdbPath $resolvedAdb -DeviceId $deviceId -X $saveButtonPoint.X -Y $saveButtonPoint.Y
-    Start-Sleep -Seconds 12
+    if ($ExerciseStoppedServerDirtySync) {
+        $stoppedProcesses = Stop-LocalApiForBaseUrl -BaseUrl $BaseUrl -ProjectRoot $ProjectRoot
+        $localApiStoppedForExercise = $true
+        $steps.Add([pscustomobject]@{ Step = 'local-api-stop-before-payment-save'; Result = 'PASS'; Detail = ($stoppedProcesses -join ', ') })
+    }
 
-    $createdPayment = Wait-TestPaymentCreated -BaseUrl $BaseUrl -Headers $headers -InvoiceId $createdInvoice.id -ExpectedAmount $expectedAmount -ExpectedMethodName $expectedMethod
-    $createdTransaction = Wait-TestTransactionCreated -BaseUrl $BaseUrl -Headers $headers -TransactionId $createdPayment.id -InvoiceId $createdInvoice.id -VoucherKind $VoucherKind -ExpectedAmount $expectedAmount
-    $steps.Add([pscustomobject]@{ Step = "mobile-$voucherSlug-payment-create"; Result = 'PASS'; Detail = "payment=$($createdPayment.id), transaction=$($createdTransaction.id), method=$expectedMethod, amount=$expectedAmount" })
+    $saveTappedAt = Get-Date
+    Tap-Point -AdbPath $resolvedAdb -DeviceId $deviceId -X $saveButtonPoint.X -Y $saveButtonPoint.Y
+
+    if ($ExerciseStoppedServerDirtySync) {
+        $pendingDump = Wait-UiContainsAll `
+            -AdbPath $resolvedAdb `
+            -DeviceId $deviceId `
+            -EvidenceDirectory $EvidenceDirectory `
+            -Name "mobile-payment-e2e-$voucherSlug-$timestamp-after-payment-save-stopped-server" `
+            -Needles @($paymentAction, '동기화', '대기') `
+            -StepName '실제 API 중단 후 수금/지급 dirty 대기' `
+            -TimeoutSeconds $StoppedServerOfflineTimeoutSeconds
+        $offlineElapsedSeconds = [Math]::Round(((Get-Date) - $saveTappedAt).TotalSeconds, 1)
+        $steps.Add([pscustomobject]@{ Step = 'mobile-stopped-server-payment-pending'; Result = 'PASS'; Detail = "elapsed=${offlineElapsedSeconds}s, dump=$($pendingDump.Path)" })
+
+        $restart = Start-LocalApiForBaseUrl `
+            -BaseUrl $BaseUrl `
+            -ProjectRoot $ProjectRoot `
+            -DotNetPath $DotNetPath `
+            -LocalApiProjectFile $LocalApiProjectFile `
+            -Username $Username `
+            -Password $Password `
+            -EvidenceDirectory $EvidenceDirectory `
+            -Timestamp $timestamp
+        $localApiStoppedForExercise = $false
+        $steps.Add([pscustomobject]@{ Step = 'local-api-restart-before-payment-sync'; Result = 'PASS'; Detail = "pid=$($restart.ProcessId), stdout=$($restart.StdOut), stderr=$($restart.StdErr)" })
+
+        $matchesAfterRestart = @(Get-TestPayments -BaseUrl $BaseUrl -Headers $headers -InvoiceId $createdInvoice.id |
+            Where-Object {
+                [decimal]$_.amount -eq $expectedAmount -and
+                [string]$_.note -like "*$expectedMethod*"
+            })
+        if ($matchesAfterRestart.Count -gt 0) {
+            $createdPayment = $matchesAfterRestart[0]
+            $createdTransaction = Wait-TestTransactionCreated -BaseUrl $BaseUrl -Headers $headers -TransactionId $createdPayment.id -InvoiceId $createdInvoice.id -VoucherKind $VoucherKind -ExpectedAmount $expectedAmount
+            $steps.Add([pscustomobject]@{ Step = 'server-payment-auto-pushed-immediately-after-restart'; Result = 'PASS'; Detail = "payment=$($createdPayment.id), transaction=$($createdTransaction.id)" })
+        }
+        else {
+            $steps.Add([pscustomobject]@{ Step = 'server-payment-absent-before-sync'; Result = 'PASS'; Detail = $createdInvoice.id })
+        }
+
+        $syncDump = Open-BottomTabAndAssert `
+            -AdbPath $resolvedAdb `
+            -DeviceId $deviceId `
+            -EvidenceDirectory $EvidenceDirectory `
+            -Timestamp $timestamp `
+            -Screen $screen `
+            -TabText '동기화' `
+            -FallbackXRatio 0.84 `
+            -StepName 'sync-status-before-payment-dirty-push' `
+            -Needles @('동기화 상태', '저장 대기', '권장 동기화 실행', '서버에서 받기', '서버에 올리기') `
+            -Steps $steps
+
+        if ($syncDump.Content.Contains('수금·지급 0건')) {
+            if (-not $createdPayment) {
+                $createdPayment = Wait-TestPaymentCreated -BaseUrl $BaseUrl -Headers $headers -InvoiceId $createdInvoice.id -ExpectedAmount $expectedAmount -ExpectedMethodName $expectedMethod
+                $createdTransaction = Wait-TestTransactionCreated -BaseUrl $BaseUrl -Headers $headers -TransactionId $createdPayment.id -InvoiceId $createdInvoice.id -VoucherKind $VoucherKind -ExpectedAmount $expectedAmount
+            }
+            $steps.Add([pscustomobject]@{ Step = "mobile-$voucherSlug-payment-auto-push-after-restart"; Result = 'PASS'; Detail = "payment=$($createdPayment.id), transaction=$($createdTransaction.id), dump=$($syncDump.Path)" })
+        }
+        else {
+            Assert-UiContains -Content $syncDump.Content -Needles @('수금·지급 1건') -StepName '동기화 전 dirty 수금/지급 1건'
+
+            Invoke-SyncNowAndAssert `
+                -AdbPath $resolvedAdb `
+                -DeviceId $deviceId `
+                -EvidenceDirectory $EvidenceDirectory `
+                -Timestamp $timestamp `
+                -SyncContent $syncDump.Content `
+                -Steps $steps | Out-Null
+
+            $createdPayment = Wait-TestPaymentCreated -BaseUrl $BaseUrl -Headers $headers -InvoiceId $createdInvoice.id -ExpectedAmount $expectedAmount -ExpectedMethodName $expectedMethod
+            $createdTransaction = Wait-TestTransactionCreated -BaseUrl $BaseUrl -Headers $headers -TransactionId $createdPayment.id -InvoiceId $createdInvoice.id -VoucherKind $VoucherKind -ExpectedAmount $expectedAmount
+            $steps.Add([pscustomobject]@{ Step = "mobile-$voucherSlug-payment-dirty-push"; Result = 'PASS'; Detail = "payment=$($createdPayment.id), transaction=$($createdTransaction.id), method=$expectedMethod, amount=$expectedAmount, dump=$($pendingDump.Path)" })
+        }
+    }
+    else {
+        Start-Sleep -Seconds 12
+
+        $createdPayment = Wait-TestPaymentCreated -BaseUrl $BaseUrl -Headers $headers -InvoiceId $createdInvoice.id -ExpectedAmount $expectedAmount -ExpectedMethodName $expectedMethod
+        $createdTransaction = Wait-TestTransactionCreated -BaseUrl $BaseUrl -Headers $headers -TransactionId $createdPayment.id -InvoiceId $createdInvoice.id -VoucherKind $VoucherKind -ExpectedAmount $expectedAmount
+        $steps.Add([pscustomobject]@{ Step = "mobile-$voucherSlug-payment-create"; Result = 'PASS'; Detail = "payment=$($createdPayment.id), transaction=$($createdTransaction.id), method=$expectedMethod, amount=$expectedAmount" })
+    }
 
     $resultStatus = 'PASS'
 }
@@ -1035,6 +1426,25 @@ catch {
     $steps.Add([pscustomobject]@{ Step = 'error'; Result = 'FAIL'; Detail = $errorMessage })
 }
 finally {
+    if ($localApiStoppedForExercise) {
+        try {
+            $restart = Start-LocalApiForBaseUrl `
+                -BaseUrl $BaseUrl `
+                -ProjectRoot $ProjectRoot `
+                -DotNetPath $DotNetPath `
+                -LocalApiProjectFile $LocalApiProjectFile `
+                -Username $Username `
+                -Password $Password `
+                -EvidenceDirectory $EvidenceDirectory `
+                -Timestamp $timestamp
+            $localApiStoppedForExercise = $false
+            $cleanupSteps.Add([pscustomobject]@{ Target = 'local-api'; Id = $restart.ProcessId; Result = 'restarted-before-cleanup' })
+        }
+        catch {
+            $cleanupSteps.Add([pscustomobject]@{ Target = 'local-api'; Id = ''; Result = "restart-failed-before-cleanup: $($_.Exception.Message)" })
+        }
+    }
+
     if (-not $KeepTemporaryData) {
         try {
             if (-not $headers) {
@@ -1056,6 +1466,7 @@ $result = [pscustomobject]@{
     BaseUrl = $BaseUrl
     PackageName = $PackageName
     VoucherKind = $VoucherKind
+    ExerciseStoppedServerDirtySync = [bool]$ExerciseStoppedServerDirtySync
     Result = $resultStatus
     Error = $errorMessage
     Fixture = if ($fixture) { [pscustomobject]@{ CustomerId = $fixture.Customer.id; CustomerName = $fixture.CustomerName; ItemId = $fixture.Item.id; ItemName = $fixture.ItemName } } else { $null }
@@ -1078,6 +1489,7 @@ $mdLines = @(
     "- 패키지: $PackageName",
     "- 전표유형: $VoucherKind",
     "- 기본 방식: $expectedMethod",
+    "- 실제 API 중단 dirty 동기화 실행: $([bool]$ExerciseStoppedServerDirtySync)",
     "- 결과: $resultStatus",
     "- 오류: $errorMessage",
     '',

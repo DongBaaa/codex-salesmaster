@@ -217,8 +217,55 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("local-api-stop-before-save", source, StringComparison.Ordinal);
         Assert.Contains("mobile-stopped-server-offline-pending", source, StringComparison.Ordinal);
         Assert.Contains("local-api-restart-before-sync", source, StringComparison.Ordinal);
+        Assert.Contains("mobile-$voucherSlug-invoice-auto-push-after-restart", source, StringComparison.Ordinal);
+        Assert.Contains("저장 대기: 전표 0건", source, StringComparison.Ordinal);
         Assert.Contains("ExerciseStoppedServerDirtySync = [bool]$ExerciseStoppedServerDirtySync", source, StringComparison.Ordinal);
         Assert.Contains("ExerciseStoppedServerDirtySync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AndroidPaymentE2E_CoversStoppedServerDirtySyncPush()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "mobile",
+            "Invoke-GeoraePlanAndroidPaymentE2E.ps1"));
+
+        Assert.Contains("[switch]$ExerciseStoppedServerDirtySync", source, StringComparison.Ordinal);
+        Assert.Contains("[int]$StoppedServerOfflineTimeoutSeconds = 45", source, StringComparison.Ordinal);
+        Assert.Contains("Assert-LocalDirtySyncTarget -BaseUrl $BaseUrl", source, StringComparison.Ordinal);
+        Assert.Contains("Stop-LocalApiForBaseUrl", source, StringComparison.Ordinal);
+        Assert.Contains("Start-LocalApiForBaseUrl", source, StringComparison.Ordinal);
+        Assert.Contains("local-api-stop-before-payment-save", source, StringComparison.Ordinal);
+        Assert.Contains("mobile-stopped-server-payment-pending", source, StringComparison.Ordinal);
+        Assert.Contains("local-api-restart-before-payment-sync", source, StringComparison.Ordinal);
+        Assert.Contains("server-payment-absent-before-sync", source, StringComparison.Ordinal);
+        Assert.Contains("sync-status-before-payment-dirty-push", source, StringComparison.Ordinal);
+        Assert.Contains("수금·지급 0건", source, StringComparison.Ordinal);
+        Assert.Contains("수금·지급 1건", source, StringComparison.Ordinal);
+        Assert.Contains("mobile-$voucherSlug-payment-dirty-push", source, StringComparison.Ordinal);
+        Assert.Contains("mobile-$voucherSlug-payment-auto-push-after-restart", source, StringComparison.Ordinal);
+        Assert.Contains("ExerciseStoppedServerDirtySync = [bool]$ExerciseStoppedServerDirtySync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AndroidPaymentDraft_QueuesDirtyPaymentWhenLatestInvoiceRefreshIsRetryable()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "PaymentDraftViewModel.cs"));
+
+        Assert.Contains("CanQueuePaymentWithSelectedInvoiceAfterRefreshFailure", source, StringComparison.Ordinal);
+        Assert.Contains("latestInvoice = SelectedInvoice", source, StringComparison.Ordinal);
+        Assert.Contains("최신 전표 확인 지연으로 현재 화면 전표 기준", source, StringComparison.Ordinal);
+        Assert.Contains("TaskCanceledException or OperationCanceledException or TimeoutException", source, StringComparison.Ordinal);
+        Assert.Contains("HttpStatusCode.ServiceUnavailable", source, StringComparison.Ordinal);
+        Assert.Contains("RefreshSelectedInvoiceForSaveAsync(SelectedInvoice)", source, StringComparison.Ordinal);
+        Assert.Contains("SavePaymentImmediatelyAsync(payment, Attachments, linkedTransaction)", source, StringComparison.Ordinal);
     }
 
     [Fact]
