@@ -184,6 +184,14 @@ public sealed class IntegrityController : ControllerBase
             .CountAsync(cancellationToken);
         AddIssue(issues, "active_invoice_lines_deleted_invoice", activeInvoiceLinesDeletedInvoiceCount, "Error", "삭제된 전표에 활성 세부내역 행이 남아 있습니다.");
 
+        var activeInvoiceDeletedLineOnlyCount = await _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
+            .Where(invoice => !invoice.IsDeleted && invoice.TotalAmount != 0m)
+            .CountAsync(
+                invoice => _dbContext.InvoiceLines.IgnoreQueryFilters().Any(line => line.InvoiceId == invoice.Id && line.IsDeleted) &&
+                           !_dbContext.InvoiceLines.IgnoreQueryFilters().Any(line => line.InvoiceId == invoice.Id && !line.IsDeleted),
+                cancellationToken);
+        AddIssue(issues, "active_invoice_deleted_line_only", activeInvoiceDeletedLineOnlyCount, "Warning", "활성 전표에 활성 세부내역이 없고 삭제된 세부내역만 남아 있습니다.");
+
         var invoiceLineMissingInvoiceRowCount = _officeScopeService.HasGlobalDataScope
             ? await _dbContext.InvoiceLines
                 .IgnoreQueryFilters()
@@ -539,6 +547,7 @@ public sealed class IntegrityController : ControllerBase
             "item_stock_snapshot_mismatch" => await LoadItemStockSnapshotMismatchDetailsAsync(cancellationToken),
             "orphan_invoice_customer_refs" => await LoadOrphanInvoiceCustomerDetailsAsync(cancellationToken),
             "active_invoice_lines_deleted_invoice" => await LoadActiveInvoiceLinesDeletedInvoiceDetailsAsync(cancellationToken),
+            "active_invoice_deleted_line_only" => await LoadActiveInvoiceDeletedLineOnlyDetailsAsync(cancellationToken),
             "invoice_line_missing_invoice_rows" => await LoadInvoiceLineMissingInvoiceRowDetailsAsync(cancellationToken),
             "orphan_transaction_customer_refs" => await LoadOrphanTransactionCustomerDetailsAsync(cancellationToken),
             "orphan_rental_profile_customer_refs" => await LoadOrphanRentalProfileCustomerDetailsAsync(cancellationToken),
@@ -1158,6 +1167,60 @@ public sealed class IntegrityController : ControllerBase
                     $"전표일 {FormatDate(row.Invoice.InvoiceDate)}",
                     $"전표유형 {row.Invoice.VoucherType}",
                     $"전표ID {FormatGuid(row.Invoice.Id)}")))
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadActiveInvoiceDeletedLineOnlyDetailsAsync(CancellationToken cancellationToken)
+    {
+        var invoices = await (
+                from invoice in _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
+                    .Where(invoice => !invoice.IsDeleted && invoice.TotalAmount != 0m)
+                where _dbContext.InvoiceLines.IgnoreQueryFilters().Any(line => line.InvoiceId == invoice.Id && line.IsDeleted) &&
+                      !_dbContext.InvoiceLines.IgnoreQueryFilters().Any(line => line.InvoiceId == invoice.Id && !line.IsDeleted)
+                orderby invoice.InvoiceDate, invoice.InvoiceNumber, invoice.Id
+                select invoice)
+            .ToListAsync(cancellationToken);
+
+        var invoiceIds = invoices.Select(invoice => invoice.Id).ToHashSet();
+        var deletedLineStats = new Dictionary<Guid, (int Count, decimal Amount)>();
+        if (invoiceIds.Count > 0)
+        {
+            var deletedLines = await _dbContext.InvoiceLines
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(line => invoiceIds.Contains(line.InvoiceId) && line.IsDeleted)
+                .Select(line => new
+                {
+                    line.InvoiceId,
+                    line.LineAmount
+                })
+                .ToListAsync(cancellationToken);
+            deletedLineStats = deletedLines
+                .GroupBy(line => line.InvoiceId)
+                .ToDictionary(
+                    group => group.Key,
+                    group => (Count: group.Count(), Amount: group.Sum(line => line.LineAmount)));
+        }
+
+        return invoices
+            .Select(invoice =>
+            {
+                var stats = deletedLineStats.TryGetValue(invoice.Id, out var value)
+                    ? value
+                    : (Count: 0, Amount: 0m);
+                return CreateDetailRow(
+                    entityType: "전표",
+                    entityIdText: FormatGuid(invoice.Id),
+                    primaryText: FirstNonEmpty(invoice.InvoiceNumber, invoice.LocalTempNumber, FormatGuid(invoice.Id)),
+                    secondaryText: CombineParts(FormatDate(invoice.InvoiceDate), $"전표유형 {invoice.VoucherType}"),
+                    referenceText: $"거래처 {FormatGuid(invoice.CustomerId)}",
+                    scopeText: FormatScope(invoice.TenantCode, invoice.OfficeCode, invoice.ResponsibleOfficeCode),
+                    detailText: CombineParts(
+                        $"총액 {FormatMoney(invoice.TotalAmount)}",
+                        $"삭제 세부내역 {FormatNumber(stats.Count)}",
+                        $"삭제 세부금액 {FormatMoney(stats.Amount)}",
+                        "활성 세부내역 0"));
+            })
             .ToList();
     }
 
@@ -3492,6 +3555,7 @@ public sealed class IntegrityController : ControllerBase
             "item_stock_snapshot_mismatch" => new IntegrityIssueDefinition("item_stock_snapshot_mismatch", "Warning", "품목 현재재고와 창고 합계가 일치하지 않는 항목이 있습니다."),
             "orphan_invoice_customer_refs" => new IntegrityIssueDefinition("orphan_invoice_customer_refs", "Error", "거래처가 없는 전표 참조가 존재합니다."),
             "active_invoice_lines_deleted_invoice" => new IntegrityIssueDefinition("active_invoice_lines_deleted_invoice", "Error", "삭제된 전표에 활성 세부내역 행이 남아 있습니다."),
+            "active_invoice_deleted_line_only" => new IntegrityIssueDefinition("active_invoice_deleted_line_only", "Warning", "활성 전표에 활성 세부내역이 없고 삭제된 세부내역만 남아 있습니다."),
             "invoice_line_missing_invoice_rows" => new IntegrityIssueDefinition("invoice_line_missing_invoice_rows", "Error", "부모 전표 행이 없는 전표 세부내역이 존재합니다."),
             "orphan_transaction_customer_refs" => new IntegrityIssueDefinition("orphan_transaction_customer_refs", "Error", "거래처가 없는 수금/지불 참조가 존재합니다."),
             "orphan_rental_profile_customer_refs" => new IntegrityIssueDefinition("orphan_rental_profile_customer_refs", "Error", "거래처가 없는 렌탈 청구 프로필 참조가 존재합니다."),

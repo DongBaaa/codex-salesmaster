@@ -308,6 +308,152 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FlagsActiveInvoicesWithOnlyDeletedLinesByScope()
+    {
+        var currentUser = CreateOfficeScopedUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var inScopeCustomerId = Guid.NewGuid();
+        var outOfScopeCustomerId = Guid.NewGuid();
+        var deletedLineOnlyInvoiceId = Guid.NewGuid();
+        var mixedLineInvoiceId = Guid.NewGuid();
+        var zeroTotalInvoiceId = Guid.NewGuid();
+        var outOfScopeInvoiceId = Guid.NewGuid();
+
+        dbContext.Customers.AddRange(
+            new Customer
+            {
+                Id = inScopeCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Deleted Line Scope Customer",
+                NameMatchKey = "DELETEDLINESCOPECUSTOMER",
+                TradeType = "매출"
+            },
+            new Customer
+            {
+                Id = outOfScopeCustomerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                NameOriginal = "Deleted Line Out Customer",
+                NameMatchKey = "DELETEDLINEOUTCUSTOMER",
+                TradeType = "매출"
+            });
+        dbContext.Invoices.AddRange(
+            new Invoice
+            {
+                Id = deletedLineOnlyInvoiceId,
+                CustomerId = inScopeCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "INV-DELETED-LINE-ONLY",
+                InvoiceDate = new DateOnly(2026, 6, 19),
+                TotalAmount = 150000m
+            },
+            new Invoice
+            {
+                Id = mixedLineInvoiceId,
+                CustomerId = inScopeCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "INV-MIXED-LINES",
+                InvoiceDate = new DateOnly(2026, 6, 19),
+                TotalAmount = 200000m
+            },
+            new Invoice
+            {
+                Id = zeroTotalInvoiceId,
+                CustomerId = inScopeCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "INV-ZERO-TOTAL-DELETED-LINE",
+                InvoiceDate = new DateOnly(2026, 6, 19),
+                TotalAmount = 0m
+            },
+            new Invoice
+            {
+                Id = outOfScopeInvoiceId,
+                CustomerId = outOfScopeCustomerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                InvoiceNumber = "INV-OUT-DELETED-LINE-ONLY",
+                InvoiceDate = new DateOnly(2026, 6, 19),
+                TotalAmount = 99000m
+            });
+        dbContext.InvoiceLines.AddRange(
+            new InvoiceLine
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = deletedLineOnlyInvoiceId,
+                ItemNameOriginal = "deleted-only-item",
+                Quantity = 1m,
+                UnitPrice = 150000m,
+                LineAmount = 150000m,
+                IsDeleted = true
+            },
+            new InvoiceLine
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = mixedLineInvoiceId,
+                ItemNameOriginal = "mixed-deleted-item",
+                Quantity = 1m,
+                UnitPrice = 100000m,
+                LineAmount = 100000m,
+                IsDeleted = true
+            },
+            new InvoiceLine
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = mixedLineInvoiceId,
+                ItemNameOriginal = "mixed-active-item",
+                Quantity = 1m,
+                UnitPrice = 100000m,
+                LineAmount = 100000m
+            },
+            new InvoiceLine
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = zeroTotalInvoiceId,
+                ItemNameOriginal = "zero-total-deleted-item",
+                IsDeleted = true
+            },
+            new InvoiceLine
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = outOfScopeInvoiceId,
+                ItemNameOriginal = "out-of-scope-deleted-item",
+                Quantity = 1m,
+                UnitPrice = 99000m,
+                LineAmount = 99000m,
+                IsDeleted = true
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issue = Assert.Single(payload.Issues, current => current.Code == "active_invoice_deleted_line_only");
+
+        Assert.Equal("Warning", issue.Severity);
+        Assert.Equal(1, issue.Count);
+
+        var details = await GetSingleDetailRowAsync(controller, "active_invoice_deleted_line_only");
+        Assert.Equal("전표", details.EntityType);
+        Assert.Equal(FormatGuidForTest(deletedLineOnlyInvoiceId), details.EntityIdText);
+        Assert.Equal("INV-DELETED-LINE-ONLY", details.PrimaryText);
+        Assert.Contains("삭제 세부내역 1", details.DetailText, StringComparison.Ordinal);
+        Assert.DoesNotContain("INV-OUT-DELETED-LINE-ONLY", details.PrimaryText, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task GetReport_FlagsRemainingChildRowsWithHardMissingParentRows()
     {
         var currentUser = CreateAdminUser();
