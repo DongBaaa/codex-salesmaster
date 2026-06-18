@@ -703,7 +703,7 @@ function Invoke-SyncNowAndAssert {
         -DeviceId $DeviceId `
         -EvidenceDirectory $EvidenceDirectory `
         -Name "mobile-write-e2e-$Timestamp-sync-now" `
-        -Needles @('권장 동기화 완료', '저장 대기: 전표 0건', '서버에서 받기', '서버에 올리기') `
+        -Needles @('권장 동기화 완료', '저장 대기: 거래처 0건', '품목 0건', '전표 0건', '서버에서 받기', '서버에 올리기') `
         -StepName 'sync-now' `
         -TimeoutSeconds 150
 
@@ -1316,7 +1316,7 @@ try {
             @('동기화 상태', '저장 대기', '권장 동기화 실행', '서버에서 받기', '서버에 올리기')
         }
         else {
-            @('동기화 상태', '저장 대기: 전표 1건', '권장 동기화 실행', '서버에서 받기', '서버에 올리기')
+            @('동기화 상태', '저장 대기', '전표 1건', '권장 동기화 실행', '서버에서 받기', '서버에 올리기')
         }
 
         $syncDump = Open-BottomTabAndAssert `
@@ -1331,12 +1331,12 @@ try {
             -Needles $syncStatusNeedles `
             -Steps $steps
 
-        if ($ExerciseStoppedServerDirtySync -and $syncDump.Content.Contains('저장 대기: 전표 0건')) {
+        if ($ExerciseStoppedServerDirtySync -and $syncDump.Content.Contains('전표 0건')) {
             $createdInvoice = Wait-TestInvoiceCreated -BaseUrl $BaseUrl -Headers $headers -CustomerId $fixture.Customer.id -CustomerName $fixture.CustomerName -ItemName $fixture.ItemName -VoucherKind $VoucherKind
             $steps.Add([pscustomobject]@{ Step = "mobile-$voucherSlug-invoice-auto-push-after-restart"; Result = 'PASS'; Detail = "invoice=$($createdInvoice.id), total=$($createdInvoice.totalAmount), dump=$($syncDump.Path)" })
         }
         else {
-            Assert-UiContains -Content $syncDump.Content -Needles @('저장 대기: 전표 1건') -StepName '동기화 전 dirty 전표 1건'
+            Assert-UiContains -Content $syncDump.Content -Needles @('저장 대기', '전표 1건') -StepName '동기화 전 dirty 전표 1건'
 
             Invoke-SyncNowAndAssert `
                 -AdbPath $resolvedAdb `

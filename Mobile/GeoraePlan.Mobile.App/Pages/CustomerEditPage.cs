@@ -10,6 +10,7 @@ public sealed class CustomerEditPage : ContentPage
 {
     private readonly GeoraePlanApiClient _api;
     private readonly SessionStore _sessionStore;
+    private readonly SyncCoordinator _syncCoordinator;
     private CustomerDto? _source;
     private readonly Func<CustomerDto?, Task> _afterSaved;
 
@@ -29,6 +30,7 @@ public sealed class CustomerEditPage : ContentPage
     {
         _api = ServiceHelper.GetRequiredService<GeoraePlanApiClient>();
         _sessionStore = ServiceHelper.GetRequiredService<SessionStore>();
+        _syncCoordinator = ServiceHelper.GetRequiredService<SyncCoordinator>();
         _source = customer;
         _afterSaved = afterSaved;
 
@@ -153,12 +155,13 @@ public sealed class CustomerEditPage : ContentPage
             return;
         }
 
+        CustomerDto? dto = null;
         try
         {
             _isBusy = true;
             _statusLabel.Text = "거래처를 저장하고 있습니다.";
 
-            var dto = BuildDto(name, tenantCode, officeCode);
+            dto = BuildDto(name, tenantCode, officeCode);
             var saved = _source is null
                 ? await _api.CreateCustomerAsync(dto)
                 : await _api.UpdateCustomerAsync(dto);
@@ -170,6 +173,10 @@ public sealed class CustomerEditPage : ContentPage
         catch (HttpRequestException ex) when (IsConcurrencyConflict(ex) && _source is not null)
         {
             await HandleConcurrencyConflictAsync("거래처 저장");
+        }
+        catch (Exception ex) when (dto is not null && MobileRetryableNetworkFailure.IsRetryable(ex))
+        {
+            await QueuePendingSaveAsync(dto, ex);
         }
         catch (Exception ex)
         {
@@ -203,6 +210,10 @@ public sealed class CustomerEditPage : ContentPage
         {
             await HandleConcurrencyConflictAsync("거래처 삭제");
         }
+        catch (Exception ex) when (MobileRetryableNetworkFailure.IsRetryable(ex) && _source is not null)
+        {
+            await QueuePendingDeleteAsync(_source, ex);
+        }
         catch (Exception ex)
         {
             _statusLabel.Text = $"거래처 삭제 실패: {ex.Message}";
@@ -211,6 +222,49 @@ public sealed class CustomerEditPage : ContentPage
         finally
         {
             _isBusy = false;
+        }
+    }
+
+    private async Task QueuePendingSaveAsync(CustomerDto dto, Exception ex)
+    {
+        var reason = MobileRetryableNetworkFailure.ToPendingSyncMessage(ex);
+        try
+        {
+            var state = await _syncCoordinator.QueueCustomerDraftAsync(dto, reason);
+            _statusLabel.Text = $"거래처 저장 완료(동기화 대기 {state.PendingCustomerCount:N0}건)";
+            await DisplayAlert(
+                "거래처 저장 대기",
+                $"네트워크/서버 응답 지연으로 거래처를 기기에 먼저 저장했습니다.\n동기화 화면에서 저장 대기 거래처 {state.PendingCustomerCount:N0}건을 확인할 수 있으며, 연결 복구 후 자동으로 서버에 반영됩니다.",
+                "확인");
+            await CloseAsync();
+            MobileErrorHandler.FireAndForget(() => _afterSaved(dto), "거래처 저장 후 목록 새로고침");
+        }
+        catch (Exception queueEx)
+        {
+            _statusLabel.Text = $"거래처 기기 저장 실패: {queueEx.Message}";
+            await DisplayAlert("거래처 저장 실패", $"서버 저장 실패 후 기기 저장도 완료하지 못했습니다.\n\n원인: {queueEx.Message}", "확인");
+        }
+    }
+
+    private async Task QueuePendingDeleteAsync(CustomerDto source, Exception ex)
+    {
+        var dto = BuildDeletedDto(source);
+        var reason = MobileRetryableNetworkFailure.ToPendingSyncMessage(ex);
+        try
+        {
+            var state = await _syncCoordinator.QueueCustomerDraftAsync(dto, reason);
+            _statusLabel.Text = $"거래처 삭제 완료(동기화 대기 {state.PendingCustomerCount:N0}건)";
+            await DisplayAlert(
+                "거래처 삭제 대기",
+                $"네트워크/서버 응답 지연으로 삭제 요청을 기기에 먼저 저장했습니다.\n동기화 화면에서 저장 대기 거래처 {state.PendingCustomerCount:N0}건을 확인할 수 있으며, 연결 복구 후 자동으로 서버에 반영됩니다.",
+                "확인");
+            await CloseAsync();
+            MobileErrorHandler.FireAndForget(() => _afterSaved(null), "거래처 삭제 후 목록 새로고침");
+        }
+        catch (Exception queueEx)
+        {
+            _statusLabel.Text = $"거래처 삭제 대기 저장 실패: {queueEx.Message}";
+            await DisplayAlert("거래처 삭제 실패", $"서버 삭제 실패 후 기기 저장도 완료하지 못했습니다.\n\n원인: {queueEx.Message}", "확인");
         }
     }
 
@@ -287,7 +341,7 @@ public sealed class CustomerEditPage : ContentPage
     private CustomerDto BuildDto(string name, string tenantCode, string officeCode)
     {
         var dto = _source is null ? new CustomerDto() : Clone(_source);
-        dto.Id = _source?.Id ?? Guid.Empty;
+        dto.Id = _source?.Id ?? Guid.NewGuid();
         dto.TenantCode = string.IsNullOrWhiteSpace(dto.TenantCode) ? tenantCode : dto.TenantCode;
         dto.OfficeCode = string.IsNullOrWhiteSpace(dto.OfficeCode) ? officeCode : dto.OfficeCode;
         dto.ResponsibleOfficeCode = string.IsNullOrWhiteSpace(dto.ResponsibleOfficeCode) ? officeCode : dto.ResponsibleOfficeCode;
@@ -302,6 +356,16 @@ public sealed class CustomerEditPage : ContentPage
         dto.Address = Read(_addressEntry);
         dto.Notes = _notesEditor.Text?.Trim() ?? string.Empty;
         dto.ExpectedRevision = _source?.Revision ?? 0;
+        StampMutation(dto);
+        return dto;
+    }
+
+    private static CustomerDto BuildDeletedDto(CustomerDto source)
+    {
+        var dto = Clone(source);
+        dto.IsDeleted = true;
+        dto.ExpectedRevision = source.Revision;
+        StampMutation(dto);
         return dto;
     }
 
@@ -352,6 +416,18 @@ public sealed class CustomerEditPage : ContentPage
 
     private static string DefaultIfBlank(string value, string fallback)
         => string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+
+    private static void StampMutation(CustomerDto dto)
+    {
+        var now = DateTime.UtcNow;
+        dto.CreatedAtUtc = dto.CreatedAtUtc == default ? now : dto.CreatedAtUtc;
+        dto.UpdatedAtUtc = now;
+        dto.MutationId = BuildMutationId("customer", dto.Id);
+        dto.MutationCreatedAtUtc = now;
+    }
+
+    private static string BuildMutationId(string entityName, Guid entityId)
+        => $"mobile:{entityName}:{entityId:N}:{Guid.NewGuid():N}";
 
     private static bool IsConcurrencyConflict(HttpRequestException ex)
         => ex.StatusCode == HttpStatusCode.Conflict;

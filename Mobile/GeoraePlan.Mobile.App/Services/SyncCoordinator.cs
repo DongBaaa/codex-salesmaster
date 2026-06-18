@@ -306,6 +306,32 @@ public sealed class SyncCoordinator
             state.PendingPush.Invoices.Add(invoice);
         }, ct);
 
+    public async Task<MobileSyncState> QueueCustomerDraftAsync(CustomerDto customer, string? pendingReason = null, CancellationToken ct = default)
+        => await MutateStoredStateAsync(state =>
+        {
+            state.LastAttemptUtc = DateTime.UtcNow;
+            state.PendingPush.Customers.RemoveAll(x => x.Id == customer.Id);
+            state.PendingPush.Customers.Add(customer);
+            if (!string.IsNullOrWhiteSpace(pendingReason))
+            {
+                state.LastError = pendingReason.Trim();
+                state.ConsecutiveFailureCount++;
+            }
+        }, ct);
+
+    public async Task<MobileSyncState> QueueItemDraftAsync(ItemDto item, string? pendingReason = null, CancellationToken ct = default)
+        => await MutateStoredStateAsync(state =>
+        {
+            state.LastAttemptUtc = DateTime.UtcNow;
+            state.PendingPush.Items.RemoveAll(x => x.Id == item.Id);
+            state.PendingPush.Items.Add(item);
+            if (!string.IsNullOrWhiteSpace(pendingReason))
+            {
+                state.LastError = pendingReason.Trim();
+                state.ConsecutiveFailureCount++;
+            }
+        }, ct);
+
     public async Task<MobileSyncState> QueuePaymentDraftAsync(PaymentDto payment, CancellationToken ct = default)
         => await MutateStoredStateAsync(state =>
         {

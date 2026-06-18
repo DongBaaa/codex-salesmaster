@@ -194,7 +194,7 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("'오프라인/재시도 대기'", source, StringComparison.Ordinal);
         Assert.Contains("mobile-offline-invoice-pending", source, StringComparison.Ordinal);
         Assert.Contains("server-invoice-absent-before-sync", source, StringComparison.Ordinal);
-        Assert.Contains("'저장 대기: 전표 1건'", source, StringComparison.Ordinal);
+        Assert.Contains("'전표 1건'", source, StringComparison.Ordinal);
         Assert.Contains("Invoke-SyncNowAndAssert", source, StringComparison.Ordinal);
         Assert.Contains("mobile-$voucherSlug-invoice-dirty-push", source, StringComparison.Ordinal);
         Assert.Contains("오프라인 dirty 동기화 검증은 로컬 테스트 API에서만 허용됩니다.", source, StringComparison.Ordinal);
@@ -218,7 +218,8 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("mobile-stopped-server-offline-pending", source, StringComparison.Ordinal);
         Assert.Contains("local-api-restart-before-sync", source, StringComparison.Ordinal);
         Assert.Contains("mobile-$voucherSlug-invoice-auto-push-after-restart", source, StringComparison.Ordinal);
-        Assert.Contains("저장 대기: 전표 0건", source, StringComparison.Ordinal);
+        Assert.Contains("저장 대기: 거래처 0건", source, StringComparison.Ordinal);
+        Assert.Contains("전표 0건", source, StringComparison.Ordinal);
         Assert.Contains("ExerciseStoppedServerDirtySync = [bool]$ExerciseStoppedServerDirtySync", source, StringComparison.Ordinal);
         Assert.Contains("ExerciseStoppedServerDirtySync", source, StringComparison.Ordinal);
     }
@@ -252,20 +253,95 @@ public sealed class MobileReleaseConfigurationTests
     [Fact]
     public void AndroidPaymentDraft_QueuesDirtyPaymentWhenLatestInvoiceRefreshIsRetryable()
     {
+        var root = FindRepositoryRoot();
         var source = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(),
+            root,
             "Mobile",
             "GeoraePlan.Mobile.App",
             "ViewModels",
             "PaymentDraftViewModel.cs"));
+        var retryPolicySource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "MobileRetryableNetworkFailure.cs"));
 
         Assert.Contains("CanQueuePaymentWithSelectedInvoiceAfterRefreshFailure", source, StringComparison.Ordinal);
         Assert.Contains("latestInvoice = SelectedInvoice", source, StringComparison.Ordinal);
         Assert.Contains("최신 전표 확인 지연으로 현재 화면 전표 기준", source, StringComparison.Ordinal);
-        Assert.Contains("TaskCanceledException or OperationCanceledException or TimeoutException", source, StringComparison.Ordinal);
-        Assert.Contains("HttpStatusCode.ServiceUnavailable", source, StringComparison.Ordinal);
+        Assert.Contains("MobileRetryableNetworkFailure.IsRetryable(ex)", source, StringComparison.Ordinal);
+        Assert.Contains("TaskCanceledException or OperationCanceledException or TimeoutException", retryPolicySource, StringComparison.Ordinal);
+        Assert.Contains("HttpStatusCode.ServiceUnavailable", retryPolicySource, StringComparison.Ordinal);
         Assert.Contains("RefreshSelectedInvoiceForSaveAsync(SelectedInvoice)", source, StringComparison.Ordinal);
         Assert.Contains("SavePaymentImmediatelyAsync(payment, Attachments, linkedTransaction)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AndroidCustomerItemEdit_QueuesRetryableDirtyWritesAndShowsPendingCounts()
+    {
+        var root = FindRepositoryRoot();
+        var customerPageSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Pages",
+            "CustomerEditPage.cs"));
+        var itemPageSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Pages",
+            "ItemEditPage.cs"));
+        var syncCoordinatorSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "SyncCoordinator.cs"));
+        var stateSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Models",
+            "MobileSyncState.cs"));
+        var syncViewSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "SyncViewModel.cs"));
+        var homeViewSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "HomeViewModel.cs"));
+
+        Assert.Contains("ServiceHelper.GetRequiredService<SyncCoordinator>()", customerPageSource, StringComparison.Ordinal);
+        Assert.Contains("QueueCustomerDraftAsync(dto, reason)", customerPageSource, StringComparison.Ordinal);
+        Assert.Contains("QueuePendingDeleteAsync(_source, ex)", customerPageSource, StringComparison.Ordinal);
+        Assert.Contains("MobileRetryableNetworkFailure.IsRetryable(ex)", customerPageSource, StringComparison.Ordinal);
+        Assert.Contains("MobileErrorHandler.FireAndForget(() => _afterSaved(dto), \"거래처 저장 후 목록 새로고침\")", customerPageSource, StringComparison.Ordinal);
+        Assert.Contains("dto.Id = _source?.Id ?? Guid.NewGuid();", customerPageSource, StringComparison.Ordinal);
+        Assert.Contains("BuildMutationId(\"customer\", dto.Id)", customerPageSource, StringComparison.Ordinal);
+
+        Assert.Contains("ServiceHelper.GetRequiredService<SyncCoordinator>()", itemPageSource, StringComparison.Ordinal);
+        Assert.Contains("QueueItemDraftAsync(dto, reason)", itemPageSource, StringComparison.Ordinal);
+        Assert.Contains("QueuePendingDeleteAsync(_source, ex)", itemPageSource, StringComparison.Ordinal);
+        Assert.Contains("MobileRetryableNetworkFailure.IsRetryable(ex)", itemPageSource, StringComparison.Ordinal);
+        Assert.Contains("MobileErrorHandler.FireAndForget(() => _afterSaved(dto), \"품목 저장 후 목록 새로고침\")", itemPageSource, StringComparison.Ordinal);
+        Assert.Contains("dto.Id = _source?.Id ?? Guid.NewGuid();", itemPageSource, StringComparison.Ordinal);
+        Assert.Contains("BuildMutationId(\"item\", dto.Id)", itemPageSource, StringComparison.Ordinal);
+
+        Assert.Contains("public async Task<MobileSyncState> QueueCustomerDraftAsync", syncCoordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("state.PendingPush.Customers.RemoveAll(x => x.Id == customer.Id)", syncCoordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("public async Task<MobileSyncState> QueueItemDraftAsync", syncCoordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("state.PendingPush.Items.RemoveAll(x => x.Id == item.Id)", syncCoordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("public int PendingCustomerCount => PendingPush.Customers?.Count ?? 0;", stateSource, StringComparison.Ordinal);
+        Assert.Contains("public int PendingItemCount => PendingPush.Items?.Count ?? 0;", stateSource, StringComparison.Ordinal);
+        Assert.Contains("거래처 {state.PendingCustomerCount}건 / 품목 {state.PendingItemCount}건", syncViewSource, StringComparison.Ordinal);
+        Assert.Contains("거래처 {sync.PendingCustomerCount:N0}건 / 품목 {sync.PendingItemCount:N0}건", homeViewSource, StringComparison.Ordinal);
     }
 
     [Fact]

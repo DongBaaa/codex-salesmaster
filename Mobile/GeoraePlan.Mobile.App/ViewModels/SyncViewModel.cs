@@ -8,7 +8,7 @@ public sealed class SyncViewModel : ObservableObject
 
     private string _lastRevisionText = "0";
     private string _lastPullSummary = "-";
-    private string _pendingText = "저장 대기: 전표 0건 / 수금·지급 0건 / 첨부 0건";
+    private string _pendingText = "저장 대기: 거래처 0건 / 품목 0건 / 전표 0건 / 수금·지급 0건 / 첨부 0건";
     private string _statusMessage = "동기화 상태를 확인할 준비가 되었습니다.";
     private string _autoSyncText = "저장하면 서버에 바로 올리고, 화면 진입/복귀 시 최신 변경만 확인합니다. 문제가 있을 때만 아래 수동 동기화를 사용하세요.";
     private string _attentionText = string.Empty;
@@ -153,7 +153,7 @@ public sealed class SyncViewModel : ObservableObject
     {
         LastRevisionText = state.LastRevision.ToString("N0");
         PendingText =
-            $"저장 대기: 전표 {state.PendingInvoiceCount}건 / 수금·지급 {state.PendingPaymentCount}건 / 첨부 {state.PendingPaymentAttachmentCount}건"
+            $"저장 대기: 거래처 {state.PendingCustomerCount}건 / 품목 {state.PendingItemCount}건 / 전표 {state.PendingInvoiceCount}건 / 수금·지급 {state.PendingPaymentCount}건 / 첨부 {state.PendingPaymentAttachmentCount}건"
             + $" / 거래 {state.PendingTransactionCount}건 / 거래첨부 {state.PendingTransactionAttachmentCount}건 / 재고이동 {state.PendingInventoryTransferCount}건"
             + $" / 렌탈 {state.PendingRentalBillingProfileCount + state.PendingRentalAssetCount + state.PendingRentalBillingLogCount}건";
         LastPullSummary =
@@ -161,7 +161,12 @@ public sealed class SyncViewModel : ObservableObject
             + $" / 거래 {state.LastPulledTransactionCount} / 거래첨부 {state.LastPulledTransactionAttachmentCount}"
             + $" / 재고이동 {state.LastPulledInventoryTransferCount} / 렌탈 {state.LastPulledRentalBillingProfileCount + state.LastPulledRentalAssetCount + state.LastPulledRentalBillingLogCount}";
 
-        if (state.PendingPaymentAttachmentCount > 0)
+        if (state.PendingCustomerCount > 0 || state.PendingItemCount > 0)
+        {
+            HasAttention = true;
+            AttentionText = $"거래처 {state.PendingCustomerCount:N0}건 / 품목 {state.PendingItemCount:N0}건이 서버 올리기 대기 중입니다. 네트워크가 복구되면 자동으로 다시 올립니다.";
+        }
+        else if (state.PendingPaymentAttachmentCount > 0)
         {
             HasAttention = true;
             AttentionText = $"첨부 {state.PendingPaymentAttachmentCount:N0}건이 서버 올리기 대기 중입니다. 네트워크가 복구되면 자동으로 다시 올립니다.";

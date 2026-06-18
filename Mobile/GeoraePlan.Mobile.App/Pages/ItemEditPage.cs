@@ -11,6 +11,7 @@ public sealed class ItemEditPage : ContentPage
 {
     private readonly GeoraePlanApiClient _api;
     private readonly SessionStore _sessionStore;
+    private readonly SyncCoordinator _syncCoordinator;
     private ItemDto? _source;
     private readonly Func<ItemDto?, Task> _afterSaved;
 
@@ -31,6 +32,7 @@ public sealed class ItemEditPage : ContentPage
     {
         _api = ServiceHelper.GetRequiredService<GeoraePlanApiClient>();
         _sessionStore = ServiceHelper.GetRequiredService<SessionStore>();
+        _syncCoordinator = ServiceHelper.GetRequiredService<SyncCoordinator>();
         _source = item;
         _afterSaved = afterSaved;
 
@@ -184,12 +186,13 @@ public sealed class ItemEditPage : ContentPage
             return;
         }
 
+        ItemDto? dto = null;
         try
         {
             _isBusy = true;
             _statusLabel.Text = "품목을 저장하고 있습니다.";
 
-            var dto = BuildDto(name, tenantCode, officeCode);
+            dto = BuildDto(name, tenantCode, officeCode);
             var saved = _source is null
                 ? await _api.CreateItemAsync(dto)
                 : await _api.UpdateItemAsync(dto);
@@ -201,6 +204,10 @@ public sealed class ItemEditPage : ContentPage
         catch (HttpRequestException ex) when (IsConcurrencyConflict(ex) && _source is not null)
         {
             await HandleConcurrencyConflictAsync("품목 저장");
+        }
+        catch (Exception ex) when (dto is not null && MobileRetryableNetworkFailure.IsRetryable(ex))
+        {
+            await QueuePendingSaveAsync(dto, ex);
         }
         catch (Exception ex)
         {
@@ -234,6 +241,10 @@ public sealed class ItemEditPage : ContentPage
         {
             await HandleConcurrencyConflictAsync("품목 삭제");
         }
+        catch (Exception ex) when (MobileRetryableNetworkFailure.IsRetryable(ex) && _source is not null)
+        {
+            await QueuePendingDeleteAsync(_source, ex);
+        }
         catch (Exception ex)
         {
             _statusLabel.Text = $"품목 삭제 실패: {ex.Message}";
@@ -242,6 +253,49 @@ public sealed class ItemEditPage : ContentPage
         finally
         {
             _isBusy = false;
+        }
+    }
+
+    private async Task QueuePendingSaveAsync(ItemDto dto, Exception ex)
+    {
+        var reason = MobileRetryableNetworkFailure.ToPendingSyncMessage(ex);
+        try
+        {
+            var state = await _syncCoordinator.QueueItemDraftAsync(dto, reason);
+            _statusLabel.Text = $"품목 저장 완료(동기화 대기 {state.PendingItemCount:N0}건)";
+            await DisplayAlert(
+                "품목 저장 대기",
+                $"네트워크/서버 응답 지연으로 품목을 기기에 먼저 저장했습니다.\n동기화 화면에서 저장 대기 품목 {state.PendingItemCount:N0}건을 확인할 수 있으며, 연결 복구 후 자동으로 서버에 반영됩니다.",
+                "확인");
+            await CloseAsync();
+            MobileErrorHandler.FireAndForget(() => _afterSaved(dto), "품목 저장 후 목록 새로고침");
+        }
+        catch (Exception queueEx)
+        {
+            _statusLabel.Text = $"품목 기기 저장 실패: {queueEx.Message}";
+            await DisplayAlert("품목 저장 실패", $"서버 저장 실패 후 기기 저장도 완료하지 못했습니다.\n\n원인: {queueEx.Message}", "확인");
+        }
+    }
+
+    private async Task QueuePendingDeleteAsync(ItemDto source, Exception ex)
+    {
+        var dto = BuildDeletedDto(source);
+        var reason = MobileRetryableNetworkFailure.ToPendingSyncMessage(ex);
+        try
+        {
+            var state = await _syncCoordinator.QueueItemDraftAsync(dto, reason);
+            _statusLabel.Text = $"품목 삭제 완료(동기화 대기 {state.PendingItemCount:N0}건)";
+            await DisplayAlert(
+                "품목 삭제 대기",
+                $"네트워크/서버 응답 지연으로 삭제 요청을 기기에 먼저 저장했습니다.\n동기화 화면에서 저장 대기 품목 {state.PendingItemCount:N0}건을 확인할 수 있으며, 연결 복구 후 자동으로 서버에 반영됩니다.",
+                "확인");
+            await CloseAsync();
+            MobileErrorHandler.FireAndForget(() => _afterSaved(null), "품목 삭제 후 목록 새로고침");
+        }
+        catch (Exception queueEx)
+        {
+            _statusLabel.Text = $"품목 삭제 대기 저장 실패: {queueEx.Message}";
+            await DisplayAlert("품목 삭제 실패", $"서버 삭제 실패 후 기기 저장도 완료하지 못했습니다.\n\n원인: {queueEx.Message}", "확인");
         }
     }
 
@@ -319,7 +373,7 @@ public sealed class ItemEditPage : ContentPage
     private ItemDto BuildDto(string name, string tenantCode, string officeCode)
     {
         var dto = _source is null ? new ItemDto() : Clone(_source);
-        dto.Id = _source?.Id ?? Guid.Empty;
+        dto.Id = _source?.Id ?? Guid.NewGuid();
         dto.TenantCode = string.IsNullOrWhiteSpace(dto.TenantCode) ? tenantCode : dto.TenantCode;
         dto.OfficeCode = string.IsNullOrWhiteSpace(dto.OfficeCode) ? officeCode : dto.OfficeCode;
         dto.NameOriginal = name;
@@ -339,6 +393,16 @@ public sealed class ItemEditPage : ContentPage
         dto.SimpleMemo = _memoEditor.Text?.Trim() ?? string.Empty;
         dto.Notes = _source?.Notes ?? string.Empty;
         dto.ExpectedRevision = _source?.Revision ?? 0;
+        StampMutation(dto);
+        return dto;
+    }
+
+    private static ItemDto BuildDeletedDto(ItemDto source)
+    {
+        var dto = Clone(source);
+        dto.IsDeleted = true;
+        dto.ExpectedRevision = source.Revision;
+        StampMutation(dto);
         return dto;
     }
 
@@ -399,6 +463,18 @@ public sealed class ItemEditPage : ContentPage
 
     private static string FormatDecimal(decimal value)
         => value == 0 ? "0" : value.ToString("0.##", CultureInfo.InvariantCulture);
+
+    private static void StampMutation(ItemDto dto)
+    {
+        var now = DateTime.UtcNow;
+        dto.CreatedAtUtc = dto.CreatedAtUtc == default ? now : dto.CreatedAtUtc;
+        dto.UpdatedAtUtc = now;
+        dto.MutationId = BuildMutationId("item", dto.Id);
+        dto.MutationCreatedAtUtc = now;
+    }
+
+    private static string BuildMutationId(string entityName, Guid entityId)
+        => $"mobile:{entityName}:{entityId:N}:{Guid.NewGuid():N}";
 
     private static bool IsConcurrencyConflict(HttpRequestException ex)
         => ex.StatusCode == HttpStatusCode.Conflict;

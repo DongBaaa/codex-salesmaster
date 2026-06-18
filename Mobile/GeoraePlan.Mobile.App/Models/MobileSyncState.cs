@@ -39,6 +39,8 @@ public sealed class MobileSyncState
     public SyncPushRequest PendingPush { get; set; } = new();
     public List<PendingPaymentAttachmentRecord> PendingPaymentAttachments { get; set; } = new();
 
+    public int PendingCustomerCount => PendingPush.Customers?.Count ?? 0;
+    public int PendingItemCount => PendingPush.Items?.Count ?? 0;
     public int PendingInvoiceCount => PendingPush.Invoices?.Count ?? 0;
     public int PendingPaymentCount => PendingPush.Payments?.Count ?? 0;
     public int PendingTransactionCount => PendingPush.Transactions?.Count ?? 0;

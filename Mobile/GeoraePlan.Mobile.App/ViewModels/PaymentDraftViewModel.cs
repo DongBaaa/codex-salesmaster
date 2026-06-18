@@ -412,23 +412,7 @@ public sealed class PaymentDraftViewModel : ObservableObject
     }
 
     internal static bool CanQueuePaymentWithSelectedInvoiceAfterRefreshFailure(Exception ex)
-    {
-        if (ex is TaskCanceledException or OperationCanceledException or TimeoutException)
-            return true;
-
-        if (ex is HttpRequestException httpEx)
-        {
-            return httpEx.StatusCode is null
-                or System.Net.HttpStatusCode.RequestTimeout
-                or System.Net.HttpStatusCode.TooManyRequests
-                or System.Net.HttpStatusCode.InternalServerError
-                or System.Net.HttpStatusCode.BadGateway
-                or System.Net.HttpStatusCode.ServiceUnavailable
-                or System.Net.HttpStatusCode.GatewayTimeout;
-        }
-
-        return false;
-    }
+        => MobileRetryableNetworkFailure.IsRetryable(ex);
 
     private async Task<InvoiceDto?> RefreshSelectedInvoiceForSaveAsync(InvoiceDto invoice)
     {
