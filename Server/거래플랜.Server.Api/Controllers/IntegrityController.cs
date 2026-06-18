@@ -256,18 +256,28 @@ public sealed class IntegrityController : ControllerBase
             .CountAsync(transaction => !_dbContext.Invoices.IgnoreQueryFilters().Any(invoice => !invoice.IsDeleted && invoice.Id == transaction.LinkedInvoiceId), cancellationToken);
         AddIssue(issues, "orphan_transaction_invoice_refs", orphanTransactionInvoiceCount, "Error", "전표가 없는 거래/수금 참조가 존재합니다.");
 
-        var orphanPaymentInvoiceCount = await _dbContext.Payments
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(payment => !payment.IsDeleted)
-            .CountAsync(payment => !_dbContext.Invoices.IgnoreQueryFilters().Any(invoice => !invoice.IsDeleted && invoice.Id == payment.InvoiceId), cancellationToken);
+        var orphanPaymentInvoiceCount = _officeScopeService.HasGlobalDataScope
+            ? await _dbContext.Payments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(payment => !payment.IsDeleted)
+                .CountAsync(payment => !_dbContext.Invoices.IgnoreQueryFilters().Any(invoice => !invoice.IsDeleted && invoice.Id == payment.InvoiceId), cancellationToken)
+            : await (
+                    from payment in _dbContext.Payments.IgnoreQueryFilters().AsNoTracking().Where(payment => !payment.IsDeleted)
+                    join invoice in _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
+                            .Where(invoice => invoice.IsDeleted)
+                        on payment.InvoiceId equals invoice.Id
+                    select payment.Id)
+                .CountAsync(cancellationToken);
         AddIssue(issues, "orphan_payment_invoice_refs", orphanPaymentInvoiceCount, "Error", "전표가 없는 수금/지급 참조가 존재합니다.");
 
-        var deletedPaymentMissingInvoiceRowCount = await _dbContext.Payments
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(payment => payment.IsDeleted)
-            .CountAsync(payment => !_dbContext.Invoices.IgnoreQueryFilters().Any(invoice => invoice.Id == payment.InvoiceId), cancellationToken);
+        var deletedPaymentMissingInvoiceRowCount = _officeScopeService.HasGlobalDataScope
+            ? await _dbContext.Payments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(payment => payment.IsDeleted)
+                .CountAsync(payment => !_dbContext.Invoices.IgnoreQueryFilters().Any(invoice => invoice.Id == payment.InvoiceId), cancellationToken)
+            : 0;
         AddIssue(issues, "deleted_payment_missing_invoice_rows", deletedPaymentMissingInvoiceRowCount, "Error", "영구 삭제된 전표의 삭제 결제 잔여 행이 존재합니다.");
 
         var invoiceLinkedTransactionPaymentMismatchCount = (await LoadInvoiceLinkedTransactionPaymentMismatchRowsAsync(cancellationToken)).Count;
@@ -303,11 +313,19 @@ public sealed class IntegrityController : ControllerBase
         var rentalBillingProfileSummaryMismatchCount = (await LoadRentalBillingProfileSummaryMismatchRowsAsync(cancellationToken)).Count;
         AddIssue(issues, "rental_billing_profile_summary_mismatch", rentalBillingProfileSummaryMismatchCount, "Error", "렌탈 청구 프로필 요약 정산/미수금액이 대표 청구 run의 실제 입금 근거와 다릅니다.");
 
-        var orphanTransactionAttachmentCount = await _dbContext.TransactionAttachments
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(attachment => !attachment.IsDeleted)
-            .CountAsync(attachment => !_dbContext.Transactions.IgnoreQueryFilters().Any(transaction => !transaction.IsDeleted && transaction.Id == attachment.TransactionId), cancellationToken);
+        var orphanTransactionAttachmentCount = _officeScopeService.HasGlobalDataScope
+            ? await _dbContext.TransactionAttachments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(attachment => !attachment.IsDeleted)
+                .CountAsync(attachment => !_dbContext.Transactions.IgnoreQueryFilters().Any(transaction => !transaction.IsDeleted && transaction.Id == attachment.TransactionId), cancellationToken)
+            : await (
+                    from attachment in _dbContext.TransactionAttachments.IgnoreQueryFilters().AsNoTracking().Where(attachment => !attachment.IsDeleted)
+                    join transaction in _officeScopeService.ApplyTransactionScope(_dbContext.Transactions.IgnoreQueryFilters().AsNoTracking())
+                            .Where(transaction => transaction.IsDeleted)
+                        on attachment.TransactionId equals transaction.Id
+                    select attachment.Id)
+                .CountAsync(cancellationToken);
         AddIssue(issues, "orphan_attachment_transaction_refs", orphanTransactionAttachmentCount, "Error", "거래내역이 없는 증빙 첨부가 존재합니다.");
 
         var deletedTransactionAttachmentMissingTransactionRowCount = _officeScopeService.HasGlobalDataScope
@@ -319,18 +337,28 @@ public sealed class IntegrityController : ControllerBase
             : 0;
         AddIssue(issues, "deleted_transaction_attachment_missing_transaction_rows", deletedTransactionAttachmentMissingTransactionRowCount, "Error", "영구 삭제된 거래내역의 삭제 첨부 잔여 행이 존재합니다.");
 
-        var orphanPaymentAttachmentCount = await _dbContext.PaymentAttachments
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(attachment => !attachment.IsDeleted)
-            .CountAsync(attachment => !_dbContext.Payments.IgnoreQueryFilters().Any(payment => !payment.IsDeleted && payment.Id == attachment.PaymentId), cancellationToken);
+        var orphanPaymentAttachmentCount = _officeScopeService.HasGlobalDataScope
+            ? await _dbContext.PaymentAttachments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(attachment => !attachment.IsDeleted)
+                .CountAsync(attachment => !_dbContext.Payments.IgnoreQueryFilters().Any(payment => !payment.IsDeleted && payment.Id == attachment.PaymentId), cancellationToken)
+            : await (
+                    from attachment in _dbContext.PaymentAttachments.IgnoreQueryFilters().AsNoTracking().Where(attachment => !attachment.IsDeleted)
+                    join payment in _officeScopeService.ApplyPaymentScope(_dbContext.Payments.IgnoreQueryFilters().AsNoTracking())
+                            .Where(payment => payment.IsDeleted)
+                        on attachment.PaymentId equals payment.Id
+                    select attachment.Id)
+                .CountAsync(cancellationToken);
         AddIssue(issues, "orphan_payment_attachment_refs", orphanPaymentAttachmentCount, "Error", "결제내역이 없는 결제 첨부가 존재합니다.");
 
-        var deletedPaymentAttachmentMissingPaymentRowCount = await _dbContext.PaymentAttachments
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(attachment => attachment.IsDeleted)
-            .CountAsync(attachment => !_dbContext.Payments.IgnoreQueryFilters().Any(payment => payment.Id == attachment.PaymentId), cancellationToken);
+        var deletedPaymentAttachmentMissingPaymentRowCount = _officeScopeService.HasGlobalDataScope
+            ? await _dbContext.PaymentAttachments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(attachment => attachment.IsDeleted)
+                .CountAsync(attachment => !_dbContext.Payments.IgnoreQueryFilters().Any(payment => payment.Id == attachment.PaymentId), cancellationToken)
+            : 0;
         AddIssue(issues, "deleted_payment_attachment_missing_payment_rows", deletedPaymentAttachmentMissingPaymentRowCount, "Error", "영구 삭제된 결제의 삭제 첨부 잔여 행이 존재합니다.");
 
         var customerContractMissingCustomerRowCount = _officeScopeService.HasGlobalDataScope
@@ -1530,15 +1558,24 @@ public sealed class IntegrityController : ControllerBase
 
     private async Task<List<IntegrityIssueDetailRowDto>> LoadOrphanPaymentInvoiceDetailsAsync(CancellationToken cancellationToken)
     {
-        var payments = await (
-                from payment in _dbContext.Payments.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
-                join invoice in _dbContext.Invoices.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
-                    on payment.InvoiceId equals invoice.Id into invoiceGroup
-                from invoice in invoiceGroup.DefaultIfEmpty()
-                where invoice == null
-                orderby payment.PaymentDate, payment.Id
-                select payment)
-            .ToListAsync(cancellationToken);
+        var payments = _officeScopeService.HasGlobalDataScope
+            ? await (
+                    from payment in _dbContext.Payments.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
+                    join invoice in _dbContext.Invoices.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
+                        on payment.InvoiceId equals invoice.Id into invoiceGroup
+                    from invoice in invoiceGroup.DefaultIfEmpty()
+                    where invoice == null
+                    orderby payment.PaymentDate, payment.Id
+                    select payment)
+                .ToListAsync(cancellationToken)
+            : await (
+                    from payment in _dbContext.Payments.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
+                    join invoice in _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
+                            .Where(current => current.IsDeleted)
+                        on payment.InvoiceId equals invoice.Id
+                    orderby payment.PaymentDate, payment.Id
+                    select payment)
+                .ToListAsync(cancellationToken);
 
         return payments
             .Select(payment => CreateDetailRow(
@@ -1556,6 +1593,9 @@ public sealed class IntegrityController : ControllerBase
 
     private async Task<List<IntegrityIssueDetailRowDto>> LoadDeletedPaymentMissingInvoiceRowDetailsAsync(CancellationToken cancellationToken)
     {
+        if (!_officeScopeService.HasGlobalDataScope)
+            return [];
+
         var payments = await (
                 from payment in _dbContext.Payments.IgnoreQueryFilters().AsNoTracking().Where(current => current.IsDeleted)
                 join invoice in _dbContext.Invoices.IgnoreQueryFilters().AsNoTracking()
@@ -2090,15 +2130,24 @@ public sealed class IntegrityController : ControllerBase
 
     private async Task<List<IntegrityIssueDetailRowDto>> LoadOrphanTransactionAttachmentDetailsAsync(CancellationToken cancellationToken)
     {
-        var attachments = await (
-                from attachment in _dbContext.TransactionAttachments.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
-                join transaction in _dbContext.Transactions.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
-                    on attachment.TransactionId equals transaction.Id into transactionGroup
-                from transaction in transactionGroup.DefaultIfEmpty()
-                where transaction == null
-                orderby attachment.UploadedAtUtc, attachment.Id
-                select attachment)
-            .ToListAsync(cancellationToken);
+        var attachments = _officeScopeService.HasGlobalDataScope
+            ? await (
+                    from attachment in _dbContext.TransactionAttachments.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
+                    join transaction in _dbContext.Transactions.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
+                        on attachment.TransactionId equals transaction.Id into transactionGroup
+                    from transaction in transactionGroup.DefaultIfEmpty()
+                    where transaction == null
+                    orderby attachment.UploadedAtUtc, attachment.Id
+                    select attachment)
+                .ToListAsync(cancellationToken)
+            : await (
+                    from attachment in _dbContext.TransactionAttachments.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
+                    join transaction in _officeScopeService.ApplyTransactionScope(_dbContext.Transactions.IgnoreQueryFilters().AsNoTracking())
+                            .Where(current => current.IsDeleted)
+                        on attachment.TransactionId equals transaction.Id
+                    orderby attachment.UploadedAtUtc, attachment.Id
+                    select attachment)
+                .ToListAsync(cancellationToken);
 
         return attachments
             .Select(attachment => CreateDetailRow(
@@ -2148,15 +2197,24 @@ public sealed class IntegrityController : ControllerBase
 
     private async Task<List<IntegrityIssueDetailRowDto>> LoadOrphanPaymentAttachmentDetailsAsync(CancellationToken cancellationToken)
     {
-        var attachments = await (
-                from attachment in _dbContext.PaymentAttachments.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
-                join payment in _dbContext.Payments.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
-                    on attachment.PaymentId equals payment.Id into paymentGroup
-                from payment in paymentGroup.DefaultIfEmpty()
-                where payment == null
-                orderby attachment.UploadedAtUtc, attachment.Id
-                select attachment)
-            .ToListAsync(cancellationToken);
+        var attachments = _officeScopeService.HasGlobalDataScope
+            ? await (
+                    from attachment in _dbContext.PaymentAttachments.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
+                    join payment in _dbContext.Payments.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
+                        on attachment.PaymentId equals payment.Id into paymentGroup
+                    from payment in paymentGroup.DefaultIfEmpty()
+                    where payment == null
+                    orderby attachment.UploadedAtUtc, attachment.Id
+                    select attachment)
+                .ToListAsync(cancellationToken)
+            : await (
+                    from attachment in _dbContext.PaymentAttachments.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
+                    join payment in _officeScopeService.ApplyPaymentScope(_dbContext.Payments.IgnoreQueryFilters().AsNoTracking())
+                            .Where(current => current.IsDeleted)
+                        on attachment.PaymentId equals payment.Id
+                    orderby attachment.UploadedAtUtc, attachment.Id
+                    select attachment)
+                .ToListAsync(cancellationToken);
 
         return attachments
             .Select(attachment => CreateDetailRow(
@@ -2174,6 +2232,9 @@ public sealed class IntegrityController : ControllerBase
 
     private async Task<List<IntegrityIssueDetailRowDto>> LoadDeletedPaymentAttachmentMissingPaymentRowDetailsAsync(CancellationToken cancellationToken)
     {
+        if (!_officeScopeService.HasGlobalDataScope)
+            return [];
+
         var attachments = await (
                 from attachment in _dbContext.PaymentAttachments.IgnoreQueryFilters().AsNoTracking().Where(current => current.IsDeleted)
                 join payment in _dbContext.Payments.IgnoreQueryFilters().AsNoTracking()

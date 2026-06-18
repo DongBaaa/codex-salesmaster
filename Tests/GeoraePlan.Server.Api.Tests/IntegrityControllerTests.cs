@@ -320,6 +320,10 @@ public sealed class IntegrityControllerTests : IDisposable
         var billingLogId = Guid.NewGuid();
         var missingTransferId = Guid.NewGuid();
         var transferLineId = Guid.NewGuid();
+        var missingInvoiceId = Guid.NewGuid();
+        var deletedPaymentId = Guid.NewGuid();
+        var missingPaymentId = Guid.NewGuid();
+        var deletedPaymentAttachmentId = Guid.NewGuid();
 
         await dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
         dbContext.TransactionAttachments.Add(new TransactionAttachment
@@ -418,6 +422,10 @@ public sealed class IntegrityControllerTests : IDisposable
         var billingLogId = Guid.NewGuid();
         var missingTransferId = Guid.NewGuid();
         var transferLineId = Guid.NewGuid();
+        var missingInvoiceId = Guid.NewGuid();
+        var deletedPaymentId = Guid.NewGuid();
+        var missingPaymentId = Guid.NewGuid();
+        var deletedPaymentAttachmentId = Guid.NewGuid();
 
         await dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
         dbContext.TransactionAttachments.Add(new TransactionAttachment
@@ -457,6 +465,22 @@ public sealed class IntegrityControllerTests : IDisposable
             Unit = "EA",
             Quantity = 3m
         });
+        dbContext.Payments.Add(new Payment
+        {
+            Id = deletedPaymentId,
+            InvoiceId = missingInvoiceId,
+            PaymentDate = new DateOnly(2026, 6, 26),
+            Amount = 45000m,
+            IsDeleted = true
+        });
+        dbContext.PaymentAttachments.Add(new PaymentAttachment
+        {
+            Id = deletedPaymentAttachmentId,
+            PaymentId = missingPaymentId,
+            FileName = "deleted-payment-attachment.pdf",
+            FileSize = 128,
+            IsDeleted = true
+        });
         await dbContext.SaveChangesAsync();
         await dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
 
@@ -469,6 +493,8 @@ public sealed class IntegrityControllerTests : IDisposable
         Assert.DoesNotContain(payload.Issues, issue => issue.Code == "deleted_transaction_attachment_missing_transaction_rows");
         Assert.DoesNotContain(payload.Issues, issue => issue.Code == "customer_contract_missing_customer_rows");
         Assert.DoesNotContain(payload.Issues, issue => issue.Code == "inventory_transfer_line_missing_transfer_rows");
+        Assert.DoesNotContain(payload.Issues, issue => issue.Code == "deleted_payment_missing_invoice_rows");
+        Assert.DoesNotContain(payload.Issues, issue => issue.Code == "deleted_payment_attachment_missing_payment_rows");
         var rentalLogIssue = Assert.Single(payload.Issues, issue => issue.Code == "rental_billing_log_missing_profile_rows");
         Assert.Equal(1, rentalLogIssue.Count);
 
@@ -476,7 +502,9 @@ public sealed class IntegrityControllerTests : IDisposable
         {
             "deleted_transaction_attachment_missing_transaction_rows",
             "customer_contract_missing_customer_rows",
-            "inventory_transfer_line_missing_transfer_rows"
+            "inventory_transfer_line_missing_transfer_rows",
+            "deleted_payment_missing_invoice_rows",
+            "deleted_payment_attachment_missing_payment_rows"
         })
         {
             var detailResponse = await controller.GetReportDetails(code, CancellationToken.None);
@@ -484,6 +512,180 @@ public sealed class IntegrityControllerTests : IDisposable
             var detailPayload = Assert.IsType<IntegrityIssueDetailResultDto>(detailOk.Value);
             Assert.Empty(detailPayload.Rows);
         }
+    }
+
+    [Fact]
+    public async Task GetReport_FiltersOrphanPaymentAndAttachmentIssuesByParentScope()
+    {
+        var currentUser = CreateOfficeScopedUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var inScopeCustomerId = Guid.NewGuid();
+        var inScopeDeletedInvoiceId = Guid.NewGuid();
+        var inScopeDeletedTransactionId = Guid.NewGuid();
+        var inScopePaymentId = Guid.NewGuid();
+        var inScopeDeletedPaymentId = Guid.NewGuid();
+        var outOfScopeCustomerId = Guid.NewGuid();
+        var outOfScopeDeletedInvoiceId = Guid.NewGuid();
+        var outOfScopeDeletedTransactionId = Guid.NewGuid();
+        var outOfScopePaymentId = Guid.NewGuid();
+        var outOfScopeDeletedPaymentId = Guid.NewGuid();
+
+        dbContext.Customers.AddRange(
+            new Customer
+            {
+                Id = inScopeCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "In Scope Orphan Customer",
+                NameMatchKey = "INSCOPEORPHANCUSTOMER",
+                TradeType = "매출"
+            },
+            new Customer
+            {
+                Id = outOfScopeCustomerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                NameOriginal = "Out Scope Orphan Customer",
+                NameMatchKey = "OUTSCOPEORPHANCUSTOMER",
+                TradeType = "매출"
+            });
+        dbContext.Invoices.AddRange(
+            new Invoice
+            {
+                Id = inScopeDeletedInvoiceId,
+                CustomerId = inScopeCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "INV-IN-SCOPE-DELETED",
+                InvoiceDate = new DateOnly(2026, 6, 27),
+                IsDeleted = true
+            },
+            new Invoice
+            {
+                Id = outOfScopeDeletedInvoiceId,
+                CustomerId = outOfScopeCustomerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                InvoiceNumber = "INV-OUT-SCOPE-DELETED",
+                InvoiceDate = new DateOnly(2026, 6, 27),
+                IsDeleted = true
+            });
+        dbContext.Transactions.AddRange(
+            new TransactionRecord
+            {
+                Id = inScopeDeletedTransactionId,
+                CustomerId = inScopeCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 27),
+                TransactionKind = "수금",
+                IsDeleted = true
+            },
+            new TransactionRecord
+            {
+                Id = outOfScopeDeletedTransactionId,
+                CustomerId = outOfScopeCustomerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                TransactionDate = new DateOnly(2026, 6, 27),
+                TransactionKind = "수금",
+                IsDeleted = true
+            });
+        dbContext.Payments.AddRange(
+            new Payment
+            {
+                Id = inScopePaymentId,
+                InvoiceId = inScopeDeletedInvoiceId,
+                PaymentDate = new DateOnly(2026, 6, 27),
+                Amount = 11000m
+            },
+            new Payment
+            {
+                Id = outOfScopePaymentId,
+                InvoiceId = outOfScopeDeletedInvoiceId,
+                PaymentDate = new DateOnly(2026, 6, 27),
+                Amount = 22000m
+            },
+            new Payment
+            {
+                Id = inScopeDeletedPaymentId,
+                InvoiceId = inScopeDeletedInvoiceId,
+                PaymentDate = new DateOnly(2026, 6, 27),
+                Amount = 33000m,
+                IsDeleted = true
+            },
+            new Payment
+            {
+                Id = outOfScopeDeletedPaymentId,
+                InvoiceId = outOfScopeDeletedInvoiceId,
+                PaymentDate = new DateOnly(2026, 6, 27),
+                Amount = 44000m,
+                IsDeleted = true
+            });
+        dbContext.TransactionAttachments.AddRange(
+            new TransactionAttachment
+            {
+                Id = Guid.NewGuid(),
+                TransactionId = inScopeDeletedTransactionId,
+                FileName = "in-scope-transaction-attachment.pdf"
+            },
+            new TransactionAttachment
+            {
+                Id = Guid.NewGuid(),
+                TransactionId = outOfScopeDeletedTransactionId,
+                FileName = "out-scope-transaction-attachment.pdf"
+            });
+        dbContext.PaymentAttachments.AddRange(
+            new PaymentAttachment
+            {
+                Id = Guid.NewGuid(),
+                PaymentId = inScopeDeletedPaymentId,
+                FileName = "in-scope-payment-attachment.pdf"
+            },
+            new PaymentAttachment
+            {
+                Id = Guid.NewGuid(),
+                PaymentId = outOfScopeDeletedPaymentId,
+                FileName = "out-scope-payment-attachment.pdf"
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issues = payload.Issues.ToDictionary(issue => issue.Code, StringComparer.OrdinalIgnoreCase);
+
+        Assert.Equal(1, issues["orphan_payment_invoice_refs"].Count);
+        Assert.Equal(1, issues["orphan_attachment_transaction_refs"].Count);
+        Assert.Equal(1, issues["orphan_payment_attachment_refs"].Count);
+
+        var paymentInvoiceDetails = await controller.GetReportDetails("orphan_payment_invoice_refs", CancellationToken.None);
+        var paymentInvoiceOk = Assert.IsType<OkObjectResult>(paymentInvoiceDetails.Result);
+        var paymentInvoicePayload = Assert.IsType<IntegrityIssueDetailResultDto>(paymentInvoiceOk.Value);
+        var paymentInvoiceRow = Assert.Single(paymentInvoicePayload.Rows);
+        Assert.Contains(FormatGuidForTest(inScopeDeletedInvoiceId), paymentInvoiceRow.ReferenceText, StringComparison.Ordinal);
+        Assert.DoesNotContain(FormatGuidForTest(outOfScopeDeletedInvoiceId), paymentInvoiceRow.ReferenceText, StringComparison.Ordinal);
+
+        var transactionAttachmentDetails = await controller.GetReportDetails("orphan_attachment_transaction_refs", CancellationToken.None);
+        var transactionAttachmentOk = Assert.IsType<OkObjectResult>(transactionAttachmentDetails.Result);
+        var transactionAttachmentPayload = Assert.IsType<IntegrityIssueDetailResultDto>(transactionAttachmentOk.Value);
+        var transactionAttachmentRow = Assert.Single(transactionAttachmentPayload.Rows);
+        Assert.Equal("in-scope-transaction-attachment.pdf", transactionAttachmentRow.PrimaryText);
+
+        var paymentAttachmentDetails = await controller.GetReportDetails("orphan_payment_attachment_refs", CancellationToken.None);
+        var paymentAttachmentOk = Assert.IsType<OkObjectResult>(paymentAttachmentDetails.Result);
+        var paymentAttachmentPayload = Assert.IsType<IntegrityIssueDetailResultDto>(paymentAttachmentOk.Value);
+        var paymentAttachmentRow = Assert.Single(paymentAttachmentPayload.Rows);
+        Assert.Equal("in-scope-payment-attachment.pdf", paymentAttachmentRow.PrimaryText);
     }
 
     [Fact]
