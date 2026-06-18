@@ -260,6 +260,54 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FlagsInvoiceLinesWithHardMissingInvoiceRows()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        var missingInvoiceId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+
+        await dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
+        dbContext.InvoiceLines.Add(new InvoiceLine
+        {
+            Id = lineId,
+            InvoiceId = missingInvoiceId,
+            ItemNameOriginal = "Hard Missing Invoice Line",
+            SpecificationOriginal = "A4",
+            Unit = "대",
+            Quantity = 2m,
+            UnitPrice = 15000m,
+            LineAmount = 30000m,
+            Remark = "missing invoice",
+            IsDeleted = true
+        });
+        await dbContext.SaveChangesAsync();
+        await dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issue = Assert.Single(payload.Issues, current => current.Code == "invoice_line_missing_invoice_rows");
+
+        Assert.Equal("Error", issue.Severity);
+        Assert.Equal(1, issue.Count);
+
+        var detailsResponse = await controller.GetReportDetails("invoice_line_missing_invoice_rows", CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+        var row = Assert.Single(details.Rows);
+
+        Assert.Equal("전표세부내역", row.EntityType);
+        Assert.Equal(FormatGuidForTest(lineId), row.EntityIdText);
+        Assert.Equal("Hard Missing Invoice Line", row.PrimaryText);
+        Assert.Contains(FormatGuidForTest(missingInvoiceId), row.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains("삭제상태 삭제", row.DetailText, StringComparison.Ordinal);
+        Assert.Contains("금액 30,000", row.DetailText, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task GetReport_FlagsDeletedPaymentResiduesWithHardMissingParents()
     {
         var currentUser = CreateAdminUser();

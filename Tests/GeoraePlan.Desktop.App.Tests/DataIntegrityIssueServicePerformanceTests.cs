@@ -249,6 +249,54 @@ public sealed class DataIntegrityIssueServicePerformanceTests
     }
 
     [Fact]
+    public async Task ScanAsync_FindsInvoiceLineRowsWhoseInvoiceRowIsHardMissing()
+    {
+        PrepareAppRoot("georaeplan-integrity-invoice-line-missing-invoice");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var missingInvoiceId = Guid.NewGuid();
+            var lineId = Guid.NewGuid();
+            await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
+            db.InvoiceLines.Add(new LocalInvoiceLine
+            {
+                Id = lineId,
+                InvoiceId = missingInvoiceId,
+                ItemNameOriginal = "Hard Missing Invoice Line",
+                SpecificationOriginal = "A4",
+                Unit = "대",
+                Quantity = 2m,
+                UnitPrice = 15000m,
+                LineAmount = 30000m,
+                Remark = "missing invoice",
+                IsDeleted = true
+            });
+            await db.SaveChangesAsync();
+            await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateAdminSession());
+            var issue = Assert.Single(result.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.InvoiceLineMissingInvoiceReference);
+
+            Assert.Equal(lineId, issue.EntityId);
+            Assert.Equal("Hard Missing Invoice Line", issue.ItemName);
+            Assert.Equal(DataIntegrityDirectActionKind.OpenSyncDiagnostics, issue.DirectActionKind);
+            Assert.Contains(missingInvoiceId.ToString("D"), issue.CurrentValue, StringComparison.Ordinal);
+            Assert.Contains("삭제상태 삭제", issue.CurrentValue, StringComparison.Ordinal);
+            Assert.Contains("전표 참조", issue.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ScanAsync_FindsPaymentRowsWhoseInvoiceRowIsHardMissing()
     {
         PrepareAppRoot("georaeplan-integrity-payment-missing-invoice");

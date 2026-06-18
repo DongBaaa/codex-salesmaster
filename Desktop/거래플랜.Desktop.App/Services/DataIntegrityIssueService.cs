@@ -42,6 +42,7 @@ public static class DataIntegrityIssueCodes
     public const string WarehouseDuplicateCandidate = "warehouse_duplicate_candidate";
     public const string InvoiceAmountMismatch = "invoice_amount_mismatch";
     public const string InvoiceOverSettled = "invoice_over_settled";
+    public const string InvoiceLineMissingInvoiceReference = "invoice_line_missing_invoice_reference";
     public const string PaymentMissingInvoiceReference = "payment_missing_invoice_reference";
     public const string InventoryDeletedItemStockResidue = "inventory_deleted_item_stock_residue";
     public const string InventoryStockSnapshotMismatch = "inventory_stock_snapshot_mismatch";
@@ -337,6 +338,13 @@ public sealed class DataIntegrityIssueService
             "회계경리",
             "전표 합계금액보다 수금 또는 지급 합계가 큽니다.",
             "수금/지급 내역 중 중복 입력이나 잘못된 금액이 있는지 확인하세요."),
+        [DataIntegrityIssueCodes.InvoiceLineMissingInvoiceReference] = new(
+            DataIntegrityIssueCodes.InvoiceLineMissingInvoiceReference,
+            "전표 세부내역 전표 참조 누락",
+            "Error",
+            "판매/구매/회계",
+            "전표 세부내역 행이 현재 로컬 DB에 존재하지 않는 전표 ID를 참조합니다.",
+            "동기화 진단에서 서버 상태와 휴지통 영구삭제 이력을 확인한 뒤 전표 세부내역 잔여 행을 정리하세요."),
         [DataIntegrityIssueCodes.PaymentMissingInvoiceReference] = new(
             DataIntegrityIssueCodes.PaymentMissingInvoiceReference,
             "수금/지급 전표 참조 누락",
@@ -552,6 +560,14 @@ public sealed class DataIntegrityIssueService
             "Integrity scan deleted item stock residues",
             stepStopwatch,
             $"issues={deletedItemStockResidueIssues.Count:N0}");
+
+        stepStopwatch.Restart();
+        var invoiceLineMissingInvoiceIssues = await LoadInvoiceLineMissingInvoiceReferenceIssuesAsync(session, ct);
+        details.AddRange(invoiceLineMissingInvoiceIssues);
+        LogIntegrityScanStep(
+            "Integrity scan invoice line missing invoice references",
+            stepStopwatch,
+            $"issues={invoiceLineMissingInvoiceIssues.Count:N0}");
 
         stepStopwatch.Restart();
         var paymentMissingInvoiceIssues = await LoadPaymentMissingInvoiceReferenceIssuesAsync(session, ct);
@@ -1512,6 +1528,45 @@ public sealed class DataIntegrityIssueService
                 currentValue: $"삭제 품목 현재고 {item.CurrentStock:N2} / 창고행 {stocks.Count:N0}건 / 창고합계 {stockTotal:N2}",
                 expectedValue: "삭제 품목 현재고 0 / 창고별 재고 행 없음",
                 message: $"{NormalizeDisplay(item.NameOriginal, "품목")} 삭제 품목에 재고 잔여가 남아 있습니다. {stockBreakdown}",
+                directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
+        }
+
+        return issues;
+    }
+
+    private async Task<List<DataIntegrityIssueDetail>> LoadInvoiceLineMissingInvoiceReferenceIssuesAsync(SessionState session, CancellationToken ct)
+    {
+        if (!session.HasAdministrativePrivileges)
+            return [];
+
+        var lines = await (
+                from line in _db.InvoiceLines.IgnoreQueryFilters().AsNoTracking()
+                join invoice in _db.Invoices.IgnoreQueryFilters().AsNoTracking()
+                    on line.InvoiceId equals invoice.Id into invoiceGroup
+                from invoice in invoiceGroup.DefaultIfEmpty()
+                where invoice == null
+                orderby line.InvoiceId, line.OrderIndex, line.Id
+                select line)
+            .ToListAsync(ct);
+
+        if (lines.Count == 0)
+            return [];
+
+        var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, DomainConstants.OfficeUsenet);
+        var issues = new List<DataIntegrityIssueDetail>(lines.Count);
+        foreach (var line in lines)
+        {
+            var deletionState = line.IsDeleted ? "삭제" : "활성";
+            AddGeneralIssue(
+                issues,
+                DataIntegrityIssueCodes.InvoiceLineMissingInvoiceReference,
+                entityType: "전표 세부내역",
+                entityId: line.Id,
+                itemName: line.ItemNameOriginal,
+                officeCode: officeCode,
+                currentValue: $"InvoiceId {line.InvoiceId:D} / 금액 {line.LineAmount:N0} / 삭제상태 {deletionState}",
+                expectedValue: "참조 전표 행 존재",
+                message: $"{NormalizeDisplay(line.ItemNameOriginal, "전표 세부내역")} 행 {line.Id:N}의 전표 참조가 현재 로컬 DB에 없습니다.",
                 directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
         }
 

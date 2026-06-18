@@ -163,6 +163,12 @@ public sealed class IntegrityController : ControllerBase
             .CountAsync(cancellationToken);
         AddIssue(issues, "active_invoice_lines_deleted_invoice", activeInvoiceLinesDeletedInvoiceCount, "Error", "삭제된 전표에 활성 세부내역 행이 남아 있습니다.");
 
+        var invoiceLineMissingInvoiceRowCount = await _dbContext.InvoiceLines
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .CountAsync(line => !_dbContext.Invoices.IgnoreQueryFilters().Any(invoice => invoice.Id == line.InvoiceId), cancellationToken);
+        AddIssue(issues, "invoice_line_missing_invoice_rows", invoiceLineMissingInvoiceRowCount, "Error", "부모 전표 행이 없는 전표 세부내역이 존재합니다.");
+
         var orphanTransactionCustomerCount = await _officeScopeService.ApplyTransactionScope(_dbContext.Transactions.IgnoreQueryFilters().AsNoTracking())
             .Where(transaction => !transaction.IsDeleted)
             .CountAsync(transaction => !_dbContext.Customers.IgnoreQueryFilters().Any(customer => !customer.IsDeleted && customer.Id == transaction.CustomerId), cancellationToken);
@@ -331,6 +337,7 @@ public sealed class IntegrityController : ControllerBase
             "item_stock_snapshot_mismatch" => await LoadItemStockSnapshotMismatchDetailsAsync(cancellationToken),
             "orphan_invoice_customer_refs" => await LoadOrphanInvoiceCustomerDetailsAsync(cancellationToken),
             "active_invoice_lines_deleted_invoice" => await LoadActiveInvoiceLinesDeletedInvoiceDetailsAsync(cancellationToken),
+            "invoice_line_missing_invoice_rows" => await LoadInvoiceLineMissingInvoiceRowDetailsAsync(cancellationToken),
             "orphan_transaction_customer_refs" => await LoadOrphanTransactionCustomerDetailsAsync(cancellationToken),
             "orphan_rental_profile_customer_refs" => await LoadOrphanRentalProfileCustomerDetailsAsync(cancellationToken),
             "rental_profile_customer_unlinked" => await LoadRentalProfileCustomerUnlinkedDetailsAsync(cancellationToken),
@@ -901,6 +908,36 @@ public sealed class IntegrityController : ControllerBase
                     $"전표일 {FormatDate(row.Invoice.InvoiceDate)}",
                     $"전표유형 {row.Invoice.VoucherType}",
                     $"전표ID {FormatGuid(row.Invoice.Id)}")))
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadInvoiceLineMissingInvoiceRowDetailsAsync(CancellationToken cancellationToken)
+    {
+        var lines = await (
+                from line in _dbContext.InvoiceLines.IgnoreQueryFilters().AsNoTracking()
+                join invoice in _dbContext.Invoices.IgnoreQueryFilters().AsNoTracking()
+                    on line.InvoiceId equals invoice.Id into invoiceGroup
+                from invoice in invoiceGroup.DefaultIfEmpty()
+                where invoice == null
+                orderby line.InvoiceId, line.OrderIndex, line.Id
+                select line)
+            .ToListAsync(cancellationToken);
+
+        return lines
+            .Select(line => CreateDetailRow(
+                entityType: "전표세부내역",
+                entityIdText: FormatGuid(line.Id),
+                primaryText: FirstNonEmpty(line.ItemNameOriginal, FormatGuid(line.Id)),
+                secondaryText: CombineParts(line.SpecificationOriginal, line.Unit, line.SerialNumber),
+                referenceText: $"누락 전표 행 {FormatGuid(line.InvoiceId)}",
+                scopeText: "공통",
+                detailText: CombineParts(
+                    line.IsDeleted ? "삭제상태 삭제" : "삭제상태 활성",
+                    $"수량 {FormatNumber(line.Quantity)}",
+                    $"단가 {FormatMoney(line.UnitPrice)}",
+                    $"금액 {FormatMoney(line.LineAmount)}",
+                    line.OrderIndex > 0 ? $"순번 {line.OrderIndex:N0}" : null,
+                    string.IsNullOrWhiteSpace(line.Remark) ? null : $"비고 {line.Remark}")))
             .ToList();
     }
 
@@ -2092,6 +2129,7 @@ public sealed class IntegrityController : ControllerBase
             "item_stock_snapshot_mismatch" => new IntegrityIssueDefinition("item_stock_snapshot_mismatch", "Warning", "품목 현재재고와 창고 합계가 일치하지 않는 항목이 있습니다."),
             "orphan_invoice_customer_refs" => new IntegrityIssueDefinition("orphan_invoice_customer_refs", "Error", "거래처가 없는 전표 참조가 존재합니다."),
             "active_invoice_lines_deleted_invoice" => new IntegrityIssueDefinition("active_invoice_lines_deleted_invoice", "Error", "삭제된 전표에 활성 세부내역 행이 남아 있습니다."),
+            "invoice_line_missing_invoice_rows" => new IntegrityIssueDefinition("invoice_line_missing_invoice_rows", "Error", "부모 전표 행이 없는 전표 세부내역이 존재합니다."),
             "orphan_transaction_customer_refs" => new IntegrityIssueDefinition("orphan_transaction_customer_refs", "Error", "거래처가 없는 수금/지불 참조가 존재합니다."),
             "orphan_rental_profile_customer_refs" => new IntegrityIssueDefinition("orphan_rental_profile_customer_refs", "Error", "거래처가 없는 렌탈 청구 프로필 참조가 존재합니다."),
             "rental_profile_customer_unlinked" => new IntegrityIssueDefinition("rental_profile_customer_unlinked", "Warning", "거래처 ID 없이 거래처명만 저장된 렌탈 청구 프로필이 있습니다."),
