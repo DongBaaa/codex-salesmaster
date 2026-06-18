@@ -168,10 +168,12 @@ public sealed class IntegrityController : ControllerBase
             .CountAsync(cancellationToken);
         AddIssue(issues, "active_invoice_lines_deleted_invoice", activeInvoiceLinesDeletedInvoiceCount, "Error", "삭제된 전표에 활성 세부내역 행이 남아 있습니다.");
 
-        var invoiceLineMissingInvoiceRowCount = await _dbContext.InvoiceLines
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .CountAsync(line => !_dbContext.Invoices.IgnoreQueryFilters().Any(invoice => invoice.Id == line.InvoiceId), cancellationToken);
+        var invoiceLineMissingInvoiceRowCount = _officeScopeService.HasGlobalDataScope
+            ? await _dbContext.InvoiceLines
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .CountAsync(line => !_dbContext.Invoices.IgnoreQueryFilters().Any(invoice => invoice.Id == line.InvoiceId), cancellationToken)
+            : 0;
         AddIssue(issues, "invoice_line_missing_invoice_rows", invoiceLineMissingInvoiceRowCount, "Error", "부모 전표 행이 없는 전표 세부내역이 존재합니다.");
 
         var orphanTransactionCustomerCount = await _officeScopeService.ApplyTransactionScope(_dbContext.Transactions.IgnoreQueryFilters().AsNoTracking())
@@ -1078,6 +1080,9 @@ public sealed class IntegrityController : ControllerBase
 
     private async Task<List<IntegrityIssueDetailRowDto>> LoadInvoiceLineMissingInvoiceRowDetailsAsync(CancellationToken cancellationToken)
     {
+        if (!_officeScopeService.HasGlobalDataScope)
+            return [];
+
         var lines = await (
                 from line in _dbContext.InvoiceLines.IgnoreQueryFilters().AsNoTracking()
                 join invoice in _dbContext.Invoices.IgnoreQueryFilters().AsNoTracking()

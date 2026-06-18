@@ -426,6 +426,8 @@ public sealed class IntegrityControllerTests : IDisposable
         var deletedPaymentId = Guid.NewGuid();
         var missingPaymentId = Guid.NewGuid();
         var deletedPaymentAttachmentId = Guid.NewGuid();
+        var missingInvoiceLineInvoiceId = Guid.NewGuid();
+        var invoiceLineId = Guid.NewGuid();
 
         await dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
         dbContext.TransactionAttachments.Add(new TransactionAttachment
@@ -481,6 +483,16 @@ public sealed class IntegrityControllerTests : IDisposable
             FileSize = 128,
             IsDeleted = true
         });
+        dbContext.InvoiceLines.Add(new InvoiceLine
+        {
+            Id = invoiceLineId,
+            InvoiceId = missingInvoiceLineInvoiceId,
+            ItemNameOriginal = "Hard Missing Invoice Line",
+            Unit = "EA",
+            Quantity = 2m,
+            UnitPrice = 10000m,
+            LineAmount = 20000m
+        });
         await dbContext.SaveChangesAsync();
         await dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
 
@@ -495,6 +507,7 @@ public sealed class IntegrityControllerTests : IDisposable
         Assert.DoesNotContain(payload.Issues, issue => issue.Code == "inventory_transfer_line_missing_transfer_rows");
         Assert.DoesNotContain(payload.Issues, issue => issue.Code == "deleted_payment_missing_invoice_rows");
         Assert.DoesNotContain(payload.Issues, issue => issue.Code == "deleted_payment_attachment_missing_payment_rows");
+        Assert.DoesNotContain(payload.Issues, issue => issue.Code == "invoice_line_missing_invoice_rows");
         var rentalLogIssue = Assert.Single(payload.Issues, issue => issue.Code == "rental_billing_log_missing_profile_rows");
         Assert.Equal(1, rentalLogIssue.Count);
 
@@ -504,7 +517,8 @@ public sealed class IntegrityControllerTests : IDisposable
             "customer_contract_missing_customer_rows",
             "inventory_transfer_line_missing_transfer_rows",
             "deleted_payment_missing_invoice_rows",
-            "deleted_payment_attachment_missing_payment_rows"
+            "deleted_payment_attachment_missing_payment_rows",
+            "invoice_line_missing_invoice_rows"
         })
         {
             var detailResponse = await controller.GetReportDetails(code, CancellationToken.None);
