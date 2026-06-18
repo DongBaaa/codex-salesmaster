@@ -259,7 +259,7 @@ public sealed class CustomerEditPage : ContentPage
                 $"네트워크/서버 응답 지연으로 삭제 요청을 기기에 먼저 저장했습니다.\n동기화 화면에서 저장 대기 거래처 {state.PendingCustomerCount:N0}건을 확인할 수 있으며, 연결 복구 후 자동으로 서버에 반영됩니다.",
                 "확인");
             await CloseAsync();
-            MobileErrorHandler.FireAndForget(() => _afterSaved(null), "거래처 삭제 후 목록 새로고침");
+            MobileErrorHandler.FireAndForget(() => _afterSaved(dto), "거래처 삭제 후 목록 새로고침");
         }
         catch (Exception queueEx)
         {

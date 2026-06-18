@@ -426,11 +426,19 @@ try
         if (_viewModel.SelectedItem is null)
             return;
 
+        var deletedItemId = _viewModel.SelectedItem.Id;
         await Navigation.PushModalAsync(new ItemEditPage(
             _viewModel.SelectedItem,
             _viewModel.SelectedCategory?.Name,
-            async _ =>
+            async saved =>
             {
+                if (saved?.IsDeleted == true)
+                {
+                    _viewModel.RemoveDeletedItemFromCurrentView(deletedItemId);
+                    RebuildCategoryButtons();
+                    return;
+                }
+
                 await _viewModel.RefreshAsync();
                 RebuildCategoryButtons();
             }));

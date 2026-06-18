@@ -368,6 +368,31 @@ public sealed class ItemsViewModel : ObservableObject
         }
     }
 
+    public void RemoveDeletedItemFromCurrentView(Guid itemId)
+    {
+        if (itemId == Guid.Empty)
+            return;
+
+        var removed = Items.FirstOrDefault(item => item.Id == itemId);
+        if (removed is not null)
+            Items.Remove(removed);
+
+        var selectedWasRemoved = SelectedItem?.Id == itemId;
+        if (selectedWasRemoved)
+            ClearSelectedItem();
+
+        if (removed is null && !selectedWasRemoved)
+            return;
+
+        StatusMessage = removed is null
+            ? "삭제 대기 품목을 현재 화면에서 숨겼습니다. 동기화 화면에서 서버 반영 상태를 확인하세요."
+            : $"{removed.NameOriginal} 품목 삭제 대기 중입니다. 동기화 화면에서 서버 반영 상태를 확인하세요.";
+        OnPropertyChanged(nameof(ItemListHeight));
+        OnPropertyChanged(nameof(SelectedCategorySummary));
+        OnPropertyChanged(nameof(CanShowItemList));
+        OnPropertyChanged(nameof(ItemListLabelText));
+    }
+
     private async Task SearchItemsCoreAsync()
     {
         if (SelectedCategory is null && !HasSearchText)

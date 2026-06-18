@@ -879,10 +879,17 @@ try
         if (_viewModel.SelectedCustomer is null)
             return;
 
+        var deletedCustomerId = _viewModel.SelectedCustomer.Id;
         await Navigation.PushModalAsync(new CustomerEditPage(
             _viewModel.SelectedCustomer,
-            async _ =>
+            async saved =>
             {
+                if (saved?.IsDeleted == true)
+                {
+                    await _viewModel.RemoveDeletedCustomerFromCurrentViewAsync(deletedCustomerId);
+                    return;
+                }
+
                 _viewModel.ClearSelectedCustomer();
                 await _viewModel.RefreshAsync();
             }));

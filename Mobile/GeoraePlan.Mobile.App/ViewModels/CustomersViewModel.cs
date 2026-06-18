@@ -261,6 +261,39 @@ public sealed class CustomersViewModel : ObservableObject
         DetailStatusMessage = "거래처를 선택하면 상세 정보가 표시됩니다.";
     }
 
+    public async Task RemoveDeletedCustomerFromCurrentViewAsync(Guid customerId)
+    {
+        if (customerId == Guid.Empty)
+            return;
+
+        var removed = Customers.FirstOrDefault(customer => customer.Id == customerId);
+        if (removed is not null)
+            Customers.Remove(removed);
+
+        var selectedWasRemoved = SelectedCustomer?.Id == customerId;
+        if (selectedWasRemoved)
+            ClearSelectedCustomer();
+
+        try
+        {
+            var cached = (await _cacheStore.LoadCustomersAsync())
+                .Where(customer => customer.Id != customerId)
+                .ToList();
+            await _cacheStore.SaveCustomersAsync(cached);
+        }
+        catch
+        {
+            // Cache cleanup must not block the visible offline-delete result.
+        }
+
+        if (removed is null && !selectedWasRemoved)
+            return;
+
+        StatusMessage = removed is null
+            ? "삭제 대기 거래처를 현재 화면에서 숨겼습니다. 동기화 화면에서 서버 반영 상태를 확인하세요."
+            : $"{removed.NameOriginal} 거래처 삭제 대기 중입니다. 동기화 화면에서 서버 반영 상태를 확인하세요.";
+    }
+
     public bool TryNavigateBackOneStep()
     {
         if (!HasSelectedCustomer)

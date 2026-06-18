@@ -293,6 +293,30 @@ public sealed class MobileReleaseConfigurationTests
             "GeoraePlan.Mobile.App",
             "Pages",
             "ItemEditPage.cs"));
+        var customersPageSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Pages",
+            "CustomersPage.cs"));
+        var itemsPageSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Pages",
+            "ItemsPage.cs"));
+        var customersViewSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "CustomersViewModel.cs"));
+        var itemsViewSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "ItemsViewModel.cs"));
         var syncCoordinatorSource = File.ReadAllText(Path.Combine(
             root,
             "Mobile",
@@ -333,6 +357,15 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("MobileErrorHandler.FireAndForget(() => _afterSaved(dto), \"품목 저장 후 목록 새로고침\")", itemPageSource, StringComparison.Ordinal);
         Assert.Contains("dto.Id = _source?.Id ?? Guid.NewGuid();", itemPageSource, StringComparison.Ordinal);
         Assert.Contains("BuildMutationId(\"item\", dto.Id)", itemPageSource, StringComparison.Ordinal);
+        Assert.Contains("MobileErrorHandler.FireAndForget(() => _afterSaved(dto), \"거래처 삭제 후 목록 새로고침\")", customerPageSource, StringComparison.Ordinal);
+        Assert.Contains("MobileErrorHandler.FireAndForget(() => _afterSaved(dto), \"품목 삭제 후 목록 새로고침\")", itemPageSource, StringComparison.Ordinal);
+        Assert.Contains("saved?.IsDeleted == true", customersPageSource, StringComparison.Ordinal);
+        Assert.Contains("RemoveDeletedCustomerFromCurrentViewAsync(deletedCustomerId)", customersPageSource, StringComparison.Ordinal);
+        Assert.Contains("saved?.IsDeleted == true", itemsPageSource, StringComparison.Ordinal);
+        Assert.Contains("RemoveDeletedItemFromCurrentView(deletedItemId)", itemsPageSource, StringComparison.Ordinal);
+        Assert.Contains("public async Task RemoveDeletedCustomerFromCurrentViewAsync(Guid customerId)", customersViewSource, StringComparison.Ordinal);
+        Assert.Contains("await _cacheStore.SaveCustomersAsync(cached)", customersViewSource, StringComparison.Ordinal);
+        Assert.Contains("public void RemoveDeletedItemFromCurrentView(Guid itemId)", itemsViewSource, StringComparison.Ordinal);
 
         Assert.Contains("public async Task<MobileSyncState> QueueCustomerDraftAsync", syncCoordinatorSource, StringComparison.Ordinal);
         Assert.Contains("state.PendingPush.Customers.RemoveAll(x => x.Id == customer.Id)", syncCoordinatorSource, StringComparison.Ordinal);
