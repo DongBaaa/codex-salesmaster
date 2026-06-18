@@ -344,6 +344,99 @@ public sealed class DataIntegrityIssueServicePerformanceTests
 
 
     [Fact]
+    public async Task ScanAsync_FindsRestoredRentalInvoiceWithDeletedPaymentAndDetachedTransaction()
+    {
+        PrepareAppRoot("georaeplan-integrity-rental-invoice-detached-payment");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var profileId = Guid.NewGuid();
+            var runId = Guid.NewGuid();
+            var invoiceId = Guid.NewGuid();
+            var paymentId = Guid.NewGuid();
+
+            db.Customers.Add(CreateCustomer(customerId, OfficeCodeCatalog.Usenet, "Detached local rental customer"));
+            db.RentalBillingProfiles.Add(CreateProfile(profileId, 9301, OfficeCodeCatalog.Usenet, customerId, "Detached local rental customer"));
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = invoiceId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerId = customerId,
+                InvoiceNumber = "LOCAL-RENTAL-DETACHED-001",
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 18),
+                TotalAmount = 100_000m,
+                SupplyAmount = 90_909m,
+                VatAmount = 9_091m,
+                VatMode = InvoiceVatModes.Included,
+                IsLatestVersion = true,
+                IsDeleted = false,
+                LinkedRentalBillingProfileId = profileId,
+                LinkedRentalBillingRunId = runId,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            db.Payments.Add(new LocalPayment
+            {
+                Id = paymentId,
+                InvoiceId = invoiceId,
+                PaymentDate = new DateOnly(2026, 6, 19),
+                Amount = 100_000m,
+                Note = "deleted local payment after incomplete invoice restore",
+                IsDeleted = true,
+                IsDirty = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = paymentId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 19),
+                TransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt,
+                LinkedInvoiceId = null,
+                LinkedInvoiceNumber = string.Empty,
+                LinkedRentalBillingProfileId = profileId,
+                LinkedRentalBillingRunId = runId,
+                BankReceipt = 100_000m,
+                ReceiptTotal = 100_000m,
+                SettlementAmount = 0m,
+                IsDeleted = false,
+                IsDirty = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateAdminSession());
+            var issue = Assert.Single(result.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.RentalInvoiceDeletedPaymentDetachedTransaction);
+
+            Assert.Equal(paymentId, issue.EntityId);
+            Assert.Equal("Error", issue.Severity);
+            Assert.Equal(DataIntegrityDirectActionKind.OpenPaymentForInvoice, issue.DirectActionKind);
+            Assert.Contains(invoiceId.ToString("D"), issue.ReviewInfo, StringComparison.Ordinal);
+            Assert.Contains(paymentId.ToString("D"), issue.ReviewInfo, StringComparison.Ordinal);
+            Assert.Contains("거래 전표링크 없음", issue.CurrentValue, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ScanAsync_FindsRemainingChildRowsWhoseParentRowsAreHardMissing()
     {
         PrepareAppRoot("georaeplan-integrity-remaining-child-parent-missing");

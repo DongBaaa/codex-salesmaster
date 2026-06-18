@@ -273,6 +273,27 @@ public sealed class IntegrityController : ControllerBase
             .CountAsync(payment => !_dbContext.Invoices.IgnoreQueryFilters().Any(invoice => invoice.Id == payment.InvoiceId), cancellationToken);
         AddIssue(issues, "deleted_payment_missing_invoice_rows", deletedPaymentMissingInvoiceRowCount, "Error", "영구 삭제된 전표의 삭제 결제 잔여 행이 존재합니다.");
 
+        var rentalInvoiceDeletedPaymentDetachedTransactionCount = await (
+                from payment in _dbContext.Payments.IgnoreQueryFilters().AsNoTracking().Where(payment => payment.IsDeleted)
+                join invoice in _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
+                        .Where(invoice =>
+                            !invoice.IsDeleted &&
+                            invoice.LinkedRentalBillingProfileId.HasValue &&
+                            invoice.LinkedRentalBillingProfileId.Value != Guid.Empty)
+                    on payment.InvoiceId equals invoice.Id
+                join transaction in _officeScopeService.ApplyTransactionScope(_dbContext.Transactions.IgnoreQueryFilters().AsNoTracking())
+                        .Where(transaction => !transaction.IsDeleted)
+                    on payment.Id equals transaction.Id
+                where !transaction.LinkedInvoiceId.HasValue ||
+                      transaction.LinkedInvoiceId.Value == Guid.Empty ||
+                      transaction.LinkedInvoiceId.Value != invoice.Id ||
+                      transaction.SettlementAmount != payment.Amount ||
+                      transaction.LinkedRentalBillingProfileId != invoice.LinkedRentalBillingProfileId ||
+                      transaction.LinkedRentalBillingRunId != invoice.LinkedRentalBillingRunId
+                select payment.Id)
+            .CountAsync(cancellationToken);
+        AddIssue(issues, "rental_invoice_deleted_payment_detached_transaction", rentalInvoiceDeletedPaymentDetachedTransactionCount, "Error", "활성 렌탈 전표에 삭제 상태 수금/지급과 전표 링크가 끊긴 활성 거래내역이 함께 남아 있습니다.");
+
         var orphanTransactionAttachmentCount = await _dbContext.TransactionAttachments
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -418,6 +439,7 @@ public sealed class IntegrityController : ControllerBase
             "orphan_transaction_invoice_refs" => await LoadOrphanTransactionInvoiceDetailsAsync(cancellationToken),
             "orphan_payment_invoice_refs" => await LoadOrphanPaymentInvoiceDetailsAsync(cancellationToken),
             "deleted_payment_missing_invoice_rows" => await LoadDeletedPaymentMissingInvoiceRowDetailsAsync(cancellationToken),
+            "rental_invoice_deleted_payment_detached_transaction" => await LoadRentalInvoiceDeletedPaymentDetachedTransactionDetailsAsync(cancellationToken),
             "orphan_attachment_transaction_refs" => await LoadOrphanTransactionAttachmentDetailsAsync(cancellationToken),
             "deleted_transaction_attachment_missing_transaction_rows" => await LoadDeletedTransactionAttachmentMissingTransactionRowDetailsAsync(cancellationToken),
             "orphan_payment_attachment_refs" => await LoadOrphanPaymentAttachmentDetailsAsync(cancellationToken),
@@ -1547,6 +1569,75 @@ public sealed class IntegrityController : ControllerBase
             .ToList();
     }
 
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalInvoiceDeletedPaymentDetachedTransactionDetailsAsync(CancellationToken cancellationToken)
+    {
+        var rows = await (
+                from payment in _dbContext.Payments.IgnoreQueryFilters().AsNoTracking().Where(payment => payment.IsDeleted)
+                join invoice in _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
+                        .Where(invoice =>
+                            !invoice.IsDeleted &&
+                            invoice.LinkedRentalBillingProfileId.HasValue &&
+                            invoice.LinkedRentalBillingProfileId.Value != Guid.Empty)
+                    on payment.InvoiceId equals invoice.Id
+                join transaction in _officeScopeService.ApplyTransactionScope(_dbContext.Transactions.IgnoreQueryFilters().AsNoTracking())
+                        .Where(transaction => !transaction.IsDeleted)
+                    on payment.Id equals transaction.Id
+                where !transaction.LinkedInvoiceId.HasValue ||
+                      transaction.LinkedInvoiceId.Value == Guid.Empty ||
+                      transaction.LinkedInvoiceId.Value != invoice.Id ||
+                      transaction.SettlementAmount != payment.Amount ||
+                      transaction.LinkedRentalBillingProfileId != invoice.LinkedRentalBillingProfileId ||
+                      transaction.LinkedRentalBillingRunId != invoice.LinkedRentalBillingRunId
+                orderby invoice.InvoiceDate, invoice.InvoiceNumber, payment.PaymentDate, payment.Id
+                select new
+                {
+                    PaymentId = payment.Id,
+                    payment.PaymentDate,
+                    PaymentAmount = payment.Amount,
+                    payment.Note,
+                    InvoiceId = invoice.Id,
+                    invoice.InvoiceNumber,
+                    invoice.LocalTempNumber,
+                    invoice.InvoiceDate,
+                    invoice.TotalAmount,
+                    invoice.TenantCode,
+                    invoice.OfficeCode,
+                    invoice.ResponsibleOfficeCode,
+                    invoice.LinkedRentalBillingProfileId,
+                    invoice.LinkedRentalBillingRunId,
+                    TransactionId = transaction.Id,
+                    transaction.TransactionDate,
+                    transaction.TransactionKind,
+                    transaction.LinkedInvoiceId,
+                    transaction.LinkedInvoiceNumber,
+                    transaction.SettlementAmount,
+                    TransactionRentalProfileId = transaction.LinkedRentalBillingProfileId,
+                    TransactionRentalRunId = transaction.LinkedRentalBillingRunId
+                })
+            .ToListAsync(cancellationToken);
+
+        return rows
+            .Select(row => CreateDetailRow(
+                entityType: "렌탈 전표/수금",
+                entityIdText: FormatGuid(row.PaymentId),
+                primaryText: CombineParts("전표", FirstNonEmpty(row.InvoiceNumber, row.LocalTempNumber, FormatGuid(row.InvoiceId)), FormatDate(row.InvoiceDate)),
+                secondaryText: CombineParts($"삭제 수금 {FormatDate(row.PaymentDate)}", $"금액 {FormatMoney(row.PaymentAmount)}"),
+                referenceText: row.LinkedInvoiceId.HasValue && row.LinkedInvoiceId.Value != Guid.Empty
+                    ? $"거래내역 전표링크 {FormatGuid(row.LinkedInvoiceId.Value)}"
+                    : "거래내역 전표링크 없음",
+                scopeText: FormatScope(row.TenantCode, row.OfficeCode, row.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    $"전표ID {FormatGuid(row.InvoiceId)}",
+                    $"거래내역ID {FormatGuid(row.TransactionId)}",
+                    $"거래일 {FormatDate(row.TransactionDate)}",
+                    string.IsNullOrWhiteSpace(row.TransactionKind) ? null : $"거래구분 {row.TransactionKind}",
+                    $"거래 정산 {FormatMoney(row.SettlementAmount)}",
+                    row.LinkedRentalBillingProfileId.HasValue ? $"전표 렌탈프로필 {FormatGuid(row.LinkedRentalBillingProfileId.Value)}" : "전표 렌탈프로필 없음",
+                    row.TransactionRentalProfileId.HasValue ? $"거래 렌탈프로필 {FormatGuid(row.TransactionRentalProfileId.Value)}" : "거래 렌탈프로필 없음",
+                    string.IsNullOrWhiteSpace(row.Note) ? null : $"메모 {row.Note}")))
+            .ToList();
+    }
+
     private async Task<List<IntegrityIssueDetailRowDto>> LoadOrphanTransactionAttachmentDetailsAsync(CancellationToken cancellationToken)
     {
         var attachments = await (
@@ -2455,6 +2546,7 @@ public sealed class IntegrityController : ControllerBase
             "orphan_transaction_invoice_refs" => new IntegrityIssueDefinition("orphan_transaction_invoice_refs", "Error", "전표가 없는 거래/수금 참조가 존재합니다."),
             "orphan_payment_invoice_refs" => new IntegrityIssueDefinition("orphan_payment_invoice_refs", "Error", "전표가 없는 수금/지급 참조가 존재합니다."),
             "deleted_payment_missing_invoice_rows" => new IntegrityIssueDefinition("deleted_payment_missing_invoice_rows", "Error", "영구 삭제된 전표의 삭제 결제 잔여 행이 존재합니다."),
+            "rental_invoice_deleted_payment_detached_transaction" => new IntegrityIssueDefinition("rental_invoice_deleted_payment_detached_transaction", "Error", "활성 렌탈 전표에 삭제 상태 수금/지급과 전표 링크가 끊긴 활성 거래내역이 함께 남아 있습니다."),
             "orphan_attachment_transaction_refs" => new IntegrityIssueDefinition("orphan_attachment_transaction_refs", "Error", "거래내역이 없는 증빙 첨부가 존재합니다."),
             "deleted_transaction_attachment_missing_transaction_rows" => new IntegrityIssueDefinition("deleted_transaction_attachment_missing_transaction_rows", "Error", "영구 삭제된 거래내역의 삭제 첨부 잔여 행이 존재합니다."),
             "orphan_payment_attachment_refs" => new IntegrityIssueDefinition("orphan_payment_attachment_refs", "Error", "결제내역이 없는 결제 첨부가 존재합니다."),
