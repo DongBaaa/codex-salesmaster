@@ -192,6 +192,9 @@ public sealed class IntegrityController : ControllerBase
                 cancellationToken);
         AddIssue(issues, "active_invoice_deleted_line_only", activeInvoiceDeletedLineOnlyCount, "Warning", "활성 전표에 활성 세부내역이 없고 삭제된 세부내역만 남아 있습니다.");
 
+        var invoiceTotalActiveLineMismatchCount = (await LoadInvoiceTotalActiveLineMismatchRowsAsync(cancellationToken)).Count;
+        AddIssue(issues, "invoice_total_active_line_mismatch", invoiceTotalActiveLineMismatchCount, "Error", "활성 전표 금액 합계와 활성 세부내역 기준 계산값이 다릅니다.");
+
         var invoiceLineMissingInvoiceRowCount = _officeScopeService.HasGlobalDataScope
             ? await _dbContext.InvoiceLines
                 .IgnoreQueryFilters()
@@ -548,6 +551,7 @@ public sealed class IntegrityController : ControllerBase
             "orphan_invoice_customer_refs" => await LoadOrphanInvoiceCustomerDetailsAsync(cancellationToken),
             "active_invoice_lines_deleted_invoice" => await LoadActiveInvoiceLinesDeletedInvoiceDetailsAsync(cancellationToken),
             "active_invoice_deleted_line_only" => await LoadActiveInvoiceDeletedLineOnlyDetailsAsync(cancellationToken),
+            "invoice_total_active_line_mismatch" => await LoadInvoiceTotalActiveLineMismatchDetailsAsync(cancellationToken),
             "invoice_line_missing_invoice_rows" => await LoadInvoiceLineMissingInvoiceRowDetailsAsync(cancellationToken),
             "orphan_transaction_customer_refs" => await LoadOrphanTransactionCustomerDetailsAsync(cancellationToken),
             "orphan_rental_profile_customer_refs" => await LoadOrphanRentalProfileCustomerDetailsAsync(cancellationToken),
@@ -1221,6 +1225,114 @@ public sealed class IntegrityController : ControllerBase
                         $"삭제 세부금액 {FormatMoney(stats.Amount)}",
                         "활성 세부내역 0"));
             })
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadInvoiceTotalActiveLineMismatchDetailsAsync(CancellationToken cancellationToken)
+    {
+        var rows = await LoadInvoiceTotalActiveLineMismatchRowsAsync(cancellationToken);
+        return rows
+            .Select(row => CreateDetailRow(
+                entityType: "전표",
+                entityIdText: FormatGuid(row.InvoiceId),
+                primaryText: FirstNonEmpty(row.InvoiceNumber, row.LocalTempNumber, FormatGuid(row.InvoiceId)),
+                secondaryText: CombineParts(FormatDate(row.InvoiceDate), $"전표유형 {row.VoucherType}", $"VAT {row.VatMode}"),
+                referenceText: $"거래처 {FormatGuid(row.CustomerId)}",
+                scopeText: FormatScope(row.TenantCode, row.OfficeCode, row.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    $"전표 총액 {FormatMoney(row.TotalAmount)}",
+                    $"활성 라인 합계 {FormatMoney(row.ExpectedTotalAmount)}",
+                    $"차이 {FormatMoney(row.TotalAmount - row.ExpectedTotalAmount)}",
+                    $"활성 라인 수 {FormatNumber(row.ActiveLineCount)}",
+                    $"공급가 {FormatMoney(row.SupplyAmount)} / 기대 {FormatMoney(row.ExpectedSupplyAmount)}",
+                    $"부가세 {FormatMoney(row.VatAmount)} / 기대 {FormatMoney(row.ExpectedVatAmount)}")))
+            .ToList();
+    }
+
+    private async Task<List<InvoiceTotalActiveLineMismatchRow>> LoadInvoiceTotalActiveLineMismatchRowsAsync(CancellationToken cancellationToken)
+    {
+        var scopedActiveInvoices = _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
+            .Where(invoice => !invoice.IsDeleted);
+        var invoices = await scopedActiveInvoices
+            .Select(invoice => new
+            {
+                invoice.Id,
+                invoice.CustomerId,
+                invoice.TenantCode,
+                invoice.OfficeCode,
+                invoice.ResponsibleOfficeCode,
+                invoice.InvoiceNumber,
+                invoice.LocalTempNumber,
+                invoice.InvoiceDate,
+                invoice.VoucherType,
+                invoice.VatMode,
+                invoice.SupplyAmount,
+                invoice.VatAmount,
+                invoice.TotalAmount
+            })
+            .ToListAsync(cancellationToken);
+        if (invoices.Count == 0)
+            return [];
+
+        var scopedActiveInvoiceIds = scopedActiveInvoices.Select(invoice => invoice.Id);
+        var activeLines = await _dbContext.InvoiceLines
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(line => !line.IsDeleted && scopedActiveInvoiceIds.Contains(line.InvoiceId))
+            .Select(line => new
+            {
+                line.InvoiceId,
+                line.LineAmount
+            })
+            .ToListAsync(cancellationToken);
+        var lineTotals = activeLines
+            .GroupBy(line => line.InvoiceId)
+            .ToDictionary(
+                group => group.Key,
+                group => new
+                {
+                    Count = group.Count(),
+                    Total = group.Sum(line => line.LineAmount)
+                });
+
+        return invoices
+            .Select(invoice =>
+            {
+                var lineStats = lineTotals.TryGetValue(invoice.Id, out var value)
+                    ? value
+                    : new { Count = 0, Total = 0m };
+                var expected = InvoiceVatModes.CalculateTotals(new[] { lineStats.Total }, invoice.VatMode);
+                if (!AmountDiffers(invoice.TotalAmount, expected.TotalAmount) &&
+                    !AmountDiffers(invoice.SupplyAmount, expected.SupplyAmount) &&
+                    !AmountDiffers(invoice.VatAmount, expected.VatAmount))
+                {
+                    return null;
+                }
+
+                return new InvoiceTotalActiveLineMismatchRow(
+                    invoice.Id,
+                    invoice.CustomerId,
+                    invoice.TenantCode,
+                    invoice.OfficeCode,
+                    invoice.ResponsibleOfficeCode,
+                    invoice.InvoiceNumber,
+                    invoice.LocalTempNumber,
+                    invoice.InvoiceDate,
+                    invoice.VoucherType,
+                    invoice.VatMode,
+                    invoice.SupplyAmount,
+                    invoice.VatAmount,
+                    invoice.TotalAmount,
+                    lineStats.Count,
+                    lineStats.Total,
+                    expected.SupplyAmount,
+                    expected.VatAmount,
+                    expected.TotalAmount);
+            })
+            .OfType<InvoiceTotalActiveLineMismatchRow>()
+            .OrderByDescending(row => row.InvoiceDate)
+            .ThenBy(row => row.InvoiceNumber, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.InvoiceId)
             .ToList();
     }
 
@@ -3556,6 +3668,7 @@ public sealed class IntegrityController : ControllerBase
             "orphan_invoice_customer_refs" => new IntegrityIssueDefinition("orphan_invoice_customer_refs", "Error", "거래처가 없는 전표 참조가 존재합니다."),
             "active_invoice_lines_deleted_invoice" => new IntegrityIssueDefinition("active_invoice_lines_deleted_invoice", "Error", "삭제된 전표에 활성 세부내역 행이 남아 있습니다."),
             "active_invoice_deleted_line_only" => new IntegrityIssueDefinition("active_invoice_deleted_line_only", "Warning", "활성 전표에 활성 세부내역이 없고 삭제된 세부내역만 남아 있습니다."),
+            "invoice_total_active_line_mismatch" => new IntegrityIssueDefinition("invoice_total_active_line_mismatch", "Error", "활성 전표 금액 합계와 활성 세부내역 기준 계산값이 다릅니다."),
             "invoice_line_missing_invoice_rows" => new IntegrityIssueDefinition("invoice_line_missing_invoice_rows", "Error", "부모 전표 행이 없는 전표 세부내역이 존재합니다."),
             "orphan_transaction_customer_refs" => new IntegrityIssueDefinition("orphan_transaction_customer_refs", "Error", "거래처가 없는 수금/지불 참조가 존재합니다."),
             "orphan_rental_profile_customer_refs" => new IntegrityIssueDefinition("orphan_rental_profile_customer_refs", "Error", "거래처가 없는 렌탈 청구 프로필 참조가 존재합니다."),
@@ -4081,6 +4194,26 @@ public sealed class IntegrityController : ControllerBase
         string CustomerName,
         decimal Quantity,
         decimal LineAmount);
+
+    private sealed record InvoiceTotalActiveLineMismatchRow(
+        Guid InvoiceId,
+        Guid CustomerId,
+        string TenantCode,
+        string OfficeCode,
+        string ResponsibleOfficeCode,
+        string InvoiceNumber,
+        string LocalTempNumber,
+        DateOnly InvoiceDate,
+        VoucherType VoucherType,
+        string VatMode,
+        decimal SupplyAmount,
+        decimal VatAmount,
+        decimal TotalAmount,
+        int ActiveLineCount,
+        decimal ActiveLineTotal,
+        decimal ExpectedSupplyAmount,
+        decimal ExpectedVatAmount,
+        decimal ExpectedTotalAmount);
 
     private sealed record InventoryTransferRouteSnapshot(
         string? TenantCode,

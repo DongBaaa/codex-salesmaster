@@ -454,6 +454,174 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FlagsActiveInvoiceTotalMismatchByScope()
+    {
+        var currentUser = CreateOfficeScopedUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var inScopeCustomerId = Guid.NewGuid();
+        var outOfScopeCustomerId = Guid.NewGuid();
+        var mismatchInvoiceId = Guid.NewGuid();
+        var matchedInvoiceId = Guid.NewGuid();
+        var deletedLineControlInvoiceId = Guid.NewGuid();
+        var outOfScopeInvoiceId = Guid.NewGuid();
+
+        dbContext.Customers.AddRange(
+            new Customer
+            {
+                Id = inScopeCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Invoice Total Scope Customer",
+                NameMatchKey = "INVOICETOTALSCOPECUSTOMER",
+                TradeType = "매출"
+            },
+            new Customer
+            {
+                Id = outOfScopeCustomerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                NameOriginal = "Invoice Total Out Customer",
+                NameMatchKey = "INVOICETOTALOUTCUSTOMER",
+                TradeType = "매출"
+            });
+        dbContext.Invoices.AddRange(
+            new Invoice
+            {
+                Id = mismatchInvoiceId,
+                CustomerId = inScopeCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "INV-TOTAL-MISMATCH",
+                InvoiceDate = new DateOnly(2026, 6, 20),
+                VoucherType = VoucherType.Sales,
+                VatMode = InvoiceVatModes.None,
+                SupplyAmount = 20000m,
+                VatAmount = 0m,
+                TotalAmount = 20000m
+            },
+            new Invoice
+            {
+                Id = matchedInvoiceId,
+                CustomerId = inScopeCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "INV-TOTAL-MATCHED",
+                InvoiceDate = new DateOnly(2026, 6, 20),
+                VoucherType = VoucherType.Sales,
+                VatMode = InvoiceVatModes.None,
+                SupplyAmount = 10000m,
+                VatAmount = 0m,
+                TotalAmount = 10000m
+            },
+            new Invoice
+            {
+                Id = deletedLineControlInvoiceId,
+                CustomerId = inScopeCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "INV-DELETED-LINE-CONTROL",
+                InvoiceDate = new DateOnly(2026, 6, 20),
+                VoucherType = VoucherType.Sales,
+                VatMode = InvoiceVatModes.None,
+                SupplyAmount = 10000m,
+                VatAmount = 0m,
+                TotalAmount = 10000m
+            },
+            new Invoice
+            {
+                Id = outOfScopeInvoiceId,
+                CustomerId = outOfScopeCustomerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                InvoiceNumber = "INV-OUT-TOTAL-MISMATCH",
+                InvoiceDate = new DateOnly(2026, 6, 20),
+                VoucherType = VoucherType.Sales,
+                VatMode = InvoiceVatModes.None,
+                SupplyAmount = 99000m,
+                VatAmount = 0m,
+                TotalAmount = 99000m
+            });
+        dbContext.InvoiceLines.AddRange(
+            new InvoiceLine
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = mismatchInvoiceId,
+                ItemNameOriginal = "mismatch active item",
+                Quantity = 1m,
+                UnitPrice = 10000m,
+                LineAmount = 10000m,
+                OrderIndex = 1
+            },
+            new InvoiceLine
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = matchedInvoiceId,
+                ItemNameOriginal = "matched active item",
+                Quantity = 1m,
+                UnitPrice = 10000m,
+                LineAmount = 10000m,
+                OrderIndex = 1
+            },
+            new InvoiceLine
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = deletedLineControlInvoiceId,
+                ItemNameOriginal = "control active item",
+                Quantity = 1m,
+                UnitPrice = 10000m,
+                LineAmount = 10000m,
+                OrderIndex = 1
+            },
+            new InvoiceLine
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = deletedLineControlInvoiceId,
+                ItemNameOriginal = "control deleted item",
+                Quantity = 1m,
+                UnitPrice = 90000m,
+                LineAmount = 90000m,
+                OrderIndex = 2,
+                IsDeleted = true
+            },
+            new InvoiceLine
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = outOfScopeInvoiceId,
+                ItemNameOriginal = "out active item",
+                Quantity = 1m,
+                UnitPrice = 1000m,
+                LineAmount = 1000m,
+                OrderIndex = 1
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issue = Assert.Single(payload.Issues, current => current.Code == "invoice_total_active_line_mismatch");
+
+        Assert.Equal("Error", issue.Severity);
+        Assert.Equal(1, issue.Count);
+
+        var details = await GetSingleDetailRowAsync(controller, "invoice_total_active_line_mismatch");
+        Assert.Equal("전표", details.EntityType);
+        Assert.Equal(FormatGuidForTest(mismatchInvoiceId), details.EntityIdText);
+        Assert.Equal("INV-TOTAL-MISMATCH", details.PrimaryText);
+        Assert.Contains("전표 총액 20,000", details.DetailText, StringComparison.Ordinal);
+        Assert.Contains("활성 라인 합계 10,000", details.DetailText, StringComparison.Ordinal);
+        Assert.Contains("차이 10,000", details.DetailText, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task GetReport_FlagsRemainingChildRowsWithHardMissingParentRows()
     {
         var currentUser = CreateAdminUser();
