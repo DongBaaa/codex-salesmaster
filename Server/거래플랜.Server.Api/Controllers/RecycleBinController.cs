@@ -1128,6 +1128,7 @@ public sealed class RecycleBinController : ControllerBase
         AddRentalSettlementTarget(transaction, rentalSettlementTargets);
 
         transaction.IsDeleted = false;
+        await RestoreTransactionAttachmentsAsync(transaction.Id, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(rentalSettlementTargets, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -1195,6 +1196,7 @@ public sealed class RecycleBinController : ControllerBase
         }
 
         linkedTransaction.IsDeleted = false;
+        await RestoreTransactionAttachmentsAsync(linkedTransaction.Id, cancellationToken);
         return (true, true, transactionRelinked, customerRestored, linkedTransaction.LinkedRentalBillingProfileId, linkedTransaction.LinkedRentalBillingRunId, string.Empty);
     }
 
@@ -1231,6 +1233,16 @@ public sealed class RecycleBinController : ControllerBase
         var attachments = await _dbContext.PaymentAttachments
             .IgnoreQueryFilters()
             .Where(current => current.PaymentId == paymentId && current.IsDeleted)
+            .ToListAsync(cancellationToken);
+        foreach (var attachment in attachments)
+            attachment.IsDeleted = false;
+    }
+
+    private async Task RestoreTransactionAttachmentsAsync(Guid transactionId, CancellationToken cancellationToken)
+    {
+        var attachments = await _dbContext.TransactionAttachments
+            .IgnoreQueryFilters()
+            .Where(current => current.TransactionId == transactionId && current.IsDeleted)
             .ToListAsync(cancellationToken);
         foreach (var attachment in attachments)
             attachment.IsDeleted = false;

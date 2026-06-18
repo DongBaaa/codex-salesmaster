@@ -603,6 +603,65 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task RestoreTransaction_RestoresDeletedTransactionAttachments()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = CreateScopedCustomer("첨부 거래내역 복원 거래처", OfficeCodeCatalog.Usenet);
+        var transactionId = Guid.NewGuid();
+        var attachmentId = Guid.NewGuid();
+        var transaction = CreateDeletedTransaction(transactionId, customer.Id, OfficeCodeCatalog.Usenet);
+        var deletedAttachment = new TransactionAttachment
+        {
+            Id = attachmentId,
+            TransactionId = transactionId,
+            AttachmentType = "증빙",
+            FileName = "restore-transaction-attachment.pdf",
+            MimeType = "application/pdf",
+            FileSize = 16,
+            FileHash = "restore-transaction-attachment-hash",
+            StoragePath = "storage/restore-transaction-attachment.pdf",
+            FileContent = [0x25, 0x50, 0x44, 0x46],
+            IsDeleted = true
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Transactions.Add(transaction);
+        dbContext.TransactionAttachments.Add(deletedAttachment);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = transactionId,
+                        Kind = "transaction"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success, item.Message);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.False(await dbContext.Transactions.IgnoreQueryFilters()
+            .Where(current => current.Id == transactionId)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.TransactionAttachments.IgnoreQueryFilters()
+            .Where(current => current.Id == attachmentId)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task PurgeRentalBillingProfile_RejectsWhenLinkedAssetOutsideRentalWriteScope()
     {
         var currentUser = CreateOfficeOnlyUser();
@@ -1152,6 +1211,7 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         var invoice = CreateScopedInvoice(customer.Id, OfficeCodeCatalog.Usenet, "INV-PAYMENT-RESTORE-LINKED-TX");
         var transactionId = Guid.NewGuid();
         var transaction = CreateDeletedTransaction(transactionId, customer.Id, OfficeCodeCatalog.Usenet, invoice.Id);
+        var transactionAttachmentId = Guid.NewGuid();
         var deletedPayment = new Payment
         {
             Id = transactionId,
@@ -1160,9 +1220,23 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
             Amount = 1000m,
             IsDeleted = true
         };
+        var deletedTransactionAttachment = new TransactionAttachment
+        {
+            Id = transactionAttachmentId,
+            TransactionId = transactionId,
+            AttachmentType = "증빙",
+            FileName = "restore-linked-transaction-attachment.pdf",
+            MimeType = "application/pdf",
+            FileSize = 16,
+            FileHash = "restore-linked-transaction-attachment-hash",
+            StoragePath = "storage/restore-linked-transaction-attachment.pdf",
+            FileContent = [0x25, 0x50, 0x44, 0x46],
+            IsDeleted = true
+        };
         dbContext.Customers.Add(customer);
         dbContext.Invoices.Add(invoice);
         dbContext.Transactions.Add(transaction);
+        dbContext.TransactionAttachments.Add(deletedTransactionAttachment);
         dbContext.Payments.Add(deletedPayment);
         await dbContext.SaveChangesAsync();
 
@@ -1193,6 +1267,10 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
             .SingleAsync());
         Assert.False(await dbContext.Transactions.IgnoreQueryFilters()
             .Where(current => current.Id == transactionId)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.TransactionAttachments.IgnoreQueryFilters()
+            .Where(current => current.Id == transactionAttachmentId)
             .Select(current => current.IsDeleted)
             .SingleAsync());
     }
@@ -1612,6 +1690,7 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         var invoice = CreateScopedInvoice(customer.Id, OfficeCodeCatalog.Usenet, "INV-TX-RESTORE-LINKED-PAYMENT");
         var transactionId = Guid.NewGuid();
         var transaction = CreateDeletedTransaction(transactionId, customer.Id, OfficeCodeCatalog.Usenet, invoice.Id);
+        var transactionAttachmentId = Guid.NewGuid();
         var deletedPayment = new Payment
         {
             Id = transactionId,
@@ -1620,9 +1699,23 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
             Amount = 1000m,
             IsDeleted = true
         };
+        var deletedTransactionAttachment = new TransactionAttachment
+        {
+            Id = transactionAttachmentId,
+            TransactionId = transactionId,
+            AttachmentType = "증빙",
+            FileName = "restore-transaction-with-linked-payment-attachment.pdf",
+            MimeType = "application/pdf",
+            FileSize = 16,
+            FileHash = "restore-transaction-with-linked-payment-attachment-hash",
+            StoragePath = "storage/restore-transaction-with-linked-payment-attachment.pdf",
+            FileContent = [0x25, 0x50, 0x44, 0x46],
+            IsDeleted = true
+        };
         dbContext.Customers.Add(customer);
         dbContext.Invoices.Add(invoice);
         dbContext.Transactions.Add(transaction);
+        dbContext.TransactionAttachments.Add(deletedTransactionAttachment);
         dbContext.Payments.Add(deletedPayment);
         await dbContext.SaveChangesAsync();
 
@@ -1649,6 +1742,10 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         dbContext.ChangeTracker.Clear();
         Assert.False(await dbContext.Transactions.IgnoreQueryFilters()
             .Where(current => current.Id == transactionId)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.TransactionAttachments.IgnoreQueryFilters()
+            .Where(current => current.Id == transactionAttachmentId)
             .Select(current => current.IsDeleted)
             .SingleAsync());
         Assert.False(await dbContext.Payments.IgnoreQueryFilters()
