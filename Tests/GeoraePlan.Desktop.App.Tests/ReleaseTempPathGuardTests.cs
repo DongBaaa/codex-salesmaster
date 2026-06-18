@@ -133,10 +133,17 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("Add-Check -Checks $checks -Name 'live healthz'", source, StringComparison.Ordinal);
         Assert.Contains("Add-Check -Checks $checks -Name 'live readyz'", source, StringComparison.Ordinal);
         Assert.Contains("readyz status={0} error={1} body={2}", source, StringComparison.Ordinal);
+        Assert.Contains("function Test-ReadyProbeSemantic", source, StringComparison.Ordinal);
+        Assert.Contains("$status -eq 'ready'", source, StringComparison.Ordinal);
+        Assert.Contains("$dbStarted -eq $true", source, StringComparison.Ordinal);
+        Assert.Contains("$dbCompleted -eq $true", source, StringComparison.Ordinal);
+        Assert.Contains("$dbFailed -eq $false", source, StringComparison.Ordinal);
+        Assert.Contains("200 OK but readiness body is not ready", source, StringComparison.Ordinal);
         AssertInOrder(
             source,
             "$health = Invoke-TextProbe -Uri ($BaseUrl + '/healthz')",
             "$ready = Invoke-TextProbe -Uri ($BaseUrl + '/readyz')",
+            "$readySemanticResult = Test-ReadyProbeSemantic -Probe $ready",
             "$manifest = Invoke-TextProbe -Uri ($BaseUrl + \"/updates/manifest?channel=$Channel\")");
     }
 
