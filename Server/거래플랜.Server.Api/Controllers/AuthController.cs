@@ -27,6 +27,13 @@ public sealed class AuthController : ControllerBase
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<ActionResult<LoginResponse>> Login([FromBody] LoginRequest request, CancellationToken cancellationToken)
     {
+        if (request is null ||
+            string.IsNullOrWhiteSpace(request.Username) ||
+            string.IsNullOrWhiteSpace(request.Password))
+        {
+            return Unauthorized();
+        }
+
         var username = request.Username.Trim();
         var user = await _dbContext.Users
             .IgnoreQueryFilters()

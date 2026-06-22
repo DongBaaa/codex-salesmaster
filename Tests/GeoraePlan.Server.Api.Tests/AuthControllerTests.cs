@@ -111,6 +111,29 @@ public sealed class AuthControllerTests : IDisposable
         Assert.IsType<UnauthorizedResult>(response.Result);
     }
 
+    [Theory]
+    [InlineData(null, "password")]
+    [InlineData("", "password")]
+    [InlineData("   ", "password")]
+    [InlineData("active-user", null)]
+    [InlineData("active-user", "")]
+    [InlineData("active-user", "   ")]
+    public async Task Login_ReturnsUnauthorized_ForBlankOrNullCredentials(string? username, string? password)
+    {
+        await using var dbContext = CreateDbContext();
+        var controller = CreateController(dbContext, Guid.NewGuid());
+
+        var response = await controller.Login(
+            new LoginRequest
+            {
+                Username = username!,
+                Password = password!
+            },
+            CancellationToken.None);
+
+        Assert.IsType<UnauthorizedResult>(response.Result);
+    }
+
     private AppDbContext CreateDbContext()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
