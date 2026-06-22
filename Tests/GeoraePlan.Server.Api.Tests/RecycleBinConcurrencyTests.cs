@@ -1474,6 +1474,108 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PurgeRentalBillingProfile_ClearsAssignmentHistoryProfileReferences()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "PURGE-PROFILE-HISTORY-001",
+            CustomerName = "영구삭제 이력 청구프로필",
+            InstallSiteName = "테스트 설치처",
+            IsDeleted = true,
+            IsActive = false
+        });
+        dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "PURGE-PROFILE-HISTORY-ASSET-001",
+            ManagementId = "PURGE-PROFILE-HISTORY-ASSET-001",
+            ManagementNumber = "PURGE-PROFILE-HISTORY-ASSET-001",
+            ItemName = "프로필 영구삭제 이력 자산",
+            AssetStatus = "설치",
+            BillingProfileId = profileId,
+            BillingEligibilityStatus = "청구가능",
+            IsDeleted = false
+        });
+        dbContext.RentalAssetAssignmentHistories.AddRange(
+            new RentalAssetAssignmentHistory
+            {
+                Id = Guid.NewGuid(),
+                AssetId = assetId,
+                BillingProfileId = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                BillingProfileDisplay = "영구삭제 이력 청구프로필",
+                ItemName = "프로필 영구삭제 이력 자산",
+                ManagementNumber = "PURGE-PROFILE-HISTORY-ASSET-001",
+                IsCurrent = true,
+                IsDeleted = false
+            },
+            new RentalAssetAssignmentHistory
+            {
+                Id = Guid.NewGuid(),
+                AssetId = assetId,
+                BillingProfileId = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                BillingProfileDisplay = "영구삭제 과거 청구프로필",
+                ItemName = "프로필 영구삭제 과거 이력 자산",
+                ManagementNumber = "PURGE-PROFILE-HISTORY-ASSET-001",
+                IsCurrent = false,
+                IsDeleted = true
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = profileId,
+                        Kind = "rental-billing-profile"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.False(await dbContext.RentalBillingProfiles.IgnoreQueryFilters().AnyAsync(current => current.Id == profileId));
+        Assert.Null(await dbContext.RentalAssets.IgnoreQueryFilters()
+            .Where(current => current.Id == assetId)
+            .Select(current => current.BillingProfileId)
+            .SingleAsync());
+        Assert.Equal(
+            0,
+            await dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                .CountAsync(current => current.BillingProfileId == profileId));
+        Assert.Equal(
+            2,
+            await dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                .CountAsync(current => current.AssetId == assetId));
+    }
+
+    [Fact]
     public async Task PurgeRentalAsset_RemovesAssignmentHistories()
     {
         var currentUser = CreateAdminUser();

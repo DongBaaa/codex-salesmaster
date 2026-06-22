@@ -2114,6 +2114,12 @@ public sealed class RecycleBinController : ControllerBase
             .IgnoreQueryFilters()
             .Where(current => current.BillingProfileId == profileId)
             .ToListAsync(cancellationToken);
+        var assignmentHistories = await _dbContext.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .Where(current => current.BillingProfileId == profileId)
+            .ToListAsync(cancellationToken);
+        foreach (var history in assignmentHistories)
+            history.BillingProfileId = null;
 
         await TouchPurgeRecordsAsync(
         [

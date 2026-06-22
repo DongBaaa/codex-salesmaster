@@ -295,6 +295,105 @@ public sealed class RecycleBinScopeAndSyncTests
         }
     }
 
+    [Fact]
+    public async Task LocalStateService_PermanentlyDeleteRentalBillingProfile_ClearsAssignmentHistoryProfileReferences()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-recycle-bin-rental-profile-purge-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            db.RentalBillingProfiles.Add(CreateDeletedRentalBillingProfile(profileId));
+            db.RentalAssets.Add(CreateDeletedRentalAsset(assetId, "LOCAL-PURGE-PROFILE-HISTORY-001", isDeleted: false, billingProfileId: profileId));
+            db.RentalAssetAssignmentHistories.AddRange(
+                CreateRentalAssetAssignmentHistory(assetId, isCurrent: true, isDeleted: false, billingProfileId: profileId),
+                CreateRentalAssetAssignmentHistory(assetId, isCurrent: false, isDeleted: true, billingProfileId: profileId));
+            await db.SaveChangesAsync();
+
+            var session = CreateSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var result = await service.PermanentlyDeleteRecycleBinEntryAsync(
+                RecycleBinEntityKind.RentalBillingProfile,
+                profileId,
+                session);
+
+            Assert.True(result.Success);
+            Assert.False(await db.RentalBillingProfiles.IgnoreQueryFilters().AnyAsync(current => current.Id == profileId));
+            Assert.Null(await db.RentalAssets.IgnoreQueryFilters()
+                .Where(current => current.Id == assetId)
+                .Select(current => current.BillingProfileId)
+                .SingleAsync());
+            Assert.Equal(
+                0,
+                await db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                    .CountAsync(current => current.BillingProfileId == profileId));
+            Assert.Equal(
+                2,
+                await db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                    .CountAsync(current => current.AssetId == assetId));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalStateService_ApplyServerPurgedRentalBillingProfile_ClearsAssignmentHistoryProfileReferences()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-recycle-bin-rental-profile-server-purge-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            db.RentalBillingProfiles.Add(CreateDeletedRentalBillingProfile(profileId));
+            db.RentalAssets.Add(CreateDeletedRentalAsset(assetId, "SERVER-PURGE-PROFILE-HISTORY-001", isDeleted: false, billingProfileId: profileId));
+            db.RentalAssetAssignmentHistories.AddRange(
+                CreateRentalAssetAssignmentHistory(assetId, isCurrent: true, isDeleted: false, billingProfileId: profileId),
+                CreateRentalAssetAssignmentHistory(assetId, isCurrent: false, isDeleted: true, billingProfileId: profileId));
+            await db.SaveChangesAsync();
+
+            var session = CreateSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var result = await service.ApplyServerPurgeRecycleBinEntryAsync(
+                RecycleBinEntityKind.RentalBillingProfile,
+                profileId);
+
+            Assert.True(result.Success);
+            Assert.False(await db.RentalBillingProfiles.IgnoreQueryFilters().AnyAsync(current => current.Id == profileId));
+            Assert.Null(await db.RentalAssets.IgnoreQueryFilters()
+                .Where(current => current.Id == assetId)
+                .Select(current => current.BillingProfileId)
+                .SingleAsync());
+            Assert.Equal(
+                0,
+                await db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                    .CountAsync(current => current.BillingProfileId == profileId));
+            Assert.Equal(
+                2,
+                await db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                    .CountAsync(current => current.AssetId == assetId));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static SessionState CreateSession(string tenantCode, string officeCode)
     {
         var session = new SessionState();
@@ -309,7 +408,27 @@ public sealed class RecycleBinScopeAndSyncTests
         return session;
     }
 
-    private static LocalRentalAsset CreateDeletedRentalAsset(Guid assetId, string key)
+    private static LocalRentalBillingProfile CreateDeletedRentalBillingProfile(Guid profileId)
+        => new()
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "PURGE-PROFILE-HISTORY-001",
+            CustomerName = "영구삭제 이력 청구프로필",
+            InstallSiteName = "테스트 설치처",
+            IsDeleted = true,
+            IsDirty = false,
+            IsActive = false,
+            Revision = 12
+        };
+
+    private static LocalRentalAsset CreateDeletedRentalAsset(
+        Guid assetId,
+        string key,
+        bool isDeleted = true,
+        Guid? billingProfileId = null)
         => new()
         {
             Id = assetId,
@@ -321,7 +440,10 @@ public sealed class RecycleBinScopeAndSyncTests
             ManagementId = key,
             ManagementNumber = key,
             ItemName = "영구삭제 이력 자산",
-            IsDeleted = true,
+            BillingProfileId = billingProfileId,
+            AssetStatus = "설치",
+            BillingEligibilityStatus = billingProfileId.HasValue ? "청구가능" : string.Empty,
+            IsDeleted = isDeleted,
             IsDirty = false,
             Revision = 10
         };
@@ -329,13 +451,16 @@ public sealed class RecycleBinScopeAndSyncTests
     private static LocalRentalAssetAssignmentHistory CreateRentalAssetAssignmentHistory(
         Guid assetId,
         bool isCurrent,
-        bool isDeleted)
+        bool isDeleted,
+        Guid? billingProfileId = null)
         => new()
         {
             Id = Guid.NewGuid(),
             AssetId = assetId,
+            BillingProfileId = billingProfileId,
             TenantCode = TenantScopeCatalog.UsenetGroup,
             ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            BillingProfileDisplay = billingProfileId.HasValue ? "영구삭제 이력 청구프로필" : string.Empty,
             ItemName = "영구삭제 이력 자산",
             ManagementNumber = "HISTORY-001",
             IsCurrent = isCurrent,

@@ -2421,6 +2421,17 @@ public sealed partial class LocalStateService
             .IgnoreQueryFilters()
             .Where(current => current.BillingProfileId == profileId)
             .ToListAsync(ct);
+        var assignmentHistories = await _db.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .Where(current => current.BillingProfileId == profileId)
+            .ToListAsync(ct);
+        var now = DateTime.UtcNow;
+        foreach (var history in assignmentHistories)
+        {
+            history.BillingProfileId = null;
+            history.IsDirty = false;
+            history.UpdatedAtUtc = now;
+        }
 
         _db.RentalBillingLogs.RemoveRange(logs);
         _db.RentalBillingProfiles.Remove(profile);
@@ -2530,6 +2541,16 @@ public sealed partial class LocalStateService
             .IgnoreQueryFilters()
             .Where(current => current.BillingProfileId == profileId)
             .ToListAsync(ct);
+        var assignmentHistories = await _db.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .Where(current => current.BillingProfileId == profileId)
+            .ToListAsync(ct);
+        foreach (var history in assignmentHistories)
+        {
+            history.BillingProfileId = null;
+            history.IsDirty = true;
+            history.UpdatedAtUtc = now;
+        }
 
         _db.RentalBillingLogs.RemoveRange(logs);
         _db.RentalBillingProfiles.Remove(profile);
@@ -2538,6 +2559,7 @@ public sealed partial class LocalStateService
             profile.CustomerName,
             profile.InstallSiteName,
             RemovedLogCount = logs.Count,
+            ClearedAssignmentHistoryCount = assignmentHistories.Count,
             UnlinkedAssetCount = linkedAssets.Count
         }, session, now);
         await _db.SaveChangesAsync(ct);

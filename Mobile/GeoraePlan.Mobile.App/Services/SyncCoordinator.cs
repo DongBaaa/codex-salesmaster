@@ -1041,6 +1041,10 @@ public sealed class SyncCoordinator
                 RemoveEntityById(state.PendingPush.RentalBillingProfiles, entityId, purgeRevision);
                 state.SyncedRentalBillingLogs.RemoveAll(log => log.BillingProfileId == entityId && !IsEntityNewerThanPurge(log, purgeRevision));
                 state.PendingPush.RentalBillingLogs.RemoveAll(log => log.BillingProfileId == entityId && !IsEntityNewerThanPurge(log, purgeRevision));
+                ClearRentalBillingProfileReferences(state.SyncedRentalAssets, entityId, purgeRevision);
+                ClearRentalBillingProfileReferences(state.PendingPush.RentalAssets, entityId, purgeRevision);
+                ClearRentalAssignmentHistoryBillingProfileReferences(state.SyncedRentalAssetAssignmentHistories, entityId, purgeRevision);
+                ClearRentalAssignmentHistoryBillingProfileReferences(state.PendingPush.RentalAssetAssignmentHistories, entityId, purgeRevision);
                 break;
             case "rentalasset":
             case "rental-asset":
@@ -1064,6 +1068,30 @@ public sealed class SyncCoordinator
             return;
 
         values.RemoveAll(value => value.Id == entityId);
+    }
+
+    private static void ClearRentalBillingProfileReferences(
+        List<RentalAssetDto> values,
+        Guid profileId,
+        long purgeRevision)
+    {
+        foreach (var value in values)
+        {
+            if (value.BillingProfileId == profileId && !IsEntityNewerThanPurge(value, purgeRevision))
+                value.BillingProfileId = null;
+        }
+    }
+
+    private static void ClearRentalAssignmentHistoryBillingProfileReferences(
+        List<RentalAssetAssignmentHistoryDto> values,
+        Guid profileId,
+        long purgeRevision)
+    {
+        foreach (var value in values)
+        {
+            if (value.BillingProfileId == profileId && !IsEntityNewerThanPurge(value, purgeRevision))
+                value.BillingProfileId = null;
+        }
     }
 
     private static bool IsEntityNewerThanPurge(SyncEntityDto entity, long purgeRevision)
