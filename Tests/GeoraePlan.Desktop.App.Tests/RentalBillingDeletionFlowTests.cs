@@ -243,6 +243,83 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     [Fact]
+    public async Task DeleteBillingHistory_RequiresPaymentEditPermissionForDirectInvoicePayment()
+    {
+        PrepareAppRoot("georaeplan-rental-delete-history-requires-payment-edit-direct-payment");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Rental direct payment delete permission customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "\uCCAD\uAD6C\uB300\uC0C1"));
+            await db.SaveChangesAsync();
+
+            var adminSession = CreateAdminSession();
+            var adminLocal = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), adminSession);
+            var adminRental = new RentalStateService(db, adminLocal);
+            var started = await adminRental.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), adminSession);
+            Assert.True(started.Success, started.Message);
+
+            var invoice = await db.Invoices
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == started.RelatedEntityId);
+            var runId = Assert.IsType<Guid>(invoice.LinkedRentalBillingRunId);
+            var paymentId = Guid.NewGuid();
+
+            var savePayment = await adminLocal.SavePaymentAsync(new LocalPayment
+            {
+                Id = paymentId,
+                InvoiceId = invoice.Id,
+                PaymentDate = new DateOnly(2026, 5, 27),
+                Amount = invoice.TotalAmount,
+                Note = "direct rental payment permission guard"
+            }, adminSession);
+            Assert.True(savePayment.Success, savePayment.Message);
+            Assert.False(await db.Transactions.IgnoreQueryFilters().AnyAsync(current => current.Id == paymentId));
+
+            var invoiceOnlySession = CreateUserSession(
+                AppPermissionNames.RentalProfileEdit,
+                AppPermissionNames.InvoiceEdit);
+            var invoiceOnlyLocal = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), invoiceOnlySession);
+            var invoiceOnlyRental = new RentalStateService(db, invoiceOnlyLocal);
+
+            var denied = await invoiceOnlyRental.DeleteBillingHistoryAsync(profileId, runId, invoiceOnlySession);
+
+            Assert.False(denied.Success);
+            Assert.Contains("수금", denied.Message);
+            var persistedPayment = await db.Payments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == paymentId);
+            Assert.False(persistedPayment.IsDeleted);
+            var persistedInvoice = await db.Invoices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == invoice.Id);
+            Assert.False(persistedInvoice.IsDeleted);
+            var persistedProfile = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == profileId);
+            Assert.Contains(DeserializeRuns(persistedProfile), current => current.RunId == runId);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task BillingHistoryRows_IncludeFinancialRunMissingFromProfileJson()
     {
         PrepareAppRoot("georaeplan-rental-history-financial-run-missing-json");

@@ -5444,12 +5444,15 @@ WHERE ""AssignedUsername"" <> '';", ct);
             billingRunId,
             linkedInvoiceIds,
             ct);
+        var linkedPaymentIds = await LoadBillingHistoryDeletePaymentIdsAsync(
+            linkedInvoiceIds,
+            ct);
 
-        if ((linkedTransactions.Count > 0 || invoiceDeleteTargetIds.Count > 0) && _local is null)
+        if ((linkedTransactions.Count > 0 || linkedPaymentIds.Count > 0 || invoiceDeleteTargetIds.Count > 0) && _local is null)
             return LocalMutationResult.Denied("연결된 판매전표/입금 내역 삭제 서비스를 사용할 수 없습니다.");
         if (invoiceDeleteTargetIds.Count > 0 && !CanDeleteRentalBillingInvoices(session))
             return LocalMutationResult.Denied("권한이 없어 연결된 판매전표를 삭제할 수 없습니다. 전표 편집 권한이 필요합니다.");
-        if (linkedTransactions.Count > 0 && !CanDeleteRentalBillingTransactions(session))
+        if ((linkedTransactions.Count > 0 || linkedPaymentIds.Count > 0) && !CanDeleteRentalBillingTransactions(session))
             return LocalMutationResult.Denied("권한이 없어 연결된 입금 내역을 삭제할 수 없습니다. 수금/지급 편집 권한이 필요합니다.");
         if (linkedTransactions.Count > 0 && !session.HasAdministrativePrivileges)
         {
@@ -5513,10 +5516,44 @@ WHERE ""AssignedUsername"" <> '';", ct);
             deletedParts.Add($"판매전표 {invoiceDeleteTargetIds.Count:N0}건");
         if (linkedTransactions.Count > 0)
             deletedParts.Add($"입금 내역 {linkedTransactions.Count:N0}건");
+        var directPaymentCount = linkedPaymentIds.Except(linkedTransactions.Select(transaction => transaction.Id)).Count();
+        if (directPaymentCount > 0)
+            deletedParts.Add($"직접 수금 {directPaymentCount:N0}건");
         if (removedRunCount > 0 || deletedLogCount > 0)
             deletedParts.Add("청구월 기록");
         var deletedSummary = deletedParts.Count == 0 ? "선택 내역" : string.Join(", ", deletedParts);
         return LocalMutationResult.Ok(billingProfileId, $"{deletedSummary}을 삭제했습니다.");
+    }
+
+    private async Task<List<Guid>> LoadBillingHistoryDeletePaymentIdsAsync(
+        IReadOnlyCollection<Guid> linkedInvoiceIds,
+        CancellationToken ct)
+    {
+        var invoiceIds = linkedInvoiceIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (invoiceIds.Count == 0)
+            return new List<Guid>();
+
+        var paymentIds = new List<Guid>();
+        foreach (var batchIds in invoiceIds.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds;
+            paymentIds.AddRange(await _db.Payments.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(payment =>
+                    !payment.IsDeleted &&
+                    scopedBatchIds.Contains(payment.InvoiceId))
+                .Select(payment => payment.Id)
+                .ToListAsync(ct));
+        }
+
+        return paymentIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
     }
 
     private async Task<List<RentalBillingHistoryDeleteTransactionLookup>> LoadBillingHistoryDeleteTransactionsAsync(
