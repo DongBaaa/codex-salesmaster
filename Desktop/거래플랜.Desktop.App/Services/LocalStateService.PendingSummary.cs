@@ -22,6 +22,26 @@ public sealed partial class LocalStateService
                 .ToListAsync(ct),
             "회사정보 변경");
 
+        AppendSharedBucket(
+            buckets,
+            await _db.Units.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct),
+            "단위 변경");
+
+        AppendSharedBucket(
+            buckets,
+            await _db.CustomerCategories.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct),
+            "거래처분류 변경");
+
+        AppendSharedBucket(
+            buckets,
+            await _db.PriceGradeOptions.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct),
+            "가격등급 변경");
+
+        AppendSharedBucket(
+            buckets,
+            await _db.TradeTypeOptions.IgnoreQueryFilters().CountAsync(entity => entity.IsDirty, ct),
+            "거래유형 변경");
+
         AppendBuckets(
             buckets,
             await _db.CustomerMasters

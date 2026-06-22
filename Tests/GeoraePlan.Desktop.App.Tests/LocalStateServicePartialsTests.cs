@@ -32,6 +32,67 @@ public sealed class LocalStateServicePartialsTests
         Assert.Equal("ITWORLD", summary.PrimaryBucket?.ScopeDisplayName);
     }
 
+    [Fact]
+    public async Task PendingSyncSummary_CountsAllDirtySettingPushCollections()
+    {
+        var previous = Environment.GetEnvironmentVariable("GEORAEPLAN_LOCAL_DB_PATH");
+        var dbPath = Path.Combine(Path.GetTempPath(), $"georaeplan-setting-dirty-{Guid.NewGuid():N}.db");
+        Environment.SetEnvironmentVariable("GEORAEPLAN_LOCAL_DB_PATH", dbPath);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            db.Units.Add(new LocalUnit { Id = Guid.NewGuid(), Name = "감사단위", IsDirty = true });
+            db.CustomerCategories.Add(new LocalCustomerCategory { Id = Guid.NewGuid(), Name = "감사분류", IsDirty = true });
+            db.PriceGradeOptions.Add(new LocalPriceGradeOption { Id = Guid.NewGuid(), Name = "감사가격", IsDirty = true });
+            db.TradeTypeOptions.Add(new LocalTradeTypeOption { Id = Guid.NewGuid(), Name = "감사거래", IsDirty = true });
+            db.ItemCategoryOptions.Add(new LocalItemCategoryOption { Id = Guid.NewGuid(), Name = "감사품목", IsDirty = true });
+            db.CustomerMasters.Add(new LocalCustomerMaster
+            {
+                Id = Guid.NewGuid(),
+                NameOriginal = "감사거래처기준",
+                NameMatchKey = "감사거래처기준",
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                IsDirty = true
+            });
+            await db.SaveChangesAsync();
+
+            db.ChangeTracker.Clear();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), CreateAdminSession());
+
+            Assert.Equal(6, await service.CountDirtyAsync());
+            Assert.True(await service.HasPendingSyncChangesAsync());
+
+            var summary = await service.GetPendingSyncSummaryAsync();
+
+            Assert.Equal(6, summary.TotalCount);
+            Assert.Contains(summary.Buckets, bucket => bucket.EntityDisplayName == "단위 변경" && bucket.Count == 1);
+            Assert.Contains(summary.Buckets, bucket => bucket.EntityDisplayName == "거래처분류 변경" && bucket.Count == 1);
+            Assert.Contains(summary.Buckets, bucket => bucket.EntityDisplayName == "가격등급 변경" && bucket.Count == 1);
+            Assert.Contains(summary.Buckets, bucket => bucket.EntityDisplayName == "거래유형 변경" && bucket.Count == 1);
+            Assert.Contains(summary.Buckets, bucket => bucket.EntityDisplayName == "품목분류 변경" && bucket.Count == 1);
+            Assert.Contains(summary.Buckets, bucket => bucket.EntityDisplayName == "거래처 기준정보 변경" && bucket.Count == 1);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_LOCAL_DB_PATH", previous);
+            SqliteConnection.ClearAllPools();
+            try
+            {
+                if (File.Exists(dbPath))
+                    File.Delete(dbPath);
+            }
+            catch
+            {
+                // 테스트 임시 DB 삭제 실패는 다음 임시 경로와 충돌하지 않습니다.
+            }
+        }
+    }
+
     [Theory]
     [InlineData(null, true)]
     [InlineData("", true)]

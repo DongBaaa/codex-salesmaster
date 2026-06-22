@@ -36,6 +36,12 @@ public sealed partial class LocalStateService
             return true;
 
         return await _db.CompanyProfiles.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.Units.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.CustomerCategories.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.PriceGradeOptions.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.TradeTypeOptions.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.ItemCategoryOptions.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.CustomerMasters.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
                || await _db.Customers.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
                || await _db.CustomerContracts.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
                || await _db.Items.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
