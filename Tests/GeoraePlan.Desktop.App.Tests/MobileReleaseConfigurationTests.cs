@@ -1852,14 +1852,39 @@ public sealed class MobileReleaseConfigurationTests
             "GeoraePlan.Mobile.App",
             "Services",
             "SyncCoordinator.cs"));
+        var contractCacheSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "CustomerContractCacheStore.cs"));
+        var recycleBinControllerSource = File.ReadAllText(Path.Combine(
+            root,
+            "Server",
+            "거래플랜.Server.Api",
+            "Controllers",
+            "RecycleBinController.cs"));
 
         Assert.Contains("public List<RecycleBinPurgeRecordDto> PurgeRecords { get; set; } = new();", contractsSource, StringComparison.Ordinal);
-        Assert.Contains("ApplyPurgeRecords(state, response.PurgeRecords);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("private static void ApplyPurgeRecords(MobileSyncState state, IEnumerable<RecycleBinPurgeRecordDto>? purgeRecords)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("\"contract\" => await PurgeContractAsync(target, cancellationToken)", recycleBinControllerSource, StringComparison.Ordinal);
+        Assert.Contains("CreatePurgeRecord(\"contract\", contract.Id", recycleBinControllerSource, StringComparison.Ordinal);
+        Assert.Contains("public SyncCoordinator(JsonSyncStateStore store, GeoraePlanApiClient api, PaymentAttachmentDraftStore attachmentStore, CustomerContractCacheStore contractCacheStore)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("_contractCacheStore = contractCacheStore;", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("await ApplyPurgeRecordsAsync(state, response.PurgeRecords, ct);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("private async Task ApplyPurgeRecordsAsync(MobileSyncState state, IEnumerable<RecycleBinPurgeRecordDto>? purgeRecords, CancellationToken ct)", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains(".GroupBy(record => (Kind: NormalizePurgeRecordKind(record.Kind), record.EntityId))", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains(".OrderBy(record => GetPurgeApplyOrder(NormalizePurgeRecordKind(record.Kind)))", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("await ApplyPurgeRecordAsync(state, NormalizePurgeRecordKind(record.Kind), record.EntityId, record.Revision, ct);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("private async Task ApplyPurgeRecordAsync(MobileSyncState state, string normalizedKind, Guid entityId, long purgeRevision, CancellationToken ct)", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedCustomers, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.PendingPush.Customers, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("state.PendingPush.CustomerContracts.RemoveAll(contract => contract.CustomerId == entityId);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("await _contractCacheStore.RemoveCustomerAsync(entityId, purgeRevision, ct);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("case \"contract\":", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("case \"customercontract\":", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("case \"customer-contract\":", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("RemoveEntityById(state.PendingPush.CustomerContracts, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("await _contractCacheStore.RemoveContractAsync(entityId, purgeRevision, ct);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("ClearRentalAssignmentHistoryCustomerReferences(state.SyncedRentalAssetAssignmentHistories, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("ClearRentalAssignmentHistoryCustomerReferences(state.PendingPush.RentalAssetAssignmentHistories, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedItems, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
@@ -1890,6 +1915,16 @@ public sealed class MobileReleaseConfigurationTests
         Assert.DoesNotContain("value.CustomerId == customerId && !IsEntityNewerThanPurge(value, purgeRevision)", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("value.CustomerId = null;", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("value.Id == entityId && IsEntityNewerThanPurge(value, purgeRevision)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("public Task RemoveCustomerContractsAsync(Guid customerId, CancellationToken ct = default)", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("public async Task RemoveCustomerAsync(Guid customerId, long purgeRevision, CancellationToken ct = default)", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("public async Task RemoveContractAsync(Guid contractId, long purgeRevision, CancellationToken ct = default)", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("await using (var stream = File.OpenRead(CustomersManifestPath))", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("customers.RemoveAll(customer =>", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("!IsCustomerNewerThanPurge(customer, purgeRevision)", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("await RemoveCustomerContractsAsync(customerId, ct);", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("TryDeleteFile(Path.Combine(customerDirectory, $\"{contractId:N}.pdf\"));", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("private static bool IsEntityNewerThanPurge(CustomerContractDto contract, long purgeRevision)", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("private static bool IsCustomerNewerThanPurge(CustomerDto customer, long purgeRevision)", contractCacheSource, StringComparison.Ordinal);
     }
 
     private static int CountOccurrences(string source, string value)

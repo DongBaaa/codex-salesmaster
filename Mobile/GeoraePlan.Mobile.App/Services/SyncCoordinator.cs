@@ -10,15 +10,17 @@ public sealed class SyncCoordinator
     private readonly JsonSyncStateStore _store;
     private readonly GeoraePlanApiClient _api;
     private readonly PaymentAttachmentDraftStore _attachmentStore;
+    private readonly CustomerContractCacheStore _contractCacheStore;
     private readonly SemaphoreSlim _syncLock = new(1, 1);
 
     public const string ConcurrencyConflictUserMessage = "다른 PC/모바일에서 먼저 수정되어 최신값을 다시 불러왔습니다. 내용을 확인한 뒤 다시 저장해 주세요.";
 
-    public SyncCoordinator(JsonSyncStateStore store, GeoraePlanApiClient api, PaymentAttachmentDraftStore attachmentStore)
+    public SyncCoordinator(JsonSyncStateStore store, GeoraePlanApiClient api, PaymentAttachmentDraftStore attachmentStore, CustomerContractCacheStore contractCacheStore)
     {
         _store = store;
         _api = api;
         _attachmentStore = attachmentStore;
+        _contractCacheStore = contractCacheStore;
     }
 
     public static bool IsConcurrencyConflictState(MobileSyncState state)
@@ -42,7 +44,7 @@ public sealed class SyncCoordinator
             try
             {
                 var response = EnsurePullResponse(await _api.PullAsync(state.LastRevision, ct));
-                ApplyPullResponse(state, response);
+                await ApplyPullResponseAsync(state, response, ct);
             }
             catch (Exception ex)
             {
@@ -444,7 +446,7 @@ public sealed class SyncCoordinator
         try
         {
             var response = EnsurePullResponse(await _api.PullAsync(state.LastRevision, ct));
-            ApplyPullResponse(state, response);
+            await ApplyPullResponseAsync(state, response, ct);
         }
         catch (Exception ex)
         {
@@ -722,7 +724,7 @@ public sealed class SyncCoordinator
         {
             var response = await _api.PullAsync(0, ct);
             if (response is not null)
-                ApplyPullResponse(state, response);
+                await ApplyPullResponseAsync(state, response, ct);
         }
         catch (Exception refreshEx)
         {
@@ -893,7 +895,7 @@ public sealed class SyncCoordinator
             || (state.PendingPush.Payments?.Count ?? 0) > 0;
     }
 
-    private static void ApplyPullResponse(MobileSyncState state, SyncPullResponse response)
+    private async Task ApplyPullResponseAsync(MobileSyncState state, SyncPullResponse response, CancellationToken ct)
     {
         state.Normalize();
         state.LastRevision = Math.Max(state.LastRevision, response.CurrentServerRevision);
@@ -929,7 +931,7 @@ public sealed class SyncCoordinator
         state.SyncedRentalAssets = MergeById(state.SyncedRentalAssets, response.RentalAssets);
         state.SyncedRentalAssetAssignmentHistories = MergeById(state.SyncedRentalAssetAssignmentHistories, response.RentalAssetAssignmentHistories);
         state.SyncedRentalBillingLogs = MergeById(state.SyncedRentalBillingLogs, response.RentalBillingLogs);
-        ApplyPurgeRecords(state, response.PurgeRecords);
+        await ApplyPurgeRecordsAsync(state, response.PurgeRecords, ct);
     }
 
     private static List<T> MergeById<T>(IEnumerable<T>? existing, IEnumerable<T>? incoming) where T : SyncEntityDto
@@ -967,7 +969,7 @@ public sealed class SyncCoordinator
             .ThenBy(stock => stock.WarehouseCode, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-    private static void ApplyPurgeRecords(MobileSyncState state, IEnumerable<RecycleBinPurgeRecordDto>? purgeRecords)
+    private async Task ApplyPurgeRecordsAsync(MobileSyncState state, IEnumerable<RecycleBinPurgeRecordDto>? purgeRecords, CancellationToken ct)
     {
         var records = (purgeRecords ?? Enumerable.Empty<RecycleBinPurgeRecordDto>())
             .Where(record => record.EntityId != Guid.Empty && !string.IsNullOrWhiteSpace(record.Kind))
@@ -984,18 +986,26 @@ public sealed class SyncCoordinator
 
         state.Normalize();
         foreach (var record in records)
-            ApplyPurgeRecord(state, NormalizePurgeRecordKind(record.Kind), record.EntityId, record.Revision);
+            await ApplyPurgeRecordAsync(state, NormalizePurgeRecordKind(record.Kind), record.EntityId, record.Revision, ct);
     }
 
-    private static void ApplyPurgeRecord(MobileSyncState state, string normalizedKind, Guid entityId, long purgeRevision)
+    private async Task ApplyPurgeRecordAsync(MobileSyncState state, string normalizedKind, Guid entityId, long purgeRevision, CancellationToken ct)
     {
         switch (normalizedKind)
         {
             case "customer":
                 RemoveEntityById(state.SyncedCustomers, entityId, purgeRevision);
                 RemoveEntityById(state.PendingPush.Customers, entityId, purgeRevision);
+                state.PendingPush.CustomerContracts.RemoveAll(contract => contract.CustomerId == entityId);
+                await _contractCacheStore.RemoveCustomerAsync(entityId, purgeRevision, ct);
                 ClearRentalAssignmentHistoryCustomerReferences(state.SyncedRentalAssetAssignmentHistories, entityId, purgeRevision);
                 ClearRentalAssignmentHistoryCustomerReferences(state.PendingPush.RentalAssetAssignmentHistories, entityId, purgeRevision);
+                break;
+            case "contract":
+            case "customercontract":
+            case "customer-contract":
+                RemoveEntityById(state.PendingPush.CustomerContracts, entityId, purgeRevision);
+                await _contractCacheStore.RemoveContractAsync(entityId, purgeRevision, ct);
                 break;
             case "item":
                 RemoveEntityById(state.SyncedItems, entityId, purgeRevision);

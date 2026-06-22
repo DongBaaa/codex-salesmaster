@@ -79,6 +79,108 @@ public sealed class CustomerContractCacheStore
         return manifest.Contracts.Select(CloneWithoutContent).ToList();
     }
 
+    public Task RemoveCustomerContractsAsync(Guid customerId, CancellationToken ct = default)
+    {
+        if (customerId == Guid.Empty)
+            return Task.CompletedTask;
+
+        ct.ThrowIfCancellationRequested();
+        var customerDirectory = GetCustomerDirectory(customerId);
+        if (!Directory.Exists(customerDirectory))
+            return Task.CompletedTask;
+
+        try
+        {
+            Directory.Delete(customerDirectory, recursive: true);
+        }
+        catch
+        {
+            // Cache cleanup must not block authoritative sync/purge handling.
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public async Task RemoveCustomerAsync(Guid customerId, long purgeRevision, CancellationToken ct = default)
+    {
+        if (customerId == Guid.Empty)
+            return;
+
+        var shouldRemoveContracts = true;
+        if (File.Exists(CustomersManifestPath))
+        {
+            try
+            {
+                List<CustomerDto> customers;
+                await using (var stream = File.OpenRead(CustomersManifestPath))
+                {
+                    customers = await JsonSerializer.DeserializeAsync<List<CustomerDto>>(stream, _jsonOptions, ct)
+                        ?? new List<CustomerDto>();
+                }
+
+                var removedCount = customers.RemoveAll(customer =>
+                    customer.Id == customerId &&
+                    !IsCustomerNewerThanPurge(customer, purgeRevision));
+                shouldRemoveContracts = removedCount > 0 || customers.All(customer => customer.Id != customerId);
+
+                if (removedCount > 0)
+                {
+                    await using var output = File.Create(CustomersManifestPath);
+                    await JsonSerializer.SerializeAsync(output, customers.Select(CloneCustomer).ToList(), _jsonOptions, ct);
+                }
+            }
+            catch
+            {
+                // Stale or unreadable cache must not block authoritative sync/purge handling.
+                shouldRemoveContracts = true;
+            }
+        }
+
+        if (shouldRemoveContracts)
+            await RemoveCustomerContractsAsync(customerId, ct);
+    }
+
+    public async Task RemoveContractAsync(Guid contractId, long purgeRevision, CancellationToken ct = default)
+    {
+        if (contractId == Guid.Empty || !Directory.Exists(RootDirectory))
+            return;
+
+        foreach (var customerDirectory in Directory.EnumerateDirectories(RootDirectory))
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var manifestPath = Path.Combine(customerDirectory, "contracts.json");
+            if (!File.Exists(manifestPath))
+                continue;
+
+            CustomerContractCacheManifest? manifest;
+            try
+            {
+                await using var stream = File.OpenRead(manifestPath);
+                manifest = await JsonSerializer.DeserializeAsync<CustomerContractCacheManifest>(stream, _jsonOptions, ct);
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (manifest?.Contracts is null)
+                continue;
+
+            var removedCount = manifest.Contracts.RemoveAll(contract =>
+                contract.Id == contractId &&
+                !IsEntityNewerThanPurge(contract, purgeRevision));
+            if (removedCount == 0)
+                continue;
+
+            TryDeleteFile(Path.Combine(customerDirectory, $"{contractId:N}.pdf"));
+            manifest.SavedAtUtc = DateTime.UtcNow;
+
+            await using var output = File.Create(manifestPath);
+            await JsonSerializer.SerializeAsync(output, manifest, _jsonOptions, ct);
+        }
+    }
+
     public async Task<string?> EnsureCachedPdfAsync(Guid customerId, CustomerContractDto contract, CancellationToken ct = default)
     {
         var pdfPath = GetPdfPath(customerId, contract.Id);
@@ -151,6 +253,12 @@ public sealed class CustomerContractCacheStore
 
         return true;
     }
+
+    private static bool IsEntityNewerThanPurge(CustomerContractDto contract, long purgeRevision)
+        => !contract.IsDeleted && contract.Revision > purgeRevision;
+
+    private static bool IsCustomerNewerThanPurge(CustomerDto customer, long purgeRevision)
+        => !customer.IsDeleted && customer.Revision > purgeRevision;
 
     private static async Task<string> ComputeSha256Async(string path, CancellationToken ct)
     {
