@@ -175,7 +175,7 @@ public sealed class SyncController : ControllerBase
                         .Where(x => x.Revision > sinceRev)
                         .OrderBy(x => x.Revision)
                         .ToListAsync(cancellationToken))
-                    .Where(x => _officeScopeService.CanReadOffice(x.OfficeCode, x.TenantCode))
+                    .Where(CanReadPurgeRecord)
                     .ToList(),
                     cancellationToken))
                 .Select(x => x.ToDto())
@@ -5563,6 +5563,28 @@ public sealed class SyncController : ControllerBase
 
         return filtered;
     }
+
+    private bool CanReadPurgeRecord(RecycleBinPurgeRecord record)
+    {
+        var normalizedKind = NormalizePurgeRecordKind(record.Kind);
+        if (IsGlobalSettingPurgeRecordKind(normalizedKind))
+            return true;
+
+        if (string.Equals(normalizedKind, "company-profile", StringComparison.Ordinal))
+            return _officeScopeService.CanReadOfficeForCompanyProfiles(record.OfficeCode);
+
+        return _officeScopeService.CanReadOffice(record.OfficeCode, record.TenantCode);
+    }
+
+    private static bool IsGlobalSettingPurgeRecordKind(string? normalizedKind)
+        => normalizedKind is "customer-category"
+            or "customercategory"
+            or "price-grade-option"
+            or "pricegradeoption"
+            or "trade-type-option"
+            or "tradetypeoption"
+            or "item-category-option"
+            or "itemcategoryoption";
 
     private Task<bool> IsPurgeRecordSupersededByActiveEntityAsync(
         RecycleBinPurgeRecord record,

@@ -156,6 +156,40 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Pull_ReturnsGlobalSettingPurgeRecords_ForDifferentTenantUser()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "itworld-settings-reader",
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+        await using var dbContext = CreateDbContext(currentUser);
+        var optionId = Guid.NewGuid();
+        dbContext.RecycleBinPurgeRecords.Add(new RecycleBinPurgeRecord
+        {
+            Id = Guid.NewGuid(),
+            Kind = "item-category-option",
+            EntityId = optionId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            Revision = 10,
+            PurgedAtUtc = new DateTime(2026, 6, 23, 0, 0, 0, DateTimeKind.Utc)
+        });
+        await dbContext.SaveChangesAsync();
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.Pull(0, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<SyncPullResponse>(ok.Value);
+        var purge = Assert.Single(payload.PurgeRecords);
+        Assert.Equal("item-category-option", purge.Kind);
+        Assert.Equal(optionId, purge.EntityId);
+    }
+
+    [Fact]
     public async Task Pull_CompanyProfiles_ReturnsOnlyReadableOfficeProfiles()
     {
         var currentUser = new TestCurrentUserContext

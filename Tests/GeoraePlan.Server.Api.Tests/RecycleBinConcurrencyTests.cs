@@ -1510,6 +1510,51 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PurgeCompanyProfile_RecordsProfileOfficeScope()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var profileId = Guid.NewGuid();
+        dbContext.CompanyProfiles.Add(new CompanyProfile
+        {
+            Id = profileId,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ProfileName = "ITWORLD 삭제 회사설정",
+            TradeName = "ITWORLD",
+            IsDeleted = true,
+            IsActive = false
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = profileId,
+                        Kind = "company-profile"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var result = Assert.Single(payload.Results);
+        Assert.True(result.Success, result.Message);
+
+        var purgeRecord = await dbContext.RecycleBinPurgeRecords
+            .IgnoreQueryFilters()
+            .SingleAsync(current => current.Kind == "company-profile" && current.EntityId == profileId);
+        Assert.Equal(TenantScopeCatalog.Itworld, purgeRecord.TenantCode);
+        Assert.Equal(OfficeCodeCatalog.Itworld, purgeRecord.OfficeCode);
+    }
+
+    [Fact]
     public async Task PurgeRentalBillingProfile_RejectsWhenLinkedAssetOutsideRentalWriteScope()
     {
         var currentUser = CreateOfficeOnlyUser();

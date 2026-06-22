@@ -1773,7 +1773,11 @@ public sealed class RecycleBinController : ControllerBase
 
         await TouchPurgeRecordsAsync(
         [
-            CreatePurgeRecord("company-profile", profile.Id, null, null)
+            CreatePurgeRecord(
+                "company-profile",
+                profile.Id,
+                TenantScopeCatalog.GetTenantCodeForOffice(profile.OfficeCode),
+                profile.OfficeCode)
         ], cancellationToken);
         _dbContext.CompanyProfiles.Remove(profile);
         await _dbContext.SaveChangesAsync(cancellationToken);
