@@ -3378,8 +3378,9 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			{
 				await _db.Database.ExecuteSqlRawAsync("CREATE UNIQUE INDEX IF NOT EXISTS \"UX_CompanyProfiles_DefaultPerOffice_Active\" ON \"CompanyProfiles\" (\"OfficeCode\") WHERE COALESCE(\"IsDefaultForOffice\", 0) = 1 AND COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(\"IsActive\", 1) = 1;");
 			}
-			catch
+			catch (Exception ex)
 			{
+				AppLogger.Warn("LOCALDB", $"회사 기본 프로필 고유 인덱스 보강 실패: {ex.Message}");
 			}
 		}
 	}

@@ -204,6 +204,19 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         AppLogger.Warn("LOCALDB", $"로컬 DB 보강 단계 '{stepName}' 실패: {ex.Message}");
     }
 
+    private static void LogSchemaSqlFailure(string operationName, string sql, Exception ex)
+    {
+        AppLogger.Warn("LOCALDB", $"로컬 DB SQL 보강 '{operationName}' 실패: {ex.Message} sql={AbbreviateSqlForLog(sql)}");
+    }
+
+    private static string AbbreviateSqlForLog(string sql)
+    {
+        var normalized = Regex.Replace(sql ?? string.Empty, @"\s+", " ").Trim();
+        return normalized.Length <= 220
+            ? normalized
+            : normalized[..220] + "...";
+    }
+
     private static async Task NormalizeSelectionOptionSystemDefaultsAsync(LocalDbContext db)
     {
         var now = DateTime.UtcNow;
@@ -2139,9 +2152,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                 var renameSql = "ALTER TABLE " + quotedTableName + " RENAME COLUMN " + quotedOldColumnName + " TO " + quotedNewColumnName + ";";
                 await db.Database.ExecuteSqlRawAsync(renameSql);
             }
-            catch
+            catch (Exception ex)
             {
-                // Fallback to copy migration below.
+                LogSchemaStepFailure($"{nameof(EnsureRenamedTextColumnAsync)}:rename:{tableName}.{oldColumnName}->{newColumnName}", ex);
             }
 
             hasNewColumn = await HasColumnAsync(db, tableName, newColumnName);
@@ -2168,9 +2181,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                 "WHERE COALESCE(TRIM(" + quotedOldColumnName + "), '') <> '';";
             await db.Database.ExecuteSqlRawAsync(copySql);
         }
-        catch
+        catch (Exception ex)
         {
-            // Ignore copy failures on partially migrated databases.
+            LogSchemaStepFailure($"{nameof(EnsureRenamedTextColumnAsync)}:copy:{tableName}.{oldColumnName}->{newColumnName}", ex);
         }
     }
 
@@ -2210,9 +2223,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             var dropSql = "ALTER TABLE " + QuoteSqlIdentifier(tableName) + " DROP COLUMN " + QuoteSqlIdentifier(columnName) + ";";
             await db.Database.ExecuteSqlRawAsync(dropSql);
         }
-        catch
+        catch (Exception ex)
         {
-            // Ignore partially migrated SQLite versions that do not support DROP COLUMN.
+            LogSchemaStepFailure($"{nameof(TryDropColumnAsync)}:{tableName}.{columnName}", ex);
         }
     }
 
@@ -2228,9 +2241,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             var sql = "ALTER TABLE \"" + table + "\" ADD COLUMN \"" + column + "\" " + definition;
             await db.Database.ExecuteSqlRawAsync(sql);
         }
-        catch
+        catch (Exception ex)
         {
-            // Column may already exist on existing databases.
+            LogSchemaStepFailure($"{nameof(TryAddColumnAsync)}:{table}.{column}", ex);
         }
     }
 
@@ -2246,9 +2259,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         {
             await db.Database.ExecuteSqlRawAsync(sql);
         }
-        catch
+        catch (Exception ex)
         {
-            // ignore
+            LogSchemaSqlFailure(nameof(TryExecuteSqlAsync), sql, ex);
         }
     }
 
@@ -2258,9 +2271,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         {
             await db.Database.ExecuteSqlRawAsync(sql);
         }
-        catch
+        catch (Exception ex)
         {
-            // ignore
+            LogSchemaSqlFailure(nameof(TryCreateIndexAsync), sql, ex);
         }
     }
 
@@ -2385,9 +2398,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         {
             await db.Database.ExecuteSqlRawAsync(sql);
         }
-        catch
+        catch (Exception ex)
         {
-            // ignore
+            LogSchemaSqlFailure(nameof(BackfillTransactionResponsibleOfficeCodeAsync), sql, ex);
         }
     }
 
@@ -2663,9 +2676,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         {
             await db.Database.ExecuteSqlRawAsync(sql);
         }
-        catch
+        catch (Exception ex)
         {
-            // ignore
+            LogSchemaSqlFailure(nameof(BackfillTransactionResponsibleOfficeCodeAsync), sql, ex);
         }
     }
 
@@ -2683,9 +2696,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                       "WHERE \"" + column + "\" IS NULL OR TRIM(\"" + column + "\") = ''";
             await db.Database.ExecuteSqlRawAsync(sql);
         }
-        catch
+        catch (Exception ex)
         {
-            // Table/column may not exist on old partial schemas.
+            LogSchemaStepFailure($"{nameof(TryNormalizeDateTimeTextColumnAsync)}:{table}.{column}", ex);
         }
     }
 
@@ -2707,8 +2720,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             await db.Database.ExecuteSqlRawAsync(
                 "CREATE INDEX IF NOT EXISTS \"IX_AttachmentSelections_CustomerKey\" ON \"AttachmentSelections\" (\"CustomerKey\");");
         }
-        catch
+        catch (Exception ex)
         {
+            LogSchemaStepFailure(nameof(TryCreateAttachmentSelectionsTableAsync), ex);
         }
     }
 
@@ -2817,8 +2831,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             await db.Database.ExecuteSqlRawAsync(
                 "CREATE INDEX IF NOT EXISTS \"IX_Transactions_ResponsibleOfficeCode\" ON \"Transactions\" (\"ResponsibleOfficeCode\");");
         }
-        catch
+        catch (Exception ex)
         {
+            LogSchemaStepFailure(nameof(TryCreateTransactionsTableAsync), ex);
         }
     }
 
@@ -2856,8 +2871,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_TransactionAttachments_TransactionId\" ON \"TransactionAttachments\" (\"TransactionId\");");
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_TransactionAttachments_TransactionStatus\" ON \"TransactionAttachments\" (\"TransactionId\", \"VerificationStatus\");");
         }
-        catch
+        catch (Exception ex)
         {
+            LogSchemaStepFailure(nameof(TryCreateTransactionAttachmentsTableAsync), ex);
         }
     }
 
@@ -2892,8 +2908,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_CustomerContracts_CustomerId\" ON \"CustomerContracts\" (\"CustomerId\");");
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_CustomerContracts_CustomerId_IsPrimary\" ON \"CustomerContracts\" (\"CustomerId\", \"IsPrimary\");");
         }
-        catch
+        catch (Exception ex)
         {
+            LogSchemaStepFailure(nameof(TryCreateCustomerContractsTableAsync), ex);
         }
     }
 
@@ -3287,8 +3304,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             await db.Database.ExecuteSqlRawAsync(lineSql);
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransferLines_TransferItem\" ON \"InventoryTransferLines\" (\"TransferId\", \"ItemId\");");
         }
-        catch
+        catch (Exception ex)
         {
+            LogSchemaStepFailure(nameof(TryCreateInventoryTransfersTableAsync), ex);
         }
     }
 
@@ -3313,8 +3331,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             await db.Database.ExecuteSqlRawAsync(sql);
             await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalManagementCompanies_Code\" ON \"RentalManagementCompanies\" (\"Code\");");
         }
-        catch
+        catch (Exception ex)
         {
+            LogSchemaStepFailure(nameof(TryCreateRentalManagementCompaniesTableAsync), ex);
         }
     }
 
@@ -3368,8 +3387,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             await db.Database.ExecuteSqlRawAsync(sql);
             await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalBillingProfiles_ProfileKey\" ON \"RentalBillingProfiles\" (\"ProfileKey\");");
         }
-        catch
+        catch (Exception ex)
         {
+            LogSchemaStepFailure(nameof(TryCreateRentalBillingProfilesTableAsync), ex);
         }
     }
 
@@ -3432,8 +3452,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementId\" ON \"RentalAssets\" (\"TenantCode\", \"ManagementId\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementId\"), '') <> '';");
             await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementNumber\" ON \"RentalAssets\" (\"TenantCode\", \"ManagementNumber\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementNumber\"), '') <> '';");
         }
-        catch
+        catch (Exception ex)
         {
+            LogSchemaStepFailure(nameof(TryCreateRentalAssetsTableAsync), ex);
         }
     }
 
@@ -3527,8 +3548,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             await db.Database.ExecuteSqlRawAsync(sql);
             await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalBillingLogs_ProfileMonth\" ON \"RentalBillingLogs\" (\"BillingProfileId\", \"BillingYearMonth\");");
         }
-        catch
+        catch (Exception ex)
         {
+            LogSchemaStepFailure(nameof(TryCreateRentalBillingLogsTableAsync), ex);
         }
     }
 

@@ -120,8 +120,9 @@ public sealed class WpfInvoicePrintService : IPrintService
                 return false;
             }
         }
-        catch
+        catch (Exception ex)
         {
+            AppLogger.Warn("PRINT", $"프린터 목록 확인 실패: {ex.Message}");
         }
 
         try
@@ -1091,8 +1092,9 @@ public sealed class WpfInvoicePrintService : IPrintService
             bitmap.Freeze();
             return bitmap;
         }
-        catch
+        catch (Exception ex)
         {
+            AppLogger.Warn("PRINT", $"전표 인감 이미지 로드 실패: {ex.Message}");
             return null;
         }
     }

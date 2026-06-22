@@ -172,6 +172,7 @@ public sealed partial class RentalCustomerOnboardingViewModel
         }
         catch (OperationCanceledException)
         {
+            // Expected when the user continues editing before the debounce delay finishes.
         }
         catch (Exception ex)
         {

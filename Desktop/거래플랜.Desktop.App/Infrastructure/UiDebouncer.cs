@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -44,6 +44,7 @@ public sealed class UiDebouncer : IDisposable
         }
         catch (OperationCanceledException)
         {
+            // Expected when a newer UI action replaces the pending debounce request.
         }
         catch (Exception ex)
         {

@@ -116,6 +116,7 @@ public sealed partial class RentalBillingViewModel
             }
             catch (OperationCanceledException)
             {
+                // Expected when a newer candidate asset load replaces the pending request.
             }
         }
 
@@ -140,8 +141,9 @@ public sealed partial class RentalBillingViewModel
         {
             await _rental.ClearBillingEditorDraftAsync(_session);
         }
-        catch
+        catch (Exception ex)
         {
+            AppLogger.Warn("RENTAL-AUTOSAVE", $"렌탈 청구 자동저장 임시본 삭제 실패: {ex.Message}");
         }
     }
 
@@ -221,6 +223,7 @@ public sealed partial class RentalBillingViewModel
         }
         catch (OperationCanceledException)
         {
+            // Expected when the user continues editing before the debounce delay finishes.
         }
         catch (Exception ex)
         {
@@ -421,8 +424,9 @@ public sealed partial class RentalBillingViewModel
         {
             await _rental.SaveBillingEditorDraftAsync(snapshot, _session);
         }
-        catch
+        catch (Exception ex)
         {
+            AppLogger.Warn("RENTAL-AUTOSAVE", $"렌탈 청구 자동저장 임시본 저장 실패: {ex.Message}");
         }
     }
 
@@ -490,4 +494,3 @@ public sealed partial class RentalBillingViewModel
                templateItem.IncludedAssetIds.Count > 0;
     }
 }
-
