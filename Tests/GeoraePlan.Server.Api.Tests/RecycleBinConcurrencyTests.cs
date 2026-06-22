@@ -112,6 +112,67 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PurgeCustomer_RemovesDeletedContractsAndStorageFiles()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var contractId = Guid.NewGuid();
+        const string storagePath = "contracts/usenet/customer-contract.pdf";
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "계약서 포함 삭제 거래처",
+            NameMatchKey = "계약서포함삭제거래처",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true
+        });
+        dbContext.CustomerContracts.Add(new CustomerContract
+        {
+            Id = contractId,
+            CustomerId = customerId,
+            ContractType = "거래계약서",
+            FileName = "customer-contract.pdf",
+            MimeType = "application/pdf",
+            FileSize = 128,
+            StoragePath = storagePath,
+            IsDeleted = true
+        });
+        await dbContext.SaveChangesAsync();
+
+        var storage = new StubCentralFileStorage();
+        var controller = CreateController(dbContext, currentUser, storage);
+
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = customerId,
+                        Kind = "customer"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var result = Assert.Single(payload.Results);
+        Assert.True(result.Success, result.Message);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.False(await dbContext.Customers.IgnoreQueryFilters().AnyAsync(current => current.Id == customerId));
+        Assert.False(await dbContext.CustomerContracts.IgnoreQueryFilters().AnyAsync(current => current.Id == contractId));
+        Assert.Contains(storagePath, storage.DeletedPaths);
+    }
+
+    [Fact]
     public async Task PurgeItem_RejectsRemainingInvoiceLineReference()
     {
         var currentUser = CreateAdminUser();

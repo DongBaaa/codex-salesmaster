@@ -1600,11 +1600,16 @@ public sealed class RecycleBinController : ControllerBase
         if (hasRentalProfiles)
             return (false, "연결된 렌탈 청구 프로필이 남아 있어 거래처를 영구삭제할 수 없습니다.");
 
-        var hasActiveContracts = await _dbContext.CustomerContracts
+        var contracts = await _dbContext.CustomerContracts
             .IgnoreQueryFilters()
-            .AnyAsync(current => current.CustomerId == customerId && !current.IsDeleted, cancellationToken);
-        if (hasActiveContracts)
+            .Where(current => current.CustomerId == customerId)
+            .ToListAsync(cancellationToken);
+        if (contracts.Any(current => !current.IsDeleted))
             return (false, "활성 계약서가 남아 있어 거래처를 영구삭제할 수 없습니다.");
+        var contractStoragePaths = contracts
+            .Select(current => current.StoragePath)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .ToList();
 
         var hasRentalAssets = await _dbContext.RentalAssets
             .IgnoreQueryFilters()
@@ -1622,8 +1627,13 @@ public sealed class RecycleBinController : ControllerBase
         [
             CreatePurgeRecord("customer", customer.Id, customer.TenantCode, customer.ResponsibleOfficeCode)
         ], cancellationToken);
+        _dbContext.CustomerContracts.RemoveRange(contracts);
         _dbContext.Customers.Remove(customer);
         await _dbContext.SaveChangesAsync(cancellationToken);
+
+        foreach (var storagePath in contractStoragePaths)
+            _fileStorage.DeleteIfExists(storagePath);
+
         return (true, "거래처를 영구삭제했습니다.");
     }
 
