@@ -1424,6 +1424,10 @@ public sealed class DataIntegrityIssueService
             .Where(item => item.Id != canonical.Id)
             .Select(item => item.Id)
             .ToList();
+        var sideEffectPermissionResult = await ValidateItemDuplicateMergeSideEffectPermissionsAsync(duplicateIds, session, ct);
+        if (sideEffectPermissionResult is not null)
+            return sideEffectPermissionResult;
+
         var duplicates = activeItems
             .Where(item => duplicateIds.Contains(item.Id))
             .ToList();
@@ -1587,6 +1591,152 @@ public sealed class DataIntegrityIssueService
         return OfficeMutationResult.Ok(
             canonical.Id,
             $"품목 중복 후보 {activeItems.Count:N0}건 중 {duplicates.Count:N0}건을 '{NormalizeDisplay(canonical.NameOriginal, "대표 품목")}'로 병합했습니다.");
+    }
+
+    private async Task<OfficeMutationResult?> ValidateItemDuplicateMergeSideEffectPermissionsAsync(
+        IReadOnlyCollection<Guid> duplicateIds,
+        SessionState session,
+        CancellationToken ct)
+    {
+        if (duplicateIds.Count == 0)
+            return null;
+
+        var invoiceLines = await _db.InvoiceLines.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(line => line.ItemId.HasValue && duplicateIds.Contains(line.ItemId.Value))
+            .ToListAsync(ct);
+        var invoiceLineSerials = await _db.InvoiceLineSerials
+            .AsNoTracking()
+            .Where(serial => serial.ItemId.HasValue && duplicateIds.Contains(serial.ItemId.Value))
+            .ToListAsync(ct);
+        var invoiceIds = invoiceLines
+            .Select(line => line.InvoiceId)
+            .Concat(invoiceLineSerials.Select(serial => serial.InvoiceId))
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (invoiceIds.Count > 0)
+        {
+            if (!HasIntegrityPermission(session, AppPermissionNames.InvoiceEdit))
+                return OfficeMutationResult.Denied("품목 병합으로 전표 라인을 함께 변경하려면 전표 편집 권한이 필요합니다.");
+
+            var invoices = await _db.Invoices.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(invoice => invoiceIds.Contains(invoice.Id))
+                .ToListAsync(ct);
+            if (invoices.Count != invoiceIds.Count)
+                return OfficeMutationResult.Denied("참조 전표를 찾을 수 없는 전표 라인이 연결된 품목은 병합할 수 없습니다.");
+
+            foreach (var invoice in invoices)
+            {
+                var scope = ResolveInvoiceScope(invoice);
+                if (!CanWriteCustomerScopeForIntegrity(session, scope.OfficeCode, scope.TenantCode))
+                    return OfficeMutationResult.Denied("권한 범위 밖 전표 라인이 연결된 품목은 병합할 수 없습니다.");
+            }
+        }
+
+        var rentalAssets = await _db.RentalAssets.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(asset => asset.ItemId.HasValue && duplicateIds.Contains(asset.ItemId.Value))
+            .ToListAsync(ct);
+        if (rentalAssets.Count > 0)
+        {
+            if (!HasIntegrityPermission(session, AppPermissionNames.RentalAssetEdit))
+                return OfficeMutationResult.Denied("품목 병합으로 렌탈 자산을 함께 변경하려면 렌탈 자산 편집 권한이 필요합니다.");
+
+            foreach (var asset in rentalAssets)
+            {
+                var scope = ResolveAssetScope(asset);
+                if (!CanWriteCustomerScopeForIntegrity(session, scope.ResponsibleOfficeCode, scope.TenantCode))
+                    return OfficeMutationResult.Denied("권한 범위 밖 렌탈 자산이 연결된 품목은 병합할 수 없습니다.");
+            }
+
+            var assetIds = rentalAssets
+                .Select(asset => asset.Id)
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+            if (assetIds.Count > 0)
+            {
+                var histories = await _db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .Where(history => assetIds.Contains(history.AssetId))
+                    .ToListAsync(ct);
+                foreach (var history in histories)
+                {
+                    var scope = ResolveAssignmentHistoryScope(history, null, null);
+                    if (!CanWriteCustomerScopeForIntegrity(session, scope.OfficeCode, scope.TenantCode))
+                        return OfficeMutationResult.Denied("권한 범위 밖 렌탈 설치 이력이 연결된 품목은 병합할 수 없습니다.");
+                }
+            }
+        }
+
+        var inventoryTransferLines = await _db.InventoryTransferLines.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(line => line.ItemId.HasValue && duplicateIds.Contains(line.ItemId.Value))
+            .ToListAsync(ct);
+        var transferIds = inventoryTransferLines
+            .Select(line => line.TransferId)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (transferIds.Count > 0)
+        {
+            var transfers = await _db.InventoryTransfers.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(transfer => transferIds.Contains(transfer.Id))
+                .ToListAsync(ct);
+            if (transfers.Count != transferIds.Count)
+                return OfficeMutationResult.Denied("참조 재고이동 문서를 찾을 수 없는 재고이동 라인이 연결된 품목은 병합할 수 없습니다.");
+
+            foreach (var transfer in transfers)
+            {
+                if (!CanWriteInventoryTransferScopeForIntegrity(session, transfer))
+                    return OfficeMutationResult.Denied("권한 범위 밖 재고이동 문서가 연결된 품목은 병합할 수 없습니다.");
+            }
+        }
+
+        var inventoryMovements = await _db.InventoryMovements
+            .AsNoTracking()
+            .Where(movement => movement.ItemId.HasValue && duplicateIds.Contains(movement.ItemId.Value))
+            .ToListAsync(ct);
+        foreach (var movement in inventoryMovements)
+        {
+            if (!CanWriteWarehouseScopeForIntegrity(session, movement.WarehouseCode))
+                return OfficeMutationResult.Denied("권한 범위 밖 재고 원장이 연결된 품목은 병합할 수 없습니다.");
+        }
+
+        var stockLayers = await _db.StockLayers
+            .AsNoTracking()
+            .Where(layer => layer.ItemId.HasValue && duplicateIds.Contains(layer.ItemId.Value))
+            .ToListAsync(ct);
+        foreach (var layer in stockLayers)
+        {
+            if (!CanWriteWarehouseScopeForIntegrity(session, layer.WarehouseCode))
+                return OfficeMutationResult.Denied("권한 범위 밖 재고 원가층이 연결된 품목은 병합할 수 없습니다.");
+        }
+
+        var serialLedgers = await _db.SerialLedgers
+            .AsNoTracking()
+            .Where(ledger => ledger.ItemId.HasValue && duplicateIds.Contains(ledger.ItemId.Value))
+            .ToListAsync(ct);
+        foreach (var ledger in serialLedgers)
+        {
+            if (!CanWriteWarehouseScopeForIntegrity(session, ledger.WarehouseCode))
+                return OfficeMutationResult.Denied("권한 범위 밖 시리얼 원장이 연결된 품목은 병합할 수 없습니다.");
+        }
+
+        var stockRows = await _db.ItemWarehouseStocks
+            .AsNoTracking()
+            .Where(stock => duplicateIds.Contains(stock.ItemId))
+            .ToListAsync(ct);
+        foreach (var stock in stockRows)
+        {
+            if (!CanWriteWarehouseScopeForIntegrity(session, stock.WarehouseCode))
+                return OfficeMutationResult.Denied("권한 범위 밖 창고 재고가 연결된 품목은 병합할 수 없습니다.");
+        }
+
+        return null;
     }
 
     private static void LogIntegrityScanStep(string operation, Stopwatch stopwatch, string? detail = null)
@@ -4143,6 +4293,20 @@ public sealed class DataIntegrityIssueService
 
     private static bool HasIntegrityPermission(SessionState? session, string permissionName)
         => session is not null && (session.HasAdministrativePrivileges || session.HasPermission(permissionName));
+
+    private static bool CanWriteInventoryTransferScopeForIntegrity(SessionState? session, LocalInventoryTransfer transfer)
+        => CanWriteWarehouseScopeForIntegrity(session, transfer.FromWarehouseCode) ||
+           CanWriteWarehouseScopeForIntegrity(session, transfer.ToWarehouseCode);
+
+    private static bool CanWriteWarehouseScopeForIntegrity(SessionState? session, string? warehouseCode)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return false;
+
+        var officeCode = ResolveOfficeCodeFromWarehouseCode(warehouseCode, session.OfficeCode);
+        var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, officeCode, session.TenantCode, session.OfficeCode);
+        return CanWriteCustomerScopeForIntegrity(session, officeCode, tenantCode);
+    }
 
     private static bool CanWriteCustomerScopeForIntegrity(SessionState? session, string? officeCode, string? tenantCode = null)
     {

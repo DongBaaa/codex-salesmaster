@@ -404,6 +404,105 @@ public sealed class DataIntegrityDuplicateMergeTests
     }
 
     [Fact]
+    public async Task MergeDuplicateIssueAsync_RequiresInvoiceEditWhenItemMergeMovesInvoiceLines()
+    {
+        PrepareAppRoot("georaeplan-integrity-item-merge-invoice-permission");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customer = CreateCustomer("0aaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "품목권한거래처");
+            var canonical = CreateItem("0bbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "권한병합품목", "동일규격", currentStock: 0m);
+            var duplicate = CreateItem("0ccccccc-cccc-cccc-cccc-cccccccccccc", "권한병합품목", "동일규격", currentStock: 0m);
+            var canonicalInvoiceId = Guid.Parse("0ddddddd-dddd-dddd-dddd-dddddddddddd");
+            var duplicateInvoiceId = Guid.Parse("0eeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
+            var duplicateLineId = Guid.Parse("0fffffff-ffff-ffff-ffff-ffffffffffff");
+            db.Customers.Add(customer);
+            db.Items.AddRange(canonical, duplicate);
+            db.Invoices.AddRange(
+                new LocalInvoice
+                {
+                    Id = canonicalInvoiceId,
+                    CustomerId = customer.Id,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    InvoiceDate = new DateOnly(2026, 6, 23),
+                    InvoiceNumber = "ITEM-MERGE-PERM-CANONICAL",
+                    IsDirty = false,
+                    Lines =
+                    {
+                        new LocalInvoiceLine
+                        {
+                            InvoiceId = canonicalInvoiceId,
+                            ItemId = canonical.Id,
+                            ItemNameOriginal = canonical.NameOriginal,
+                            SpecificationOriginal = canonical.SpecificationOriginal,
+                            Quantity = 1m
+                        },
+                        new LocalInvoiceLine
+                        {
+                            InvoiceId = canonicalInvoiceId,
+                            ItemId = canonical.Id,
+                            ItemNameOriginal = canonical.NameOriginal,
+                            SpecificationOriginal = canonical.SpecificationOriginal,
+                            Quantity = 2m
+                        }
+                    }
+                },
+                new LocalInvoice
+                {
+                    Id = duplicateInvoiceId,
+                    CustomerId = customer.Id,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    InvoiceDate = new DateOnly(2026, 6, 23),
+                    InvoiceNumber = "ITEM-MERGE-PERM-DUPLICATE",
+                    IsDirty = false,
+                    Lines =
+                    {
+                        new LocalInvoiceLine
+                        {
+                            Id = duplicateLineId,
+                            InvoiceId = duplicateInvoiceId,
+                            ItemId = duplicate.Id,
+                            ItemNameOriginal = duplicate.NameOriginal,
+                            SpecificationOriginal = duplicate.SpecificationOriginal,
+                            Quantity = 1m
+                        }
+                    }
+                });
+            await db.SaveChangesAsync();
+
+            var service = new DataIntegrityIssueService(db, new SyncRequestDispatcher());
+            var scan = await service.ScanAsync(CreateAdminSession());
+            var issue = Assert.Single(scan.Issues, issue => issue.Code == DataIntegrityIssueCodes.ItemDuplicateCandidate);
+            var itemOnlySession = CreateUserSession(AppPermissionNames.ItemEdit);
+
+            var result = await service.MergeDuplicateIssueAsync(issue, itemOnlySession);
+
+            Assert.False(result.Success);
+            Assert.Contains("전표", result.Message);
+            var storedDuplicate = await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == duplicate.Id);
+            var storedDuplicateLine = await db.InvoiceLines.IgnoreQueryFilters().SingleAsync(line => line.Id == duplicateLineId);
+            var storedDuplicateInvoice = await db.Invoices.IgnoreQueryFilters().SingleAsync(invoice => invoice.Id == duplicateInvoiceId);
+            Assert.False(storedDuplicate.IsDeleted);
+            Assert.False(storedDuplicate.IsDirty);
+            Assert.Equal(duplicate.Id, storedDuplicateLine.ItemId);
+            Assert.False(storedDuplicateInvoice.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ScanAsync_ItemDuplicateCandidateRequiresExactSameNameAndSpecification()
     {
         PrepareAppRoot("georaeplan-integrity-item-exact-name-spec");
