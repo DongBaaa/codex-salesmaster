@@ -115,7 +115,7 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Denied("삭제된 거래처로는 연결을 옮길 수 없습니다.");
         if (!CanAccessCustomer(target, session))
             return OfficeMutationResult.Denied("권한이 없어 대상 거래처로 연결을 옮길 수 없습니다.");
-        if (!CanWriteCustomerScope(session, target.ResponsibleOfficeCode, target.TenantCode))
+        if (!CanWriteCustomerScope(session, target.ResponsibleOfficeCode, target.TenantCode, target.OfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 대상 거래처에 연결 데이터를 저장할 수 없습니다.");
 
         var now = DateTime.UtcNow;

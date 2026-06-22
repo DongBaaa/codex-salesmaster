@@ -13,6 +13,207 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class RecycleBinScopeAndSyncTests
 {
     [Fact]
+    public async Task LocalStateService_GetCustomersAsync_UsesOwnerOfficeFallbackWhenResponsibleOfficeMissing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-customer-fallback-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            db.Customers.Add(CreateFallbackOfficeCustomer(customerId, TenantScopeCatalog.Itworld, OfficeCodeCatalog.Itworld));
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeUserSession(TenantScopeCatalog.Itworld, OfficeCodeCatalog.Itworld);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var customers = await service.GetCustomersAsync(session);
+
+            Assert.Contains(customers, customer => customer.Id == customerId);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalStateService_GetDirtyCustomerContractsForSyncAsync_UsesOwnerOfficeFallbackWhenResponsibleOfficeMissing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-contract-fallback-sync-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var contractId = Guid.NewGuid();
+            db.Customers.Add(CreateFallbackOfficeCustomer(customerId, TenantScopeCatalog.Itworld, OfficeCodeCatalog.Itworld));
+            db.CustomerContracts.Add(new LocalCustomerContract
+            {
+                Id = contractId,
+                CustomerId = customerId,
+                ContractType = "Fallback contract",
+                FileName = "fallback-contract.pdf",
+                FileSize = 12,
+                FileHash = "fallback-hash",
+                FileContent = [1, 2, 3],
+                IsDirty = true,
+                IsDeleted = false,
+                Revision = 3
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeUserSession(
+                TenantScopeCatalog.Itworld,
+                OfficeCodeCatalog.Itworld,
+                AppPermissionNames.CustomerEdit);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var dirtyContracts = await service.GetDirtyCustomerContractsForSyncAsync(session);
+
+            Assert.Contains(dirtyContracts, contract => contract.Id == contractId);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalStateService_RestoreInvoice_UsesOwnerOfficeFallbackWhenResponsibleOfficeMissing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-invoice-fallback-restore-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var invoiceId = Guid.NewGuid();
+            db.Customers.Add(CreateFallbackOfficeCustomer(customerId, TenantScopeCatalog.Itworld, OfficeCodeCatalog.Itworld));
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = invoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = string.Empty,
+                InvoiceNumber = "FB-RESTORE-001",
+                LocalTempNumber = "L202606-0001",
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 22),
+                TotalAmount = 1000m,
+                SupplyAmount = 909m,
+                VatAmount = 91m,
+                VersionGroupId = invoiceId,
+                VersionNumber = 1,
+                IsLatestVersion = true,
+                IsConfirmed = true,
+                IsDeleted = true,
+                IsDirty = false,
+                Revision = 7
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeUserSession(TenantScopeCatalog.Itworld, OfficeCodeCatalog.Itworld);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var restore = await service.RestoreRecycleBinEntryAsync(RecycleBinEntityKind.Invoice, invoiceId, session);
+
+            Assert.True(restore.Success, restore.Message);
+            Assert.False(await db.Invoices.IgnoreQueryFilters()
+                .Where(invoice => invoice.Id == invoiceId)
+                .Select(invoice => invoice.IsDeleted)
+                .SingleAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalStateService_UpdatePaymentLedgerMemo_UsesInvoiceOwnerOfficeFallbackWhenResponsibleOfficeMissing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-payment-memo-fallback-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var invoiceId = Guid.NewGuid();
+            var paymentId = Guid.NewGuid();
+            db.Customers.Add(CreateFallbackOfficeCustomer(customerId, TenantScopeCatalog.Itworld, OfficeCodeCatalog.Itworld));
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = invoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = string.Empty,
+                InvoiceNumber = "FB-MEMO-001",
+                LocalTempNumber = "L202606-0002",
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 22),
+                TotalAmount = 1000m,
+                SupplyAmount = 909m,
+                VatAmount = 91m,
+                VersionGroupId = invoiceId,
+                VersionNumber = 1,
+                IsLatestVersion = true,
+                IsConfirmed = true,
+                IsDeleted = false,
+                IsDirty = false,
+                Revision = 8
+            });
+            db.Payments.Add(new LocalPayment
+            {
+                Id = paymentId,
+                InvoiceId = invoiceId,
+                PaymentDate = new DateOnly(2026, 6, 22),
+                Amount = 1000m,
+                IsDeleted = false,
+                IsDirty = false,
+                Revision = 9
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeUserSession(TenantScopeCatalog.Itworld, OfficeCodeCatalog.Itworld);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var result = await service.UpdatePaymentLedgerMemoAsync(paymentId, "fallback memo", session);
+
+            Assert.True(result.Success, result.Message);
+            var payment = await db.Payments.IgnoreQueryFilters().SingleAsync(current => current.Id == paymentId);
+            Assert.Equal("fallback memo", payment.Note);
+            Assert.True(payment.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task LocalStateService_GetRecycleBinEntriesAsync_FiltersRentalAssetsByBusinessDatabase()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-recycle-bin-scope-{Guid.NewGuid():N}");
@@ -504,6 +705,36 @@ public sealed class RecycleBinScopeAndSyncTests
         });
         return session;
     }
+
+    private static SessionState CreateOfficeUserSession(string tenantCode, string officeCode, params string[] permissions)
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            Username = "office-user",
+            Role = DomainConstants.RoleUser,
+            TenantCode = tenantCode,
+            OfficeCode = officeCode,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = permissions.ToList()
+        });
+        return session;
+    }
+
+    private static LocalCustomer CreateFallbackOfficeCustomer(Guid customerId, string tenantCode, string officeCode)
+        => new()
+        {
+            Id = customerId,
+            TenantCode = tenantCode,
+            OfficeCode = officeCode,
+            ResponsibleOfficeCode = string.Empty,
+            NameOriginal = $"Fallback customer {customerId:N}",
+            NameMatchKey = $"fallbackcustomer{customerId:N}",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = false,
+            IsDirty = false,
+            Revision = 5
+        };
 
     private static LocalCustomer CreateDeletedCustomer(Guid customerId)
         => new()

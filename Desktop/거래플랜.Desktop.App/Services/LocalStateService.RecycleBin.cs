@@ -1628,7 +1628,7 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Missing("복원할 전표를 찾을 수 없습니다.");
         if (!target.IsDeleted)
             return OfficeMutationResult.Ok(invoiceId, "이미 활성 상태인 전표입니다.");
-        if (!CanWriteOfficeScope(session, target.ResponsibleOfficeCode))
+        if (!CanWriteOfficeScope(session, target.ResponsibleOfficeCode, target.OfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 전표를 복원할 수 없습니다.");
 
         var invoiceGroupRestore = await RestoreInvoiceGroupCoreAsync(target, session, ct);
@@ -1660,7 +1660,7 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Missing("영구삭제할 전표를 찾을 수 없습니다.");
         if (!target.IsDeleted)
             return OfficeMutationResult.Denied("활성 상태 전표는 휴지통에서 영구삭제할 수 없습니다.");
-        if (!CanWriteOfficeScope(session, target.ResponsibleOfficeCode))
+        if (!CanWriteOfficeScope(session, target.ResponsibleOfficeCode, target.OfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 전표를 영구삭제할 수 없습니다.");
 
         var groupInvoices = await LoadInvoiceGroupForRecycleBinAsync(target, ct);
@@ -1752,7 +1752,7 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == payment.InvoiceId, ct);
         if (invoice is null)
             return OfficeMutationResult.Missing("연결된 전표를 찾을 수 없습니다.");
-        if (!CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode))
+        if (!CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode, invoice.OfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 수금/지급 기록을 복원할 수 없습니다.");
 
         var customerRestored = false;
@@ -1794,7 +1794,7 @@ public sealed partial class LocalStateService
         var invoice = await _db.Invoices
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == payment.InvoiceId, ct);
-        if (invoice is null || !CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode))
+        if (invoice is null || !CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode, invoice.OfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 수금/지급 기록을 영구삭제할 수 없습니다.");
         if (await _db.Transactions.IgnoreQueryFilters().AnyAsync(current => current.Id == paymentId, ct))
             return OfficeMutationResult.Denied("연동 거래내역이 남아 있어 수금/지급 기록만 영구삭제할 수 없습니다. 거래내역 영구삭제를 실행하면 연동 수금/지급도 함께 제거됩니다.");
@@ -1855,7 +1855,7 @@ public sealed partial class LocalStateService
                 .FirstOrDefaultAsync(current => current.Id == transaction.LinkedInvoiceId.Value, ct);
             if (linkedInvoice is null)
                 return OfficeMutationResult.Missing("연결된 전표를 찾을 수 없습니다.");
-            if (!CanWriteOfficeScope(session, linkedInvoice.ResponsibleOfficeCode))
+            if (!CanWriteOfficeScope(session, linkedInvoice.ResponsibleOfficeCode, linkedInvoice.OfficeCode))
                 return OfficeMutationResult.Denied("권한이 없어 연결 전표를 복원하거나 수금/지급과 동기화할 수 없습니다.");
 
             if (linkedInvoice is not null && linkedInvoice.IsDeleted)
@@ -1908,7 +1908,7 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Missing("영구삭제할 거래내역을 찾을 수 없습니다.");
         if (!transaction.IsDeleted)
             return OfficeMutationResult.Denied("활성 상태 거래내역은 휴지통에서 영구삭제할 수 없습니다.");
-        if (!CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode))
+        if (!CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode, transaction.OfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 거래내역을 영구삭제할 수 없습니다.");
 
         var attachments = await _db.TransactionAttachments
@@ -1927,7 +1927,7 @@ public sealed partial class LocalStateService
             var linkedPaymentInvoice = await _db.Invoices
                 .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(current => current.Id == linkedPayment.InvoiceId, ct);
-            if (linkedPaymentInvoice is null || !CanWriteOfficeScope(session, linkedPaymentInvoice.ResponsibleOfficeCode))
+            if (linkedPaymentInvoice is null || !CanWriteOfficeScope(session, linkedPaymentInvoice.ResponsibleOfficeCode, linkedPaymentInvoice.OfficeCode))
                 return OfficeMutationResult.Denied("권한이 없어 연동 수금/지급 기록을 영구삭제할 수 없습니다.");
         }
 
@@ -1984,7 +1984,7 @@ public sealed partial class LocalStateService
         var customerRestored = false;
         if (customer.IsDeleted)
         {
-            if (!CanWriteOfficeScope(session, customer.ResponsibleOfficeCode))
+            if (!CanWriteOfficeScope(session, customer.ResponsibleOfficeCode, customer.OfficeCode))
                 return (false, false, "현재 계정으로 연결된 거래처를 복원할 수 없습니다.");
 
             RestoreCustomerCore(customer, session, now);
@@ -2067,7 +2067,7 @@ public sealed partial class LocalStateService
         {
             if (!invoiceMap.TryGetValue(payment.InvoiceId, out var invoice))
                 continue;
-            if (!CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode))
+            if (!CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode, invoice.OfficeCode))
                 return (false, false, "권한이 없어 연결 수금/지급 기록을 복원할 수 없습니다.");
 
             var linkedTransaction = await _db.Transactions
@@ -2075,7 +2075,7 @@ public sealed partial class LocalStateService
                 .FirstOrDefaultAsync(current => current.Id == payment.Id, ct);
             if (linkedTransaction is not null)
             {
-                if (!CanWriteOfficeScope(session, linkedTransaction.ResponsibleOfficeCode))
+                if (!CanWriteOfficeScope(session, linkedTransaction.ResponsibleOfficeCode, linkedTransaction.OfficeCode))
                     return (false, false, "권한이 없어 연결 거래내역을 복원하거나 전표와 재연결할 수 없습니다.");
 
                 var transactionRelinked = false;
@@ -2205,7 +2205,7 @@ public sealed partial class LocalStateService
     {
         foreach (var invoice in invoiceGroup)
         {
-            if (!CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode))
+            if (!CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode, invoice.OfficeCode))
                 return OfficeMutationResult.Denied($"권한이 없어 전표 묶음의 모든 버전을 {actionText}할 수 없습니다.");
         }
 
@@ -2229,7 +2229,7 @@ public sealed partial class LocalStateService
 
         if (!session.HasAdministrativePrivileges &&
             !string.Equals(
-                NormalizeOfficeCode(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet),
+                ResolveResponsibleOfficeScopeForAccess(customer.ResponsibleOfficeCode, customer.OfficeCode),
                 NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet),
                 StringComparison.OrdinalIgnoreCase))
         {

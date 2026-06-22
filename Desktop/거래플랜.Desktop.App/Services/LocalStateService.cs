@@ -426,7 +426,13 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		string normalizedOfficeCode = (string.IsNullOrWhiteSpace(text) ? string.Empty : NormalizeOfficeCode(text, DomainConstants.OfficeYeonsu));
 		if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
 		{
-			queryable = queryable.Where((LocalCustomer customer) => customer.ResponsibleOfficeCode == normalizedOfficeCode || customer.ResponsibleOfficeCode == "ALL");
+			queryable = queryable.Where((LocalCustomer customer) =>
+				customer.ResponsibleOfficeCode == normalizedOfficeCode ||
+				customer.ResponsibleOfficeCode == "ALL" ||
+				((customer.ResponsibleOfficeCode == null ||
+				  customer.ResponsibleOfficeCode == string.Empty ||
+				  customer.ResponsibleOfficeCode == OfficeCodeCatalog.Shared) &&
+				 customer.OfficeCode == normalizedOfficeCode));
 		}
 		return queryable.OrderBy((LocalCustomer c) => c.NameOriginal).ToListAsync(ct);
 	}
@@ -473,13 +479,14 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return null;
 		}
-		return (CanReadRentalCustomerScope(session, customer.ResponsibleOfficeCode, customer.TenantCode) || CanAccessCustomer(customer, session)) ? customer : null;
+		return (CanReadRentalCustomerScope(session, customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode) || CanAccessCustomer(customer, session)) ? customer : null;
 	}
 
 	public async Task<LocalCustomer> UpsertCustomerAsync(LocalCustomer customer, CancellationToken ct = default(CancellationToken))
 	{
 		NormalizeCustomerClassification(customer);
-		customer.ResponsibleOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
+		string ownerOfficeFallback = NormalizeOfficeScope(customer.OfficeCode, DomainConstants.OfficeUsenet);
+		customer.ResponsibleOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, ownerOfficeFallback);
 		customer.OfficeCode = OfficeCodeCatalog.ResolveOwningOfficeCode(customer.OfficeCode, customer.ResponsibleOfficeCode, customer.ResponsibleOfficeCode);
 		customer.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, customer.ResponsibleOfficeCode);
 		var existing = await _db.Customers.FindAsync(new object[1] { customer.Id }, ct);
@@ -518,7 +525,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return OfficeMutationResult.Denied("현재 계정은 거래처를 저장할 권한이 없습니다.");
 		}
 		NormalizeCustomerClassification(customer);
-		string normalizedOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
+		string normalizedOwnerFallback = NormalizeOfficeScope(customer.OfficeCode, NormalizeOfficeScope(session.OfficeCode, DomainConstants.OfficeUsenet));
+		string normalizedOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, normalizedOwnerFallback);
 		string normalizedOwnerOfficeCode = OfficeCodeCatalog.ResolveOwningOfficeCode(customer.OfficeCode, normalizedOfficeCode, normalizedOfficeCode);
 		string normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, normalizedOfficeCode);
 		var existing = await _db.Customers.IgnoreQueryFilters().FirstOrDefaultAsync((LocalCustomer current) => current.Id == customer.Id, ct);
@@ -528,7 +536,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			NormalizeOfficeScope(existing.ResponsibleOfficeCode, normalizedOfficeCode);
 		}
-		if ((existing != null && !CanWriteCustomerScope(session, existing.ResponsibleOfficeCode, existing.TenantCode)) || !CanWriteCustomerScope(session, normalizedOfficeCode, normalizedTenantCode))
+		if ((existing != null && !CanWriteCustomerScope(session, existing.ResponsibleOfficeCode, existing.TenantCode, existing.OfficeCode)) || !CanWriteCustomerScope(session, normalizedOfficeCode, normalizedTenantCode, normalizedOwnerOfficeCode))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 거래처를 저장할 수 없습니다.");
 		}
@@ -592,7 +600,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Missing("거래처를 찾을 수 없습니다.");
 		}
-		if (!CanWriteCustomerScope(session, customer.ResponsibleOfficeCode, customer.TenantCode))
+		if (!CanWriteCustomerScope(session, customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 거래처를 삭제할 수 없습니다.");
 		}
@@ -1149,7 +1157,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return await query.ToListAsync(ct);
 		}
-		return (await query.ToListAsync(ct)).Where((LocalCustomer customer) => CanWriteCustomerScope(session, customer.ResponsibleOfficeCode, customer.TenantCode)).ToList();
+		return (await query.ToListAsync(ct)).Where((LocalCustomer customer) => CanWriteCustomerScope(session, customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode)).ToList();
 	}
 
 	public async Task<List<LocalCustomerMaster>> GetDirtyCustomerMastersForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
@@ -1244,7 +1252,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		foreach (LocalCustomer customer in dirtyCustomers)
 		{
 			result.ScannedCount++;
-			string normalizedOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
+			string normalizedOwnerFallback = NormalizeOfficeScope(customer.OfficeCode, DomainConstants.OfficeUsenet);
+			string normalizedOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, normalizedOwnerFallback);
 			string normalizedOwnerOfficeCode = OfficeCodeCatalog.ResolveOwningOfficeCode(customer.OfficeCode, normalizedOfficeCode, normalizedOfficeCode);
 			string normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, normalizedOfficeCode);
 			if (!string.Equals(customer.ResponsibleOfficeCode, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase) || !string.Equals(customer.OfficeCode, normalizedOwnerOfficeCode, StringComparison.OrdinalIgnoreCase) || !string.Equals(customer.TenantCode, normalizedTenantCode, StringComparison.OrdinalIgnoreCase))
@@ -1273,7 +1282,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 					result.ClearedMissingCustomerMasterCount++;
 				}
 			}
-			if (!CanWriteAllScopedData(session) && !CanWriteCustomerScope(session, customer.ResponsibleOfficeCode, customer.TenantCode))
+			if (!CanWriteAllScopedData(session) && !CanWriteCustomerScope(session, customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode))
 			{
 				result.SkippedOutOfScopeCount++;
 			}
@@ -1302,12 +1311,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			select contract.CustomerId into customerId
 			where customerId != Guid.Empty
 			select customerId).Distinct().ToList();
-		Dictionary<Guid, (string ResponsibleOfficeCode, string TenantCode)> scopeByCustomerId = await (from customer in (from customer in _db.Customers.IgnoreQueryFilters()
+		Dictionary<Guid, (string ResponsibleOfficeCode, string TenantCode, string OfficeCode)> scopeByCustomerId = await (from customer in (from customer in _db.Customers.IgnoreQueryFilters()
 				where customerIds.Contains(customer.Id)
 				select customer).AsNoTracking()
-			select new { customer.Id, customer.ResponsibleOfficeCode, customer.TenantCode }).ToDictionaryAsync(customer => customer.Id, customer => (ResponsibleOfficeCode: customer.ResponsibleOfficeCode, TenantCode: customer.TenantCode), ct);
-		(string, string) value;
-		return dirtyContracts.Where((LocalCustomerContract contract) => scopeByCustomerId.TryGetValue(contract.CustomerId, out value) && CanWriteCustomerScope(session, value.Item1, value.Item2)).ToList();
+			select new { customer.Id, customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode }).ToDictionaryAsync(customer => customer.Id, customer => (ResponsibleOfficeCode: customer.ResponsibleOfficeCode, TenantCode: customer.TenantCode, OfficeCode: customer.OfficeCode), ct);
+		(string, string, string) value;
+		return dirtyContracts.Where((LocalCustomerContract contract) => scopeByCustomerId.TryGetValue(contract.CustomerId, out value) && CanWriteCustomerScope(session, value.Item1, value.Item2, value.Item3)).ToList();
 	}
 
 	public async Task<List<LocalRentalBillingProfile>> GetDirtyRentalBillingProfilesForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
@@ -2384,7 +2393,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			select invoice;
 		if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
 		{
-			query = query.Where((LocalInvoice invoice) => invoice.ResponsibleOfficeCode == normalizedOfficeCode);
+			query = query.Where((LocalInvoice invoice) =>
+				invoice.ResponsibleOfficeCode == normalizedOfficeCode ||
+				((invoice.ResponsibleOfficeCode == null || invoice.ResponsibleOfficeCode == string.Empty) &&
+				 invoice.OfficeCode == normalizedOfficeCode));
 		}
 		if (from.HasValue)
 		{
@@ -2423,7 +2435,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			select invoice;
 		if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
 		{
-			query = query.Where((LocalInvoice invoice) => invoice.ResponsibleOfficeCode == normalizedOfficeCode);
+			query = query.Where((LocalInvoice invoice) =>
+				invoice.ResponsibleOfficeCode == normalizedOfficeCode ||
+				((invoice.ResponsibleOfficeCode == null || invoice.ResponsibleOfficeCode == string.Empty) &&
+				 invoice.OfficeCode == normalizedOfficeCode));
 		}
 		if (from.HasValue)
 		{
@@ -2590,8 +2605,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return InvoiceSaveResult.Missing("거래처 정보를 찾을 수 없습니다.");
 		}
-		string customerOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
-		if (!CanAccessCustomer(customerTenantCode: TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, customerOfficeCode), customerId: customer.Id, customerOfficeCode: customerOfficeCode, session: session, role: context.Role))
+		string customerOfficeCode = ResolveResponsibleOfficeScopeForAccess(customer.ResponsibleOfficeCode, customer.OfficeCode);
+		if (!CanAccessCustomer(customerTenantCode: TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, customerOfficeCode), customerId: customer.Id, customerOfficeCode: customer.ResponsibleOfficeCode, session: session, role: context.Role, fallbackOfficeCode: customer.OfficeCode))
 		{
 			return InvoiceSaveResult.Denied("권한이 없어 해당 거래처 전표를 저장할 수 없습니다.");
 		}
@@ -4475,8 +4490,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return default(decimal);
 		}
-		string customerOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
-		if (!CanAccessCustomer(customerTenantCode: TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, customerOfficeCode), customerId: customer.Id, customerOfficeCode: customerOfficeCode, session: session, role: session.User?.Role))
+		string customerOfficeCode = ResolveResponsibleOfficeScopeForAccess(customer.ResponsibleOfficeCode, customer.OfficeCode);
+		if (!CanAccessCustomer(customerTenantCode: TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, customerOfficeCode), customerId: customer.Id, customerOfficeCode: customer.ResponsibleOfficeCode, session: session, role: session.User?.Role, fallbackOfficeCode: customer.OfficeCode))
 		{
 			return default(decimal);
 		}
@@ -4490,8 +4505,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return new CustomerFinancialSummary();
 		}
-		string customerOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
-		if (!CanAccessCustomer(customerTenantCode: TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, customerOfficeCode), customerId: customer.Id, customerOfficeCode: customerOfficeCode, session: session, role: session.User?.Role))
+		string customerOfficeCode = ResolveResponsibleOfficeScopeForAccess(customer.ResponsibleOfficeCode, customer.OfficeCode);
+		if (!CanAccessCustomer(customerTenantCode: TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, customerOfficeCode), customerId: customer.Id, customerOfficeCode: customer.ResponsibleOfficeCode, session: session, role: session.User?.Role, fallbackOfficeCode: customer.OfficeCode))
 		{
 			return new CustomerFinancialSummary();
 		}
@@ -4616,7 +4631,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Missing("거래처를 찾을 수 없습니다.");
 		}
-		string customerOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
+		string customerOfficeCode = ResolveResponsibleOfficeScopeForAccess(customer.ResponsibleOfficeCode, customer.OfficeCode);
 		if (!CanWriteOfficeScope(session, customerOfficeCode))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 거래처의 수금/지급을 저장할 수 없습니다.");
@@ -4929,7 +4944,9 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Missing("수금/지급 내역을 찾을 수 없습니다.");
 		}
-		if (!CanWriteOfficeScope(fallbackOfficeCode: NormalizeOfficeScope((await _db.Customers.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync((LocalCustomer current) => current.Id == transaction.CustomerId, ct))?.ResponsibleOfficeCode, NormalizeOfficeScope(transaction.ResponsibleOfficeCode, DomainConstants.OfficeUsenet)), session: session, officeCode: transaction.ResponsibleOfficeCode))
+		var transactionCustomer = await _db.Customers.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync((LocalCustomer current) => current.Id == transaction.CustomerId, ct);
+		string transactionFallbackOfficeCode = ResolveResponsibleOfficeScopeForAccess(transactionCustomer?.ResponsibleOfficeCode, transactionCustomer?.OfficeCode ?? transaction.OfficeCode);
+		if (!CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode, transactionFallbackOfficeCode))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 수금/지급 내역을 삭제할 수 없습니다.");
 		}
@@ -5435,7 +5452,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	private bool CanAccessRentalProfile(LocalRentalBillingProfile profile, SessionState session)
 	{
-		return session.HasGlobalDataScope || session.HasAssignedPermission("Rental.ViewAll") || session.HasAssignedPermission("Rental.EditAll") || string.Equals(NormalizeOfficeCode(profile.ResponsibleOfficeCode, DomainConstants.OfficeUsenet), NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet), StringComparison.OrdinalIgnoreCase);
+		return session.HasGlobalDataScope || session.HasAssignedPermission("Rental.ViewAll") || session.HasAssignedPermission("Rental.EditAll") || string.Equals(ResolveResponsibleOfficeScopeForAccess(profile.ResponsibleOfficeCode, profile.ManagementCompanyCode), NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet), StringComparison.OrdinalIgnoreCase);
 	}
 
 	public async Task<List<LocalTransactionAttachment>> GetTransactionAttachmentsAsync(Guid transactionId, SessionState session, CancellationToken ct = default(CancellationToken))
@@ -6231,7 +6248,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		HashSet<string> readableOfficeCodes = GetReadableOfficeCodes(session);
 		string currentTenantCode = ResolveCurrentTenantCode(session);
 		List<Guid> temporaryCustomerIds = _officeAccess.GetTemporaryCustomerAccessIds(session).ToList();
-		return query.Where((LocalCustomer customer) => customer.TenantCode == currentTenantCode && (customer.ResponsibleOfficeCode == "ALL" || readableOfficeCodes.Contains(customer.ResponsibleOfficeCode) || temporaryCustomerIds.Contains(customer.Id)));
+		return query.Where((LocalCustomer customer) => customer.TenantCode == currentTenantCode && (customer.ResponsibleOfficeCode == "ALL" || readableOfficeCodes.Contains(customer.ResponsibleOfficeCode) || ((customer.ResponsibleOfficeCode == null || customer.ResponsibleOfficeCode == string.Empty) && readableOfficeCodes.Contains(customer.OfficeCode)) || temporaryCustomerIds.Contains(customer.Id)));
 	}
 
 	private IQueryable<LocalCustomer> ApplyRentalCustomerScope(IQueryable<LocalCustomer> query, SessionState session)
@@ -6247,6 +6264,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			customer.TenantCode == currentTenantCode &&
 			(customer.ResponsibleOfficeCode == "ALL" ||
 			 readableOfficeCodes.Contains(customer.ResponsibleOfficeCode) ||
+			 ((customer.ResponsibleOfficeCode == null || customer.ResponsibleOfficeCode == string.Empty) &&
+			  readableOfficeCodes.Contains(customer.OfficeCode)) ||
 			 temporaryCustomerIds.Contains(customer.Id)));
 	}
 
@@ -6260,7 +6279,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(tenantCode, officeCode, session?.TenantCode, session?.OfficeCode);
 	}
 
-	private static bool CanReadCustomerScope(SessionState? session, string? officeCode, string? tenantCode = null)
+	private static bool CanReadCustomerScope(SessionState? session, string? officeCode, string? tenantCode = null, string? fallbackOfficeCode = null)
 	{
 		if (session == null || !session.IsLoggedIn)
 		{
@@ -6270,16 +6289,17 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return true;
 		}
-		string a = ResolveCustomerTenantCodeForOffice(officeCode, tenantCode, session);
+		string resolvedOfficeCode = ResolveResponsibleOfficeScopeForAccess(officeCode, fallbackOfficeCode);
+		string a = ResolveCustomerTenantCodeForOffice(resolvedOfficeCode, tenantCode, session);
 		if (!string.Equals(a, ResolveCurrentTenantCode(session), StringComparison.OrdinalIgnoreCase))
 		{
 			return false;
 		}
-		string text = NormalizeOfficeScope(officeCode, DomainConstants.OfficeUsenet);
+		string text = NormalizeOfficeScope(resolvedOfficeCode, DomainConstants.OfficeUsenet);
 		return IsSharedOfficeScope(text) || GetReadableOfficeCodes(session).Contains(text);
 	}
 
-	private static bool CanReadRentalCustomerScope(SessionState? session, string? officeCode, string? tenantCode = null)
+	private static bool CanReadRentalCustomerScope(SessionState? session, string? officeCode, string? tenantCode = null, string? fallbackOfficeCode = null)
 	{
 		if (session == null || !session.IsLoggedIn)
 		{
@@ -6289,11 +6309,11 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return true;
 		}
-		string text = NormalizeOfficeScope(officeCode, DomainConstants.OfficeUsenet);
+		string text = ResolveResponsibleOfficeScopeForAccess(officeCode, fallbackOfficeCode);
 		return IsSharedOfficeScope(text) || GetReadableAssetOfficeCodes(session).Contains(text);
 	}
 
-	private static bool CanWriteCustomerScope(SessionState? session, string? officeCode, string? tenantCode = null)
+	private static bool CanWriteCustomerScope(SessionState? session, string? officeCode, string? tenantCode = null, string? fallbackOfficeCode = null)
 	{
 		if (session == null || !session.IsLoggedIn)
 		{
@@ -6303,12 +6323,13 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return true;
 		}
-		string a = ResolveCustomerTenantCodeForOffice(officeCode, tenantCode, session);
+		string resolvedOfficeCode = ResolveResponsibleOfficeScopeForAccess(officeCode, fallbackOfficeCode);
+		string a = ResolveCustomerTenantCodeForOffice(resolvedOfficeCode, tenantCode, session);
 		if (!string.Equals(a, ResolveCurrentTenantCode(session), StringComparison.OrdinalIgnoreCase))
 		{
 			return false;
 		}
-		return CanWriteOfficeScope(session, officeCode);
+		return CanWriteOfficeScope(session, officeCode, fallbackOfficeCode);
 	}
 
 	private IQueryable<LocalItem> ApplyItemScope(IQueryable<LocalItem> query, SessionState session)
@@ -6627,16 +6648,16 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	private bool CanAccessCustomer(LocalCustomer customer, SessionState? session)
 	{
-		return CanAccessCustomer(customer.Id, customer.ResponsibleOfficeCode, customer.TenantCode, session, session?.User?.Role);
+		return CanAccessCustomer(customer.Id, customer.ResponsibleOfficeCode, customer.TenantCode, session, session?.User?.Role, customer.OfficeCode);
 	}
 
-	private bool CanAccessCustomer(Guid customerId, string? customerOfficeCode, string? customerTenantCode, SessionState? session, string? role)
+	private bool CanAccessCustomer(Guid customerId, string? customerOfficeCode, string? customerTenantCode, SessionState? session, string? role, string? fallbackOfficeCode = null)
 	{
 		if (HasFullAccess(session))
 		{
 			return true;
 		}
-		if (CanReadCustomerScope(session, customerOfficeCode, customerTenantCode))
+		if (CanReadCustomerScope(session, customerOfficeCode, customerTenantCode, fallbackOfficeCode))
 		{
 			return true;
 		}

@@ -132,7 +132,7 @@ public sealed partial class LocalStateService
         if (payment.Invoice is null)
             return OfficeMutationResult.Missing("연결된 전표를 찾을 수 없습니다.");
 
-        if (!CanWriteOfficeScope(session, payment.Invoice.ResponsibleOfficeCode))
+        if (!CanWriteOfficeScope(session, payment.Invoice.ResponsibleOfficeCode, payment.Invoice.OfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 수금/지급 메모를 수정할 수 없습니다.");
 
         var normalizedMemo = memo ?? string.Empty;
@@ -179,7 +179,7 @@ public sealed partial class LocalStateService
         if (transaction is null)
             return OfficeMutationResult.Missing("수금/지급 내역을 찾을 수 없습니다.");
 
-        if (!CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode))
+        if (!CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode, transaction.OfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 수금/지급 전표메모를 수정할 수 없습니다.");
 
         var normalizedMemo = memo ?? string.Empty;
