@@ -8423,6 +8423,78 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task DeleteInvoiceAsync_RequiresPaymentEditWhenDeletingLinkedPayments()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-invoice-delete-payment-permission-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        var previousAppRoot = Environment.GetEnvironmentVariable("GEORAEPLAN_APP_ROOT");
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var invoiceOnlySession = CreateUserSession(AppPermissionNames.InvoiceEdit);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), invoiceOnlySession);
+            var customerId = Guid.Parse("8a111111-1111-1111-1111-111111111111");
+            var invoiceId = Guid.Parse("8a222222-2222-2222-2222-222222222222");
+            var paymentId = Guid.Parse("8a333333-3333-3333-3333-333333333333");
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Invoice delete payment permission customer",
+                NameMatchKey = "INVOICEDELETEPAYMENTPERMISSIONCUSTOMER",
+                IsDirty = false
+            });
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = invoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 23),
+                InvoiceNumber = "PAYMENT-PERMISSION-GUARD",
+                TotalAmount = 100_000m,
+                SupplyAmount = 100_000m,
+                IsLatestVersion = true,
+                IsDirty = false
+            });
+            db.Payments.Add(new LocalPayment
+            {
+                Id = paymentId,
+                InvoiceId = invoiceId,
+                PaymentDate = new DateOnly(2026, 6, 24),
+                Amount = 100_000m,
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var result = await service.DeleteInvoiceAsync(invoiceId, invoiceOnlySession);
+
+            Assert.False(result.Success);
+            Assert.Contains("수금", result.Message);
+            var storedInvoice = await db.Invoices.IgnoreQueryFilters().SingleAsync(invoice => invoice.Id == invoiceId);
+            var storedPayment = await db.Payments.IgnoreQueryFilters().SingleAsync(payment => payment.Id == paymentId);
+            Assert.False(storedInvoice.IsDeleted);
+            Assert.False(storedInvoice.IsDirty);
+            Assert.False(storedPayment.IsDeleted);
+            Assert.False(storedPayment.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", previousAppRoot);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task CustomerContractMutations_RejectStaleExpectedRevision()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-contract-concurrency-{Guid.NewGuid():N}");

@@ -2887,6 +2887,11 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		List<LocalInvoice> invoicesToDelete = await (from localInvoice in _db.Invoices.IgnoreQueryFilters()
 			where localInvoice.Id == id || localInvoice.VersionGroupId == versionGroupId
 			select localInvoice).ToListAsync(ct);
+		List<Guid> deletedInvoiceIds = invoicesToDelete.Select((LocalInvoice localInvoice) => localInvoice.Id).ToList();
+		if (!CanEditPayments(session) && await HasActivePaymentSideEffectsForInvoiceDeleteAsync(deletedInvoiceIds, ct))
+		{
+			return OfficeMutationResult.Denied("전표에 연결된 수금/지급 내역을 함께 변경하거나 삭제하려면 수금/지급 편집 권한이 필요합니다.");
+		}
 		foreach (LocalInvoice invoice in invoicesToDelete)
 		{
 			invoice.IsDeleted = true;
@@ -2895,7 +2900,6 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			invoice.UpdatedAtUtc = now;
 			invoice.LastSavedAtUtc = now;
 		}
-		List<Guid> deletedInvoiceIds = invoicesToDelete.Select((LocalInvoice localInvoice) => localInvoice.Id).ToList();
 		var rentalSettlementTargets = await LoadRentalSettlementTargetsForInvoiceDeleteAsync(deletedInvoiceIds, ct);
 		await DetachTransactionsFromInvoicesAsync(deletedInvoiceIds, now, ct);
 		await MarkPaymentsDeletedForInvoicesAsync(deletedInvoiceIds, now, ct);
@@ -5329,6 +5333,40 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				payment.Revision = Math.Max(payment.Revision, revision.Value);
 			}
 		}
+	}
+
+	private async Task<bool> HasActivePaymentSideEffectsForInvoiceDeleteAsync(IReadOnlyCollection<Guid> invoiceIds, CancellationToken ct)
+	{
+		if (invoiceIds == null || invoiceIds.Count == 0)
+		{
+			return false;
+		}
+
+		foreach (var batchIds in invoiceIds.Where(id => id != Guid.Empty).Distinct().Chunk(LocalQueryContainsBatchSize))
+		{
+			ct.ThrowIfCancellationRequested();
+			var scopedBatchIds = batchIds;
+			var hasActivePayment = await _db.Payments.IgnoreQueryFilters()
+				.AsNoTracking()
+				.AnyAsync(payment => !payment.IsDeleted && scopedBatchIds.Contains(payment.InvoiceId), ct);
+			if (hasActivePayment)
+			{
+				return true;
+			}
+
+			var hasActiveTransaction = await _db.Transactions.IgnoreQueryFilters()
+				.AsNoTracking()
+				.AnyAsync(transaction =>
+					!transaction.IsDeleted &&
+					transaction.LinkedInvoiceId.HasValue &&
+					scopedBatchIds.Contains(transaction.LinkedInvoiceId.Value), ct);
+			if (hasActiveTransaction)
+			{
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	private async Task RecalculateRentalSettlementAsync(Guid billingProfileId, CancellationToken ct, bool markDirty = true)
