@@ -3709,12 +3709,17 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 		string source = SelectionOptionDefaults.NormalizePriceSource(option.PriceSource);
 		List<LocalPriceGradeOption> options = await _db.PriceGradeOptions.IgnoreQueryFilters().ToListAsync(ct);
-		if (options.Any((LocalPriceGradeOption current) => current.Id != option.Id && !current.IsDeleted && string.Equals(current.Name, name, StringComparison.CurrentCultureIgnoreCase)))
-		{
-			return LocalMutationResult.Denied("같은 이름의 가격등급이 이미 있습니다.");
-		}
 		DateTime now = DateTime.UtcNow;
 		var existing = options.FirstOrDefault((LocalPriceGradeOption current) => current.Id == option.Id);
+		var sameNameOption = options.FirstOrDefault((LocalPriceGradeOption current) => current.Id != option.Id && string.Equals((current.Name ?? string.Empty).Trim(), name, StringComparison.CurrentCultureIgnoreCase));
+		if (sameNameOption != null)
+		{
+			if (existing != null || (!sameNameOption.IsDeleted && sameNameOption.IsActive))
+			{
+				return LocalMutationResult.Denied("같은 이름의 가격등급이 이미 있습니다.");
+			}
+			existing = sameNameOption;
+		}
 		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
 		var expected = ResolveSelectionOptionExpectedRevision(expectedRevision, option.Revision);
 		if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(existing, expected, "가격등급", out string conflictMessage))
@@ -3805,12 +3810,17 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return LocalMutationResult.Denied("거래구분은 매출, 매입, 매출/매입 3개만 사용할 수 있습니다.");
 		}
 		List<LocalTradeTypeOption> options = await _db.TradeTypeOptions.IgnoreQueryFilters().ToListAsync(ct);
-		if (options.Any((LocalTradeTypeOption current) => current.Id != option.Id && !current.IsDeleted && string.Equals(current.Name, name, StringComparison.CurrentCultureIgnoreCase)))
-		{
-			return LocalMutationResult.Denied("같은 이름의 거래구분이 이미 있습니다.");
-		}
 		DateTime now = DateTime.UtcNow;
 		var existing = options.FirstOrDefault((LocalTradeTypeOption current) => current.Id == option.Id);
+		var sameNameOption = options.FirstOrDefault((LocalTradeTypeOption current) => current.Id != option.Id && string.Equals((current.Name ?? string.Empty).Trim(), name, StringComparison.CurrentCultureIgnoreCase));
+		if (sameNameOption != null)
+		{
+			if (existing != null || (!sameNameOption.IsDeleted && sameNameOption.IsActive))
+			{
+				return LocalMutationResult.Denied("같은 이름의 거래구분이 이미 있습니다.");
+			}
+			existing = sameNameOption;
+		}
 		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
 		var expected = ResolveSelectionOptionExpectedRevision(expectedRevision, option.Revision);
 		if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(existing, expected, "거래구분", out string conflictMessage))
@@ -4025,12 +4035,17 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		List<LocalItemCategoryOption> options = (from localItemCategoryOption in local.Concat(await _db.ItemCategoryOptions.IgnoreQueryFilters().ToListAsync(ct))
 			group localItemCategoryOption by localItemCategoryOption.Id into @group
 			select @group.First()).ToList();
-		if (options.Any((LocalItemCategoryOption current) => current.Id != option.Id && !current.IsDeleted && string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(current.Name), nameKey, StringComparison.OrdinalIgnoreCase)))
-		{
-			return LocalMutationResult.Denied("같은 이름의 품목분류가 이미 있습니다.");
-		}
 		DateTime now = DateTime.UtcNow;
 		var existing = options.FirstOrDefault((LocalItemCategoryOption current) => current.Id == option.Id);
+		var sameNameOption = options.FirstOrDefault((LocalItemCategoryOption current) => current.Id != option.Id && string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(current.Name), nameKey, StringComparison.OrdinalIgnoreCase));
+		if (sameNameOption != null)
+		{
+			if (existing != null || (!sameNameOption.IsDeleted && sameNameOption.IsActive))
+			{
+				return LocalMutationResult.Denied("같은 이름의 품목분류가 이미 있습니다.");
+			}
+			existing = sameNameOption;
+		}
 		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
 		var expected = ResolveSelectionOptionExpectedRevision(expectedRevision, option.Revision);
 		if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(existing, expected, "품목분류", out string conflictMessage))

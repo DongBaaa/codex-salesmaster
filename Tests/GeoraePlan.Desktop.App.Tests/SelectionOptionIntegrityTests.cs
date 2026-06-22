@@ -58,6 +58,115 @@ public sealed class SelectionOptionIntegrityTests
     }
 
     [Fact]
+    public async Task SavePriceGradeOption_ReusesDeletedSameNameOptionInsteadOfCreatingNewId()
+    {
+        PrepareAppRoot("georaeplan-price-grade-reuse-deleted");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var deletedId = Guid.NewGuid();
+            var incomingId = Guid.NewGuid();
+            db.PriceGradeOptions.Add(new LocalPriceGradeOption
+            {
+                Id = deletedId,
+                Name = "VIP",
+                PriceSource = SelectionOptionDefaults.PriceSourceA,
+                SortOrder = 10,
+                Revision = 5,
+                IsActive = false,
+                IsDeleted = true,
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var local = CreateLocalStateService(db);
+
+            var result = await local.SavePriceGradeOptionAsync(new LocalPriceGradeOption
+            {
+                Id = incomingId,
+                Name = " VIP ",
+                PriceSource = SelectionOptionDefaults.PriceSourceSales,
+                SortOrder = 20
+            });
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(deletedId, result.EntityId);
+            Assert.False(await db.PriceGradeOptions.IgnoreQueryFilters().AnyAsync(option => option.Id == incomingId));
+
+            var option = await db.PriceGradeOptions.IgnoreQueryFilters().AsNoTracking().SingleAsync();
+            Assert.Equal(deletedId, option.Id);
+            Assert.Equal("VIP", option.Name);
+            Assert.Equal(SelectionOptionDefaults.PriceSourceSales, option.PriceSource);
+            Assert.Equal(20, option.SortOrder);
+            Assert.True(option.IsActive);
+            Assert.False(option.IsDeleted);
+            Assert.True(option.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SaveItemCategoryOption_ReusesDeletedLooseKeyOptionInsteadOfCreatingNewId()
+    {
+        PrepareAppRoot("georaeplan-item-category-reuse-deleted");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var deletedId = Guid.NewGuid();
+            var incomingId = Guid.NewGuid();
+            db.ItemCategoryOptions.Add(new LocalItemCategoryOption
+            {
+                Id = deletedId,
+                Name = "A3 Copier",
+                SortOrder = 10,
+                Revision = 5,
+                IsActive = false,
+                IsDeleted = true,
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var local = CreateLocalStateService(db);
+
+            var result = await local.SaveItemCategoryOptionAsync(new LocalItemCategoryOption
+            {
+                Id = incomingId,
+                Name = "A3Copier",
+                SortOrder = 20
+            });
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(deletedId, result.EntityId);
+            Assert.False(await db.ItemCategoryOptions.IgnoreQueryFilters().AnyAsync(option => option.Id == incomingId));
+
+            var option = await db.ItemCategoryOptions.IgnoreQueryFilters().AsNoTracking().SingleAsync();
+            Assert.Equal(deletedId, option.Id);
+            Assert.Equal("A3Copier", option.Name);
+            Assert.Equal(20, option.SortOrder);
+            Assert.True(option.IsActive);
+            Assert.False(option.IsDeleted);
+            Assert.True(option.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SaveItemCategoryOption_RenamePropagatesToItemsAndRentalAssetsAsDirty()
     {
         PrepareAppRoot("georaeplan-item-category-rename-propagation");

@@ -8729,6 +8729,107 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Equal(1, await _dbContext.CustomerCategories.IgnoreQueryFilters().CountAsync(category => !category.IsDeleted));
     }
 
+    [Fact]
+    public async Task Push_RejectsSelectionOptionDeleteWhenOnlyNameMatchesDifferentActiveId()
+    {
+        var existingId = Guid.NewGuid();
+        _dbContext.PriceGradeOptions.Add(new PriceGradeOption
+        {
+            Id = existingId,
+            Name = "VIP",
+            PriceSource = "Sales",
+            SortOrder = 10,
+            IsActive = true,
+            IsDeleted = false,
+            UpdatedAtUtc = new DateTime(2026, 6, 23, 0, 0, 0, DateTimeKind.Utc)
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var incomingId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-selection-option-wrong-delete-id",
+            PriceGradeOptions =
+            [
+                new PriceGradeOptionDto
+                {
+                    Id = incomingId,
+                    Name = " VIP ",
+                    PriceSource = "Sales",
+                    SortOrder = 10,
+                    IsActive = false,
+                    IsDeleted = true,
+                    CreatedAtUtc = new DateTime(2026, 6, 23, 0, 1, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 23, 0, 1, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(PriceGradeOption) &&
+            conflict.Reason.Contains("does not exist", StringComparison.OrdinalIgnoreCase));
+        Assert.False(await _dbContext.PriceGradeOptions.IgnoreQueryFilters().AnyAsync(option => option.Id == incomingId));
+
+        var stored = await _dbContext.PriceGradeOptions.IgnoreQueryFilters().SingleAsync(option => option.Id == existingId);
+        Assert.False(stored.IsDeleted);
+        Assert.True(stored.IsActive);
+    }
+
+    [Fact]
+    public async Task Push_RejectsSelectionOptionRecreateWhenDeletedSameNameHasDifferentId()
+    {
+        var deletedId = Guid.NewGuid();
+        _dbContext.PriceGradeOptions.Add(new PriceGradeOption
+        {
+            Id = deletedId,
+            Name = "VIP",
+            PriceSource = "A",
+            SortOrder = 10,
+            IsActive = false,
+            IsDeleted = true,
+            UpdatedAtUtc = new DateTime(2026, 6, 23, 0, 0, 0, DateTimeKind.Utc)
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var incomingId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-selection-option-recreate-deleted-name",
+            PriceGradeOptions =
+            [
+                new PriceGradeOptionDto
+                {
+                    Id = incomingId,
+                    Name = " VIP ",
+                    PriceSource = "Sales",
+                    SortOrder = 20,
+                    IsActive = true,
+                    IsDeleted = false,
+                    CreatedAtUtc = new DateTime(2026, 6, 23, 0, 1, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 23, 0, 1, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(PriceGradeOption) &&
+            conflict.Reason.Contains("Restore", StringComparison.OrdinalIgnoreCase));
+        Assert.False(await _dbContext.PriceGradeOptions.IgnoreQueryFilters().AnyAsync(option => option.Id == incomingId));
+
+        var stored = await _dbContext.PriceGradeOptions.IgnoreQueryFilters().SingleAsync(option => option.Id == deletedId);
+        Assert.True(stored.IsDeleted);
+        Assert.False(stored.IsActive);
+        Assert.Equal("A", stored.PriceSource);
+    }
+
     public void Dispose()
     {
         _dbContext.Dispose();

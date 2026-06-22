@@ -711,6 +711,7 @@ public sealed class SyncController : ControllerBase
             payload,
             _dbContext.PriceGradeOptions,
             entity => entity.Name,
+            entity => entity.IsActive,
             dto => dto.Name,
             (entity, dto) => entity.Apply(dto),
             dto => new PriceGradeOption { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id },
@@ -821,6 +822,7 @@ public sealed class SyncController : ControllerBase
             normalizedPayload,
             _dbContext.TradeTypeOptions,
             entity => entity.Name,
+            entity => entity.IsActive,
             dto => dto.Name,
             (entity, dto) => entity.Apply(dto),
             dto => new TradeTypeOption { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id },
@@ -840,6 +842,7 @@ public sealed class SyncController : ControllerBase
             payload,
             _dbContext.ItemCategoryOptions,
             entity => entity.Name,
+            entity => entity.IsActive,
             dto => dto.Name,
             (entity, dto) => entity.Apply(dto),
             dto => new ItemCategoryOption { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id },
@@ -918,6 +921,7 @@ public sealed class SyncController : ControllerBase
         IEnumerable<TDto> payload,
         DbSet<TEntity> dbSet,
         Func<TEntity, string> entityNameSelector,
+        Func<TEntity, bool> entityActiveSelector,
         Func<TDto, string> dtoNameSelector,
         Action<TEntity, TDto> apply,
         Func<TDto, TEntity> create,
@@ -942,16 +946,37 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            var entity = existingEntities.FirstOrDefault(current => current.Id == dto.Id)
-                ?? existingEntities
-                    .Where(current =>
-                        string.Equals(
-                            NormalizeOptionName(entityNameSelector(current)),
-                            normalizedName,
-                            StringComparison.CurrentCultureIgnoreCase))
-                    .OrderByDescending(current => current.UpdatedAtUtc)
-                    .ThenByDescending(current => current.Revision)
-                    .FirstOrDefault();
+            var entity = existingEntities.FirstOrDefault(current => current.Id == dto.Id);
+            var duplicateByName = existingEntities
+                .Where(current => current.Id != dto.Id)
+                .Where(current =>
+                    string.Equals(
+                        NormalizeOptionName(entityNameSelector(current)),
+                        normalizedName,
+                        StringComparison.CurrentCultureIgnoreCase))
+                .OrderByDescending(current => !current.IsDeleted && entityActiveSelector(current))
+                .ThenByDescending(current => current.UpdatedAtUtc)
+                .ThenByDescending(current => current.Revision)
+                .FirstOrDefault();
+
+            if (entity is null && dto.IsDeleted)
+            {
+                AddClientConflict(dto, entityName, "Option does not exist on server.", result);
+                continue;
+            }
+
+            if (!dto.IsDeleted && duplicateByName is not null)
+            {
+                var duplicateIsActive = !duplicateByName.IsDeleted && entityActiveSelector(duplicateByName);
+                AddClientConflict(
+                    dto,
+                    entityName,
+                    duplicateIsActive
+                        ? "Option name already exists."
+                        : "Option name exists on a deleted or inactive option. Restore the existing option before reusing the name.",
+                    result);
+                continue;
+            }
 
             if (entity is null)
             {
