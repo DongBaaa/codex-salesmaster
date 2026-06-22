@@ -1770,6 +1770,8 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == payment.InvoiceId, ct);
         if (invoice is null || !CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 수금/지급 기록을 영구삭제할 수 없습니다.");
+        if (await _db.Transactions.IgnoreQueryFilters().AnyAsync(current => current.Id == paymentId, ct))
+            return OfficeMutationResult.Denied("연동 거래내역이 남아 있어 수금/지급 기록만 영구삭제할 수 없습니다. 거래내역 영구삭제를 실행하면 연동 수금/지급도 함께 제거됩니다.");
 
         var now = DateTime.UtcNow;
         _db.Payments.Remove(payment);

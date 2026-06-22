@@ -1971,6 +1971,8 @@ public sealed class RecycleBinController : ControllerBase
             return (false, "현재 계정으로 영구삭제할 수 없는 수금/지급 기록입니다.");
         if (!payment.IsDeleted)
             return (false, "활성 상태 수금/지급 기록은 휴지통에서 영구삭제할 수 없습니다.");
+        if (await _dbContext.Transactions.IgnoreQueryFilters().AnyAsync(current => current.Id == paymentId, cancellationToken))
+            return (false, "연동 거래내역이 남아 있어 수금/지급 기록만 영구삭제할 수 없습니다. 거래내역 영구삭제를 실행하면 연동 수금/지급도 함께 제거됩니다.");
 
         var revisionCheck = EnsureRecycleBinMutationRevision(payment, target);
         if (!revisionCheck.Success)
