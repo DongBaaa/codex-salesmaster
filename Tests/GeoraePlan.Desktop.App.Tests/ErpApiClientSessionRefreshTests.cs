@@ -112,6 +112,59 @@ public sealed class ErpApiClientSessionRefreshTests
         Assert.Equal(HttpStatusCode.Forbidden, exception.StatusCode);
     }
 
+    [Fact]
+    public async Task GetSyncStatusAsync_ValidationProblemPayload_ThrowsReadableValidationDetails()
+    {
+        var session = new SessionState();
+        session.SetSession("validation-token", CreateAdminUser(), DateTime.UtcNow.AddDays(1));
+
+        var handler = new ErrorResponseHandler(
+            HttpStatusCode.BadRequest,
+            new
+            {
+                title = "One or more validation errors occurred.",
+                status = 400,
+                detail = "입력값을 확인하세요.",
+                errors = new Dictionary<string, string[]>
+                {
+                    ["InvoiceDate"] = ["날짜가 올바르지 않습니다."],
+                    ["CustomerId"] = ["거래처가 필요합니다."]
+                }
+            });
+        var api = new ErpApiClient(new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://localhost/")
+        }, session);
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => api.GetSyncStatusAsync());
+
+        Assert.Equal(HttpStatusCode.BadRequest, exception.StatusCode);
+        Assert.Contains("입력값을 확인하세요.", exception.Message);
+        Assert.Contains("InvoiceDate", exception.Message);
+        Assert.Contains("날짜가 올바르지 않습니다.", exception.Message);
+        Assert.DoesNotContain("{\"title\"", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("\\u", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GetSyncStatusAsync_EmptyForbiddenPayload_ThrowsReadablePermissionFallback()
+    {
+        var session = new SessionState();
+        session.SetSession("forbidden-token", CreateAdminUser(), DateTime.UtcNow.AddDays(1));
+
+        var handler = new ErrorResponseHandler(HttpStatusCode.Forbidden, payload: null);
+        var api = new ErpApiClient(new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://localhost/")
+        }, session);
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => api.GetSyncStatusAsync());
+
+        Assert.Equal(HttpStatusCode.Forbidden, exception.StatusCode);
+        Assert.Contains("권한", exception.Message);
+        Assert.Contains("관리자", exception.Message);
+    }
+
     private static UserSessionDto CreateAdminUser() => new()
     {
         UserId = Guid.Parse("11111111-2222-3333-4444-555555555555"),
@@ -171,6 +224,27 @@ public sealed class ErpApiClientSessionRefreshTests
         {
             Content = JsonContent.Create(payload)
         };
+    }
+
+    private sealed class ErrorResponseHandler : HttpMessageHandler
+    {
+        private readonly HttpStatusCode _statusCode;
+        private readonly object? _payload;
+
+        public ErrorResponseHandler(HttpStatusCode statusCode, object? payload)
+        {
+            _statusCode = statusCode;
+            _payload = payload;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var response = new HttpResponseMessage(_statusCode);
+            if (_payload is not null)
+                response.Content = JsonContent.Create(_payload);
+
+            return Task.FromResult(response);
+        }
     }
 
     private sealed class ForbiddenPushHandler : HttpMessageHandler

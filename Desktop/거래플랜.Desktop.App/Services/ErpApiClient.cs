@@ -1036,6 +1036,9 @@ public sealed class ErpApiClient
         if (response.StatusCode == HttpStatusCode.Unauthorized)
             return $"401 Unauthorized 로그인 세션이 만료되었거나 권한이 없습니다. 다시 로그인하세요. {trimmedBody}".Trim();
 
+        if (response.StatusCode == HttpStatusCode.Forbidden)
+            return "403 Forbidden 현재 계정에 이 작업을 수행할 권한이 없습니다. 관리자에게 권한 확인을 요청하세요.";
+
         return $"{(int)response.StatusCode} {response.ReasonPhrase} {trimmedBody}".Trim();
     }
 
@@ -1050,19 +1053,31 @@ public sealed class ErpApiClient
             return false;
 
         var parts = new List<string>();
-        if (!string.IsNullOrWhiteSpace(payload.Error))
-            parts.Add(payload.Error.Trim());
-        if (!string.IsNullOrWhiteSpace(payload.Message) &&
-            !parts.Any(part => string.Equals(part, payload.Message.Trim(), StringComparison.OrdinalIgnoreCase)))
-        {
-            parts.Add(payload.Message.Trim());
-        }
+        AddDistinctPart(parts, payload.Error);
+        AddDistinctPart(parts, payload.Message);
+        AddDistinctPart(parts, payload.Detail);
+        AddDistinctPart(parts, payload.Title);
+
+        foreach (var validationError in payload.GetValidationErrorMessages())
+            AddDistinctPart(parts, validationError);
 
         if (parts.Count == 0)
             return false;
 
         message = $"{(int)response.StatusCode} {response.ReasonPhrase} {string.Join(" ", parts)}".Trim();
         return true;
+    }
+
+    private static void AddDistinctPart(List<string> parts, string? value)
+    {
+        var normalized = value?.Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+            return;
+
+        if (parts.Any(part => string.Equals(part, normalized, StringComparison.OrdinalIgnoreCase)))
+            return;
+
+        parts.Add(normalized);
     }
 
     private static bool TryBuildKnownApiErrorMessage(
@@ -1118,5 +1133,32 @@ public sealed class ErpApiClient
         public string? Error { get; set; }
 
         public string? Message { get; set; }
+
+        public string? Title { get; set; }
+
+        public string? Detail { get; set; }
+
+        public Dictionary<string, string[]>? Errors { get; set; }
+
+        public IEnumerable<string> GetValidationErrorMessages()
+        {
+            if (Errors is null || Errors.Count == 0)
+                yield break;
+
+            foreach (var pair in Errors)
+            {
+                var messages = pair.Value
+                    .Where(message => !string.IsNullOrWhiteSpace(message))
+                    .Select(message => message.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (messages.Count == 0)
+                    continue;
+
+                yield return string.IsNullOrWhiteSpace(pair.Key)
+                    ? string.Join(", ", messages)
+                    : $"{pair.Key}: {string.Join(", ", messages)}";
+            }
+        }
     }
 }
