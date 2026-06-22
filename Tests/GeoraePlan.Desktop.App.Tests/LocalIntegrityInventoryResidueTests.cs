@@ -69,6 +69,101 @@ public sealed class LocalIntegrityInventoryResidueTests
         }
     }
 
+    [Fact]
+    public async Task RepairInventoryIntegrityForStartupAsync_DoesNotMutateMixedOfficeInventoryScope()
+    {
+        PrepareAppRoot("georaeplan-local-integrity-mixed-office-repair-guard");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateYeonsuAdminSession();
+            var yeonsuDeletedItemId = Guid.NewGuid();
+            var usenetDeletedItemId = Guid.NewGuid();
+            db.Items.AddRange(
+                new LocalItem
+                {
+                    Id = yeonsuDeletedItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Yeonsu,
+                    NameOriginal = "Yeonsu deleted residue item",
+                    NameMatchKey = "YEONSUDELETEDRESIDUEITEM",
+                    TrackingType = ItemTrackingTypes.Stock,
+                    CurrentStock = 9m,
+                    IsDeleted = true,
+                    CreatedAtUtc = DateTime.UtcNow,
+                    UpdatedAtUtc = DateTime.UtcNow
+                },
+                new LocalItem
+                {
+                    Id = usenetDeletedItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "Usenet deleted residue item",
+                    NameMatchKey = "USENETDELETEDRESIDUEITEM",
+                    TrackingType = ItemTrackingTypes.Stock,
+                    CurrentStock = 7m,
+                    IsDeleted = true,
+                    CreatedAtUtc = DateTime.UtcNow,
+                    UpdatedAtUtc = DateTime.UtcNow
+                });
+            db.ItemWarehouseStocks.AddRange(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = yeonsuDeletedItemId,
+                    WarehouseCode = OfficeCodeCatalog.GetMainWarehouseCode(OfficeCodeCatalog.Yeonsu),
+                    Quantity = 9m,
+                    UpdatedAtUtc = DateTime.UtcNow
+                },
+                new LocalItemWarehouseStock
+                {
+                    ItemId = usenetDeletedItemId,
+                    WarehouseCode = OfficeCodeCatalog.GetMainWarehouseCode(OfficeCodeCatalog.Usenet),
+                    Quantity = 7m,
+                    UpdatedAtUtc = DateTime.UtcNow
+                });
+            await db.SaveChangesAsync();
+
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var report = await service.BuildIntegrityReportAsync(session);
+            Assert.Contains(report.Issues, issue =>
+                issue.Code == "inventory_deleted_item_stock_residue" &&
+                issue.Count == 1 &&
+                issue.EffectiveDetailRows.Any(row => row.Contains("Yeonsu deleted residue item", StringComparison.Ordinal)));
+            Assert.DoesNotContain(report.Issues, issue =>
+                issue.Code == "inventory_deleted_item_stock_residue" &&
+                issue.EffectiveDetailRows.Any(row => row.Contains("Usenet deleted residue item", StringComparison.Ordinal)));
+            Assert.DoesNotContain(report.Issues, issue => issue.Code == "out_of_scope_items");
+
+            var repairResult = await service.RepairInventoryIntegrityForStartupAsync(session);
+
+            Assert.False(repairResult.RepairedAny);
+            Assert.Equal(9m, await db.Items.IgnoreQueryFilters()
+                .Where(item => item.Id == yeonsuDeletedItemId)
+                .Select(item => item.CurrentStock)
+                .SingleAsync());
+            Assert.Equal(7m, await db.Items.IgnoreQueryFilters()
+                .Where(item => item.Id == usenetDeletedItemId)
+                .Select(item => item.CurrentStock)
+                .SingleAsync());
+            Assert.True(await db.ItemWarehouseStocks.AnyAsync(stock =>
+                stock.ItemId == yeonsuDeletedItemId &&
+                stock.WarehouseCode == OfficeCodeCatalog.GetMainWarehouseCode(OfficeCodeCatalog.Yeonsu)));
+            Assert.True(await db.ItemWarehouseStocks.AnyAsync(stock =>
+                stock.ItemId == usenetDeletedItemId &&
+                stock.WarehouseCode == OfficeCodeCatalog.GetMainWarehouseCode(OfficeCodeCatalog.Usenet)));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var root = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");

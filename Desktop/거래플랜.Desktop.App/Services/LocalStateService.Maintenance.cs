@@ -157,7 +157,7 @@ public sealed partial class LocalStateService
 
     public async Task<bool> RebuildInventorySnapshotsForIntegrityAsync(SessionState session, CancellationToken ct = default)
     {
-        if (!CanResetInventoryValue(session))
+        if (!await CanRunGlobalInventoryMaintenanceForCurrentIntegrityScopeAsync(session, ct))
             return false;
 
         await RebuildInventorySnapshotsAsync(
@@ -174,7 +174,7 @@ public sealed partial class LocalStateService
 
     public async Task<InventoryIntegrityRepairResult> RepairInventoryIntegrityForStartupAsync(SessionState session, CancellationToken ct = default)
     {
-        if (!CanResetInventoryValue(session))
+        if (!await CanRunGlobalInventoryMaintenanceForCurrentIntegrityScopeAsync(session, ct))
             return new InventoryIntegrityRepairResult(0, false);
 
         var crossTenantTransferIds = (await _db.InventoryTransfers
@@ -242,6 +242,103 @@ public sealed partial class LocalStateService
         }
 
         return new InventoryIntegrityRepairResult(crossTenantTransferIds.Count, true);
+    }
+
+    private async Task<bool> CanRunGlobalInventoryMaintenanceForCurrentIntegrityScopeAsync(
+        SessionState? session,
+        CancellationToken ct)
+    {
+        if (!CanResetInventoryValue(session) || session is null || !session.IsLoggedIn)
+            return false;
+
+        var integrityTenantCode = ResolveIntegrityTenantCode(session);
+        var integrityOfficeCodes = ResolveIntegrityOfficeCodes(session, integrityTenantCode);
+        var integrityWarehouseCodes = ResolveIntegrityWarehouseCodes(integrityOfficeCodes)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (integrityWarehouseCodes.Count == 0)
+            return false;
+
+        var totalItemCount = await _db.Items
+            .IgnoreQueryFilters()
+            .CountAsync(ct);
+        var scopedItemCount = await ApplyIntegrityItemScope(
+                _db.Items.IgnoreQueryFilters(),
+                integrityTenantCode,
+                integrityOfficeCodes)
+            .CountAsync(ct);
+        if (totalItemCount != scopedItemCount)
+            return false;
+
+        var invoiceWarehouseRows = await _db.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(invoice => !invoice.IsDeleted && invoice.IsLatestVersion && invoice.IsConfirmed)
+            .Select(invoice => new
+            {
+                invoice.SourceWarehouseCode,
+                invoice.ResponsibleOfficeCode,
+                invoice.OfficeCode
+            })
+            .ToListAsync(ct);
+        if (invoiceWarehouseRows.Any(row =>
+                !integrityWarehouseCodes.Contains(NormalizeWarehouseCode(
+                    row.SourceWarehouseCode,
+                    row.ResponsibleOfficeCode,
+                    row.OfficeCode))))
+        {
+            return false;
+        }
+
+        var transferWarehouseRows = await _db.InventoryTransfers
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(transfer => !transfer.IsDeleted)
+            .Select(transfer => new
+            {
+                transfer.FromWarehouseCode,
+                transfer.ToWarehouseCode
+            })
+            .ToListAsync(ct);
+        if (transferWarehouseRows.Any(row =>
+                !integrityWarehouseCodes.Contains(NormalizeWarehouseCode(
+                    row.FromWarehouseCode,
+                    DomainConstants.OfficeUsenet,
+                    DomainConstants.OfficeUsenet)) ||
+                !integrityWarehouseCodes.Contains(NormalizeWarehouseCode(
+                    row.ToWarehouseCode,
+                    DomainConstants.OfficeYeonsu,
+                    DomainConstants.OfficeYeonsu))))
+        {
+            return false;
+        }
+
+        var inventoryWarehouseCodes = new List<string>();
+        inventoryWarehouseCodes.AddRange(await _db.ItemWarehouseStocks
+            .AsNoTracking()
+            .Select(stock => stock.WarehouseCode)
+            .ToListAsync(ct));
+        inventoryWarehouseCodes.AddRange(await _db.InventoryMovements
+            .AsNoTracking()
+            .Select(movement => movement.WarehouseCode)
+            .ToListAsync(ct));
+        inventoryWarehouseCodes.AddRange(await _db.StockLayers
+            .AsNoTracking()
+            .Select(layer => layer.WarehouseCode)
+            .ToListAsync(ct));
+        inventoryWarehouseCodes.AddRange(await _db.CostAllocations
+            .AsNoTracking()
+            .Select(allocation => allocation.WarehouseCode)
+            .ToListAsync(ct));
+        inventoryWarehouseCodes.AddRange(await _db.SerialLedgers
+            .AsNoTracking()
+            .Select(ledger => ledger.WarehouseCode)
+            .ToListAsync(ct));
+
+        return inventoryWarehouseCodes.All(warehouseCode =>
+            integrityWarehouseCodes.Contains(NormalizeWarehouseCode(
+                warehouseCode,
+                ResolveOfficeCodeFromWarehouseCode(warehouseCode),
+                DomainConstants.OfficeUsenet)));
     }
 
     public async Task<SyncOutboxRecoveryResult> RecoverStaleSyncOutboxEntriesAsync(CancellationToken ct = default)
