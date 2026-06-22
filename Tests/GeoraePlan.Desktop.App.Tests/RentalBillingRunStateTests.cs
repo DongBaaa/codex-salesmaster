@@ -55,6 +55,80 @@ public sealed class RentalBillingRunStateTests
     }
 
     [Fact]
+    public async Task StartBilling_AfterHeldRunUsesCurrentTemplateInsteadOfStaleHeldSnapshot()
+    {
+        PrepareAppRoot("georaeplan-rental-held-run-current-template");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Held template refresh customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
+            db.RentalBillingProfiles.Add(CreateBillingProfile(profileId, assetId, customerName, customerId));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+
+            var hold = await service.HoldBillingAsync(
+                profileId,
+                new DateOnly(2026, 5, 25),
+                "템플릿 조정 전 보류",
+                session);
+            Assert.True(hold.Success, hold.Message);
+
+            var profile = await db.RentalBillingProfiles.SingleAsync(current => current.Id == profileId);
+            profile.MonthlyAmount = 130_000m;
+            profile.ItemName = "Adjusted Rental Fee";
+            profile.BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    DisplayItemName = "Adjusted Rental Fee",
+                    BillingLineMode = "묶음",
+                    RepresentativeAssetId = assetId,
+                    Quantity = 1m,
+                    UnitPrice = 130_000m,
+                    Amount = 130_000m,
+                    IncludedAssetIds = [assetId]
+                }
+            });
+            await db.SaveChangesAsync();
+
+            var start = await service.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+
+            Assert.True(start.Success, start.Message);
+            var invoice = await db.Invoices
+                .Include(current => current.Lines)
+                .AsNoTracking()
+                .SingleAsync(current => current.LinkedRentalBillingProfileId == profileId);
+            var line = Assert.Single(invoice.Lines, current => !current.IsDeleted);
+            Assert.StartsWith("사무기기 렌탈대금", line.ItemNameOriginal, StringComparison.Ordinal);
+            Assert.Equal(130_000m, line.LineAmount);
+            Assert.Equal(130_000m, invoice.TotalAmount);
+
+            var persistedProfile = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(current => current.Id == profileId);
+            Assert.Equal(130_000m, persistedProfile.MonthlyAmount);
+            var run = Assert.Single(DeserializeRuns(persistedProfile.BillingRunsJson));
+            var runItem = Assert.Single(run.Items);
+            Assert.Equal("Adjusted Rental Fee", runItem.DisplayItemName);
+            Assert.Equal(130_000m, runItem.Amount);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task StartBilling_BatchesManyIncludedAssetReferencesForInvoiceLineBuild()
     {
         PrepareAppRoot("georaeplan-rental-start-included-assets-batch");

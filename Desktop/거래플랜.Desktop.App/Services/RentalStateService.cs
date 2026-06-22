@@ -9309,6 +9309,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var status = (run.Status ?? string.Empty).Trim();
         return string.IsNullOrWhiteSpace(status) ||
                string.Equals(status, PaymentFlowConstants.BillingStatusPlanned, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(status, PaymentFlowConstants.BillingStatusOnHold, StringComparison.OrdinalIgnoreCase) ||
                string.Equals(status, "예정", StringComparison.OrdinalIgnoreCase);
     }
 
