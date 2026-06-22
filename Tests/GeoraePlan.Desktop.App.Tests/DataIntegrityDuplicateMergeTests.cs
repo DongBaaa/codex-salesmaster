@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using System.Reflection;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
@@ -92,6 +93,106 @@ public sealed class DataIntegrityDuplicateMergeTests
             Assert.Equal(canonicalId, invoice.CustomerId);
             Assert.Equal(canonicalId, profile.CustomerId);
             Assert.True(invoice.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalDbInitializer_MergeBusinessDuplicateCustomers_RepointsRentalAssignmentHistoryCustomerReferences()
+    {
+        PrepareAppRoot("georaeplan-initializer-business-customer-merge-history");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var source = CreateCustomer("15111111-1111-1111-1111-111111111111", "AUTO MERGE CUSTOMER", "123-45-67890");
+            var target = CreateCustomer("15222222-2222-2222-2222-222222222222", "AUTO MERGE CUSTOMER", "123-45-67890");
+            var historyId = Guid.Parse("15333333-3333-3333-3333-333333333333");
+            db.Customers.AddRange(source, target);
+            db.Invoices.AddRange(
+                CreateInitializerInvoice("15444444-4444-4444-4444-444444444444", target.Id, "LOCAL-INIT-BIZ-1"),
+                CreateInitializerInvoice("15555555-5555-5555-5555-555555555555", target.Id, "LOCAL-INIT-BIZ-2"));
+            db.RentalAssetAssignmentHistories.Add(CreateInitializerAssignmentHistory(historyId, source.Id));
+            await db.SaveChangesAsync();
+
+            var method = typeof(LocalDbInitializer).GetMethod(
+                "MergeBusinessDuplicateCustomersAsync",
+                BindingFlags.NonPublic | BindingFlags.Static);
+
+            Assert.NotNull(method);
+
+            var task = method!.Invoke(null, new object?[] { db }) as Task;
+            Assert.NotNull(task);
+            await task!;
+            await db.SaveChangesAsync();
+
+            Assert.False(await db.Customers.IgnoreQueryFilters().AnyAsync(customer => customer.Id == source.Id));
+            var remaining = Assert.Single(await db.Customers.IgnoreQueryFilters()
+                .Where(customer => !customer.IsDeleted && customer.NameOriginal == source.NameOriginal)
+                .ToListAsync());
+            Assert.Equal(target.Id, remaining.Id);
+
+            var history = await db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                .SingleAsync(current => current.Id == historyId);
+            Assert.Equal(target.Id, history.CustomerId);
+            Assert.Equal("AUTO MERGE CUSTOMER", history.CustomerName);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalDbInitializer_MergeDuplicateCustomers_RepointsRentalAssignmentHistoryCustomerReferences()
+    {
+        PrepareAppRoot("georaeplan-initializer-customer-merge-history");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var source = CreateCustomer("16111111-1111-1111-1111-111111111111", "AUTO MERGE CUSTOMER");
+            var target = CreateCustomer("16222222-2222-2222-2222-222222222222", "AUTO MERGE CUSTOMER");
+            var historyId = Guid.Parse("16333333-3333-3333-3333-333333333333");
+            db.Customers.AddRange(source, target);
+            db.Invoices.AddRange(
+                CreateInitializerInvoice("16444444-4444-4444-4444-444444444444", target.Id, "LOCAL-INIT-GENERIC-1"),
+                CreateInitializerInvoice("16555555-5555-5555-5555-555555555555", target.Id, "LOCAL-INIT-GENERIC-2"));
+            db.RentalAssetAssignmentHistories.Add(CreateInitializerAssignmentHistory(historyId, source.Id));
+            await db.SaveChangesAsync();
+
+            var method = typeof(LocalDbInitializer).GetMethod(
+                "MergeDuplicateCustomersAsync",
+                BindingFlags.NonPublic | BindingFlags.Static);
+
+            Assert.NotNull(method);
+
+            var task = method!.Invoke(null, new object?[] { db }) as Task;
+            Assert.NotNull(task);
+            await task!;
+            await db.SaveChangesAsync();
+
+            Assert.False(await db.Customers.IgnoreQueryFilters().AnyAsync(customer => customer.Id == source.Id));
+            var remaining = Assert.Single(await db.Customers.IgnoreQueryFilters()
+                .Where(customer => !customer.IsDeleted && customer.NameOriginal == source.NameOriginal)
+                .ToListAsync());
+            Assert.Equal(target.Id, remaining.Id);
+
+            var history = await db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                .SingleAsync(current => current.Id == historyId);
+            Assert.Equal(target.Id, history.CustomerId);
+            Assert.Equal("AUTO MERGE CUSTOMER", history.CustomerName);
         }
         finally
         {
@@ -339,6 +440,36 @@ public sealed class DataIntegrityDuplicateMergeTests
             NameOriginal = name,
             NameMatchKey = name,
             BusinessNumber = businessNumber,
+            IsDirty = false
+        };
+
+    private static LocalInvoice CreateInitializerInvoice(string id, Guid customerId, string invoiceNumber)
+        => new()
+        {
+            Id = Guid.Parse(id),
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceDate = new DateOnly(2026, 6, 22),
+            InvoiceNumber = invoiceNumber,
+            IsDirty = false
+        };
+
+    private static LocalRentalAssetAssignmentHistory CreateInitializerAssignmentHistory(Guid id, Guid customerId)
+        => new()
+        {
+            Id = id,
+            AssetId = Guid.NewGuid(),
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            CustomerName = "AUTO MERGE CUSTOMER",
+            InstallLocation = "Initializer history site",
+            ItemName = "Initializer history item",
+            ManagementNumber = "LOCAL-INIT-HISTORY-001",
+            IsCurrent = false,
+            IsDeleted = false,
             IsDirty = false
         };
 

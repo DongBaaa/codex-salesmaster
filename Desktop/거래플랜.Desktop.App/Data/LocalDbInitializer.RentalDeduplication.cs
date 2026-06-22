@@ -74,6 +74,7 @@ public static partial class LocalDbInitializer
         var transactions = await db.Transactions.IgnoreQueryFilters().ToListAsync();
         var profiles = await db.RentalBillingProfiles.IgnoreQueryFilters().ToListAsync();
         var assets = await db.RentalAssets.IgnoreQueryFilters().ToListAsync();
+        var assignmentHistories = await db.RentalAssetAssignmentHistories.IgnoreQueryFilters().ToListAsync();
 
         var contractCounts = contracts.GroupBy(current => current.CustomerId).ToDictionary(group => group.Key, group => group.Count());
         var invoiceCounts = invoices.GroupBy(current => current.CustomerId).ToDictionary(group => group.Key, group => group.Count());
@@ -82,6 +83,9 @@ public static partial class LocalDbInitializer
             .GroupBy(current => current.CustomerId!.Value)
             .ToDictionary(group => group.Key, group => group.Count());
         var assetCounts = assets.Where(current => current.CustomerId.HasValue && current.CustomerId.Value != Guid.Empty)
+            .GroupBy(current => current.CustomerId!.Value)
+            .ToDictionary(group => group.Key, group => group.Count());
+        var assignmentHistoryCounts = assignmentHistories.Where(current => current.CustomerId.HasValue && current.CustomerId.Value != Guid.Empty)
             .GroupBy(current => current.CustomerId!.Value)
             .ToDictionary(group => group.Key, group => group.Count());
 
@@ -101,6 +105,7 @@ public static partial class LocalDbInitializer
                 .ThenByDescending(current => transactionCounts.GetValueOrDefault(current.Id))
                 .ThenByDescending(current => profileCounts.GetValueOrDefault(current.Id))
                 .ThenByDescending(current => assetCounts.GetValueOrDefault(current.Id))
+                .ThenByDescending(current => assignmentHistoryCounts.GetValueOrDefault(current.Id))
                 .ThenByDescending(current => current.CustomerMasterId.HasValue && current.CustomerMasterId.Value != Guid.Empty)
                 .ThenByDescending(current => current.UpdatedAtUtc)
                 .ThenBy(current => current.Id)
@@ -137,6 +142,12 @@ public static partial class LocalDbInitializer
                 {
                     asset.CustomerId = canonical.Id;
                     PreserveDirtyStateForStartupMaintenance(asset, now);
+                }
+
+                foreach (var history in assignmentHistories.Where(current => current.CustomerId == duplicate.Id))
+                {
+                    history.CustomerId = canonical.Id;
+                    PreserveDirtyStateForStartupMaintenance(history, now);
                 }
 
                 if ((!canonical.CustomerMasterId.HasValue || canonical.CustomerMasterId.Value == Guid.Empty) && duplicate.CustomerMasterId.HasValue && duplicate.CustomerMasterId.Value != Guid.Empty)

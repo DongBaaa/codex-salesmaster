@@ -153,6 +153,7 @@ public static partial class DbInitializer
         var transactions = await dbContext.Transactions.IgnoreQueryFilters().ToListAsync(cancellationToken);
         var profiles = await dbContext.RentalBillingProfiles.IgnoreQueryFilters().ToListAsync(cancellationToken);
         var assets = await dbContext.RentalAssets.IgnoreQueryFilters().ToListAsync(cancellationToken);
+        var assignmentHistories = await dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().ToListAsync(cancellationToken);
 
         var groups = customers
             .GroupBy(BuildBusinessDuplicateCustomerKey, StringComparer.Ordinal)
@@ -171,12 +172,15 @@ public static partial class DbInitializer
         var assetCounts = assets.Where(current => current.CustomerId.HasValue && current.CustomerId.Value != Guid.Empty)
             .GroupBy(current => current.CustomerId!.Value)
             .ToDictionary(group => group.Key, group => group.Count());
+        var assignmentHistoryCounts = assignmentHistories.Where(current => current.CustomerId.HasValue && current.CustomerId.Value != Guid.Empty)
+            .GroupBy(current => current.CustomerId!.Value)
+            .ToDictionary(group => group.Key, group => group.Count());
 
         var now = DateTime.UtcNow;
         foreach (var group in groups)
         {
             var canonical = group
-                .OrderByDescending(current => CountCustomerReferenceScore(current.Id, contractCounts, invoiceCounts, transactionCounts, profileCounts, assetCounts))
+                .OrderByDescending(current => CountCustomerReferenceScore(current.Id, contractCounts, invoiceCounts, transactionCounts, profileCounts, assetCounts, assignmentHistoryCounts))
                 .ThenByDescending(CountFilledCustomerValues)
                 .ThenByDescending(current => (current.Notes ?? string.Empty).Length)
                 .ThenByDescending(current => NormalizeComparableText(current.Address).Length)
@@ -215,6 +219,12 @@ public static partial class DbInitializer
                 {
                     asset.CustomerId = canonical.Id;
                     TouchTrackedEntity(asset, now);
+                }
+
+                foreach (var history in assignmentHistories.Where(current => current.CustomerId == duplicate.Id))
+                {
+                    history.CustomerId = canonical.Id;
+                    TouchTrackedEntity(history, now);
                 }
 
                 changed |= MergeBusinessCustomerValues(canonical, duplicate);
@@ -310,12 +320,14 @@ public static partial class DbInitializer
         IReadOnlyDictionary<Guid, int> invoiceCounts,
         IReadOnlyDictionary<Guid, int> transactionCounts,
         IReadOnlyDictionary<Guid, int> profileCounts,
-        IReadOnlyDictionary<Guid, int> assetCounts)
+        IReadOnlyDictionary<Guid, int> assetCounts,
+        IReadOnlyDictionary<Guid, int> assignmentHistoryCounts)
         => contractCounts.GetValueOrDefault(customerId)
            + invoiceCounts.GetValueOrDefault(customerId)
            + transactionCounts.GetValueOrDefault(customerId)
            + profileCounts.GetValueOrDefault(customerId)
-           + assetCounts.GetValueOrDefault(customerId);
+           + assetCounts.GetValueOrDefault(customerId)
+           + assignmentHistoryCounts.GetValueOrDefault(customerId);
 
     private static int CountItemReferenceScore(
         Guid itemId,

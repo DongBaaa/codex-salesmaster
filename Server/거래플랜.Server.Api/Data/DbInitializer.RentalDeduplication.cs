@@ -78,6 +78,7 @@ public static partial class DbInitializer
         var transactions = await dbContext.Transactions.IgnoreQueryFilters().ToListAsync(cancellationToken);
         var profiles = await dbContext.RentalBillingProfiles.IgnoreQueryFilters().ToListAsync(cancellationToken);
         var assets = await dbContext.RentalAssets.IgnoreQueryFilters().ToListAsync(cancellationToken);
+        var assignmentHistories = await dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().ToListAsync(cancellationToken);
 
         var contractCounts = contracts.GroupBy(current => current.CustomerId).ToDictionary(group => group.Key, group => group.Count());
         var invoiceCounts = invoices.GroupBy(current => current.CustomerId).ToDictionary(group => group.Key, group => group.Count());
@@ -86,6 +87,9 @@ public static partial class DbInitializer
             .GroupBy(current => current.CustomerId!.Value)
             .ToDictionary(group => group.Key, group => group.Count());
         var assetCounts = assets.Where(current => current.CustomerId.HasValue && current.CustomerId.Value != Guid.Empty)
+            .GroupBy(current => current.CustomerId!.Value)
+            .ToDictionary(group => group.Key, group => group.Count());
+        var assignmentHistoryCounts = assignmentHistories.Where(current => current.CustomerId.HasValue && current.CustomerId.Value != Guid.Empty)
             .GroupBy(current => current.CustomerId!.Value)
             .ToDictionary(group => group.Key, group => group.Count());
 
@@ -105,6 +109,7 @@ public static partial class DbInitializer
                 .ThenByDescending(current => transactionCounts.GetValueOrDefault(current.Id))
                 .ThenByDescending(current => profileCounts.GetValueOrDefault(current.Id))
                 .ThenByDescending(current => assetCounts.GetValueOrDefault(current.Id))
+                .ThenByDescending(current => assignmentHistoryCounts.GetValueOrDefault(current.Id))
                 .ThenByDescending(current => current.CustomerMasterId.HasValue && current.CustomerMasterId.Value != Guid.Empty)
                 .ThenByDescending(current => current.UpdatedAtUtc)
                 .ThenBy(current => current.Id)
@@ -141,6 +146,12 @@ public static partial class DbInitializer
                 {
                     asset.CustomerId = canonical.Id;
                     TouchTrackedEntity(asset, now);
+                }
+
+                foreach (var history in assignmentHistories.Where(current => current.CustomerId == duplicate.Id))
+                {
+                    history.CustomerId = canonical.Id;
+                    TouchTrackedEntity(history, now);
                 }
 
                 if ((!canonical.CustomerMasterId.HasValue || canonical.CustomerMasterId.Value == Guid.Empty) && duplicate.CustomerMasterId.HasValue && duplicate.CustomerMasterId.Value != Guid.Empty)

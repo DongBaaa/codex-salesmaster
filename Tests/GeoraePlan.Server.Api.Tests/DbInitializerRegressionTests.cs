@@ -395,6 +395,78 @@ public sealed class DbInitializerRegressionTests : IDisposable
     }
 
     [Fact]
+    public async Task MergeBusinessDuplicateCustomersAsync_RepointsRentalAssignmentHistoryCustomerReferences()
+    {
+        var source = CreateDuplicateMergeCustomer(Guid.Parse("12111111-1111-1111-1111-111111111111"), businessNumber: "123-45-67890");
+        var target = CreateDuplicateMergeCustomer(Guid.Parse("12222222-2222-2222-2222-222222222222"), businessNumber: "123-45-67890");
+        var historyId = Guid.Parse("12333333-3333-3333-3333-333333333333");
+        _dbContext.Customers.AddRange(source, target);
+        _dbContext.Invoices.AddRange(
+            CreateInitializerInvoice(Guid.Parse("12444444-4444-4444-4444-444444444444"), target.Id, "INIT-MERGE-BIZ-1"),
+            CreateInitializerInvoice(Guid.Parse("12555555-5555-5555-5555-555555555555"), target.Id, "INIT-MERGE-BIZ-2"));
+        _dbContext.RentalAssetAssignmentHistories.Add(CreateInitializerAssignmentHistory(historyId, source.Id));
+        await _dbContext.SaveChangesAsync();
+
+        var method = typeof(DbInitializer).GetMethod(
+            "MergeBusinessDuplicateCustomersAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
+        await _dbContext.SaveChangesAsync();
+
+        Assert.False(await _dbContext.Customers.IgnoreQueryFilters().AnyAsync(customer => customer.Id == source.Id));
+        var remaining = Assert.Single(await _dbContext.Customers.IgnoreQueryFilters()
+            .Where(customer => !customer.IsDeleted && customer.NameOriginal == source.NameOriginal)
+            .ToListAsync());
+        Assert.Equal(target.Id, remaining.Id);
+
+        var history = await _dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == historyId);
+        Assert.Equal(target.Id, history.CustomerId);
+        Assert.Equal("AUTO MERGE CUSTOMER", history.CustomerName);
+    }
+
+    [Fact]
+    public async Task MergeDuplicateCustomersAsync_RepointsRentalAssignmentHistoryCustomerReferences()
+    {
+        var source = CreateDuplicateMergeCustomer(Guid.Parse("13111111-1111-1111-1111-111111111111"), businessNumber: string.Empty);
+        var target = CreateDuplicateMergeCustomer(Guid.Parse("13222222-2222-2222-2222-222222222222"), businessNumber: string.Empty);
+        var historyId = Guid.Parse("13333333-3333-3333-3333-333333333333");
+        _dbContext.Customers.AddRange(source, target);
+        _dbContext.Invoices.AddRange(
+            CreateInitializerInvoice(Guid.Parse("13444444-4444-4444-4444-444444444444"), target.Id, "INIT-MERGE-GENERIC-1"),
+            CreateInitializerInvoice(Guid.Parse("13555555-5555-5555-5555-555555555555"), target.Id, "INIT-MERGE-GENERIC-2"));
+        _dbContext.RentalAssetAssignmentHistories.Add(CreateInitializerAssignmentHistory(historyId, source.Id));
+        await _dbContext.SaveChangesAsync();
+
+        var method = typeof(DbInitializer).GetMethod(
+            "MergeDuplicateCustomersAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
+        await _dbContext.SaveChangesAsync();
+
+        Assert.False(await _dbContext.Customers.IgnoreQueryFilters().AnyAsync(customer => customer.Id == source.Id));
+        var remaining = Assert.Single(await _dbContext.Customers.IgnoreQueryFilters()
+            .Where(customer => !customer.IsDeleted && customer.NameOriginal == source.NameOriginal)
+            .ToListAsync());
+        Assert.Equal(target.Id, remaining.Id);
+
+        var history = await _dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == historyId);
+        Assert.Equal(target.Id, history.CustomerId);
+        Assert.Equal("AUTO MERGE CUSTOMER", history.CustomerName);
+    }
+
+    [Fact]
     public async Task EnsureRentalAssetsTableAsync_AllowsDeletedNaturalKeyDuplicates_ButBlocksActiveDuplicates()
     {
         var method = typeof(DbInitializer).GetMethod(
@@ -1171,6 +1243,54 @@ public sealed class DbInitializerRegressionTests : IDisposable
         Assert.Contains("LogBestEffortSchemaWarning", combinedSource, StringComparison.Ordinal);
         Assert.Contains("Best-effort schema operation failed", combinedSource, StringComparison.Ordinal);
     }
+
+    private static Customer CreateDuplicateMergeCustomer(Guid id, string businessNumber)
+        => new()
+        {
+            Id = id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "AUTO MERGE CUSTOMER",
+            NameMatchKey = "AUTOMERGECUSTOMER",
+            BusinessNumber = businessNumber,
+            TradeType = CustomerClassificationNormalizer.Sales,
+            CreatedAtUtc = new DateTime(2026, 6, 22, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 22, 0, 0, 0, DateTimeKind.Utc)
+        };
+
+    private static Invoice CreateInitializerInvoice(Guid id, Guid customerId, string invoiceNumber)
+        => new()
+        {
+            Id = id,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = invoiceNumber,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 22),
+            TotalAmount = 1000m,
+            SupplyAmount = 1000m,
+            IsDeleted = false
+        };
+
+    private static RentalAssetAssignmentHistory CreateInitializerAssignmentHistory(Guid id, Guid customerId)
+        => new()
+        {
+            Id = id,
+            AssetId = Guid.NewGuid(),
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            CustomerName = "AUTO MERGE CUSTOMER",
+            InstallLocation = "Initializer history site",
+            ItemName = "Initializer history item",
+            ManagementNumber = "INIT-HISTORY-001",
+            IsCurrent = false,
+            IsDeleted = false
+        };
 
     public void Dispose()
     {
