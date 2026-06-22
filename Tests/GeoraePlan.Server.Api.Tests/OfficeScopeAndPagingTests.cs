@@ -388,6 +388,104 @@ public sealed class OfficeScopeAndPagingTests : IDisposable
     }
 
     [Fact]
+    public async Task OfficeOnlyUser_OperationalScopesHideSharedResponsibleRows_WhenOwnerOfficeBelongsToAnotherTenant()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet_user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var leakedCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "MISMATCH-SHARED-CUSTOMER",
+            NameMatchKey = "MISMATCHSHAREDCUSTOMER",
+            TradeType = "Sales"
+        };
+        var leakedInvoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = leakedCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Shared,
+            InvoiceNumber = "MISMATCH-SHARED-INVOICE",
+            InvoiceDate = new DateOnly(2026, 6, 23)
+        };
+        var leakedProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Shared,
+            ProfileKey = "MISMATCH-SHARED-PROFILE",
+            CustomerId = leakedCustomer.Id,
+            CustomerName = leakedCustomer.NameOriginal
+        };
+
+        dbContext.Customers.Add(leakedCustomer);
+        dbContext.Invoices.Add(leakedInvoice);
+        dbContext.Payments.Add(new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = leakedInvoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 23),
+            Amount = 100m,
+            Note = "MISMATCH-SHARED-PAYMENT"
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = leakedCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Shared,
+            TransactionKind = "MISMATCH-SHARED-TRANSACTION",
+            ReceiptTotal = 100m
+        });
+        dbContext.RentalBillingProfiles.Add(leakedProfile);
+        dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Shared,
+            AssetKey = "MISMATCH-SHARED-ASSET",
+            CustomerId = leakedCustomer.Id,
+            BillingProfileId = leakedProfile.Id
+        });
+        dbContext.RentalBillingLogs.Add(new RentalBillingLog
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Shared,
+            BillingProfileId = leakedProfile.Id,
+            BillingYearMonth = "2026-06"
+        });
+        await dbContext.SaveChangesAsync();
+
+        var service = new OfficeScopeService(currentUser, dbContext);
+
+        Assert.False(service.CanReadOfficeForCustomers(leakedCustomer.ResponsibleOfficeCode, leakedCustomer.TenantCode, leakedCustomer.OfficeCode));
+        Assert.Empty(await service.ApplyCustomerScope(dbContext.Customers.AsNoTracking()).ToListAsync());
+        Assert.Empty(await service.ApplyInvoiceScope(dbContext.Invoices.AsNoTracking()).ToListAsync());
+        Assert.Empty(await service.ApplyPaymentScope(dbContext.Payments.AsNoTracking().Include(payment => payment.Invoice)).ToListAsync());
+        Assert.Empty(await service.ApplyTransactionScope(dbContext.Transactions.AsNoTracking()).ToListAsync());
+        Assert.Empty(await service.ApplyRentalBillingProfileScope(dbContext.RentalBillingProfiles.AsNoTracking()).ToListAsync());
+        Assert.Empty(await service.ApplyRentalAssetScope(dbContext.RentalAssets.AsNoTracking()).ToListAsync());
+        Assert.Empty(await service.ApplyRentalBillingLogScope(dbContext.RentalBillingLogs.AsNoTracking()).ToListAsync());
+    }
+
+    [Fact]
     public async Task OfficeOnlyUser_OperationalScopesUseOwnerOffice_WhenResponsibleOfficeIsBlank()
     {
         var currentUser = new TestCurrentUserContext

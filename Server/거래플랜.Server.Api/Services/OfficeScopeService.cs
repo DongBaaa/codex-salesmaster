@@ -257,9 +257,14 @@ public sealed class OfficeScopeService
 
         var tenantCode = CurrentTenantCode;
         var readableOffices = ResolveReadableOfficeCodes(DataArea.Customers);
+        var tenantOffices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode);
         return query.Where(entity =>
             entity.TenantCode == tenantCode &&
-            (entity.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
+            ((entity.ResponsibleOfficeCode == OfficeCodeCatalog.Shared &&
+              (entity.OfficeCode == OfficeCodeCatalog.Shared ||
+               entity.OfficeCode == null ||
+               entity.OfficeCode == string.Empty ||
+               tenantOffices.Contains(entity.OfficeCode))) ||
              readableOffices.Contains(entity.ResponsibleOfficeCode) ||
              ((entity.ResponsibleOfficeCode == null || entity.ResponsibleOfficeCode == string.Empty) &&
               readableOffices.Contains(entity.OfficeCode))));
@@ -280,10 +285,15 @@ public sealed class OfficeScopeService
 
         var tenantCode = CurrentTenantCode;
         var readableOffices = ResolveReadableOfficeCodes(DataArea.Contracts);
+        var tenantOffices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode);
         return query.Where(entity =>
             entity.Customer != null &&
             entity.Customer.TenantCode == tenantCode &&
-            (entity.Customer.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
+            ((entity.Customer.ResponsibleOfficeCode == OfficeCodeCatalog.Shared &&
+              (entity.Customer.OfficeCode == OfficeCodeCatalog.Shared ||
+               entity.Customer.OfficeCode == null ||
+               entity.Customer.OfficeCode == string.Empty ||
+               tenantOffices.Contains(entity.Customer.OfficeCode))) ||
              readableOffices.Contains(entity.Customer.ResponsibleOfficeCode) ||
              ((entity.Customer.ResponsibleOfficeCode == null || entity.Customer.ResponsibleOfficeCode == string.Empty) &&
               readableOffices.Contains(entity.Customer.OfficeCode))));
@@ -316,9 +326,14 @@ public sealed class OfficeScopeService
 
         var tenantCode = CurrentTenantCode;
         var readableOffices = ResolveReadableOfficeCodes(DataArea.Invoices);
+        var tenantOffices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode);
         return query.Where(entity =>
             entity.TenantCode == tenantCode &&
-            (entity.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
+            ((entity.ResponsibleOfficeCode == OfficeCodeCatalog.Shared &&
+              (entity.OfficeCode == OfficeCodeCatalog.Shared ||
+               entity.OfficeCode == null ||
+               entity.OfficeCode == string.Empty ||
+               tenantOffices.Contains(entity.OfficeCode))) ||
              readableOffices.Contains(entity.ResponsibleOfficeCode) ||
              ((entity.ResponsibleOfficeCode == null || entity.ResponsibleOfficeCode == string.Empty) &&
               readableOffices.Contains(entity.OfficeCode))));
@@ -339,10 +354,15 @@ public sealed class OfficeScopeService
 
         var tenantCode = CurrentTenantCode;
         var readableOffices = ResolveReadableOfficeCodes(DataArea.Payments);
+        var tenantOffices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode);
         return query.Where(entity =>
             entity.Invoice != null &&
             entity.Invoice.TenantCode == tenantCode &&
-            (entity.Invoice.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
+            ((entity.Invoice.ResponsibleOfficeCode == OfficeCodeCatalog.Shared &&
+              (entity.Invoice.OfficeCode == OfficeCodeCatalog.Shared ||
+               entity.Invoice.OfficeCode == null ||
+               entity.Invoice.OfficeCode == string.Empty ||
+               tenantOffices.Contains(entity.Invoice.OfficeCode))) ||
              readableOffices.Contains(entity.Invoice.ResponsibleOfficeCode) ||
              ((entity.Invoice.ResponsibleOfficeCode == null || entity.Invoice.ResponsibleOfficeCode == string.Empty) &&
               readableOffices.Contains(entity.Invoice.OfficeCode))));
@@ -355,9 +375,14 @@ public sealed class OfficeScopeService
 
         var tenantCode = CurrentTenantCode;
         var readableOffices = ResolveReadableOfficeCodes(DataArea.Payments);
+        var tenantOffices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode);
         return query.Where(entity =>
             entity.TenantCode == tenantCode &&
-            (entity.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
+            ((entity.ResponsibleOfficeCode == OfficeCodeCatalog.Shared &&
+              (entity.OfficeCode == OfficeCodeCatalog.Shared ||
+               entity.OfficeCode == null ||
+               entity.OfficeCode == string.Empty ||
+               tenantOffices.Contains(entity.OfficeCode))) ||
              readableOffices.Contains(entity.ResponsibleOfficeCode) ||
              ((entity.ResponsibleOfficeCode == null || entity.ResponsibleOfficeCode == string.Empty) &&
               readableOffices.Contains(entity.OfficeCode))));
@@ -370,10 +395,15 @@ public sealed class OfficeScopeService
 
         var tenantCode = CurrentTenantCode;
         var readableOffices = ResolveReadableOfficeCodes(DataArea.Payments);
+        var tenantOffices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode);
         return query.Where(entity =>
             entity.Transaction != null &&
             entity.Transaction.TenantCode == tenantCode &&
-            (entity.Transaction.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
+            ((entity.Transaction.ResponsibleOfficeCode == OfficeCodeCatalog.Shared &&
+              (entity.Transaction.OfficeCode == OfficeCodeCatalog.Shared ||
+               entity.Transaction.OfficeCode == null ||
+               entity.Transaction.OfficeCode == string.Empty ||
+               tenantOffices.Contains(entity.Transaction.OfficeCode))) ||
              readableOffices.Contains(entity.Transaction.ResponsibleOfficeCode) ||
              ((entity.Transaction.ResponsibleOfficeCode == null || entity.Transaction.ResponsibleOfficeCode == string.Empty) &&
               readableOffices.Contains(entity.Transaction.OfficeCode))));
@@ -407,9 +437,14 @@ public sealed class OfficeScopeService
 
         var tenantCode = CurrentTenantCode;
         var readableOffices = ResolveReadableOfficeCodes(DataArea.Rentals);
+        var tenantOffices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode);
         return query.Where(entity =>
             entity.TenantCode == tenantCode &&
-            (entity.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
+            ((entity.ResponsibleOfficeCode == OfficeCodeCatalog.Shared &&
+              (entity.OfficeCode == OfficeCodeCatalog.Shared ||
+               entity.OfficeCode == null ||
+               entity.OfficeCode == string.Empty ||
+               tenantOffices.Contains(entity.OfficeCode))) ||
              readableOffices.Contains(entity.ResponsibleOfficeCode) ||
              ((entity.ResponsibleOfficeCode == null || entity.ResponsibleOfficeCode == string.Empty) &&
               readableOffices.Contains(entity.OfficeCode))));
@@ -422,9 +457,14 @@ public sealed class OfficeScopeService
 
         var tenantCode = CurrentTenantCode;
         var readableOffices = ResolveReadableOfficeCodes(DataArea.Rentals);
+        var tenantOffices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode);
         return query.Where(entity =>
             entity.TenantCode == tenantCode &&
-            (entity.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
+            ((entity.ResponsibleOfficeCode == OfficeCodeCatalog.Shared &&
+              (entity.OfficeCode == OfficeCodeCatalog.Shared ||
+               entity.OfficeCode == null ||
+               entity.OfficeCode == string.Empty ||
+               tenantOffices.Contains(entity.OfficeCode))) ||
              readableOffices.Contains(entity.ResponsibleOfficeCode) ||
              ((entity.ResponsibleOfficeCode == null || entity.ResponsibleOfficeCode == string.Empty) &&
               readableOffices.Contains(entity.OfficeCode))));
@@ -437,9 +477,14 @@ public sealed class OfficeScopeService
 
         var tenantCode = CurrentTenantCode;
         var readableOffices = ResolveReadableOfficeCodes(DataArea.Rentals);
+        var tenantOffices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode);
         return query.Where(entity =>
             entity.TenantCode == tenantCode &&
-            (entity.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
+            ((entity.ResponsibleOfficeCode == OfficeCodeCatalog.Shared &&
+              (entity.OfficeCode == OfficeCodeCatalog.Shared ||
+               entity.OfficeCode == null ||
+               entity.OfficeCode == string.Empty ||
+               tenantOffices.Contains(entity.OfficeCode))) ||
              readableOffices.Contains(entity.ResponsibleOfficeCode) ||
              ((entity.ResponsibleOfficeCode == null || entity.ResponsibleOfficeCode == string.Empty) &&
               readableOffices.Contains(entity.OfficeCode))));
@@ -452,9 +497,14 @@ public sealed class OfficeScopeService
 
         var tenantCode = CurrentTenantCode;
         var readableOffices = ResolveReadableOfficeCodes(DataArea.Rentals);
+        var tenantOffices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode);
         return query.Where(entity =>
             entity.TenantCode == tenantCode &&
-            (entity.ResponsibleOfficeCode == OfficeCodeCatalog.Shared ||
+            ((entity.ResponsibleOfficeCode == OfficeCodeCatalog.Shared &&
+              (entity.OfficeCode == OfficeCodeCatalog.Shared ||
+               entity.OfficeCode == null ||
+               entity.OfficeCode == string.Empty ||
+               tenantOffices.Contains(entity.OfficeCode))) ||
              readableOffices.Contains(entity.ResponsibleOfficeCode) ||
              ((entity.ResponsibleOfficeCode == null || entity.ResponsibleOfficeCode == string.Empty) &&
               readableOffices.Contains(entity.OfficeCode))));
