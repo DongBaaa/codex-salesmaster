@@ -180,12 +180,10 @@ public sealed class SettingsViewModel : ObservableObject
             var result = await _updateService.CheckForUpdatesAsync();
             CurrentVersion = result.CurrentVersion;
             LatestVersion = result.LatestVersion;
-            UpdateNotes = string.IsNullOrWhiteSpace(result.Package?.Notes)
-                ? "배포 메모가 없습니다."
-                : result.Package.Notes;
+            UpdateNotes = BuildUpdateNotes(result);
             UpdateStatusMessage = result.Message;
             _pendingAndroidUpdate = result.Package;
-            IsUpdateAvailable = result.IsUpdateAvailable;
+            IsUpdateAvailable = result.IsUpdateAvailable || result.RequiresImmediateUpdate;
 
             if (userInitiated)
                 StatusMessage = result.Message;
@@ -202,5 +200,20 @@ public sealed class SettingsViewModel : ObservableObject
         {
             IsCheckingForUpdate = false;
         }
+    }
+
+    private static string BuildUpdateNotes(MobileAppUpdateCheckResult result)
+    {
+        var notes = string.IsNullOrWhiteSpace(result.Package?.Notes)
+            ? "배포 메모가 없습니다."
+            : result.Package.Notes;
+
+        if (result.Package?.Mandatory == true)
+            notes += $"{Environment.NewLine}{Environment.NewLine}필수 업데이트입니다.";
+
+        if (!string.IsNullOrWhiteSpace(result.MinimumSupportedVersion))
+            notes += $"{Environment.NewLine}서버 최소 지원 버전: {result.MinimumSupportedVersion}";
+
+        return notes;
     }
 }

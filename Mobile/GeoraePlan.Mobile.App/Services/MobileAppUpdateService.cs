@@ -42,16 +42,26 @@ public sealed class MobileAppUpdateService
 
             var latestVersion = NormalizeVersionText(package.Version);
             var isUpdateAvailable = CompareVersions(latestVersion, currentVersion) > 0;
+            var minimumSupportedVersion = ResolveMinimumSupportedVersion(package, latestVersion);
+            var isBelowMinimumSupportedVersion =
+                !string.IsNullOrWhiteSpace(minimumSupportedVersion) &&
+                CompareVersions(currentVersion, minimumSupportedVersion) < 0;
 
             return new MobileAppUpdateCheckResult
             {
                 CurrentVersion = currentVersion,
                 LatestVersion = latestVersion,
+                MinimumSupportedVersion = minimumSupportedVersion,
                 IsUpdateAvailable = isUpdateAvailable,
+                IsBelowMinimumSupportedVersion = isBelowMinimumSupportedVersion,
                 Package = package,
-                Message = isUpdateAvailable
-                    ? $"새 안드로이드 버전 {latestVersion}이 준비되어 있습니다."
-                    : $"현재 버전({currentVersion})이 최신입니다."
+                Message = BuildUpdateMessage(
+                    currentVersion,
+                    latestVersion,
+                    minimumSupportedVersion,
+                    isUpdateAvailable,
+                    isBelowMinimumSupportedVersion,
+                    package.Mandatory)
             };
         }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
@@ -241,6 +251,35 @@ public sealed class MobileAppUpdateService
         return leftVersion.CompareTo(rightVersion);
     }
 
+    private static string ResolveMinimumSupportedVersion(AppUpdatePackageDto package, string latestVersion)
+    {
+        if (!string.IsNullOrWhiteSpace(package.MinimumSupportedVersion))
+            return NormalizeVersionText(package.MinimumSupportedVersion);
+
+        return package.Mandatory ? latestVersion : string.Empty;
+    }
+
+    private static string BuildUpdateMessage(
+        string currentVersion,
+        string latestVersion,
+        string minimumSupportedVersion,
+        bool isUpdateAvailable,
+        bool isBelowMinimumSupportedVersion,
+        bool isMandatory)
+    {
+        if (isBelowMinimumSupportedVersion)
+        {
+            return $"현재 안드로이드 버전({currentVersion})은 서버 최소 지원 버전({minimumSupportedVersion})보다 낮아 업데이트가 필요합니다. 최신 버전 {latestVersion}을 설치하세요.";
+        }
+
+        if (isUpdateAvailable && isMandatory)
+            return $"필수 안드로이드 업데이트 {latestVersion}이 준비되어 있습니다.";
+
+        return isUpdateAvailable
+            ? $"새 안드로이드 버전 {latestVersion}이 준비되어 있습니다."
+            : $"현재 버전({currentVersion})이 최신입니다.";
+    }
+
     private static string NormalizeVersionText(string raw)
     {
         var normalized = (raw ?? string.Empty).Trim();
@@ -259,7 +298,10 @@ public sealed class MobileAppUpdateCheckResult
 {
     public string CurrentVersion { get; set; } = string.Empty;
     public string LatestVersion { get; set; } = string.Empty;
+    public string MinimumSupportedVersion { get; set; } = string.Empty;
     public bool IsUpdateAvailable { get; set; }
+    public bool IsBelowMinimumSupportedVersion { get; set; }
+    public bool RequiresImmediateUpdate => IsBelowMinimumSupportedVersion || (IsUpdateAvailable && Package?.Mandatory == true);
     public string Message { get; set; } = string.Empty;
     public AppUpdatePackageDto? Package { get; set; }
 }

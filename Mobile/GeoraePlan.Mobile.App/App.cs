@@ -188,22 +188,31 @@ public sealed class App : Application
             if (!result.IsUpdateAvailable || result.Package is null)
                 return;
 
-            var lastPromptedVersion = Preferences.Default.Get(LastPromptedMobileVersionKey, string.Empty);
-            if (string.Equals(lastPromptedVersion, result.LatestVersion, StringComparison.OrdinalIgnoreCase))
-                return;
+            if (!result.RequiresImmediateUpdate)
+            {
+                var lastPromptedVersion = Preferences.Default.Get(LastPromptedMobileVersionKey, string.Empty);
+                if (string.Equals(lastPromptedVersion, result.LatestVersion, StringComparison.OrdinalIgnoreCase))
+                    return;
 
-            Preferences.Default.Set(LastPromptedMobileVersionKey, result.LatestVersion);
+                Preferences.Default.Set(LastPromptedMobileVersionKey, result.LatestVersion);
+            }
 
             await MainThread.InvokeOnMainThreadAsync(async () =>
             {
                 if (Current?.MainPage is null)
                     return;
 
+                var promptTitle = result.RequiresImmediateUpdate ? "필수 업데이트" : "업데이트 알림";
+                var promptMessage = result.RequiresImmediateUpdate
+                    ? $"{result.Message}{Environment.NewLine}{Environment.NewLine}업무 데이터 오류를 막기 위해 최신 APK 설치를 진행해 주세요."
+                    : $"안드로이드 버전 {result.LatestVersion}이 준비되었습니다.{Environment.NewLine}{Environment.NewLine}지금 설치하시겠습니까?";
+                var cancelText = result.RequiresImmediateUpdate ? "닫기" : "나중에";
+
                 var installNow = await Current.MainPage.DisplayAlert(
-                    "업데이트 알림",
-                    $"안드로이드 버전 {result.LatestVersion}이 준비되었습니다.{Environment.NewLine}{Environment.NewLine}지금 설치하시겠습니까?",
+                    promptTitle,
+                    promptMessage,
                     "설치",
-                    "나중에");
+                    cancelText);
 
                 if (!installNow)
                     return;

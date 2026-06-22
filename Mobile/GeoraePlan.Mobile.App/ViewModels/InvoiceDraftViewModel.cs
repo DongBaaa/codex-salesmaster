@@ -1301,23 +1301,15 @@ public sealed class InvoiceDraftViewModel : ObservableObject
 
         var snapshot = _sessionStore.GetSnapshot();
         _sessionOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(snapshot.OfficeCode, OfficeCodeCatalog.Usenet);
-        _sessionTenantCode = string.IsNullOrWhiteSpace(snapshot.TenantCode) ? TenantScopeCatalog.UsenetGroup : snapshot.TenantCode;
+        _sessionTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(snapshot.TenantCode, _sessionOfficeCode);
         _sessionUsername = snapshot.Username ?? string.Empty;
 
-        var options = new List<string>();
-        if (snapshot.IsAdmin)
-        {
+        var options = ResolveWritableInvoiceOfficeCodes(snapshot, _sessionOfficeCode, _sessionTenantCode)
+            .Select(code => OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(code, _sessionOfficeCode))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (options.Count == 0)
             options.Add(_sessionOfficeCode);
-            foreach (var code in OfficeCodeCatalog.AllScopes)
-            {
-                if (!options.Contains(code, StringComparer.OrdinalIgnoreCase))
-                    options.Add(code);
-            }
-        }
-        else
-        {
-            options.Add(_sessionOfficeCode);
-        }
 
         InvoiceOfficeOptions.Clear();
         foreach (var code in options)
@@ -1334,6 +1326,24 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         OnPropertyChanged(nameof(CanChooseInvoiceOffice));
         OnPropertyChanged(nameof(SelectedInvoiceOfficeSummary));
         RefreshSourceWarehouseOptions();
+    }
+
+    private static IReadOnlyList<string> ResolveWritableInvoiceOfficeCodes(
+        SessionSnapshot snapshot,
+        string sessionOfficeCode,
+        string sessionTenantCode)
+    {
+        var scopeType = TenantScopeCatalog.NormalizeScopeTypeOrDefault(
+            snapshot.ScopeType,
+            snapshot.IsAdmin ? TenantScopeCatalog.ScopeAdmin : TenantScopeCatalog.ScopeOfficeOnly);
+
+        if (snapshot.IsAdmin && string.Equals(scopeType, TenantScopeCatalog.ScopeAdmin, StringComparison.OrdinalIgnoreCase))
+            return OfficeCodeCatalog.All;
+
+        if (string.Equals(scopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
+            return TenantScopeCatalog.GetOfficeCodesForTenant(sessionTenantCode);
+
+        return [sessionOfficeCode];
     }
 
     private void RefreshSourceWarehouseOptions()

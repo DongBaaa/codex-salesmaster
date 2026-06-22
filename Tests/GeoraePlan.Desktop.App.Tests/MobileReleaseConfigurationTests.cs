@@ -836,6 +836,40 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void MobilePaymentAttachmentUpload_StopsRetryingTerminalFailures()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "SyncCoordinator.cs"));
+        var normalizedSource = source.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains("private static bool ShouldRetryPaymentAttachmentUpload(Exception ex)", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "MobileRetryableNetworkFailure.IsRetryable(ex) ||\n           ex is MobileAuthenticationException",
+            normalizedSource,
+            StringComparison.Ordinal);
+        Assert.Contains("private static string BuildTerminalPaymentAttachmentUploadFailureMessage(", source, StringComparison.Ordinal);
+        Assert.Contains("catch (Exception uploadEx) when (ShouldRetryPaymentAttachmentUpload(uploadEx))", source, StringComparison.Ordinal);
+        Assert.Contains("BuildTerminalPaymentAttachmentUploadFailureMessage(attachment, uploadEx)", source, StringComparison.Ordinal);
+        Assert.Contains("catch (Exception ex) when (ShouldRetryPaymentAttachmentUpload(ex))", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "uploadedIds.Add(attachment.LocalId);\n                errors.Add(BuildTerminalPaymentAttachmentUploadFailureMessage(attachment, ex));",
+            normalizedSource,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "catch (Exception uploadEx)\n                    {\n                        state.PendingPaymentAttachments.Add(attachment);\n                        attachmentUploadErrors.Add(uploadEx.Message);",
+            normalizedSource,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "catch (Exception ex)\n            {\n                errors.Add(ex.Message);\n            }",
+            normalizedSource,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MobileImmediatePaymentSave_PreservesAttachmentUploadFailureAfterPull()
     {
         var source = File.ReadAllText(Path.Combine(
@@ -1260,6 +1294,36 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void AndroidInvoiceDraft_OfficeSelectionUsesScopeTypeNotAdminRoleOnly()
+    {
+        var root = FindRepositoryRoot();
+        var viewModelSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "InvoiceDraftViewModel.cs"));
+        var normalizedSource = viewModelSource.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains("_sessionTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(snapshot.TenantCode, _sessionOfficeCode);", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("private static IReadOnlyList<string> ResolveWritableInvoiceOfficeCodes(", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("var scopeType = TenantScopeCatalog.NormalizeScopeTypeOrDefault(", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("snapshot.IsAdmin ? TenantScopeCatalog.ScopeAdmin : TenantScopeCatalog.ScopeOfficeOnly", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "snapshot.IsAdmin && string.Equals(scopeType, TenantScopeCatalog.ScopeAdmin",
+            viewModelSource,
+            StringComparison.Ordinal);
+        Assert.Contains("return OfficeCodeCatalog.All;", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "string.Equals(scopeType, TenantScopeCatalog.ScopeTenantAll",
+            viewModelSource,
+            StringComparison.Ordinal);
+        Assert.Contains("return TenantScopeCatalog.GetOfficeCodesForTenant(sessionTenantCode);", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains(".Select(code => OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(code, _sessionOfficeCode))", normalizedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach (var code in OfficeCodeCatalog.AllScopes)", viewModelSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AndroidInvoiceDraft_FiltersItemsAndStockEvidenceBySelectedOfficeAndWarehouse()
     {
         var root = FindRepositoryRoot();
@@ -1381,6 +1445,41 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("HasMatchingFileAsync(temporaryPath, expectedSha256, ct)", source, StringComparison.Ordinal);
         Assert.Contains("File.Move(temporaryPath, targetPath, overwrite: true)", source, StringComparison.Ordinal);
         Assert.Contains("TryDeleteFile(temporaryPath)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MobileUpdateCheck_HonorsMandatoryAndMinimumSupportedVersion()
+    {
+        var root = FindRepositoryRoot();
+        var serviceSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "MobileAppUpdateService.cs"));
+        var settingsSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "SettingsViewModel.cs"));
+        var appSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "App.cs"));
+
+        Assert.Contains("var minimumSupportedVersion = ResolveMinimumSupportedVersion(package, latestVersion);", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("IsBelowMinimumSupportedVersion = isBelowMinimumSupportedVersion", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("public bool IsBelowMinimumSupportedVersion { get; set; }", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("public bool RequiresImmediateUpdate => IsBelowMinimumSupportedVersion || (IsUpdateAvailable && Package?.Mandatory == true);", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("private static string ResolveMinimumSupportedVersion(AppUpdatePackageDto package, string latestVersion)", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("package.MinimumSupportedVersion", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("package.Mandatory ? latestVersion : string.Empty", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("IsUpdateAvailable = result.IsUpdateAvailable || result.RequiresImmediateUpdate;", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("result.MinimumSupportedVersion", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("if (!result.RequiresImmediateUpdate)", appSource, StringComparison.Ordinal);
+        Assert.Contains("result.RequiresImmediateUpdate", appSource, StringComparison.Ordinal);
     }
 
     [Fact]

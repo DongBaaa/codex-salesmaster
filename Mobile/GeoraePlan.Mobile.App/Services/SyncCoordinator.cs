@@ -218,6 +218,7 @@ public sealed class SyncCoordinator
             var attachmentList = attachments?.ToList() ?? [];
             var uploadedAttachments = new List<PendingPaymentAttachmentRecord>();
             var attachmentUploadErrors = new List<string>();
+            var terminalAttachmentUploadErrors = new List<string>();
 
             try
             {
@@ -253,7 +254,7 @@ public sealed class SyncCoordinator
                         EnsurePaymentAttachmentResult(await _api.UploadPaymentAttachmentAsync(payment.Id, attachment, ct));
                         uploadedAttachments.Add(attachment);
                     }
-                    catch (Exception uploadEx)
+                    catch (Exception uploadEx) when (ShouldRetryPaymentAttachmentUpload(uploadEx))
                     {
                         state.PendingPaymentAttachments.Add(attachment);
                         attachmentUploadErrors.Add(uploadEx.Message);
@@ -263,6 +264,10 @@ public sealed class SyncCoordinator
                             state.LastFailureAllowsCachedDisplay = true;
                         }
                     }
+                    catch (Exception uploadEx)
+                    {
+                        terminalAttachmentUploadErrors.Add(BuildTerminalPaymentAttachmentUploadFailureMessage(attachment, uploadEx));
+                    }
                 }
 
                 state.LastSuccessUtc = DateTime.UtcNow;
@@ -270,6 +275,7 @@ public sealed class SyncCoordinator
                 state.ConsecutiveFailureCount = 0;
                 state = await PullInternalAsync(state, ct);
                 RestorePaymentAttachmentUploadErrorsAfterPull(state, attachmentUploadErrors);
+                RestoreTerminalPaymentAttachmentUploadErrorsAfterPull(state, terminalAttachmentUploadErrors);
             }
             catch (Exception ex) when (IsConcurrencyConflict(ex))
             {
@@ -630,9 +636,14 @@ public sealed class SyncCoordinator
                 uploadedIds.Add(attachment.LocalId);
                 uploadedAttachments.Add(attachment);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ShouldRetryPaymentAttachmentUpload(ex))
             {
                 errors.Add(ex.Message);
+            }
+            catch (Exception ex)
+            {
+                uploadedIds.Add(attachment.LocalId);
+                errors.Add(BuildTerminalPaymentAttachmentUploadFailureMessage(attachment, ex));
             }
         }
 
@@ -686,6 +697,55 @@ public sealed class SyncCoordinator
             ? string.Empty
             : $" 첫 오류: {firstError}";
         return $"수금/지급은 저장됐지만 첨부 {attachmentUploadErrors.Count:N0}건 업로드가 실패해 다음 동기화에서 다시 시도합니다.{detail}";
+    }
+
+    private static void RestoreTerminalPaymentAttachmentUploadErrorsAfterPull(
+        MobileSyncState state,
+        IReadOnlyList<string> terminalAttachmentUploadErrors)
+    {
+        if (terminalAttachmentUploadErrors.Count == 0)
+            return;
+
+        var attachmentError = BuildTerminalPaymentAttachmentUploadFailureSummary(terminalAttachmentUploadErrors);
+        if (string.IsNullOrWhiteSpace(state.LastError))
+        {
+            state.LastError = attachmentError;
+        }
+        else
+        {
+            state.LastError = $"{attachmentError} 최신 데이터 새로고침 상태: {state.LastError}";
+        }
+
+        state.ConsecutiveFailureCount = Math.Max(1, state.ConsecutiveFailureCount);
+        state.LastFailureAllowsCachedDisplay = true;
+    }
+
+    private static string BuildTerminalPaymentAttachmentUploadFailureSummary(IReadOnlyList<string> terminalAttachmentUploadErrors)
+    {
+        var firstError = terminalAttachmentUploadErrors
+            .Select(error => error?.Trim())
+            .FirstOrDefault(error => !string.IsNullOrWhiteSpace(error));
+        var detail = string.IsNullOrWhiteSpace(firstError)
+            ? string.Empty
+            : $" 첫 오류: {firstError}";
+        return $"수금/지급은 저장됐지만 첨부 {terminalAttachmentUploadErrors.Count:N0}건은 서버가 계속 받을 수 없어 재시도 대기에서 제외했습니다. 첨부를 확인한 뒤 다시 선택해 주세요.{detail}";
+    }
+
+    private static bool ShouldRetryPaymentAttachmentUpload(Exception ex)
+        => MobileRetryableNetworkFailure.IsRetryable(ex) ||
+           ex is MobileAuthenticationException ||
+           ex is HttpRequestException { StatusCode: HttpStatusCode.Unauthorized };
+
+    private static string BuildTerminalPaymentAttachmentUploadFailureMessage(PendingPaymentAttachmentRecord attachment, Exception ex)
+    {
+        var fileName = Path.GetFileName(attachment.FileName ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(fileName))
+            fileName = "첨부파일";
+
+        var detail = TranslateFailureMessage(ex);
+        return string.IsNullOrWhiteSpace(detail)
+            ? $"첨부 업로드를 계속 재시도하지 않도록 대기 목록에서 제외했습니다: {fileName}. 첨부를 확인한 뒤 다시 선택해 주세요."
+            : $"첨부 업로드를 계속 재시도하지 않도록 대기 목록에서 제외했습니다: {fileName}. {detail} 첨부를 확인한 뒤 다시 선택해 주세요.";
     }
 
     private async Task RemoveUploadedPaymentAttachmentDraftsAsync(
