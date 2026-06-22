@@ -110,12 +110,14 @@ public sealed partial class LocalStateService
             directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var staleOutboxSentCutoffUtc = DateTime.UtcNow - StaleSyncOutboxSentThreshold;
-        var staleOutboxSentCount = await _db.SyncOutboxEntries
+        var staleOutboxSentRows = await _db.SyncOutboxEntries
             .AsNoTracking()
-            .CountAsync(entry =>
+            .Where(entry =>
                 entry.Status == "Sent" &&
                 entry.SentAtUtc.HasValue &&
-                entry.SentAtUtc.Value <= staleOutboxSentCutoffUtc, ct);
+                entry.SentAtUtc.Value <= staleOutboxSentCutoffUtc)
+            .ToListAsync(ct);
+        var staleOutboxSentCount = staleOutboxSentRows.Count(entry => CanCurrentSessionAccessOutboxEntry(entry, session));
         AddIssueIfNeeded(
             issues,
             "sync_outbox_sent_stuck",
@@ -124,9 +126,11 @@ public sealed partial class LocalStateService
             severity: "Error",
             directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
-        var failedOutboxCount = await _db.SyncOutboxEntries
+        var failedOutboxRows = await _db.SyncOutboxEntries
             .AsNoTracking()
-            .CountAsync(entry => entry.Status == "Failed", ct);
+            .Where(entry => entry.Status == "Failed")
+            .ToListAsync(ct);
+        var failedOutboxCount = failedOutboxRows.Count(entry => CanCurrentSessionAccessOutboxEntry(entry, session));
         AddIssueIfNeeded(
             issues,
             "sync_outbox_failed_pending",

@@ -173,6 +173,59 @@ public sealed class SyncOutboxPendingStateTests
         }
     }
 
+    [Fact]
+    public async Task LocalIntegrityReport_OutboxIssuesAreLimitedToCurrentSessionScope()
+    {
+        PrepareAppRoot("georaeplan-integrity-outbox-session-scope-guard");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var usenetSession = CreateOfficeSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), usenetSession);
+            var staleSentAtUtc = DateTime.UtcNow.AddMinutes(-30);
+            db.SyncOutboxEntries.AddRange(
+                CreateOutboxEntry(
+                    "Failed",
+                    tenantCode: TenantScopeCatalog.UsenetGroup,
+                    officeCode: OfficeCodeCatalog.Usenet,
+                    responsibleOfficeCode: OfficeCodeCatalog.Usenet),
+                CreateOutboxEntry(
+                    "Failed",
+                    tenantCode: TenantScopeCatalog.Itworld,
+                    officeCode: OfficeCodeCatalog.Itworld,
+                    responsibleOfficeCode: OfficeCodeCatalog.Itworld),
+                CreateOutboxEntry(
+                    "Sent",
+                    tenantCode: TenantScopeCatalog.UsenetGroup,
+                    officeCode: OfficeCodeCatalog.Usenet,
+                    responsibleOfficeCode: OfficeCodeCatalog.Usenet,
+                    sentAtUtc: staleSentAtUtc),
+                CreateOutboxEntry(
+                    "Sent",
+                    tenantCode: TenantScopeCatalog.Itworld,
+                    officeCode: OfficeCodeCatalog.Itworld,
+                    responsibleOfficeCode: OfficeCodeCatalog.Itworld,
+                    sentAtUtc: staleSentAtUtc));
+            await db.SaveChangesAsync();
+
+            var report = await local.BuildIntegrityReportAsync(usenetSession);
+
+            var failedIssue = Assert.Single(report.Issues, issue => issue.Code == "sync_outbox_failed_pending");
+            Assert.Equal(1, failedIssue.Count);
+            var staleIssue = Assert.Single(report.Issues, issue => issue.Code == "sync_outbox_sent_stuck");
+            Assert.Equal(1, staleIssue.Count);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static LocalSyncOutboxEntry CreateOutboxEntry(
         string status,
         string entityName = nameof(LocalCustomer),
@@ -180,7 +233,8 @@ public sealed class SyncOutboxPendingStateTests
         Guid? entryId = null,
         string tenantCode = TenantScopeCatalog.UsenetGroup,
         string officeCode = OfficeCodeCatalog.Usenet,
-        string responsibleOfficeCode = OfficeCodeCatalog.Usenet)
+        string responsibleOfficeCode = OfficeCodeCatalog.Usenet,
+        DateTime? sentAtUtc = null)
         => new()
         {
             Id = entryId ?? Guid.NewGuid(),
@@ -194,7 +248,7 @@ public sealed class SyncOutboxPendingStateTests
             ResponsibleOfficeCode = responsibleOfficeCode,
             Status = status,
             PreparedAtUtc = DateTime.UtcNow.AddMinutes(-1),
-            SentAtUtc = DateTime.UtcNow
+            SentAtUtc = sentAtUtc ?? DateTime.UtcNow
         };
 
     private static Task<string> ReadOutboxStatusAsync(LocalDbContext db)
