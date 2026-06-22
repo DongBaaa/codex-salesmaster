@@ -1623,6 +1623,13 @@ public sealed class RecycleBinController : ControllerBase
         if (hasCurrentAssignmentHistories)
             return (false, "현재 설치이력이 남아 있어 거래처를 영구삭제할 수 없습니다.");
 
+        var assignmentHistories = await _dbContext.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .Where(current => current.CustomerId == customerId)
+            .ToListAsync(cancellationToken);
+        foreach (var history in assignmentHistories)
+            history.CustomerId = null;
+
         await TouchPurgeRecordsAsync(
         [
             CreatePurgeRecord("customer", customer.Id, customer.TenantCode, customer.ResponsibleOfficeCode)

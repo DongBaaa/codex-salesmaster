@@ -1133,16 +1133,31 @@ public sealed partial class LocalStateService
         var customer = await _db.Customers
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == customerId, ct);
-        if (customer is null)
-            return OfficeMutationResult.Ok(customerId, "거래처 서버 영구삭제 상태가 이미 로컬에 반영되어 있습니다.");
 
         var contracts = await _db.CustomerContracts
             .IgnoreQueryFilters()
             .Where(current => current.CustomerId == customerId)
             .ToListAsync(ct);
 
+        var assignmentHistories = await _db.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .Where(current => current.CustomerId == customerId)
+            .ToListAsync(ct);
+
+        if (customer is null && contracts.Count == 0 && assignmentHistories.Count == 0)
+            return OfficeMutationResult.Ok(customerId, "거래처 서버 영구삭제 상태가 이미 로컬에 반영되어 있습니다.");
+
+        var now = DateTime.UtcNow;
+        foreach (var history in assignmentHistories)
+        {
+            history.CustomerId = null;
+            history.IsDirty = false;
+            history.UpdatedAtUtc = now;
+        }
+
         _db.CustomerContracts.RemoveRange(contracts);
-        _db.Customers.Remove(customer);
+        if (customer is not null)
+            _db.Customers.Remove(customer);
         await _db.SaveChangesAsync(ct);
         return OfficeMutationResult.Ok(customerId, "거래처 서버 영구삭제를 로컬에 반영했습니다.");
     }
@@ -1357,6 +1372,17 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Denied("활성 계약서가 남아 있어 거래처를 영구삭제할 수 없습니다.");
 
         var now = DateTime.UtcNow;
+        var assignmentHistories = await _db.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .Where(current => current.CustomerId == customerId)
+            .ToListAsync(ct);
+        foreach (var history in assignmentHistories)
+        {
+            history.CustomerId = null;
+            history.IsDirty = true;
+            history.UpdatedAtUtc = now;
+        }
+
         _db.CustomerContracts.RemoveRange(contracts);
         _db.Customers.Remove(customer);
         AddPurgeAudit(nameof(LocalCustomer), customer.Id, new

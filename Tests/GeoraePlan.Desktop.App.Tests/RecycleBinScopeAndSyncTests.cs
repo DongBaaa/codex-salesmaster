@@ -394,6 +394,103 @@ public sealed class RecycleBinScopeAndSyncTests
         }
     }
 
+    [Fact]
+    public async Task LocalStateService_PermanentlyDeleteCustomer_ClearsAssignmentHistoryCustomerReferences()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-recycle-bin-customer-purge-history-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            db.Customers.Add(CreateDeletedCustomer(customerId));
+            db.RentalAssetAssignmentHistories.AddRange(
+                CreateRentalAssetAssignmentHistory(assetId, isCurrent: false, isDeleted: false, customerId: customerId),
+                CreateRentalAssetAssignmentHistory(assetId, isCurrent: false, isDeleted: true, customerId: customerId));
+            await db.SaveChangesAsync();
+
+            var session = CreateSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var result = await service.PermanentlyDeleteRecycleBinEntryAsync(
+                RecycleBinEntityKind.Customer,
+                customerId,
+                session);
+
+            Assert.True(result.Success);
+            Assert.False(await db.Customers.IgnoreQueryFilters().AnyAsync(current => current.Id == customerId));
+            Assert.Equal(
+                0,
+                await db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                    .CountAsync(current => current.CustomerId == customerId));
+            Assert.Equal(
+                2,
+                await db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                    .CountAsync(current => current.AssetId == assetId));
+            Assert.Equal(
+                2,
+                await db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                    .CountAsync(current => current.AssetId == assetId && current.IsDirty));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalStateService_ApplyServerPurgedCustomer_ClearsAssignmentHistoryCustomerReferences()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-recycle-bin-customer-server-purge-history-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            db.Customers.Add(CreateDeletedCustomer(customerId));
+            db.RentalAssetAssignmentHistories.AddRange(
+                CreateRentalAssetAssignmentHistory(assetId, isCurrent: false, isDeleted: false, customerId: customerId),
+                CreateRentalAssetAssignmentHistory(assetId, isCurrent: false, isDeleted: true, customerId: customerId));
+            await db.SaveChangesAsync();
+
+            var session = CreateSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var result = await service.ApplyServerPurgeRecycleBinEntryAsync(
+                RecycleBinEntityKind.Customer,
+                customerId);
+
+            Assert.True(result.Success);
+            Assert.False(await db.Customers.IgnoreQueryFilters().AnyAsync(current => current.Id == customerId));
+            Assert.Equal(
+                0,
+                await db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                    .CountAsync(current => current.CustomerId == customerId));
+            Assert.Equal(
+                2,
+                await db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                    .CountAsync(current => current.AssetId == assetId));
+            Assert.Equal(
+                0,
+                await db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                    .CountAsync(current => current.AssetId == assetId && current.IsDirty));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static SessionState CreateSession(string tenantCode, string officeCode)
     {
         var session = new SessionState();
@@ -407,6 +504,21 @@ public sealed class RecycleBinScopeAndSyncTests
         });
         return session;
     }
+
+    private static LocalCustomer CreateDeletedCustomer(Guid customerId)
+        => new()
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "영구삭제 이력 거래처",
+            NameMatchKey = "영구삭제이력거래처",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true,
+            IsDirty = false,
+            Revision = 14
+        };
 
     private static LocalRentalBillingProfile CreateDeletedRentalBillingProfile(Guid profileId)
         => new()
@@ -452,14 +564,18 @@ public sealed class RecycleBinScopeAndSyncTests
         Guid assetId,
         bool isCurrent,
         bool isDeleted,
-        Guid? billingProfileId = null)
+        Guid? billingProfileId = null,
+        Guid? customerId = null)
         => new()
         {
             Id = Guid.NewGuid(),
             AssetId = assetId,
             BillingProfileId = billingProfileId,
+            CustomerId = customerId,
             TenantCode = TenantScopeCatalog.UsenetGroup,
             ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            CustomerName = customerId.HasValue ? "영구삭제 이력 거래처" : string.Empty,
+            InstallLocation = customerId.HasValue ? "과거 설치처" : string.Empty,
             BillingProfileDisplay = billingProfileId.HasValue ? "영구삭제 이력 청구프로필" : string.Empty,
             ItemName = "영구삭제 이력 자산",
             ManagementNumber = "HISTORY-001",

@@ -994,6 +994,8 @@ public sealed class SyncCoordinator
             case "customer":
                 RemoveEntityById(state.SyncedCustomers, entityId, purgeRevision);
                 RemoveEntityById(state.PendingPush.Customers, entityId, purgeRevision);
+                ClearRentalAssignmentHistoryCustomerReferences(state.SyncedRentalAssetAssignmentHistories, entityId, purgeRevision);
+                ClearRentalAssignmentHistoryCustomerReferences(state.PendingPush.RentalAssetAssignmentHistories, entityId, purgeRevision);
                 break;
             case "item":
                 RemoveEntityById(state.SyncedItems, entityId, purgeRevision);
@@ -1077,7 +1079,7 @@ public sealed class SyncCoordinator
     {
         foreach (var value in values)
         {
-            if (value.BillingProfileId == profileId && !IsEntityNewerThanPurge(value, purgeRevision))
+            if (value.BillingProfileId == profileId)
                 value.BillingProfileId = null;
         }
     }
@@ -1089,8 +1091,20 @@ public sealed class SyncCoordinator
     {
         foreach (var value in values)
         {
-            if (value.BillingProfileId == profileId && !IsEntityNewerThanPurge(value, purgeRevision))
+            if (value.BillingProfileId == profileId)
                 value.BillingProfileId = null;
+        }
+    }
+
+    private static void ClearRentalAssignmentHistoryCustomerReferences(
+        List<RentalAssetAssignmentHistoryDto> values,
+        Guid customerId,
+        long purgeRevision)
+    {
+        foreach (var value in values)
+        {
+            if (value.CustomerId == customerId)
+                value.CustomerId = null;
         }
     }
 

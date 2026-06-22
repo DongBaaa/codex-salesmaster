@@ -1860,6 +1860,8 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains(".OrderBy(record => GetPurgeApplyOrder(NormalizePurgeRecordKind(record.Kind)))", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedCustomers, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.PendingPush.Customers, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("ClearRentalAssignmentHistoryCustomerReferences(state.SyncedRentalAssetAssignmentHistories, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("ClearRentalAssignmentHistoryCustomerReferences(state.PendingPush.RentalAssetAssignmentHistories, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedItems, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("state.SyncedItemWarehouseStocks.RemoveAll(stock => stock.ItemId == entityId);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("state.PendingPush.ItemWarehouseStocks.RemoveAll(stock => stock.ItemId == entityId);", coordinatorSource, StringComparison.Ordinal);
@@ -1877,10 +1879,16 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("ClearRentalBillingProfileReferences(state.PendingPush.RentalAssets, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("ClearRentalAssignmentHistoryBillingProfileReferences(state.SyncedRentalAssetAssignmentHistories, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("ClearRentalAssignmentHistoryBillingProfileReferences(state.PendingPush.RentalAssetAssignmentHistories, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("if (value.BillingProfileId == profileId)", coordinatorSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("value.BillingProfileId == profileId && !IsEntityNewerThanPurge(value, purgeRevision)", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedRentalAssets, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("state.SyncedRentalAssetAssignmentHistories.RemoveAll(history => history.AssetId == entityId", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedRentalBillingLogs, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("private static void RemoveEntityById<T>(List<T> values, Guid entityId, long purgeRevision)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("private static void ClearRentalAssignmentHistoryCustomerReferences(", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("if (value.CustomerId == customerId)", coordinatorSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("value.CustomerId == customerId && !IsEntityNewerThanPurge(value, purgeRevision)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("value.CustomerId = null;", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("value.Id == entityId && IsEntityNewerThanPurge(value, purgeRevision)", coordinatorSource, StringComparison.Ordinal);
     }
 

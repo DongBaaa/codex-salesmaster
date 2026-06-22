@@ -2575,6 +2575,98 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_ClearsHistoricalRentalAssignmentHistory_DeletedCustomerAndProfileReferences()
+    {
+        var asset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "RENTAL-HISTORY-STALE-HISTORICAL-ASSET",
+            ManagementNumber = "RH-STALE-HISTORICAL",
+            ItemName = "Stale historical copier",
+            MachineNumber = "STALE-HISTORICAL-001",
+            MonthlyFee = 100m
+        };
+        var deletedCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Deleted historical history customer",
+            NameMatchKey = "DELETEDHISTORICALHISTORYCUSTOMER",
+            TradeType = "Sales",
+            IsDeleted = true
+        };
+        var deletedProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "DELETED-HISTORICAL-HISTORY-PROFILE",
+            CustomerName = deletedCustomer.NameOriginal,
+            InstallSiteName = "Historical site",
+            IsDeleted = true
+        };
+        _dbContext.RentalAssets.Add(asset);
+        _dbContext.Customers.Add(deletedCustomer);
+        _dbContext.RentalBillingProfiles.Add(deletedProfile);
+        await _dbContext.SaveChangesAsync();
+
+        var historyId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "rental-history-stale-historical-reference-device",
+            RentalAssetAssignmentHistories =
+            [
+                new RentalAssetAssignmentHistoryDto
+                {
+                    Id = historyId,
+                    AssetId = asset.Id,
+                    BillingProfileId = deletedProfile.Id,
+                    CustomerId = deletedCustomer.Id,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    BillingProfileDisplay = deletedProfile.ProfileKey,
+                    CustomerName = deletedCustomer.NameOriginal,
+                    InstallLocation = deletedProfile.InstallSiteName,
+                    ItemName = asset.ItemName,
+                    MachineNumber = asset.MachineNumber,
+                    ManagementNumber = asset.ManagementNumber,
+                    MonthlyFee = asset.MonthlyFee,
+                    IsCurrent = false,
+                    LinkedAtUtc = DateTime.UtcNow.AddDays(-7),
+                    UnlinkedAtUtc = DateTime.UtcNow.AddDays(-1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityId == historyId &&
+            string.Equals(revision.EntityName, nameof(RentalAssetAssignmentHistory), StringComparison.Ordinal));
+        Assert.Contains(result.Notices, notice =>
+            notice.Code == "historical-rental-assignment-customer-reference-cleared");
+        Assert.Contains(result.Notices, notice =>
+            notice.Code == "historical-rental-assignment-profile-reference-cleared");
+
+        var stored = await _dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == historyId);
+        Assert.Null(stored.CustomerId);
+        Assert.Null(stored.BillingProfileId);
+        Assert.Equal(deletedCustomer.NameOriginal, stored.CustomerName);
+        Assert.Equal(deletedProfile.InstallSiteName, stored.InstallLocation);
+    }
+
+    [Fact]
     public async Task Push_StoresAndPullsCurrentRentalAssignmentHistory_WithMergedActiveCustomerReference()
     {
         var customer = new Customer

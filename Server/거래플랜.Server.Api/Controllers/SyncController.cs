@@ -3175,15 +3175,29 @@ public sealed class SyncController : ControllerBase
     {
         if (dto.BillingProfileId.HasValue && dto.BillingProfileId.Value != Guid.Empty)
         {
+            var requestedBillingProfileId = dto.BillingProfileId.Value;
             var billingProfile = await _dbContext.RentalBillingProfiles
                 .IgnoreQueryFilters()
                 .AsNoTracking()
-                .FirstOrDefaultAsync(profile => profile.Id == dto.BillingProfileId.Value, cancellationToken);
-            if (dto.IsCurrent && (billingProfile is null || billingProfile.IsDeleted))
+                .FirstOrDefaultAsync(profile => profile.Id == requestedBillingProfileId, cancellationToken);
+            if (billingProfile is null || billingProfile.IsDeleted)
             {
-                AddClientConflict(dto, nameof(RentalAssetAssignmentHistory),
-                    $"Referenced rental billing profile is missing or deleted: {dto.BillingProfileId.Value}.", result);
-                return false;
+                if (!dto.IsCurrent)
+                {
+                    dto.BillingProfileId = null;
+                    AddNotice(
+                        result,
+                        nameof(RentalAssetAssignmentHistory),
+                        dto.Id,
+                        "historical-rental-assignment-profile-reference-cleared",
+                        $"Historical rental assignment '{dto.Id:D}' referenced a missing or deleted billing profile '{requestedBillingProfileId:D}'. The display snapshot was kept and the stale profile reference was cleared.");
+                }
+                else
+                {
+                    AddClientConflict(dto, nameof(RentalAssetAssignmentHistory),
+                        $"Referenced rental billing profile is missing or deleted: {requestedBillingProfileId}.", result);
+                    return false;
+                }
             }
 
             if (billingProfile is not null &&
@@ -3191,22 +3205,36 @@ public sealed class SyncController : ControllerBase
                 !_officeScopeService.CanWriteOfficeForRentals(billingProfile.ResponsibleOfficeCode, billingProfile.TenantCode, billingProfile.OfficeCode))
             {
                 AddClientConflict(dto, nameof(RentalAssetAssignmentHistory),
-                    $"Referenced rental billing profile is outside the writable office scope: {dto.BillingProfileId.Value}.", result);
+                    $"Referenced rental billing profile is outside the writable office scope: {billingProfile.Id}.", result);
                 return false;
             }
         }
 
         if (dto.CustomerId.HasValue && dto.CustomerId.Value != Guid.Empty)
         {
+            var requestedCustomerId = dto.CustomerId.Value;
             var customer = await _dbContext.Customers
                 .IgnoreQueryFilters()
                 .AsNoTracking()
-                .FirstOrDefaultAsync(current => current.Id == dto.CustomerId.Value, cancellationToken);
-            if (dto.IsCurrent && (customer is null || customer.IsDeleted))
+                .FirstOrDefaultAsync(current => current.Id == requestedCustomerId, cancellationToken);
+            if (customer is null || customer.IsDeleted)
             {
-                AddClientConflict(dto, nameof(RentalAssetAssignmentHistory),
-                    $"Referenced customer is missing or deleted: {dto.CustomerId.Value}.", result);
-                return false;
+                if (!dto.IsCurrent)
+                {
+                    dto.CustomerId = null;
+                    AddNotice(
+                        result,
+                        nameof(RentalAssetAssignmentHistory),
+                        dto.Id,
+                        "historical-rental-assignment-customer-reference-cleared",
+                        $"Historical rental assignment '{dto.Id:D}' referenced a missing or deleted customer '{requestedCustomerId:D}'. The display snapshot was kept and the stale customer reference was cleared.");
+                }
+                else
+                {
+                    AddClientConflict(dto, nameof(RentalAssetAssignmentHistory),
+                        $"Referenced customer is missing or deleted: {requestedCustomerId}.", result);
+                    return false;
+                }
             }
 
             if (customer is not null &&
@@ -3214,7 +3242,7 @@ public sealed class SyncController : ControllerBase
                 !CanReadCustomerForRentalReference(customer))
             {
                 AddClientConflict(dto, nameof(RentalAssetAssignmentHistory),
-                    $"Referenced customer is outside the readable office scope: {dto.CustomerId.Value}.", result);
+                    $"Referenced customer is outside the readable office scope: {customer.Id}.", result);
                 return false;
             }
         }
