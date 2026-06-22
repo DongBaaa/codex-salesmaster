@@ -1036,6 +1036,7 @@ public sealed class RecycleBinController : ControllerBase
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(rentalSettlementTargets, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await _inventoryLedgerService.RebuildAsync(cancellationToken);
         return (true, restoredLinkedPaymentCount > 0 || restoredLinkedTransactionCount > 0 || relinkedTransactionCount > 0
             ? "전표를 복원하고 연결된 수금/지급 기록과 거래내역도 함께 활성화했습니다."
             : invoiceGroupRestore.CustomerRestored
@@ -1074,6 +1075,7 @@ public sealed class RecycleBinController : ControllerBase
 
         var customerRestored = false;
         var invoiceRestored = false;
+        var shouldRebuildInventoryLedger = false;
         if (invoice.IsDeleted)
         {
             var invoiceGroupRestore = await RestoreInvoiceGroupAsync(invoice, customer, cancellationToken);
@@ -1082,6 +1084,7 @@ public sealed class RecycleBinController : ControllerBase
 
             customerRestored = invoiceGroupRestore.CustomerRestored;
             invoiceRestored = true;
+            shouldRebuildInventoryLedger = true;
         }
         else if (customer.IsDeleted)
         {
@@ -1108,6 +1111,8 @@ public sealed class RecycleBinController : ControllerBase
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(rentalSettlementTargets, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        if (shouldRebuildInventoryLedger)
+            await _inventoryLedgerService.RebuildAsync(cancellationToken);
         return (true, customerRestored || invoiceRestored || linkedTransactionRestore.TransactionRestored || linkedTransactionRestore.TransactionRelinked
             ? "수금/지급 기록을 복원하고 연결 거래내역/전표도 함께 활성화했습니다."
             : "수금/지급 기록을 복원했습니다.");
@@ -1138,6 +1143,7 @@ public sealed class RecycleBinController : ControllerBase
 
         var customerRestored = false;
         var invoiceRestored = false;
+        var shouldRebuildInventoryLedger = false;
 
         if (transaction.LinkedInvoiceId is Guid linkedInvoiceId && linkedInvoiceId != Guid.Empty)
         {
@@ -1163,6 +1169,7 @@ public sealed class RecycleBinController : ControllerBase
 
                     invoiceRestored = true;
                     customerRestored = invoiceGroupRestore.CustomerRestored || customerRestored;
+                    shouldRebuildInventoryLedger = true;
                 }
                 else if (linkedInvoiceCustomer.IsDeleted)
                 {
@@ -1202,6 +1209,8 @@ public sealed class RecycleBinController : ControllerBase
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(rentalSettlementTargets, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        if (shouldRebuildInventoryLedger)
+            await _inventoryLedgerService.RebuildAsync(cancellationToken);
         return (true, customerRestored || invoiceRestored || linkedPaymentRestore.PaymentRestored
             ? "거래내역을 복원하고 연결된 거래처/전표/수금·지급 기록을 함께 활성화했습니다."
             : "거래내역을 복원했습니다.");
@@ -2310,6 +2319,7 @@ public sealed class RecycleBinController : ControllerBase
         var versionGroupId = invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId;
         return await _dbContext.Invoices
             .IgnoreQueryFilters()
+            .Include(current => current.Lines)
             .Where(current =>
                 current.Id == invoice.Id ||
                 current.Id == versionGroupId ||
@@ -2331,6 +2341,7 @@ public sealed class RecycleBinController : ControllerBase
         if (!lineItemScopeCheck.Success)
             return (false, false, lineItemScopeCheck.Message);
 
+        var previousStockDeltas = await BuildInvoiceGroupStockDeltasAsync(invoiceGroup, cancellationToken);
         var customerRestored = false;
         if (customer.IsDeleted)
         {
@@ -2367,7 +2378,31 @@ public sealed class RecycleBinController : ControllerBase
         }
 
         await RestoreInvoiceLinesAsync(invoiceGroup, cancellationToken);
+        var currentStockDeltas = await BuildInvoiceGroupStockDeltasAsync(invoiceGroup, cancellationToken);
+        await _invoiceStockSnapshotService.ApplyInvoiceStockDeltaDifferenceAsync(
+            previousStockDeltas,
+            currentStockDeltas,
+            cancellationToken);
         return (true, customerRestored, string.Empty);
+    }
+
+    private async Task<IReadOnlyDictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal>> BuildInvoiceGroupStockDeltasAsync(
+        IEnumerable<Invoice> invoices,
+        CancellationToken cancellationToken)
+    {
+        var merged = new Dictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal>();
+        foreach (var invoice in invoices)
+        {
+            var deltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(invoice, cancellationToken);
+            foreach (var (key, quantity) in deltas)
+            {
+                merged[key] = merged.TryGetValue(key, out var current)
+                    ? current + quantity
+                    : quantity;
+            }
+        }
+
+        return merged;
     }
 
     private async Task<(bool Success, string Message)> EnsureCanReadInvoiceGroupLineItemsAsync(

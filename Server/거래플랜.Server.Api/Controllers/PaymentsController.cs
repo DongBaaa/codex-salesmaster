@@ -294,11 +294,47 @@ public sealed class PaymentsController : ControllerBase
         if (await ValidatePaymentAmountAsync(dto, id, cancellationToken) is { } paymentValidationError)
             return paymentValidationError;
 
+        var linkedTransaction = await _dbContext.Transactions
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(transaction => transaction.Id == id, cancellationToken);
+        var linkedTransactionRentalTargets = new List<(Guid ProfileId, Guid? RunId)>();
+        if (linkedTransaction is not null && !linkedTransaction.IsDeleted)
+        {
+            if (linkedTransaction.LinkedInvoiceId.HasValue &&
+                linkedTransaction.LinkedInvoiceId.Value != entity.InvoiceId)
+            {
+                return Conflict("Linked transaction invoice does not match the payment invoice.");
+            }
+
+            if (!_officeScopeService.CanWriteOfficeForPayments(
+                    linkedTransaction.ResponsibleOfficeCode,
+                    linkedTransaction.TenantCode,
+                    linkedTransaction.OfficeCode))
+            {
+                return Forbid();
+            }
+
+            AddRentalSettlementTarget(
+                linkedTransactionRentalTargets,
+                linkedTransaction.LinkedRentalBillingProfileId,
+                linkedTransaction.LinkedRentalBillingRunId);
+        }
+
         var previousInvoice = entity.Invoice;
         entity.Apply(dto);
+        if (linkedTransaction is not null && !linkedTransaction.IsDeleted && targetInvoice is not null)
+        {
+            SynchronizeLinkedTransactionFromPayment(linkedTransaction, entity, targetInvoice);
+            AddRentalSettlementTarget(
+                linkedTransactionRentalTargets,
+                linkedTransaction.LinkedRentalBillingProfileId,
+                linkedTransaction.LinkedRentalBillingRunId);
+        }
+
         await ProcessedSyncMutationRecorder.RecordAsync(_dbContext, dto, nameof(Payment), cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await RecalculateRentalSettlementsForPaymentInvoicesAsync([previousInvoice, targetInvoice], cancellationToken);
+        await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(linkedTransactionRentalTargets, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(entity.ToDto());
     }
@@ -382,6 +418,107 @@ public sealed class PaymentsController : ControllerBase
             .Distinct()
             .ToList();
         await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(targets, cancellationToken);
+    }
+
+    private static void AddRentalSettlementTarget(
+        ICollection<(Guid ProfileId, Guid? RunId)> targets,
+        Guid? profileId,
+        Guid? runId)
+    {
+        if (profileId.HasValue && profileId.Value != Guid.Empty)
+            targets.Add((profileId.Value, runId));
+    }
+
+    private static void SynchronizeLinkedTransactionFromPayment(
+        TransactionRecord transaction,
+        Payment payment,
+        Invoice invoice)
+    {
+        transaction.CustomerId = invoice.CustomerId;
+        transaction.TenantCode = invoice.TenantCode;
+        transaction.OfficeCode = invoice.OfficeCode;
+        transaction.ResponsibleOfficeCode = invoice.ResponsibleOfficeCode;
+        transaction.TransactionDate = payment.PaymentDate;
+        transaction.LinkedInvoiceId = payment.InvoiceId;
+        transaction.LinkedInvoiceNumber = invoice.InvoiceNumber;
+        transaction.LinkedRentalBillingProfileId = invoice.LinkedRentalBillingProfileId;
+        transaction.LinkedRentalBillingRunId = invoice.LinkedRentalBillingRunId;
+        transaction.SettlementAmount = payment.Amount;
+        transaction.TransactionKind = ResolveLinkedTransactionKind(invoice);
+        ApplyLinkedTransactionTotals(transaction, payment.Amount, IsPaymentVoucher(invoice.VoucherType));
+    }
+
+    private static string ResolveLinkedTransactionKind(Invoice invoice)
+    {
+        if (invoice.LinkedRentalBillingProfileId is Guid rentalProfileId && rentalProfileId != Guid.Empty)
+            return "렌탈수금";
+
+        return IsPaymentVoucher(invoice.VoucherType)
+            ? "전표지급"
+            : "전표수금";
+    }
+
+    private static bool IsPaymentVoucher(VoucherType voucherType)
+        => voucherType is VoucherType.Purchase or VoucherType.Procurement;
+
+    private static void ApplyLinkedTransactionTotals(
+        TransactionRecord transaction,
+        decimal amount,
+        bool isPayment)
+    {
+        if (isPayment)
+        {
+            transaction.CashReceipt = 0m;
+            transaction.CardReceipt = 0m;
+            transaction.BankReceipt = 0m;
+            transaction.DiscountApplied = 0m;
+            transaction.ReceiptTotal = 0m;
+            transaction.PaymentTotal = amount;
+            ApplySinglePaymentChannel(transaction, amount);
+            return;
+        }
+
+        transaction.CashPayment = 0m;
+        transaction.CardPayment = 0m;
+        transaction.BankPayment = 0m;
+        transaction.DiscountReceived = 0m;
+        transaction.PaymentTotal = 0m;
+        transaction.ReceiptTotal = amount;
+        ApplySingleReceiptChannel(transaction, amount);
+    }
+
+    private static void ApplySingleReceiptChannel(TransactionRecord transaction, decimal amount)
+    {
+        var useCash = transaction.CashReceipt != 0m &&
+                      transaction.CardReceipt == 0m &&
+                      transaction.BankReceipt == 0m &&
+                      transaction.DiscountApplied == 0m;
+        var useCard = transaction.CardReceipt != 0m &&
+                      transaction.CashReceipt == 0m &&
+                      transaction.BankReceipt == 0m &&
+                      transaction.DiscountApplied == 0m;
+
+        transaction.CashReceipt = useCash ? amount : 0m;
+        transaction.CardReceipt = useCard ? amount : 0m;
+        transaction.BankReceipt = !useCash && !useCard ? amount : 0m;
+        transaction.DiscountApplied = 0m;
+    }
+
+    private static void ApplySinglePaymentChannel(TransactionRecord transaction, decimal amount)
+    {
+        var useCash = transaction.CashPayment != 0m &&
+                      transaction.CardPayment == 0m &&
+                      transaction.BankPayment == 0m &&
+                      transaction.DiscountReceived == 0m;
+        var useCard = transaction.CardPayment != 0m &&
+                      transaction.CashPayment == 0m &&
+                      transaction.BankPayment == 0m &&
+                      transaction.DiscountReceived == 0m;
+
+        transaction.CashPayment = useCash ? amount : 0m;
+        transaction.CardPayment = useCard ? amount : 0m;
+        transaction.BankPayment = !useCash && !useCard ? amount : 0m;
+        transaction.DiscountReceived = 0m;
     }
 
     private async Task<ActionResult?> ValidateWritableInvoiceRentalBillingProfileAsync(

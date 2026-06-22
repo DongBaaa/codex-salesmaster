@@ -3319,6 +3319,249 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task RestoreInvoice_AppliesStockSnapshotsAndLedgerEntries()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var itemId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+        var customer = CreateScopedCustomer("전표 복원 재고 거래처", OfficeCodeCatalog.Usenet);
+        dbContext.Customers.Add(customer);
+        dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "복원 전표 재고 품목",
+            NameMatchKey = "복원전표재고품목",
+            Unit = "개",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 10m
+        });
+        dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-10),
+            Revision = 10
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "INV-RESTORE-STOCK-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            InvoiceDate = new DateOnly(2026, 6, 22),
+            TotalAmount = 2_000m,
+            SupplyAmount = 1_818m,
+            VatAmount = 182m,
+            IsDeleted = true,
+            Lines =
+            [
+                new InvoiceLine
+                {
+                    Id = lineId,
+                    InvoiceId = invoiceId,
+                    ItemId = itemId,
+                    ItemNameOriginal = "복원 전표 재고 품목",
+                    Unit = "개",
+                    Quantity = 2m,
+                    UnitPrice = 1_000m,
+                    LineAmount = 2_000m,
+                    ItemTrackingType = ItemTrackingTypes.Stock,
+                    OrderIndex = 1,
+                    IsDeleted = true
+                }
+            ]
+        });
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Invoices.IgnoreQueryFilters().SingleAsync(invoice => invoice.Id == invoiceId);
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = invoiceId,
+                        Kind = "invoice",
+                        ExpectedRevision = stored.Revision
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success, item.Message);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.False(await dbContext.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.Id == invoiceId)
+            .Select(invoice => invoice.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.InvoiceLines.IgnoreQueryFilters()
+            .Where(line => line.Id == lineId)
+            .Select(line => line.IsDeleted)
+            .SingleAsync());
+        Assert.Equal(8m, await dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(8m, await dbContext.Items.IgnoreQueryFilters()
+            .Where(item => item.Id == itemId)
+            .Select(item => item.CurrentStock)
+            .SingleAsync());
+        Assert.True(await dbContext.InventoryLedgerEntries.AnyAsync(entry =>
+            entry.SourceDocumentId == invoiceId &&
+            entry.SourceLineId == lineId &&
+            entry.SourceType == "Invoice:Sales" &&
+            entry.QuantityDelta == -2m));
+    }
+
+    [Fact]
+    public async Task RestorePayment_WhenInvoiceWasDeleted_RestoresInvoiceStockAndLedgerEntries()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var itemId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+        var customer = CreateScopedCustomer("수금 복원 재고 거래처", OfficeCodeCatalog.Usenet);
+        dbContext.Customers.Add(customer);
+        dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "수금 복원 전표 재고 품목",
+            NameMatchKey = "수금복원전표재고품목",
+            Unit = "개",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 10m
+        });
+        dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-10),
+            Revision = 10
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "INV-RESTORE-PAYMENT-STOCK-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            InvoiceDate = new DateOnly(2026, 6, 22),
+            TotalAmount = 2_000m,
+            SupplyAmount = 1_818m,
+            VatAmount = 182m,
+            IsDeleted = true,
+            Lines =
+            [
+                new InvoiceLine
+                {
+                    Id = lineId,
+                    InvoiceId = invoiceId,
+                    ItemId = itemId,
+                    ItemNameOriginal = "수금 복원 전표 재고 품목",
+                    Unit = "개",
+                    Quantity = 2m,
+                    UnitPrice = 1_000m,
+                    LineAmount = 2_000m,
+                    ItemTrackingType = ItemTrackingTypes.Stock,
+                    OrderIndex = 1,
+                    IsDeleted = true
+                }
+            ]
+        });
+        dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 6, 23),
+            Amount = 2_000m,
+            IsDeleted = true
+        });
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Payments.IgnoreQueryFilters().SingleAsync(payment => payment.Id == paymentId);
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = paymentId,
+                        Kind = "payment",
+                        ExpectedRevision = stored.Revision
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success, item.Message);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.False(await dbContext.Payments.IgnoreQueryFilters()
+            .Where(payment => payment.Id == paymentId)
+            .Select(payment => payment.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.Id == invoiceId)
+            .Select(invoice => invoice.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.InvoiceLines.IgnoreQueryFilters()
+            .Where(line => line.Id == lineId)
+            .Select(line => line.IsDeleted)
+            .SingleAsync());
+        Assert.Equal(8m, await dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(8m, await dbContext.Items.IgnoreQueryFilters()
+            .Where(item => item.Id == itemId)
+            .Select(item => item.CurrentStock)
+            .SingleAsync());
+        Assert.True(await dbContext.InventoryLedgerEntries.AnyAsync(entry =>
+            entry.SourceDocumentId == invoiceId &&
+            entry.SourceLineId == lineId &&
+            entry.SourceType == "Invoice:Sales" &&
+            entry.QuantityDelta == -2m));
+    }
+
+    [Fact]
     public async Task RestoreInventoryTransfer_AppliesStockSnapshotsAndLedgerEntries()
     {
         var currentUser = CreateAdminUser();

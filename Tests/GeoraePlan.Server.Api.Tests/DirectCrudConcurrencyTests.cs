@@ -2860,6 +2860,65 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PaymentsController_Update_DerivedLinkedPayment_UpdatesSourceTransactionAndSettlement()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var scenario = SeedRentalDirectPaymentScenario(dbContext, existingPaymentAmount: 40_000m, storedSettledAmount: 40_000m);
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = scenario.PaymentId,
+            CustomerId = scenario.CustomerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 7, 26),
+            TransactionKind = "렌탈수금",
+            LinkedInvoiceId = scenario.InvoiceId,
+            LinkedInvoiceNumber = "RENTAL-DIRECT-PAY-001",
+            LinkedRentalBillingProfileId = scenario.ProfileId,
+            LinkedRentalBillingRunId = scenario.RunId,
+            BankReceipt = 40_000m,
+            ReceiptTotal = 40_000m,
+            SettlementAmount = 40_000m
+        });
+        await dbContext.SaveChangesAsync();
+        var storedPayment = await dbContext.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(payment => payment.Id == scenario.PaymentId);
+
+        var controller = CreatePaymentsController(dbContext, currentUser);
+        var updateResponse = await controller.Update(scenario.PaymentId, new PaymentDto
+        {
+            Id = scenario.PaymentId,
+            InvoiceId = scenario.InvoiceId,
+            PaymentDate = new DateOnly(2026, 7, 27),
+            Amount = 70_000m,
+            Note = "derived rental payment updated",
+            ExpectedRevision = storedPayment.Revision
+        }, CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(updateResponse.Result);
+        dbContext.ChangeTracker.Clear();
+        var linkedTransaction = await dbContext.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(transaction => transaction.Id == scenario.PaymentId);
+        Assert.Equal(scenario.InvoiceId, linkedTransaction.LinkedInvoiceId);
+        Assert.Equal("RENTAL-DIRECT-PAY-001", linkedTransaction.LinkedInvoiceNumber);
+        Assert.Equal(scenario.CustomerId, linkedTransaction.CustomerId);
+        Assert.Equal(scenario.ProfileId, linkedTransaction.LinkedRentalBillingProfileId);
+        Assert.Equal(scenario.RunId, linkedTransaction.LinkedRentalBillingRunId);
+        Assert.Equal(new DateOnly(2026, 7, 27), linkedTransaction.TransactionDate);
+        Assert.Equal(70_000m, linkedTransaction.SettlementAmount);
+        Assert.Equal(70_000m, linkedTransaction.ReceiptTotal);
+        Assert.Equal(70_000m, linkedTransaction.BankReceipt);
+        await AssertRentalSettlementAsync(
+            dbContext,
+            scenario.ProfileId,
+            scenario.RunId,
+            expectedSettled: 70_000m,
+            expectedOutstanding: 30_000m,
+            expectedSettledDate: new DateOnly(2026, 7, 27));
+    }
+
+    [Fact]
     public async Task PaymentsController_Update_ForbidsExistingRentalProfileOutsideWritableScope()
     {
         var currentUser = CreateOfficePaymentEditor();
@@ -4254,7 +4313,8 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         Guid profileId,
         Guid runId,
         decimal expectedSettled,
-        decimal expectedOutstanding)
+        decimal expectedOutstanding,
+        DateOnly? expectedSettledDate = null)
     {
         var profile = await dbContext.RentalBillingProfiles
             .IgnoreQueryFilters()
@@ -4279,7 +4339,7 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         if (expectedSettled <= 0m)
             Assert.Null(run.SettledDate);
         else
-            Assert.Equal(new DateOnly(2026, 7, 26), run.SettledDate);
+            Assert.Equal(expectedSettledDate ?? new DateOnly(2026, 7, 26), run.SettledDate);
     }
 
     private static async Task AssertOutOfScopeRentalSettlementUnchangedAsync(
