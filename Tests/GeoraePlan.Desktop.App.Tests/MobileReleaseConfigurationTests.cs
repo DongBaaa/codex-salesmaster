@@ -1430,10 +1430,15 @@ public sealed class MobileReleaseConfigurationTests
             "GeoraePlan.Mobile.App",
             "ViewModels",
             "CustomerContractsViewModel.cs"));
+        var errorFormatterSource = File.ReadAllText(Path.Combine(
+            root,
+            "Shared",
+            "거래플랜.Shared.Contracts",
+            "ApiErrorMessageFormatter.cs"));
 
-        Assert.Contains("TryMapServerErrorMessage(body)", apiSource, StringComparison.Ordinal);
-        Assert.Contains("\"contract_content_unavailable\"", apiSource, StringComparison.Ordinal);
-        Assert.Contains("\"attachment_content_unavailable\"", apiSource, StringComparison.Ordinal);
+        Assert.Contains("ApiErrorMessageFormatter.BuildFailureMessage(", apiSource, StringComparison.Ordinal);
+        Assert.Contains("\"contract_content_unavailable\"", errorFormatterSource, StringComparison.Ordinal);
+        Assert.Contains("\"attachment_content_unavailable\"", errorFormatterSource, StringComparison.Ordinal);
         Assert.Contains("DownloadFileToCacheAsync(", apiSource, StringComparison.Ordinal);
         Assert.Contains("ValidateDownloadedFileAsync(temporaryPath, expectedSize, expectedSha256, label, ct)", apiSource, StringComparison.Ordinal);
         Assert.Contains("IsCachedDownloadValidAsync(cachedPath, contract.FileSize, contract.FileHash, ct)", apiSource, StringComparison.Ordinal);
@@ -2047,6 +2052,32 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("TryDeleteFile(Path.Combine(customerDirectory, $\"{contractId:N}.pdf\"));", contractCacheSource, StringComparison.Ordinal);
         Assert.Contains("private static bool IsEntityNewerThanPurge(CustomerContractDto contract, long purgeRevision)", contractCacheSource, StringComparison.Ordinal);
         Assert.Contains("private static bool IsCustomerNewerThanPurge(CustomerDto customer, long purgeRevision)", contractCacheSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MobileApiClient_UsesSharedApiErrorFormatterForReadableServerErrors()
+    {
+        var source = File.ReadAllText(Path.Combine(
+                FindRepositoryRoot(),
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "Services",
+                "GeoraePlanApiClient.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains(
+            "ApiErrorMessageFormatter.BuildFailureMessage(",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "throw new HttpRequestException(failureMessage, null, response.StatusCode);",
+            source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("TryMapServerErrorMessage(body)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "$\"{(int)response.StatusCode} {response.ReasonPhrase} {displayBody}\"",
+            source,
+            StringComparison.Ordinal);
     }
 
     private static int CountOccurrences(string source, string value)

@@ -450,22 +450,19 @@ public sealed class GeoraePlanApiClient
             return;
 
         var body = await response.Content.ReadAsStringAsync(ct);
-        var mappedMessage = TryMapServerErrorMessage(body);
-        var displayBody = body;
-        if (displayBody.Length > 200)
-            displayBody = displayBody[..200] + "...";
+        var failureMessage = ApiErrorMessageFormatter.BuildFailureMessage(
+            response.StatusCode,
+            response.ReasonPhrase,
+            body);
 
         if (response.StatusCode == HttpStatusCode.Unauthorized)
         {
             await HandleAuthenticationFailureAsync();
             throw new MobileAuthenticationException(relative,
-                $"401 Unauthorized ({relative}): 서버가 Bearer 토큰을 거부했습니다. 세션이 만료되었거나 다시 로그인이 필요합니다. {displayBody}".Trim());
+                $"401 Unauthorized ({relative}): 서버가 Bearer 토큰을 거부했습니다. 세션이 만료되었거나 다시 로그인이 필요합니다. {failureMessage}".Trim());
         }
 
-        if (!string.IsNullOrWhiteSpace(mappedMessage))
-            throw new HttpRequestException($"{(int)response.StatusCode} {mappedMessage}".Trim(), null, response.StatusCode);
-
-        throw new HttpRequestException($"{(int)response.StatusCode} {response.ReasonPhrase} {displayBody}".Trim(), null, response.StatusCode);
+        throw new HttpRequestException(failureMessage, null, response.StatusCode);
     }
 
     private async Task HandleAuthenticationFailureAsync()
@@ -592,33 +589,6 @@ public sealed class GeoraePlanApiClient
         await using var stream = File.OpenRead(path);
         var hash = await SHA256.HashDataAsync(stream, ct);
         return Convert.ToHexString(hash).ToLowerInvariant();
-    }
-
-    private static string? TryMapServerErrorMessage(string body)
-    {
-        if (string.IsNullOrWhiteSpace(body))
-            return null;
-
-        try
-        {
-            using var document = JsonDocument.Parse(body);
-            if (!document.RootElement.TryGetProperty("error", out var errorElement))
-                return null;
-
-            var error = errorElement.GetString();
-            return error switch
-            {
-                "contract_content_unavailable" =>
-                    "계약서 파일 본문을 서버 저장소에서 찾지 못했습니다. 운영점검에서 파일 저장소 무결성을 확인하거나 계약서를 다시 등록해 주세요.",
-                "attachment_content_unavailable" =>
-                    "수금/지급 첨부 파일 본문을 서버 저장소에서 찾지 못했습니다. 운영점검에서 파일 저장소 무결성을 확인하거나 첨부를 다시 등록해 주세요.",
-                _ => null
-            };
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
     }
 
     private static void TryDeleteFile(string path)

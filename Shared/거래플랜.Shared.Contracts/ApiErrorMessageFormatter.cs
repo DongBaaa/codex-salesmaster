@@ -1,0 +1,167 @@
+using System.Net;
+using System.Text.Json;
+
+namespace 거래플랜.Shared.Contracts;
+
+public static class ApiErrorMessageFormatter
+{
+    public static string BuildFailureMessage(HttpStatusCode statusCode, string? reasonPhrase, string? body)
+    {
+        var statusText = BuildStatusText(statusCode, reasonPhrase);
+
+        if (TryBuildPayloadMessage(statusText, body, out var payloadMessage))
+            return payloadMessage;
+
+        var trimmedBody = TrimBody(body);
+
+        if (statusCode == HttpStatusCode.Unauthorized)
+            return $"{statusText} 로그인 세션이 만료되었거나 권한이 없습니다. 다시 로그인하세요. {trimmedBody}".Trim();
+
+        if (statusCode == HttpStatusCode.Forbidden)
+            return $"{statusText} 현재 계정에 이 작업을 수행할 권한이 없습니다. 관리자에게 권한 확인을 요청하세요.".Trim();
+
+        return $"{statusText} {trimmedBody}".Trim();
+    }
+
+    private static bool TryBuildPayloadMessage(string statusText, string? body, out string message)
+    {
+        message = string.Empty;
+        if (string.IsNullOrWhiteSpace(body))
+            return false;
+
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            if (root.ValueKind == JsonValueKind.String)
+            {
+                var value = root.GetString();
+                if (string.IsNullOrWhiteSpace(value))
+                    return false;
+
+                message = $"{statusText} {value.Trim()}".Trim();
+                return true;
+            }
+
+            if (root.ValueKind != JsonValueKind.Object)
+                return false;
+
+            var parts = new List<string>();
+            var errorCode = GetStringProperty(root, "error");
+            AddDistinctPart(parts, MapKnownError(errorCode) ?? errorCode);
+            AddDistinctPart(parts, GetStringProperty(root, "message"));
+            AddDistinctPart(parts, GetStringProperty(root, "detail"));
+            AddDistinctPart(parts, GetStringProperty(root, "title"));
+
+            foreach (var validationError in GetValidationErrorMessages(root))
+                AddDistinctPart(parts, validationError);
+
+            if (parts.Count == 0)
+                return false;
+
+            message = $"{statusText} {string.Join(" ", parts)}".Trim();
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static IEnumerable<string> GetValidationErrorMessages(JsonElement root)
+    {
+        if (!root.TryGetProperty("errors", out var errorsElement) ||
+            errorsElement.ValueKind != JsonValueKind.Object)
+        {
+            yield break;
+        }
+
+        foreach (var property in errorsElement.EnumerateObject())
+        {
+            var messages = ReadValidationMessages(property.Value)
+                .Select(message => message.Trim())
+                .Where(message => message.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (messages.Count == 0)
+                continue;
+
+            yield return string.IsNullOrWhiteSpace(property.Name)
+                ? string.Join(", ", messages)
+                : $"{property.Name}: {string.Join(", ", messages)}";
+        }
+    }
+
+    private static IEnumerable<string> ReadValidationMessages(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            var message = value.GetString();
+            if (!string.IsNullOrWhiteSpace(message))
+                yield return message;
+
+            yield break;
+        }
+
+        if (value.ValueKind != JsonValueKind.Array)
+            yield break;
+
+        foreach (var item in value.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String)
+                continue;
+
+            var message = item.GetString();
+            if (!string.IsNullOrWhiteSpace(message))
+                yield return message;
+        }
+    }
+
+    private static string? GetStringProperty(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out var property) ||
+            property.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var value = property.GetString();
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static string? MapKnownError(string? errorCode)
+        => errorCode switch
+        {
+            "contract_content_unavailable" =>
+                "계약서 파일 내용을 찾을 수 없습니다. 서버에는 계약서 정보가 있으나 실제 파일이 없거나 손상되었습니다. 운영 점검의 파일 저장소 무결성 결과를 확인한 뒤 다시 시도하세요.",
+            "attachment_content_unavailable" =>
+                "첨부 파일 내용을 찾을 수 없습니다. 서버에는 첨부 정보가 있으나 실제 파일이 없거나 손상되었습니다. 운영 점검의 파일 저장소 무결성 결과를 확인한 뒤 다시 시도하세요.",
+            _ => null
+        };
+
+    private static void AddDistinctPart(List<string> parts, string? value)
+    {
+        var normalized = value?.Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+            return;
+
+        if (parts.Any(part => string.Equals(part, normalized, StringComparison.OrdinalIgnoreCase)))
+            return;
+
+        parts.Add(normalized);
+    }
+
+    private static string BuildStatusText(HttpStatusCode statusCode, string? reasonPhrase)
+    {
+        var reason = string.IsNullOrWhiteSpace(reasonPhrase)
+            ? statusCode.ToString()
+            : reasonPhrase.Trim();
+        return $"{(int)statusCode} {reason}".Trim();
+    }
+
+    private static string TrimBody(string? body)
+    {
+        var trimmedBody = body?.Trim() ?? string.Empty;
+        return trimmedBody.Length > 200 ? trimmedBody[..200] + "..." : trimmedBody;
+    }
+}

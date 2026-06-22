@@ -3,7 +3,6 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Runtime.ExceptionServices;
-using System.Text;
 using System.Text.Json;
 using 거래플랜.Shared.Contracts;
 
@@ -20,10 +19,6 @@ public sealed class ErpApiClient
     private static readonly TimeSpan TokenRefreshFailureCooldown = TimeSpan.FromMinutes(1);
     private static readonly IReadOnlyDictionary<string, string> EmptyHeaders = new Dictionary<string, string>();
     private static readonly JsonSerializerOptions ConflictPayloadJsonOptions = new() { PropertyNameCaseInsensitive = true };
-    private static readonly JsonSerializerOptions ApiErrorPayloadJsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        PropertyNameCaseInsensitive = true
-    };
 
     private readonly HttpClient _http;
     private readonly SessionState _session;
@@ -1022,143 +1017,5 @@ public sealed class ErpApiClient
     }
 
     private static string BuildFailureMessage(HttpResponseMessage response, string body)
-    {
-        if (TryBuildKnownApiErrorMessage(response, body, out var knownMessage))
-            return knownMessage;
-
-        if (TryBuildApiErrorPayloadMessage(response, body, out var payloadMessage))
-            return payloadMessage;
-
-        var trimmedBody = body;
-        if (trimmedBody.Length > 200)
-            trimmedBody = trimmedBody[..200] + "...";
-
-        if (response.StatusCode == HttpStatusCode.Unauthorized)
-            return $"401 Unauthorized 로그인 세션이 만료되었거나 권한이 없습니다. 다시 로그인하세요. {trimmedBody}".Trim();
-
-        if (response.StatusCode == HttpStatusCode.Forbidden)
-            return "403 Forbidden 현재 계정에 이 작업을 수행할 권한이 없습니다. 관리자에게 권한 확인을 요청하세요.";
-
-        return $"{(int)response.StatusCode} {response.ReasonPhrase} {trimmedBody}".Trim();
-    }
-
-    private static bool TryBuildApiErrorPayloadMessage(
-        HttpResponseMessage response,
-        string body,
-        out string message)
-    {
-        message = string.Empty;
-        var payload = TryParseApiErrorPayload(body);
-        if (payload is null)
-            return false;
-
-        var parts = new List<string>();
-        AddDistinctPart(parts, payload.Error);
-        AddDistinctPart(parts, payload.Message);
-        AddDistinctPart(parts, payload.Detail);
-        AddDistinctPart(parts, payload.Title);
-
-        foreach (var validationError in payload.GetValidationErrorMessages())
-            AddDistinctPart(parts, validationError);
-
-        if (parts.Count == 0)
-            return false;
-
-        message = $"{(int)response.StatusCode} {response.ReasonPhrase} {string.Join(" ", parts)}".Trim();
-        return true;
-    }
-
-    private static void AddDistinctPart(List<string> parts, string? value)
-    {
-        var normalized = value?.Trim();
-        if (string.IsNullOrWhiteSpace(normalized))
-            return;
-
-        if (parts.Any(part => string.Equals(part, normalized, StringComparison.OrdinalIgnoreCase)))
-            return;
-
-        parts.Add(normalized);
-    }
-
-    private static bool TryBuildKnownApiErrorMessage(
-        HttpResponseMessage response,
-        string body,
-        out string message)
-    {
-        message = string.Empty;
-        var payload = TryParseApiErrorPayload(body);
-        if (payload is null || string.IsNullOrWhiteSpace(payload.Error))
-            return false;
-
-        var userMessage = payload.Error.Trim() switch
-        {
-            "contract_content_unavailable" =>
-                "계약서 파일 내용을 찾을 수 없습니다. 서버에는 계약서 정보가 있으나 실제 파일이 없거나 손상되었습니다. 운영 점검의 파일 저장소 무결성 결과를 확인한 뒤 다시 시도하세요.",
-            "attachment_content_unavailable" =>
-                "첨부 파일 내용을 찾을 수 없습니다. 서버에는 첨부 정보가 있으나 실제 파일이 없거나 손상되었습니다. 운영 점검의 파일 저장소 무결성 결과를 확인한 뒤 다시 시도하세요.",
-            _ => string.Empty
-        };
-
-        if (string.IsNullOrWhiteSpace(userMessage))
-            return false;
-
-        var builder = new StringBuilder($"{(int)response.StatusCode} {response.ReasonPhrase} {userMessage}".Trim());
-        if (!string.IsNullOrWhiteSpace(payload.Message) &&
-            !userMessage.Contains(payload.Message.Trim(), StringComparison.OrdinalIgnoreCase))
-        {
-            builder.Append(' ');
-            builder.Append(payload.Message.Trim());
-        }
-
-        return !string.IsNullOrWhiteSpace(message = builder.ToString());
-    }
-
-    private static ApiErrorPayload? TryParseApiErrorPayload(string body)
-    {
-        if (string.IsNullOrWhiteSpace(body))
-            return null;
-
-        try
-        {
-            return JsonSerializer.Deserialize<ApiErrorPayload>(body, ApiErrorPayloadJsonOptions);
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private sealed class ApiErrorPayload
-    {
-        public string? Error { get; set; }
-
-        public string? Message { get; set; }
-
-        public string? Title { get; set; }
-
-        public string? Detail { get; set; }
-
-        public Dictionary<string, string[]>? Errors { get; set; }
-
-        public IEnumerable<string> GetValidationErrorMessages()
-        {
-            if (Errors is null || Errors.Count == 0)
-                yield break;
-
-            foreach (var pair in Errors)
-            {
-                var messages = pair.Value
-                    .Where(message => !string.IsNullOrWhiteSpace(message))
-                    .Select(message => message.Trim())
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-                if (messages.Count == 0)
-                    continue;
-
-                yield return string.IsNullOrWhiteSpace(pair.Key)
-                    ? string.Join(", ", messages)
-                    : $"{pair.Key}: {string.Join(", ", messages)}";
-            }
-        }
-    }
+        => ApiErrorMessageFormatter.BuildFailureMessage(response.StatusCode, response.ReasonPhrase, body);
 }
