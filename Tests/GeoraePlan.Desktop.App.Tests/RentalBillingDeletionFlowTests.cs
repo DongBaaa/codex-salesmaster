@@ -1397,8 +1397,9 @@ public sealed class RentalBillingDeletionFlowTests
             var detachedTransaction = await db.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == transactionId);
             Assert.Null(detachedTransaction.LinkedInvoiceId);
             Assert.Equal(0m, detachedTransaction.SettlementAmount);
-            Assert.Equal(profileId, detachedTransaction.LinkedRentalBillingProfileId);
-            Assert.Equal(runId, detachedTransaction.LinkedRentalBillingRunId);
+            Assert.Null(detachedTransaction.LinkedRentalBillingProfileId);
+            Assert.Null(detachedTransaction.LinkedRentalBillingRunId);
+            Assert.Equal(PaymentFlowConstants.TransactionKindReceipt, detachedTransaction.TransactionKind);
 
             var deletedPayment = await db.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == transactionId);
             Assert.True(deletedPayment.IsDeleted);
@@ -1522,6 +1523,9 @@ public sealed class RentalBillingDeletionFlowTests
             var detachedTransaction = await db.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == transactionId);
             Assert.Null(detachedTransaction.LinkedInvoiceId);
             Assert.Equal(0m, detachedTransaction.SettlementAmount);
+            Assert.Null(detachedTransaction.LinkedRentalBillingProfileId);
+            Assert.Null(detachedTransaction.LinkedRentalBillingRunId);
+            Assert.Equal(PaymentFlowConstants.TransactionKindReceipt, detachedTransaction.TransactionKind);
             Assert.False(detachedTransaction.IsDirty);
 
             var deletedPayment = await db.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == transactionId);
@@ -1924,6 +1928,9 @@ public sealed class RentalBillingDeletionFlowTests
             var detachedTransaction = await db.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == transactionId);
             Assert.Null(detachedTransaction.LinkedInvoiceId);
             Assert.Equal(0m, detachedTransaction.SettlementAmount);
+            Assert.Null(detachedTransaction.LinkedRentalBillingProfileId);
+            Assert.Null(detachedTransaction.LinkedRentalBillingRunId);
+            Assert.Equal(PaymentFlowConstants.TransactionKindReceipt, detachedTransaction.TransactionKind);
 
             var restore = await local.RestoreRecycleBinEntryAsync(
                 RecycleBinEntityKind.Payment,
@@ -2013,6 +2020,9 @@ public sealed class RentalBillingDeletionFlowTests
             var detachedTransaction = await db.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == transactionId);
             Assert.Null(detachedTransaction.LinkedInvoiceId);
             Assert.Equal(0m, detachedTransaction.SettlementAmount);
+            Assert.Null(detachedTransaction.LinkedRentalBillingProfileId);
+            Assert.Null(detachedTransaction.LinkedRentalBillingRunId);
+            Assert.Equal(PaymentFlowConstants.TransactionKindReceipt, detachedTransaction.TransactionKind);
             var deletedRun = await GetBillingRunAsync(db, profileId, runId);
             Assert.Equal(0m, deletedRun.SettledAmount);
 

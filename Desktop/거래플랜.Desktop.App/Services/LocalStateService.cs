@@ -5264,14 +5264,21 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			}
 
 			transaction.LinkedInvoiceId = null;
+			transaction.LinkedInvoiceNumber = string.Empty;
+			transaction.LinkedRentalBillingProfileId = null;
+			transaction.LinkedRentalBillingRunId = null;
 			transaction.SettlementAmount = 0m;
-			if (string.Equals(transaction.TransactionKind, "전표수금", StringComparison.OrdinalIgnoreCase))
+			if (string.Equals(transaction.TransactionKind, PaymentFlowConstants.TransactionKindInvoiceReceipt, StringComparison.OrdinalIgnoreCase))
 			{
-				transaction.TransactionKind = "일반수금";
+				transaction.TransactionKind = PaymentFlowConstants.TransactionKindReceipt;
 			}
-			else if (string.Equals(transaction.TransactionKind, "전표지급", StringComparison.OrdinalIgnoreCase))
+			else if (string.Equals(transaction.TransactionKind, PaymentFlowConstants.TransactionKindInvoicePayment, StringComparison.OrdinalIgnoreCase))
 			{
-				transaction.TransactionKind = "일반지급";
+				transaction.TransactionKind = PaymentFlowConstants.TransactionKindPayment;
+			}
+			else if (string.Equals(transaction.TransactionKind, PaymentFlowConstants.TransactionKindRentalReceipt, StringComparison.OrdinalIgnoreCase))
+			{
+				transaction.TransactionKind = PaymentFlowConstants.TransactionKindReceipt;
 			}
 			transaction.IsDirty = markDirty;
 			transaction.UpdatedAtUtc = updatedAtUtc;
