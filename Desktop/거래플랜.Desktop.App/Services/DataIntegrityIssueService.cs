@@ -1171,6 +1171,10 @@ public sealed class DataIntegrityIssueService
             .Where(customer => customer.Id != canonical.Id)
             .Select(customer => customer.Id)
             .ToList();
+        var sideEffectPermissionResult = await ValidateCustomerDuplicateMergeSideEffectPermissionsAsync(duplicateIds, session, ct);
+        if (sideEffectPermissionResult is not null)
+            return sideEffectPermissionResult;
+
         var duplicates = activeCustomers
             .Where(customer => duplicateIds.Contains(customer.Id))
             .ToList();
@@ -1277,6 +1281,102 @@ public sealed class DataIntegrityIssueService
         return OfficeMutationResult.Ok(
             canonical.Id,
             $"거래처 중복 후보 {activeCustomers.Count:N0}건 중 {duplicates.Count:N0}건을 '{NormalizeDisplay(canonical.NameOriginal, "대표 거래처")}'로 병합했습니다.");
+    }
+
+    private async Task<OfficeMutationResult?> ValidateCustomerDuplicateMergeSideEffectPermissionsAsync(
+        IReadOnlyCollection<Guid> duplicateIds,
+        SessionState session,
+        CancellationToken ct)
+    {
+        if (duplicateIds.Count == 0)
+            return null;
+
+        var invoices = await _db.Invoices.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(invoice => duplicateIds.Contains(invoice.CustomerId))
+            .ToListAsync(ct);
+        if (invoices.Count > 0)
+        {
+            if (!HasIntegrityPermission(session, AppPermissionNames.InvoiceEdit))
+                return OfficeMutationResult.Denied("거래처 병합으로 연결 전표를 함께 변경하려면 전표 편집 권한이 필요합니다.");
+
+            foreach (var invoice in invoices)
+            {
+                var scope = ResolveInvoiceScope(invoice);
+                if (!CanWriteCustomerScopeForIntegrity(session, scope.OfficeCode, scope.TenantCode))
+                    return OfficeMutationResult.Denied("권한 범위 밖 전표가 연결된 거래처는 병합할 수 없습니다.");
+            }
+        }
+
+        var transactions = await _db.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(transaction => duplicateIds.Contains(transaction.CustomerId))
+            .ToListAsync(ct);
+        if (transactions.Count > 0)
+        {
+            if (!HasIntegrityPermission(session, AppPermissionNames.PaymentEdit))
+                return OfficeMutationResult.Denied("거래처 병합으로 수금/지급 거래내역을 함께 변경하려면 수금/지급 편집 권한이 필요합니다.");
+
+            foreach (var transaction in transactions)
+            {
+                var scope = ResolveTransactionScope(transaction);
+                if (!CanWriteCustomerScopeForIntegrity(session, scope.OfficeCode, scope.TenantCode))
+                    return OfficeMutationResult.Denied("권한 범위 밖 수금/지급 거래내역이 연결된 거래처는 병합할 수 없습니다.");
+            }
+        }
+
+        var profiles = await _db.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(profile => profile.CustomerId.HasValue && duplicateIds.Contains(profile.CustomerId.Value))
+            .ToListAsync(ct);
+        if (profiles.Count > 0)
+        {
+            if (!HasIntegrityPermission(session, AppPermissionNames.RentalProfileEdit))
+                return OfficeMutationResult.Denied("거래처 병합으로 렌탈 청구 프로필을 함께 변경하려면 렌탈 청구 편집 권한이 필요합니다.");
+
+            foreach (var profile in profiles)
+            {
+                var scope = ResolveProfileScope(profile);
+                if (!CanWriteCustomerScopeForIntegrity(session, scope.ResponsibleOfficeCode, scope.TenantCode))
+                    return OfficeMutationResult.Denied("권한 범위 밖 렌탈 청구 프로필이 연결된 거래처는 병합할 수 없습니다.");
+            }
+        }
+
+        var assets = await _db.RentalAssets.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(asset => asset.CustomerId.HasValue && duplicateIds.Contains(asset.CustomerId.Value))
+            .ToListAsync(ct);
+        if (assets.Count > 0)
+        {
+            if (!HasIntegrityPermission(session, AppPermissionNames.RentalAssetEdit))
+                return OfficeMutationResult.Denied("거래처 병합으로 렌탈 자산을 함께 변경하려면 렌탈 자산 편집 권한이 필요합니다.");
+
+            foreach (var asset in assets)
+            {
+                var scope = ResolveAssetScope(asset);
+                if (!CanWriteCustomerScopeForIntegrity(session, scope.ResponsibleOfficeCode, scope.TenantCode))
+                    return OfficeMutationResult.Denied("권한 범위 밖 렌탈 자산이 연결된 거래처는 병합할 수 없습니다.");
+            }
+        }
+
+        var histories = await _db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(history => history.CustomerId.HasValue && duplicateIds.Contains(history.CustomerId.Value))
+            .ToListAsync(ct);
+        if (histories.Count > 0)
+        {
+            if (!HasIntegrityPermission(session, AppPermissionNames.RentalAssetEdit))
+                return OfficeMutationResult.Denied("거래처 병합으로 렌탈 설치 이력을 함께 변경하려면 렌탈 자산 편집 권한이 필요합니다.");
+
+            foreach (var history in histories)
+            {
+                var scope = ResolveAssignmentHistoryScope(history, null, null);
+                if (!CanWriteCustomerScopeForIntegrity(session, scope.OfficeCode, scope.TenantCode))
+                    return OfficeMutationResult.Denied("권한 범위 밖 렌탈 설치 이력이 연결된 거래처는 병합할 수 없습니다.");
+            }
+        }
+
+        return null;
     }
 
     private async Task<OfficeMutationResult> MergeDuplicateItemsAsync(
@@ -2942,6 +3042,60 @@ public sealed class DataIntegrityIssueService
         return (scopeTenantCode, scopeOfficeCode);
     }
 
+    private static (string TenantCode, string OfficeCode) ResolveInvoiceScope(LocalInvoice invoice)
+    {
+        string scopeOfficeCode;
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(invoice.ResponsibleOfficeCode, out var responsibleOfficeCode))
+        {
+            scopeOfficeCode = responsibleOfficeCode;
+        }
+        else if (OfficeCodeCatalog.TryNormalizeOfficeCode(invoice.OfficeCode, out var ownerOfficeCode))
+        {
+            scopeOfficeCode = ownerOfficeCode;
+        }
+        else
+        {
+            scopeOfficeCode = TenantScopeCatalog.TryNormalizeTenantCode(invoice.TenantCode, out var tenantCode) &&
+                              string.Equals(tenantCode, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase)
+                ? OfficeCodeCatalog.Itworld
+                : OfficeCodeCatalog.Usenet;
+        }
+
+        var scopeTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            invoice.TenantCode,
+            scopeOfficeCode,
+            invoice.TenantCode,
+            scopeOfficeCode);
+        return (scopeTenantCode, scopeOfficeCode);
+    }
+
+    private static (string TenantCode, string OfficeCode) ResolveTransactionScope(LocalTransaction transaction)
+    {
+        string scopeOfficeCode;
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(transaction.ResponsibleOfficeCode, out var responsibleOfficeCode))
+        {
+            scopeOfficeCode = responsibleOfficeCode;
+        }
+        else if (OfficeCodeCatalog.TryNormalizeOfficeCode(transaction.OfficeCode, out var ownerOfficeCode))
+        {
+            scopeOfficeCode = ownerOfficeCode;
+        }
+        else
+        {
+            scopeOfficeCode = TenantScopeCatalog.TryNormalizeTenantCode(transaction.TenantCode, out var tenantCode) &&
+                              string.Equals(tenantCode, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase)
+                ? OfficeCodeCatalog.Itworld
+                : OfficeCodeCatalog.Usenet;
+        }
+
+        var scopeTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            transaction.TenantCode,
+            scopeOfficeCode,
+            transaction.TenantCode,
+            scopeOfficeCode);
+        return (scopeTenantCode, scopeOfficeCode);
+    }
+
     private static (string TenantCode, string OfficeCode) ResolveItemScope(LocalItem item)
     {
         string scopeOfficeCode;
@@ -3986,6 +4140,9 @@ public sealed class DataIntegrityIssueService
 
     private static bool CanEditItemsForIntegrity(SessionState? session)
         => session is not null && (session.HasAdministrativePrivileges || session.HasPermission(AppPermissionNames.ItemEdit));
+
+    private static bool HasIntegrityPermission(SessionState? session, string permissionName)
+        => session is not null && (session.HasAdministrativePrivileges || session.HasPermission(permissionName));
 
     private static bool CanWriteCustomerScopeForIntegrity(SessionState? session, string? officeCode, string? tenantCode = null)
     {

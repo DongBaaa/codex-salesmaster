@@ -102,6 +102,50 @@ public sealed class DataIntegrityDuplicateMergeTests
     }
 
     [Fact]
+    public async Task MergeDuplicateIssueAsync_RequiresInvoiceEditWhenCustomerMergeMovesInvoices()
+    {
+        PrepareAppRoot("georaeplan-integrity-customer-merge-invoice-permission");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var canonical = CreateCustomer("01111111-1111-1111-1111-111111111111", "권한병합거래처");
+            var duplicate = CreateCustomer("02222222-2222-2222-2222-222222222222", "권한병합거래처");
+            var duplicateInvoiceId = Guid.Parse("03333333-3333-3333-3333-333333333333");
+            db.Customers.AddRange(canonical, duplicate);
+            db.Invoices.AddRange(
+                CreateInitializerInvoice("04444444-4444-4444-4444-444444444444", canonical.Id, "MERGE-PERM-CANONICAL-1"),
+                CreateInitializerInvoice("05555555-5555-5555-5555-555555555555", canonical.Id, "MERGE-PERM-CANONICAL-2"),
+                CreateInitializerInvoice(duplicateInvoiceId.ToString("D"), duplicate.Id, "MERGE-PERM-DUPLICATE-1"));
+            await db.SaveChangesAsync();
+
+            var service = new DataIntegrityIssueService(db, new SyncRequestDispatcher());
+            var scan = await service.ScanAsync(CreateAdminSession());
+            var issue = Assert.Single(scan.Issues, issue => issue.Code == DataIntegrityIssueCodes.CustomerDuplicateCandidate);
+            var customerOnlySession = CreateUserSession(AppPermissionNames.CustomerEdit);
+
+            var result = await service.MergeDuplicateIssueAsync(issue, customerOnlySession);
+
+            Assert.False(result.Success);
+            Assert.Contains("전표", result.Message);
+            var storedDuplicate = await db.Customers.IgnoreQueryFilters().SingleAsync(customer => customer.Id == duplicate.Id);
+            var storedDuplicateInvoice = await db.Invoices.IgnoreQueryFilters().SingleAsync(invoice => invoice.Id == duplicateInvoiceId);
+            Assert.False(storedDuplicate.IsDeleted);
+            Assert.False(storedDuplicate.IsDirty);
+            Assert.Equal(duplicate.Id, storedDuplicateInvoice.CustomerId);
+            Assert.False(storedDuplicateInvoice.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task LocalDbInitializer_MergeBusinessDuplicateCustomers_RepointsRentalAssignmentHistoryCustomerReferences()
     {
         PrepareAppRoot("georaeplan-initializer-business-customer-merge-history");
@@ -498,6 +542,21 @@ public sealed class DataIntegrityDuplicateMergeTests
             TenantCode = TenantScopeCatalog.UsenetGroup,
             OfficeCode = OfficeCodeCatalog.Usenet,
             ScopeType = TenantScopeCatalog.ScopeAdmin
+        });
+        return session;
+    }
+
+    private static SessionState CreateUserSession(params string[] permissions)
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            Username = "user",
+            Role = DomainConstants.RoleUser,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = permissions.ToList()
         });
         return session;
     }
