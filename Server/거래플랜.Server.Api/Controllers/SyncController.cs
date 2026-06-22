@@ -182,8 +182,74 @@ public sealed class SyncController : ControllerBase
                 .ToList()
         };
 
+        await RemoveUnreadableItemLinesFromPullResponseAsync(response, cancellationToken);
+
         response.CurrentServerRevision = await GetCurrentRevisionAsync(cancellationToken);
         return Ok(response);
+    }
+
+    private async Task RemoveUnreadableItemLinesFromPullResponseAsync(
+        SyncPullResponse response,
+        CancellationToken cancellationToken)
+    {
+        var referencedItemIds = response.Invoices
+            .SelectMany(invoice => invoice.Lines ?? [])
+            .Select(line => line.ItemId)
+            .Concat(response.InventoryTransfers
+                .SelectMany(transfer => transfer.Lines ?? [])
+                .Select(line => line.ItemId))
+            .Where(itemId => itemId.HasValue && itemId.Value != Guid.Empty)
+            .Select(itemId => itemId!.Value)
+            .Distinct()
+            .ToList();
+
+        if (referencedItemIds.Count == 0)
+            return;
+
+        var referencedItems = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item => referencedItemIds.Contains(item.Id) && !item.IsDeleted)
+            .Select(item => new { item.Id, item.OfficeCode, item.TenantCode })
+            .ToListAsync(cancellationToken);
+        var readableItemIds = referencedItems
+            .Where(item => _officeScopeService.CanReadOfficeForItems(item.OfficeCode, item.TenantCode))
+            .Select(item => item.Id)
+            .ToHashSet();
+
+        foreach (var invoice in response.Invoices)
+            invoice.Lines = FilterReadableInvoiceLines(invoice.Lines, readableItemIds);
+
+        foreach (var transfer in response.InventoryTransfers)
+            transfer.Lines = FilterReadableInventoryTransferLines(transfer.Lines, readableItemIds);
+    }
+
+    private static List<InvoiceLineDto> FilterReadableInvoiceLines(
+        List<InvoiceLineDto>? lines,
+        IReadOnlySet<Guid> readableItemIds)
+    {
+        if (lines is null || lines.Count == 0)
+            return [];
+
+        return lines
+            .Where(line => !line.ItemId.HasValue ||
+                           line.ItemId.Value == Guid.Empty ||
+                           readableItemIds.Contains(line.ItemId.Value))
+            .ToList();
+    }
+
+    private static List<InventoryTransferLineDto> FilterReadableInventoryTransferLines(
+        List<InventoryTransferLineDto>? lines,
+        IReadOnlySet<Guid> readableItemIds)
+    {
+        if (lines is null || lines.Count == 0)
+            return [];
+
+        return lines
+            .Where(line => !line.ItemId.HasValue ||
+                           line.ItemId.Value == Guid.Empty ||
+                           readableItemIds.Contains(line.ItemId.Value))
+            .ToList();
     }
 
     private static List<UnitDto> DeduplicatePulledUnits(List<UnitDto> units)

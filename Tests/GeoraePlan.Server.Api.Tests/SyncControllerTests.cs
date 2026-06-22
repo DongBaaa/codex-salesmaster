@@ -198,6 +198,178 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Pull_RemovesInvoiceLinesReferencingItemsOutsideReadableItemScope()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-invoice-line-reader",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var inScopeItemId = Guid.NewGuid();
+        var outOfScopeItemId = Guid.NewGuid();
+        var customerId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        scopedDb.Items.AddRange(
+            new Item
+            {
+                Id = inScopeItemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "SYNC-PULL-IN-SCOPE-INVOICE-ITEM",
+                NameMatchKey = "SYNCPULLINSCOPEINVOICEITEM"
+            },
+            new Item
+            {
+                Id = outOfScopeItemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                NameOriginal = "SYNC-PULL-OUT-SCOPE-INVOICE-ITEM",
+                NameMatchKey = "SYNCPULLOUTSCOPEINVOICEITEM"
+            });
+        scopedDb.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-PULL-INVOICE-LINE-CUSTOMER",
+            NameMatchKey = "SYNCPULLINVOICELINECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        scopedDb.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 22),
+            InvoiceNumber = "SYNC-PULL-LINE-SCOPE",
+            Revision = 10,
+            Lines =
+            [
+                new InvoiceLine
+                {
+                    Id = Guid.NewGuid(),
+                    ItemId = inScopeItemId,
+                    ItemNameOriginal = "SYNC-PULL-IN-SCOPE-INVOICE-ITEM",
+                    Unit = "EA",
+                    Quantity = 1m,
+                    UnitPrice = 1000m,
+                    LineAmount = 1000m,
+                    OrderIndex = 1
+                },
+                new InvoiceLine
+                {
+                    Id = Guid.NewGuid(),
+                    ItemId = outOfScopeItemId,
+                    ItemNameOriginal = "SYNC-PULL-OUT-SCOPE-INVOICE-ITEM",
+                    Unit = "EA",
+                    Quantity = 1m,
+                    UnitPrice = 2000m,
+                    LineAmount = 2000m,
+                    OrderIndex = 2
+                }
+            ]
+        });
+        await scopedDb.SaveChangesAsync();
+
+        var response = await controller.Pull(0, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPullResponse>(ok.Value);
+
+        Assert.Contains(result.Items, item => item.Id == inScopeItemId);
+        Assert.DoesNotContain(result.Items, item => item.Id == outOfScopeItemId);
+        var invoice = Assert.Single(result.Invoices, current => current.Id == invoiceId);
+        Assert.Contains(invoice.Lines, line => line.ItemId == inScopeItemId);
+        Assert.DoesNotContain(invoice.Lines, line => line.ItemId == outOfScopeItemId);
+    }
+
+    [Fact]
+    public async Task Pull_RemovesInventoryTransferLinesReferencingItemsOutsideReadableItemScope()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-transfer-line-reader",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var inScopeItemId = Guid.NewGuid();
+        var outOfScopeItemId = Guid.NewGuid();
+        var transferId = Guid.NewGuid();
+        scopedDb.Items.AddRange(
+            new Item
+            {
+                Id = inScopeItemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "SYNC-PULL-IN-SCOPE-TRANSFER-ITEM",
+                NameMatchKey = "SYNCPULLINSCOPETRANSFERITEM"
+            },
+            new Item
+            {
+                Id = outOfScopeItemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                NameOriginal = "SYNC-PULL-OUT-SCOPE-TRANSFER-ITEM",
+                NameMatchKey = "SYNCPULLOUTSCOPETRANSFERITEM"
+            });
+        scopedDb.InventoryTransfers.Add(new InventoryTransfer
+        {
+            Id = transferId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TransferNumber = "SYNC-PULL-TRANSFER-LINE-SCOPE",
+            TransferDate = new DateOnly(2026, 6, 22),
+            FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            TransferStatus = InventoryTransferStatusNormalizer.Pending,
+            Revision = 10,
+            Lines =
+            [
+                new InventoryTransferLine
+                {
+                    Id = Guid.NewGuid(),
+                    ItemId = inScopeItemId,
+                    ItemNameOriginal = "SYNC-PULL-IN-SCOPE-TRANSFER-ITEM",
+                    Unit = "EA",
+                    Quantity = 1m
+                },
+                new InventoryTransferLine
+                {
+                    Id = Guid.NewGuid(),
+                    ItemId = outOfScopeItemId,
+                    ItemNameOriginal = "SYNC-PULL-OUT-SCOPE-TRANSFER-ITEM",
+                    Unit = "EA",
+                    Quantity = 1m
+                }
+            ]
+        });
+        await scopedDb.SaveChangesAsync();
+
+        var response = await controller.Pull(0, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPullResponse>(ok.Value);
+
+        Assert.Contains(result.Items, item => item.Id == inScopeItemId);
+        Assert.DoesNotContain(result.Items, item => item.Id == outOfScopeItemId);
+        var transfer = Assert.Single(result.InventoryTransfers, current => current.Id == transferId);
+        Assert.Contains(transfer.Lines, line => line.ItemId == inScopeItemId);
+        Assert.DoesNotContain(transfer.Lines, line => line.ItemId == outOfScopeItemId);
+    }
+
+    [Fact]
     public async Task Push_CompanyProfiles_RejectsOutOfScopeOfficeProfileMutation()
     {
         var currentUser = new TestCurrentUserContext
