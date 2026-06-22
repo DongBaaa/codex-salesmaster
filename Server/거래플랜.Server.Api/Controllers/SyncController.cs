@@ -2096,13 +2096,28 @@ public sealed class SyncController : ControllerBase
         foreach (var dto in payload)
         {
             var existing = await _dbContext.TransactionAttachments.IgnoreQueryFilters()
-                .Include(current => current.Transaction)
                 .FirstOrDefaultAsync(current => current.Id == dto.Id, cancellationToken);
-            if (existing?.Transaction is not null &&
-                !_officeScopeService.CanWriteOfficeForPayments(existing.Transaction.ResponsibleOfficeCode, existing.Transaction.TenantCode, existing.Transaction.OfficeCode))
+            TransactionRecord? existingTransaction = null;
+            if (existing is not null)
+            {
+                existingTransaction = await _dbContext.Transactions.IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(current => current.Id == existing.TransactionId, cancellationToken);
+            }
+
+            if (existing is not null &&
+                existingTransaction is null &&
+                !_officeScopeService.HasGlobalDataScope)
             {
                 AddClientConflict(dto, nameof(TransactionAttachment),
-                    $"Existing transaction is outside the writable office scope: {existing.TransactionId}.", result);
+                    $"Existing transaction reference is missing, so current account cannot verify writable office scope: {existing.TransactionId}.", result);
+                continue;
+            }
+
+            if (existingTransaction is not null &&
+                !_officeScopeService.CanWriteOfficeForPayments(existingTransaction.ResponsibleOfficeCode, existingTransaction.TenantCode, existingTransaction.OfficeCode))
+            {
+                AddClientConflict(dto, nameof(TransactionAttachment),
+                    $"Existing transaction is outside the writable office scope: {existingTransaction.Id}.", result);
                 continue;
             }
 

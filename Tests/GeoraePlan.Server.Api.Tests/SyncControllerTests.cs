@@ -7394,6 +7394,137 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsExistingTransactionAttachment_WhenExistingTransactionReferenceIsHardMissingForScopedUser()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "ORPHAN-ATTACHMENT-CUSTOMER",
+            NameMatchKey = "ORPHANATTACHMENTCUSTOMER",
+            TradeType = "Sales"
+        };
+        var missingTransactionId = Guid.NewGuid();
+        var visibleTransactionId = Guid.NewGuid();
+        var attachmentId = Guid.NewGuid();
+        var createdAtUtc = new DateTime(2026, 6, 23, 0, 0, 0, DateTimeKind.Utc);
+        _dbContext.Customers.Add(customer);
+        _dbContext.Transactions.AddRange(
+            new TransactionRecord
+            {
+                Id = missingTransactionId,
+                CustomerId = customer.Id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 23),
+                TransactionKind = "Receipt",
+                CashReceipt = 1000m,
+                ReceiptTotal = 1000m,
+                SettlementAmount = 1000m,
+                CreatedAtUtc = createdAtUtc,
+                UpdatedAtUtc = createdAtUtc
+            },
+            new TransactionRecord
+            {
+                Id = visibleTransactionId,
+                CustomerId = customer.Id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 23),
+                TransactionKind = "Receipt",
+                CashReceipt = 2000m,
+                ReceiptTotal = 2000m,
+                SettlementAmount = 2000m,
+                CreatedAtUtc = createdAtUtc,
+                UpdatedAtUtc = createdAtUtc
+            });
+        _dbContext.TransactionAttachments.Add(new TransactionAttachment
+        {
+            Id = attachmentId,
+            TransactionId = missingTransactionId,
+            AttachmentType = "Evidence",
+            FileName = "orphan-receipt.pdf",
+            MimeType = "application/pdf",
+            FileSize = 10,
+            FileHash = "orphan-hash",
+            Description = "orphan attachment must not be modified by scoped users",
+            UploadedByUsername = "admin",
+            UploadedAtUtc = createdAtUtc,
+            CreatedAtUtc = createdAtUtc,
+            UpdatedAtUtc = createdAtUtc
+        });
+        await _dbContext.SaveChangesAsync();
+
+        _dbContext.ChangeTracker.Clear();
+        await _dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
+        await _dbContext.Database.ExecuteSqlInterpolatedAsync($"""DELETE FROM "Transactions" WHERE "Id" = {missingTransactionId};""");
+        await _dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-payment-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.PaymentEdit]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var scopedExisting = await scopedDb.TransactionAttachments
+            .IgnoreQueryFilters()
+            .FirstAsync(current => current.Id == attachmentId);
+        Assert.Equal(missingTransactionId, scopedExisting.TransactionId);
+        Assert.False(await scopedDb.Transactions.IgnoreQueryFilters().AnyAsync(current => current.Id == missingTransactionId));
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-transaction-attachment-hard-missing-parent",
+            TransactionAttachments =
+            [
+                new TransactionAttachmentDto
+                {
+                    Id = attachmentId,
+                    TransactionId = visibleTransactionId,
+                    IsDeleted = false,
+                    FileName = "orphan-receipt.pdf",
+                    MimeType = "application/pdf",
+                    AttachmentType = "Evidence",
+                    FileContent = TestPdfBytes(),
+                    CreatedAtUtc = new DateTime(2026, 6, 23, 0, 1, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 23, 0, 2, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(TransactionAttachment) &&
+            conflict.Reason.Contains("cannot verify writable office scope", StringComparison.OrdinalIgnoreCase));
+
+        await using var verificationDb = CreateDbContext(new TestCurrentUserContext
+        {
+            Username = "admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        });
+        var storedAttachment = await verificationDb.TransactionAttachments
+            .IgnoreQueryFilters()
+            .FirstAsync(x => x.Id == attachmentId);
+        Assert.Equal(missingTransactionId, storedAttachment.TransactionId);
+        Assert.False(storedAttachment.IsDeleted);
+        Assert.Equal("orphan-hash", storedAttachment.FileHash);
+    }
+
+    [Fact]
     public async Task Push_RejectsTransactionAttachment_WhenFileTypeUnsupported()
     {
         var customer = new Customer
