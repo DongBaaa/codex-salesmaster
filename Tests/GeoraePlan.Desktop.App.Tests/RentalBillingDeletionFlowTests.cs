@@ -1550,6 +1550,73 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     [Fact]
+    public async Task RestoreTransaction_RestoresDeletedTransactionAttachments()
+    {
+        PrepareAppRoot("georaeplan-restore-transaction-attachments");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var transactionId = Guid.NewGuid();
+            var attachmentId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(customerId, "Restore transaction attachment customer"));
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = transactionId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 18),
+                TransactionKind = PaymentFlowConstants.TransactionKindReceipt,
+                ReceiptTotal = 1000m,
+                SettlementAmount = 1000m,
+                IsDeleted = true,
+                IsDirty = false
+            });
+            db.TransactionAttachments.Add(new LocalTransactionAttachment
+            {
+                Id = attachmentId,
+                TransactionId = transactionId,
+                AttachmentType = "증빙",
+                FileName = "restore-transaction-attachment.pdf",
+                StoredFileName = "restore-transaction-attachment.pdf",
+                StoredPath = "storage/restore-transaction-attachment.pdf",
+                MimeType = "application/pdf",
+                FileSize = 16,
+                FileHash = "restore-transaction-attachment-hash",
+                IsDeleted = true,
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var restore = await local.RestoreRecycleBinEntryAsync(
+                RecycleBinEntityKind.Transaction,
+                transactionId,
+                session);
+
+            Assert.True(restore.Success, restore.Message);
+            var restoredAttachment = await db.TransactionAttachments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == attachmentId);
+            Assert.False(restoredAttachment.IsDeleted);
+            Assert.True(restoredAttachment.IsDirty);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task RestorePayment_DerivedFromDeletedRentalTransaction_RestoresSourceTransaction()
     {
         PrepareAppRoot("georaeplan-rental-restore-derived-payment-transaction");
@@ -1615,6 +1682,110 @@ public sealed class RentalBillingDeletionFlowTests
             var restoredRun = await GetBillingRunAsync(db, profileId, runId);
             Assert.Equal(invoice.TotalAmount, restoredRun.SettledAmount);
             Assert.Equal(PaymentFlowConstants.BillingStatusCompleted, restoredRun.Status);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RestorePayment_DerivedTransaction_RestoresDeletedTransactionAttachments()
+    {
+        PrepareAppRoot("georaeplan-restore-payment-derived-transaction-attachments");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var invoiceId = Guid.NewGuid();
+            var transactionId = Guid.NewGuid();
+            var attachmentId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(customerId, "Restore payment transaction attachment customer"));
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = invoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "LOCAL-PAY-RESTORE-TX-ATTACH",
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 18),
+                TotalAmount = 1000m,
+                SupplyAmount = 1000m,
+                VersionGroupId = invoiceId,
+                VersionNumber = 1,
+                IsLatestVersion = true,
+                IsDeleted = false
+            });
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = transactionId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 18),
+                TransactionKind = PaymentFlowConstants.TransactionKindInvoiceReceipt,
+                LinkedInvoiceId = invoiceId,
+                LinkedInvoiceNumber = "LOCAL-PAY-RESTORE-TX-ATTACH",
+                ReceiptTotal = 1000m,
+                SettlementAmount = 1000m,
+                IsDeleted = true,
+                IsDirty = false
+            });
+            db.TransactionAttachments.Add(new LocalTransactionAttachment
+            {
+                Id = attachmentId,
+                TransactionId = transactionId,
+                AttachmentType = "증빙",
+                FileName = "restore-payment-transaction-attachment.pdf",
+                StoredFileName = "restore-payment-transaction-attachment.pdf",
+                StoredPath = "storage/restore-payment-transaction-attachment.pdf",
+                MimeType = "application/pdf",
+                FileSize = 16,
+                FileHash = "restore-payment-transaction-attachment-hash",
+                IsDeleted = true,
+                IsDirty = false
+            });
+            db.Payments.Add(new LocalPayment
+            {
+                Id = transactionId,
+                InvoiceId = invoiceId,
+                PaymentDate = new DateOnly(2026, 6, 18),
+                Amount = 1000m,
+                IsDeleted = true,
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var restore = await local.RestoreRecycleBinEntryAsync(
+                RecycleBinEntityKind.Payment,
+                transactionId,
+                session);
+
+            Assert.True(restore.Success, restore.Message);
+            Assert.False(await db.Payments.IgnoreQueryFilters()
+                .Where(current => current.Id == transactionId)
+                .Select(current => current.IsDeleted)
+                .SingleAsync());
+            Assert.False(await db.Transactions.IgnoreQueryFilters()
+                .Where(current => current.Id == transactionId)
+                .Select(current => current.IsDeleted)
+                .SingleAsync());
+            var restoredAttachment = await db.TransactionAttachments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == attachmentId);
+            Assert.False(restoredAttachment.IsDeleted);
+            Assert.True(restoredAttachment.IsDirty);
         }
         finally
         {

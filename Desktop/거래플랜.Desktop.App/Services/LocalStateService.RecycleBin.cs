@@ -1853,6 +1853,7 @@ public sealed partial class LocalStateService
             transaction.TransactionDate,
             transaction.TransactionKind
         }, session, now);
+        await RestoreTransactionAttachmentsAsync(transaction.Id, now, ct);
 
         await _db.SaveChangesAsync(ct);
 
@@ -2109,6 +2110,7 @@ public sealed partial class LocalStateService
                         linkedTransaction.TransactionKind,
                         Reason = "InvoiceRestore"
                     }, session, now);
+                    await RestoreTransactionAttachmentsAsync(linkedTransaction.Id, now, ct);
                     restoredOrRelinked = true;
                 }
                 else if (transactionRelinked)
@@ -2142,6 +2144,20 @@ public sealed partial class LocalStateService
         }
 
         return (true, restoredOrRelinked, string.Empty);
+    }
+
+    private async Task RestoreTransactionAttachmentsAsync(
+        Guid transactionId,
+        DateTime now,
+        CancellationToken ct)
+    {
+        var attachments = await _db.TransactionAttachments
+            .IgnoreQueryFilters()
+            .Where(current => current.TransactionId == transactionId && current.IsDeleted)
+            .ToListAsync(ct);
+
+        foreach (var attachment in attachments)
+            RestoreEntity(attachment, now);
     }
 
     private Task<List<LocalInvoice>> LoadInvoiceGroupForRecycleBinAsync(LocalInvoice target, CancellationToken ct)
