@@ -2926,6 +2926,54 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PaymentsController_Delete_DerivedLinkedPayment_DeletesSourceTransactionAndRevertsSettlement()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var scenario = SeedRentalDirectPaymentScenario(dbContext, existingPaymentAmount: 40_000m, storedSettledAmount: 40_000m);
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = scenario.PaymentId,
+            CustomerId = scenario.CustomerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 7, 26),
+            TransactionKind = "렌탈수금",
+            LinkedInvoiceId = scenario.InvoiceId,
+            LinkedInvoiceNumber = "RENTAL-DIRECT-PAY-001",
+            LinkedRentalBillingProfileId = scenario.ProfileId,
+            LinkedRentalBillingRunId = scenario.RunId,
+            ReceiptTotal = 40_000m,
+            BankReceipt = 40_000m,
+            SettlementAmount = 40_000m,
+            Note = "mobile linked transaction"
+        });
+        dbContext.TransactionAttachments.Add(new TransactionAttachment
+        {
+            Id = Guid.NewGuid(),
+            TransactionId = scenario.PaymentId,
+            FileName = "linked-transaction-evidence.pdf",
+            StoragePath = "storage/linked-transaction-evidence.pdf"
+        });
+        await dbContext.SaveChangesAsync();
+        var storedPayment = await dbContext.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(payment => payment.Id == scenario.PaymentId);
+
+        var controller = CreatePaymentsController(dbContext, currentUser);
+        var deleteResponse = await controller.Delete(scenario.PaymentId, storedPayment.Revision, CancellationToken.None);
+
+        Assert.IsType<NoContentResult>(deleteResponse);
+        var deletedPayment = await dbContext.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(payment => payment.Id == scenario.PaymentId);
+        Assert.True(deletedPayment.IsDeleted);
+        var deletedTransaction = await dbContext.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(transaction => transaction.Id == scenario.PaymentId);
+        Assert.True(deletedTransaction.IsDeleted);
+        var deletedAttachment = await dbContext.TransactionAttachments.IgnoreQueryFilters().AsNoTracking().SingleAsync(attachment => attachment.TransactionId == scenario.PaymentId);
+        Assert.True(deletedAttachment.IsDeleted);
+        await AssertRentalSettlementAsync(dbContext, scenario.ProfileId, scenario.RunId, expectedSettled: 0m, expectedOutstanding: 100_000m);
+    }
+
+    [Fact]
     public async Task PaymentsController_Delete_ForbidsExistingRentalProfileOutsideWritableScope()
     {
         var currentUser = CreateOfficePaymentEditor();

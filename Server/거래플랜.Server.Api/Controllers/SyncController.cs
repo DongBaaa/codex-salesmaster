@@ -543,11 +543,14 @@ public sealed class SyncController : ControllerBase
                     await LoadRentalSettlementTargetsForPaymentsAsync(validPayments, cancellationToken);
                 await UpsertEntitiesAsync(validPayments, _dbContext.Payments,
                     (e, d) => e.Apply(d), d => new Payment { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+                var paymentLinkedTransactionSettlementTargets =
+                    await CascadeDeletedPaymentsToLinkedTransactionsAsync(validPayments, cancellationToken);
 
                 await _dbContext.SaveChangesAsync(cancellationToken);
                 var rentalSettlementTargets = invoiceRentalSettlementTargets
                     .Concat(transactionRentalSettlementTargets)
                     .Concat(paymentRentalSettlementTargets)
+                    .Concat(paymentLinkedTransactionSettlementTargets)
                     .Distinct()
                     .ToList();
                 if (rentalSettlementTargets.Count > 0)
@@ -1147,6 +1150,60 @@ public sealed class SyncController : ControllerBase
             .Select(target => (target.ProfileId, target.RunId))
             .Distinct()
             .ToList();
+    }
+
+    private async Task<List<(Guid ProfileId, Guid? RunId)>> CascadeDeletedPaymentsToLinkedTransactionsAsync(
+        IEnumerable<PaymentDto> payload,
+        CancellationToken cancellationToken)
+    {
+        var deletedPayments = (payload ?? Enumerable.Empty<PaymentDto>())
+            .Where(payment => payment.IsDeleted && payment.Id != Guid.Empty)
+            .GroupBy(payment => payment.Id)
+            .Select(group => group.First())
+            .ToList();
+        if (deletedPayments.Count == 0)
+            return [];
+
+        var deletedPaymentById = deletedPayments.ToDictionary(payment => payment.Id);
+        var paymentIds = deletedPaymentById.Keys.ToList();
+        var transactions = await _dbContext.Transactions.IgnoreQueryFilters()
+            .Where(transaction => !transaction.IsDeleted && paymentIds.Contains(transaction.Id))
+            .ToListAsync(cancellationToken);
+        if (transactions.Count == 0)
+            return [];
+
+        var transactionIds = transactions.Select(transaction => transaction.Id).ToList();
+        var attachments = await _dbContext.TransactionAttachments.IgnoreQueryFilters()
+            .Where(attachment => transactionIds.Contains(attachment.TransactionId) && !attachment.IsDeleted)
+            .ToListAsync(cancellationToken);
+        var attachmentsByTransactionId = attachments
+            .GroupBy(attachment => attachment.TransactionId)
+            .ToDictionary(group => group.Key, group => group.ToList());
+
+        var targets = new List<(Guid ProfileId, Guid? RunId)>();
+        foreach (var transaction in transactions)
+        {
+            if (!deletedPaymentById.TryGetValue(transaction.Id, out var payment))
+                continue;
+
+            if (transaction.LinkedInvoiceId.HasValue &&
+                payment.InvoiceId != Guid.Empty &&
+                transaction.LinkedInvoiceId.Value != payment.InvoiceId)
+            {
+                continue;
+            }
+
+            transaction.IsDeleted = true;
+            AddRentalSettlementTarget(targets, transaction.LinkedRentalBillingProfileId, transaction.LinkedRentalBillingRunId);
+
+            if (attachmentsByTransactionId.TryGetValue(transaction.Id, out var transactionAttachments))
+            {
+                foreach (var attachment in transactionAttachments)
+                    attachment.IsDeleted = true;
+            }
+        }
+
+        return targets.Distinct().ToList();
     }
 
     private static void AddRentalSettlementTarget(List<(Guid ProfileId, Guid? RunId)> targets, Guid? profileId, Guid? runId)
@@ -4757,6 +4814,33 @@ public sealed class SyncController : ControllerBase
                 AddClientConflict(dto, nameof(Payment),
                     $"Referenced invoice revision mismatch. client={dto.ExpectedRevision}, server={invoice.Revision}", result);
                 continue;
+            }
+
+            if (dto.IsDeleted && existing is not null)
+            {
+                var linkedTransaction = await _dbContext.Transactions.IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(transaction => !transaction.IsDeleted && transaction.Id == dto.Id, cancellationToken);
+                if (linkedTransaction is not null)
+                {
+                    if (linkedTransaction.LinkedInvoiceId.HasValue &&
+                        linkedTransaction.LinkedInvoiceId.Value != existing.InvoiceId)
+                    {
+                        AddClientConflict(dto, nameof(Payment),
+                            $"Linked transaction invoice does not match the payment invoice: {linkedTransaction.LinkedInvoiceId.Value}.", result);
+                        continue;
+                    }
+
+                    if (!_officeScopeService.CanWriteOfficeForPayments(
+                            linkedTransaction.ResponsibleOfficeCode,
+                            linkedTransaction.TenantCode,
+                            linkedTransaction.OfficeCode))
+                    {
+                        AddClientConflict(dto, nameof(Payment),
+                            $"Linked transaction is outside the writable office scope: {linkedTransaction.Id}.", result);
+                        continue;
+                    }
+                }
             }
 
             if (!dto.IsDeleted)

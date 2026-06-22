@@ -2990,13 +2990,40 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			var invoice = await _db.Invoices.IgnoreQueryFilters()
 				.AsNoTracking()
 				.FirstOrDefaultAsync(current => current.Id == payment.InvoiceId, ct);
+			var linkedTransaction = await _db.Transactions.IgnoreQueryFilters()
+				.FirstOrDefaultAsync(current => current.Id == id, ct);
+			var linkedRentalProfileId = linkedTransaction?.LinkedRentalBillingProfileId;
+			var linkedRentalRunId = linkedTransaction?.LinkedRentalBillingRunId;
+			var now = DateTime.UtcNow;
+			if (linkedTransaction != null &&
+			    !linkedTransaction.IsDeleted &&
+			    (!linkedTransaction.LinkedInvoiceId.HasValue ||
+			     linkedTransaction.LinkedInvoiceId.Value == payment.InvoiceId))
+			{
+				linkedTransaction.IsDeleted = true;
+				linkedTransaction.IsDirty = true;
+				linkedTransaction.UpdatedAtUtc = now;
+				foreach (var attachment in await _db.TransactionAttachments.IgnoreQueryFilters()
+					         .Where(current => current.TransactionId == id && !current.IsDeleted)
+					         .ToListAsync(ct))
+				{
+					attachment.IsDeleted = true;
+					attachment.IsDirty = true;
+					attachment.UpdatedAtUtc = now;
+				}
+			}
+
 			payment.IsDeleted = true;
 			payment.IsDirty = true;
-			payment.UpdatedAtUtc = DateTime.UtcNow;
+			payment.UpdatedAtUtc = now;
 			await _db.SaveChangesAsync(ct);
 			if (invoice?.LinkedRentalBillingProfileId is Guid billingProfileId && billingProfileId != Guid.Empty)
 			{
 				await RecalculateRentalSettlementAsync(billingProfileId, invoice.LinkedRentalBillingRunId, ct);
+			}
+			if (linkedRentalProfileId is Guid transactionBillingProfileId && transactionBillingProfileId != Guid.Empty)
+			{
+				await RecalculateRentalSettlementAsync(transactionBillingProfileId, linkedRentalRunId, ct);
 			}
 		}
 	}

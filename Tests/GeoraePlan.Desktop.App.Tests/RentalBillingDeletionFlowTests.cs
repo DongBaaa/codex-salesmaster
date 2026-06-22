@@ -1192,6 +1192,76 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     [Fact]
+    public async Task DeletePayment_DerivedRentalBillingInvoicePayment_DeletesSourceTransactionAndRevertsSettlement()
+    {
+        PrepareAppRoot("georaeplan-rental-derived-payment-delete-settlement");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Delete derived rental invoice payment customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "청구대상"));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+            var start = await rental.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+            Assert.True(start.Success, start.Message);
+
+            var invoice = await db.Invoices.AsNoTracking().SingleAsync(current => current.Id == start.RelatedEntityId);
+            var runId = Assert.IsType<Guid>(invoice.LinkedRentalBillingRunId);
+            var transactionId = Guid.NewGuid();
+            var save = await local.SaveTransactionAsync(new LocalTransaction
+            {
+                Id = transactionId,
+                CustomerId = customerId,
+                TransactionDate = new DateOnly(2026, 5, 27),
+                TransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt,
+                LinkedInvoiceId = invoice.Id,
+                LinkedRentalBillingProfileId = profileId,
+                LinkedRentalBillingRunId = runId,
+                BankReceipt = invoice.TotalAmount,
+                ReceiptTotal = invoice.TotalAmount,
+                SettlementAmount = invoice.TotalAmount,
+                Note = "삭제 전 전표 연동 렌탈 수금"
+            }, session);
+            Assert.True(save.Success, save.Message);
+            Assert.Equal(invoice.TotalAmount, (await db.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == profileId)).SettledAmount);
+
+            await local.DeletePaymentAsync(transactionId);
+
+            var deletedPayment = await db.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == transactionId);
+            Assert.True(deletedPayment.IsDeleted);
+            var deletedTransaction = await db.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == transactionId);
+            Assert.True(deletedTransaction.IsDeleted);
+            var revertedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == profileId);
+            Assert.Equal(0m, revertedProfile.SettledAmount);
+            Assert.Equal(invoice.TotalAmount, revertedProfile.OutstandingAmount);
+            Assert.Equal(PaymentFlowConstants.CompletionPending, revertedProfile.CompletionStatus);
+            var revertedRun = DeserializeRuns(revertedProfile).Single(current => current.RunId == runId);
+            Assert.Equal(0m, revertedRun.SettledAmount);
+            Assert.NotEqual(PaymentFlowConstants.BillingStatusCompleted, revertedRun.Status);
+            Assert.NotEqual(PaymentFlowConstants.SettlementStatusConfirmed, revertedRun.SettlementStatus);
+            Assert.Null(revertedRun.SettledDate);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task DeleteInvoice_RentalBillingSalesInvoice_RevertsRentalSettlementAndMarksProfileDirty()
     {
         PrepareAppRoot("georaeplan-rental-delete-linked-invoice-recalculates");

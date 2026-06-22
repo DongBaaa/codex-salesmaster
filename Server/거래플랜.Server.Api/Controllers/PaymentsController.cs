@@ -323,6 +323,34 @@ public sealed class PaymentsController : ControllerBase
         if (await ValidateWritableInvoiceRentalBillingProfileAsync(entity.Invoice, allowMissingOrDeleted: true, cancellationToken) is { } rentalProfileScopeError)
             return rentalProfileScopeError;
 
+        var linkedTransaction = await _dbContext.Transactions
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(transaction => transaction.Id == id, cancellationToken);
+        if (linkedTransaction is not null && !linkedTransaction.IsDeleted)
+        {
+            if (linkedTransaction.LinkedInvoiceId.HasValue &&
+                linkedTransaction.LinkedInvoiceId.Value != entity.InvoiceId)
+            {
+                return Conflict("Linked transaction invoice does not match the payment invoice.");
+            }
+
+            if (!_officeScopeService.CanWriteOfficeForPayments(
+                    linkedTransaction.ResponsibleOfficeCode,
+                    linkedTransaction.TenantCode,
+                    linkedTransaction.OfficeCode))
+            {
+                return Forbid();
+            }
+
+            linkedTransaction.IsDeleted = true;
+            var transactionAttachments = await _dbContext.TransactionAttachments
+                .IgnoreQueryFilters()
+                .Where(attachment => attachment.TransactionId == id && !attachment.IsDeleted)
+                .ToListAsync(cancellationToken);
+            foreach (var attachment in transactionAttachments)
+                attachment.IsDeleted = true;
+        }
+
         entity.IsDeleted = true;
         var attachments = await _dbContext.PaymentAttachments
             .IgnoreQueryFilters()
@@ -333,6 +361,13 @@ public sealed class PaymentsController : ControllerBase
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         await RecalculateRentalSettlementsForPaymentInvoicesAsync([entity.Invoice], cancellationToken);
+        if (linkedTransaction?.LinkedRentalBillingProfileId is Guid linkedRentalProfileId &&
+            linkedRentalProfileId != Guid.Empty)
+        {
+            await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(
+                [(linkedRentalProfileId, linkedTransaction.LinkedRentalBillingRunId)],
+                cancellationToken);
+        }
         await _dbContext.SaveChangesAsync(cancellationToken);
         return NoContent();
     }
