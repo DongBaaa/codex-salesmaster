@@ -699,7 +699,10 @@ public sealed class RecycleBinController : ControllerBase
         DateTime customerDeletedAtUtc,
         CancellationToken cancellationToken)
     {
-        if (!_officeScopeService.CanWriteOfficeForContracts(customer.ResponsibleOfficeCode, customer.TenantCode))
+        if (!_officeScopeService.CanWriteOfficeForContracts(
+                customer.ResponsibleOfficeCode,
+                customer.TenantCode,
+                customer.OfficeCode))
             return 0;
 
         var contracts = await _dbContext.CustomerContracts
@@ -753,7 +756,10 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == contract.CustomerId, cancellationToken);
         if (customer is null)
             return (false, "계약서와 연결된 거래처를 찾을 수 없습니다.");
-        if (!_officeScopeService.CanWriteOfficeForContracts(customer.ResponsibleOfficeCode, customer.TenantCode))
+        if (!_officeScopeService.CanWriteOfficeForContracts(
+                customer.ResponsibleOfficeCode,
+                customer.TenantCode,
+                customer.OfficeCode))
             return (false, "현재 계정으로 복원할 수 없는 계약서입니다.");
 
         if (customer.IsDeleted)
@@ -1632,7 +1638,7 @@ public sealed class RecycleBinController : ControllerBase
 
         await TouchPurgeRecordsAsync(
         [
-            CreatePurgeRecord("customer", customer.Id, customer.TenantCode, customer.ResponsibleOfficeCode)
+            CreatePurgeRecord("customer", customer.Id, customer.TenantCode, customer.ResponsibleOfficeCode, customer.OfficeCode)
         ], cancellationToken);
         _dbContext.CustomerContracts.RemoveRange(contracts);
         _dbContext.Customers.Remove(customer);
@@ -1653,7 +1659,11 @@ public sealed class RecycleBinController : ControllerBase
         if (contract is null)
             return (false, "영구삭제할 계약서를 찾을 수 없습니다.");
         var contractCustomer = await _dbContext.Customers.IgnoreQueryFilters().FirstOrDefaultAsync(current => current.Id == contract.CustomerId, cancellationToken);
-        if (contractCustomer is null || !_officeScopeService.CanWriteOfficeForContracts(contractCustomer.ResponsibleOfficeCode, contractCustomer.TenantCode))
+        if (contractCustomer is null ||
+            !_officeScopeService.CanWriteOfficeForContracts(
+                contractCustomer.ResponsibleOfficeCode,
+                contractCustomer.TenantCode,
+                contractCustomer.OfficeCode))
             return (false, "현재 계정으로 영구삭제할 수 없는 계약서입니다.");
         if (!contract.IsDeleted)
             return (false, "활성 상태 계약서는 휴지통에서 영구삭제할 수 없습니다.");
@@ -1664,7 +1674,7 @@ public sealed class RecycleBinController : ControllerBase
 
         await TouchPurgeRecordsAsync(
         [
-            CreatePurgeRecord("contract", contract.Id, contractCustomer.TenantCode, contractCustomer.ResponsibleOfficeCode)
+            CreatePurgeRecord("contract", contract.Id, contractCustomer.TenantCode, contractCustomer.ResponsibleOfficeCode, contractCustomer.OfficeCode)
         ], cancellationToken);
         var storagePath = contract.StoragePath;
         _dbContext.CustomerContracts.Remove(contract);
@@ -1954,12 +1964,12 @@ public sealed class RecycleBinController : ControllerBase
             .ToList();
 
         var purgeRecords = invoiceGroup
-            .Select(current => CreatePurgeRecord("invoice", current.Id, current.TenantCode, current.ResponsibleOfficeCode))
+            .Select(current => CreatePurgeRecord("invoice", current.Id, current.TenantCode, current.ResponsibleOfficeCode, current.OfficeCode))
             .ToList();
         purgeRecords.AddRange(deletedPayments.Select(payment =>
         {
             var paymentInvoice = invoiceGroup.First(current => current.Id == payment.InvoiceId);
-            return CreatePurgeRecord("payment", payment.Id, paymentInvoice.TenantCode, paymentInvoice.ResponsibleOfficeCode);
+            return CreatePurgeRecord("payment", payment.Id, paymentInvoice.TenantCode, paymentInvoice.ResponsibleOfficeCode, paymentInvoice.OfficeCode);
         }));
 
         await TouchPurgeRecordsAsync(purgeRecords, cancellationToken);
@@ -2005,7 +2015,7 @@ public sealed class RecycleBinController : ControllerBase
 
         await TouchPurgeRecordsAsync(
         [
-            CreatePurgeRecord("payment", payment.Id, purgeInvoice.TenantCode, purgeInvoice.ResponsibleOfficeCode)
+            CreatePurgeRecord("payment", payment.Id, purgeInvoice.TenantCode, purgeInvoice.ResponsibleOfficeCode, purgeInvoice.OfficeCode)
         ], cancellationToken);
         _dbContext.PaymentAttachments.RemoveRange(attachments);
         _dbContext.Payments.Remove(payment);
@@ -2047,7 +2057,7 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == transactionId, cancellationToken);
         var purgeRecords = new List<RecycleBinPurgeRecordDto>
         {
-            CreatePurgeRecord("transaction", transaction.Id, transaction.TenantCode, transaction.ResponsibleOfficeCode)
+            CreatePurgeRecord("transaction", transaction.Id, transaction.TenantCode, transaction.ResponsibleOfficeCode, transaction.OfficeCode)
         };
         var linkedPaymentAttachments = new List<PaymentAttachment>();
         if (linkedPayment is not null)
@@ -2067,7 +2077,7 @@ public sealed class RecycleBinController : ControllerBase
                 .ToListAsync(cancellationToken);
             attachmentPaths.AddRange(linkedPaymentAttachments.Select(current => current.StoragePath));
 
-            purgeRecords.Add(CreatePurgeRecord("payment", linkedPayment.Id, linkedPaymentInvoice.TenantCode, linkedPaymentInvoice.ResponsibleOfficeCode));
+            purgeRecords.Add(CreatePurgeRecord("payment", linkedPayment.Id, linkedPaymentInvoice.TenantCode, linkedPaymentInvoice.ResponsibleOfficeCode, linkedPaymentInvoice.OfficeCode));
             _dbContext.PaymentAttachments.RemoveRange(linkedPaymentAttachments);
             _dbContext.Payments.Remove(linkedPayment);
         }
@@ -2140,7 +2150,7 @@ public sealed class RecycleBinController : ControllerBase
 
         await TouchPurgeRecordsAsync(
         [
-            CreatePurgeRecord("rental-billing-profile", profile.Id, profile.TenantCode, profile.ResponsibleOfficeCode)
+            CreatePurgeRecord("rental-billing-profile", profile.Id, profile.TenantCode, profile.ResponsibleOfficeCode, profile.OfficeCode)
         ], cancellationToken);
         _dbContext.RentalBillingLogs.RemoveRange(logs);
         _dbContext.RentalBillingProfiles.Remove(profile);
@@ -2182,7 +2192,7 @@ public sealed class RecycleBinController : ControllerBase
 
         await TouchPurgeRecordsAsync(
         [
-            CreatePurgeRecord("rental-asset", asset.Id, asset.TenantCode, asset.ResponsibleOfficeCode)
+            CreatePurgeRecord("rental-asset", asset.Id, asset.TenantCode, asset.ResponsibleOfficeCode, asset.OfficeCode)
         ], cancellationToken);
         var assignmentHistories = await _dbContext.RentalAssetAssignmentHistories
             .IgnoreQueryFilters()
@@ -2213,7 +2223,7 @@ public sealed class RecycleBinController : ControllerBase
 
         await TouchPurgeRecordsAsync(
         [
-            CreatePurgeRecord("rental-billing-log", log.Id, log.TenantCode, log.ResponsibleOfficeCode)
+            CreatePurgeRecord("rental-billing-log", log.Id, log.TenantCode, log.ResponsibleOfficeCode, log.OfficeCode)
         ], cancellationToken);
         _dbContext.RentalBillingLogs.Remove(log);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -2599,8 +2609,10 @@ public sealed class RecycleBinController : ControllerBase
         string kind,
         Guid entityId,
         string? tenantCode,
-        string? officeCode)
+        string? officeCode,
+        string? fallbackOfficeCode = null)
     {
+        var resolvedOfficeCode = ResolvePurgeRecordOfficeCode(officeCode, fallbackOfficeCode);
         return new RecycleBinPurgeRecordDto
         {
             Id = Guid.NewGuid(),
@@ -2608,13 +2620,24 @@ public sealed class RecycleBinController : ControllerBase
             EntityId = entityId,
             TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
                 tenantCode,
-                officeCode,
+                resolvedOfficeCode,
                 TenantScopeCatalog.UsenetGroup,
-                officeCode),
-            OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(officeCode, OfficeCodeCatalog.Shared),
+                resolvedOfficeCode),
+            OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(resolvedOfficeCode, OfficeCodeCatalog.Shared),
             PurgedAtUtc = DateTime.UtcNow,
             IsDeleted = false
         };
+    }
+
+    private static string ResolvePurgeRecordOfficeCode(string? officeCode, string? fallbackOfficeCode)
+    {
+        if (OfficeCodeCatalog.TryNormalizeScope(officeCode, out var normalizedOfficeCode))
+            return normalizedOfficeCode;
+
+        if (OfficeCodeCatalog.TryNormalizeScope(fallbackOfficeCode, out var normalizedFallbackOfficeCode))
+            return normalizedFallbackOfficeCode;
+
+        return OfficeCodeCatalog.Shared;
     }
 
     private async Task TouchPurgeRecordsAsync(

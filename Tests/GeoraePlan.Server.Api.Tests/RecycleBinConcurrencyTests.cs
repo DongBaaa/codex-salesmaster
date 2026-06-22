@@ -173,6 +173,53 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PurgeCustomer_RecordsOwnerOffice_WhenCustomerResponsibleOfficeMissing()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = string.Empty,
+            NameOriginal = "담당지점 누락 삭제 거래처",
+            NameMatchKey = "담당지점누락삭제거래처",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = customerId,
+                        Kind = "customer"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var result = Assert.Single(payload.Results);
+        Assert.True(result.Success, result.Message);
+
+        var purgeRecord = await dbContext.RecycleBinPurgeRecords
+            .IgnoreQueryFilters()
+            .SingleAsync(current => current.Kind == "customer" && current.EntityId == customerId);
+        Assert.Equal(TenantScopeCatalog.UsenetGroup, purgeRecord.TenantCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, purgeRecord.OfficeCode);
+    }
+
+    [Fact]
     public async Task PurgeCustomer_ClearsHistoricalAssignmentHistoryCustomerReferences()
     {
         var currentUser = CreateAdminUser();

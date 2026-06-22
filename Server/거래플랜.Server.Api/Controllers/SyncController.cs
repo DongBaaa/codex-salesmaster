@@ -4655,7 +4655,11 @@ public sealed class SyncController : ControllerBase
                 .Include(x => x.Customer)
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
 
-            if (existing?.Customer is not null && !_officeScopeService.CanWriteOfficeForContracts(existing.Customer.ResponsibleOfficeCode, existing.Customer.TenantCode))
+            if (existing?.Customer is not null &&
+                !_officeScopeService.CanWriteOfficeForContracts(
+                    existing.Customer.ResponsibleOfficeCode,
+                    existing.Customer.TenantCode,
+                    existing.Customer.OfficeCode))
             {
                 AddClientConflict(dto, nameof(CustomerContract),
                     "Current account cannot modify this office scope.", result);
@@ -4673,7 +4677,10 @@ public sealed class SyncController : ControllerBase
                     continue;
                 }
 
-                if (!_officeScopeService.CanWriteOfficeForContracts(customer.ResponsibleOfficeCode, customer.TenantCode))
+                if (!_officeScopeService.CanWriteOfficeForContracts(
+                        customer.ResponsibleOfficeCode,
+                        customer.TenantCode,
+                        customer.OfficeCode))
                 {
                     AddClientConflict(dto, nameof(CustomerContract),
                         $"Referenced customer is outside the writable office scope: {dto.CustomerId}.", result);

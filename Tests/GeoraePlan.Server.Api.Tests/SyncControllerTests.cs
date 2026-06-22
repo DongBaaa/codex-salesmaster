@@ -4844,6 +4844,65 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_CustomerContract_AllowsOwnerOfficeFallback_WhenCustomerResponsibleOfficeMissing()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "office-user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            IsAdmin = false
+        };
+        await using var dbContext = CreateDbContext(currentUser);
+        var controller = CreateController(dbContext, currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = string.Empty,
+            NameOriginal = "LEGACY-CONTRACT-CUSTOMER",
+            NameMatchKey = "LEGACYCONTRACTCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        dbContext.Customers.Add(customer);
+        await dbContext.SaveChangesAsync();
+
+        var contractId = Guid.NewGuid();
+        var pdfBytes = TestPdfBytes();
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-legacy-contract-fallback",
+            CustomerContracts =
+            [
+                new CustomerContractDto
+                {
+                    Id = contractId,
+                    CustomerId = customer.Id,
+                    ContractType = "Contract",
+                    FileName = "legacy-contract.pdf",
+                    MimeType = "application/pdf",
+                    FileSize = pdfBytes.LongLength,
+                    FileHash = ComputeTestSha256Hex(pdfBytes),
+                    FileContent = pdfBytes,
+                    UploadedAtUtc = new DateTime(2026, 6, 22, 0, 0, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = new DateTime(2026, 6, 22, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 22, 0, 1, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.True(await dbContext.CustomerContracts.IgnoreQueryFilters()
+            .AnyAsync(current => current.Id == contractId && current.CustomerId == customer.Id));
+    }
+
+    [Fact]
     public async Task Push_AllowsCustomerContractMetadataUpdate_WhenFileAlreadyStored()
     {
         var customer = new Customer
