@@ -993,6 +993,22 @@ public sealed class SyncCoordinator
     {
         switch (normalizedKind)
         {
+            case "companyprofile":
+            case "company-profile":
+                RemoveEntityById(state.PendingPush.CompanyProfiles, entityId, purgeRevision);
+                break;
+            case "customercategory":
+            case "customer-category":
+                RemoveEntityById(state.PendingPush.CustomerCategories, entityId, purgeRevision);
+                break;
+            case "tradetypeoption":
+            case "trade-type-option":
+                RemoveEntityById(state.PendingPush.TradeTypeOptions, entityId, purgeRevision);
+                break;
+            case "itemcategoryoption":
+            case "item-category-option":
+                RemoveEntityById(state.PendingPush.ItemCategoryOptions, entityId, purgeRevision);
+                break;
             case "customer":
                 RemoveEntityById(state.SyncedCustomers, entityId, purgeRevision);
                 RemoveEntityById(state.PendingPush.Customers, entityId, purgeRevision);
@@ -1143,8 +1159,16 @@ public sealed class SyncCoordinator
             "rental-management-company" => 7,
             "rentalmanagementcompany" => 7,
             "customer" => 8,
+            "company-profile" => 9,
+            "companyprofile" => 9,
+            "customer-category" => 10,
+            "customercategory" => 10,
             "price-grade-option" => 10,
             "pricegradeoption" => 10,
+            "trade-type-option" => 10,
+            "tradetypeoption" => 10,
+            "item-category-option" => 10,
+            "itemcategoryoption" => 10,
             _ => 99
         };
 }
