@@ -76,6 +76,42 @@ public sealed class ErpApiClientSessionRefreshTests
         Assert.Equal("new-token", session.Token);
     }
 
+    [Fact]
+    public async Task PushAsync_ForbiddenMessagePayload_ThrowsReadablePermissionMessageWithoutRetry()
+    {
+        const string permissionMessage = "현재 계정 권한으로 서버 동기화 반영이 허용되지 않는 변경이 포함되어 있습니다: 전표";
+        var session = new SessionState();
+        session.SetSession("forbidden-token", CreateAdminUser(), DateTime.UtcNow.AddDays(1));
+
+        var handler = new ForbiddenPushHandler(permissionMessage);
+        var api = new ErpApiClient(new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://localhost/")
+        }, session);
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => api.PushAsync(new SyncPushRequest
+        {
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+                    CustomerId = Guid.Parse("11111111-2222-3333-4444-555555555555"),
+                    CustomerName = "권한 테스트 거래처",
+                    InvoiceDate = DateOnly.FromDateTime(DateTime.Today),
+                    VoucherType = VoucherType.Sales
+                }
+            ]
+        }));
+
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("/sync/push", request.Path);
+        Assert.Contains(permissionMessage, exception.Message);
+        Assert.DoesNotContain("{\"message\"", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("\\u", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(HttpStatusCode.Forbidden, exception.StatusCode);
+    }
+
     private static UserSessionDto CreateAdminUser() => new()
     {
         UserId = Guid.Parse("11111111-2222-3333-4444-555555555555"),
@@ -135,6 +171,33 @@ public sealed class ErpApiClientSessionRefreshTests
         {
             Content = JsonContent.Create(payload)
         };
+    }
+
+    private sealed class ForbiddenPushHandler : HttpMessageHandler
+    {
+        private readonly string _message;
+
+        public ForbiddenPushHandler(string message)
+        {
+            _message = message;
+        }
+
+        public List<RequestSnapshot> Requests { get; } = new();
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Requests.Add(new RequestSnapshot(request.RequestUri?.AbsolutePath ?? string.Empty, request.Headers.Authorization?.Parameter));
+
+            if (request.RequestUri?.AbsolutePath == "/sync/push")
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden)
+                {
+                    Content = JsonContent.Create(new { message = _message })
+                });
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        }
     }
 
     public sealed record RequestSnapshot(string Path, string? BearerToken);

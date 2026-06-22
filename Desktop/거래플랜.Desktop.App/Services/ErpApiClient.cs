@@ -124,7 +124,8 @@ public sealed class ErpApiClient
 
         throw new HttpRequestException(
             $"{operationName} 실패 (최대 재시도 {MaxRetryCount}회): {lastException?.Message}",
-            lastException);
+            lastException,
+            ResolveHttpStatusCode(lastException));
     }
 
     public async Task<LoginResponse?> RefreshSessionAsync(CancellationToken ct = default)
@@ -177,7 +178,8 @@ public sealed class ErpApiClient
 
         throw new HttpRequestException(
             $"{operationName} 실패 (최대 재시도 {MaxRetryCount}회): {lastException?.Message}",
-            lastException);
+            lastException,
+            ResolveHttpStatusCode(lastException));
     }
 
     public async Task<List<UserAccountDto>> GetUsersAsync(CancellationToken ct = default)
@@ -859,7 +861,21 @@ public sealed class ErpApiClient
 
         throw new HttpRequestException(
             $"{operationName} 실패 (최대 재시도 {MaxRetryCount}회): {lastException?.Message}",
-            lastException);
+            lastException,
+            ResolveHttpStatusCode(lastException));
+    }
+
+    private static HttpStatusCode? ResolveHttpStatusCode(Exception? exception)
+    {
+        while (exception is not null)
+        {
+            if (exception is HttpRequestException { StatusCode: { } statusCode })
+                return statusCode;
+
+            exception = exception.InnerException;
+        }
+
+        return null;
     }
 
     private static async Task<T?> ReadRequiredJsonAsync<T>(
@@ -1010,6 +1026,9 @@ public sealed class ErpApiClient
         if (TryBuildKnownApiErrorMessage(response, body, out var knownMessage))
             return knownMessage;
 
+        if (TryBuildApiErrorPayloadMessage(response, body, out var payloadMessage))
+            return payloadMessage;
+
         var trimmedBody = body;
         if (trimmedBody.Length > 200)
             trimmedBody = trimmedBody[..200] + "...";
@@ -1018,6 +1037,32 @@ public sealed class ErpApiClient
             return $"401 Unauthorized 로그인 세션이 만료되었거나 권한이 없습니다. 다시 로그인하세요. {trimmedBody}".Trim();
 
         return $"{(int)response.StatusCode} {response.ReasonPhrase} {trimmedBody}".Trim();
+    }
+
+    private static bool TryBuildApiErrorPayloadMessage(
+        HttpResponseMessage response,
+        string body,
+        out string message)
+    {
+        message = string.Empty;
+        var payload = TryParseApiErrorPayload(body);
+        if (payload is null)
+            return false;
+
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(payload.Error))
+            parts.Add(payload.Error.Trim());
+        if (!string.IsNullOrWhiteSpace(payload.Message) &&
+            !parts.Any(part => string.Equals(part, payload.Message.Trim(), StringComparison.OrdinalIgnoreCase)))
+        {
+            parts.Add(payload.Message.Trim());
+        }
+
+        if (parts.Count == 0)
+            return false;
+
+        message = $"{(int)response.StatusCode} {response.ReasonPhrase} {string.Join(" ", parts)}".Trim();
+        return true;
     }
 
     private static bool TryBuildKnownApiErrorMessage(

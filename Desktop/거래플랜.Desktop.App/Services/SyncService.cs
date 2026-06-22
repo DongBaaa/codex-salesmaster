@@ -194,6 +194,8 @@ public sealed class SyncService : IDisposable
             var hasPendingChanges = await _local.HasPendingSyncChangesAsync(ct);
             if (!hasPendingChanges)
                 return synced;
+            if (!synced)
+                return false;
 
             await Task.Delay(TimeSpan.FromMilliseconds(250), ct);
         }

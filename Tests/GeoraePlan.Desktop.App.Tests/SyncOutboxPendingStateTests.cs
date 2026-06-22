@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Http.Json;
 using System.Reflection;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -226,6 +228,55 @@ public sealed class SyncOutboxPendingStateTests
         }
     }
 
+    [Fact]
+    public async Task SyncService_ForbiddenPush_KeepsDirtyAndRecordsReadableOutboxFailure()
+    {
+        const string permissionMessage = "현재 계정 권한으로 서버 동기화 반영이 허용되지 않는 변경이 포함되어 있습니다: 환경설정/분류";
+        PrepareAppRoot("georaeplan-forbidden-push-outbox-guard");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var unitId = Guid.Parse("99999999-aaaa-bbbb-cccc-dddddddddddd");
+            db.Units.Add(new LocalUnit
+            {
+                Id = unitId,
+                Name = "권한 거부 테스트 단위",
+                IsActive = true,
+                Revision = 0,
+                IsDirty = true,
+                CreatedAtUtc = DateTime.UtcNow.AddMinutes(-10),
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            var handler = new ForbiddenPushThenEmptyPullHandler(permissionMessage);
+            using var sync = CreateSyncService(db, session, handler);
+
+            var synced = await sync.FlushPendingChangesAsync();
+
+            Assert.False(synced);
+            Assert.Equal(1, handler.PushCount);
+            Assert.True(await db.Units.IgnoreQueryFilters().AsNoTracking().AnyAsync(unit => unit.Id == unitId && unit.IsDirty));
+
+            var outbox = await db.SyncOutboxEntries.AsNoTracking().SingleAsync();
+            Assert.Equal("Failed", outbox.Status);
+            Assert.Contains(permissionMessage, outbox.ErrorMessage);
+            Assert.DoesNotContain("{\"message\"", outbox.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("\\u", outbox.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static LocalSyncOutboxEntry CreateOutboxEntry(
         string status,
         string entityName = nameof(LocalCustomer),
@@ -315,13 +366,55 @@ public sealed class SyncOutboxPendingStateTests
     }
 
     private static SyncService CreateSyncService(LocalDbContext db, SessionState session)
+        => CreateSyncService(db, session, handler: null);
+
+    private static SyncService CreateSyncService(LocalDbContext db, SessionState session, HttpMessageHandler? handler)
     {
         var dispatcher = new SyncRequestDispatcher();
         var local = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
         var rental = new RentalStateService(db, local);
         var diagnostics = new SyncDiagnosticsService(session);
-        var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
+        var httpClient = handler is null
+            ? new HttpClient()
+            : new HttpClient(handler);
+        httpClient.BaseAddress = new Uri("http://localhost/");
+        var api = new ErpApiClient(httpClient, session);
         return new SyncService(db, local, rental, api, session, dispatcher, diagnostics);
+    }
+
+    private sealed class ForbiddenPushThenEmptyPullHandler : HttpMessageHandler
+    {
+        private readonly string _message;
+
+        public ForbiddenPushThenEmptyPullHandler(string message)
+        {
+            _message = message;
+        }
+
+        public int PushCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            if (path == "/sync/push")
+            {
+                PushCount++;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden)
+                {
+                    Content = JsonContent.Create(new { message = _message })
+                });
+            }
+
+            if (path == "/sync/pull")
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(new SyncPullResponse())
+                });
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        }
     }
 
     private static void PrepareAppRoot(string prefix)
