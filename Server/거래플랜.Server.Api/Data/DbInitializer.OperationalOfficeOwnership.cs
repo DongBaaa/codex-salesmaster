@@ -31,9 +31,10 @@ public static partial class DbInitializer
             {
                 await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);
             }
-            catch
-            {
-            }
+            catch (Exception ignoredDbInitializerException)
+        {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
+        }
         }
     }
 

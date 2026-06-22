@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
@@ -7,6 +8,7 @@ using 거래플랜.Server.Api.Services;
 using 거래플랜.Shared.Contracts;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace GeoraePlan.Server.Api.Tests;
@@ -401,7 +403,7 @@ public sealed class DbInitializerRegressionTests : IDisposable
 
         Assert.NotNull(method);
 
-        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task;
+        var task = method!.Invoke(null, new object?[] { _dbContext, NullLogger.Instance, CancellationToken.None }) as Task;
         Assert.NotNull(task);
         await task!;
 
@@ -1147,10 +1149,47 @@ public sealed class DbInitializerRegressionTests : IDisposable
         Assert.Equal(OfficeCodeCatalog.Yeonsu, healthAsset.ResponsibleOfficeCode);
     }
 
+    [Fact]
+    public void DbInitializerBestEffortFailures_AreLoggedInsteadOfSilentlySwallowed()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var dbInitializerSources = Directory
+            .GetFiles(
+                Path.Combine(repositoryRoot.FullName, "Server"),
+                "DbInitializer*.cs",
+                SearchOption.AllDirectories)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .Select(File.ReadAllText)
+            .ToArray();
+
+        var combinedSource = string.Join(Environment.NewLine, dbInitializerSources);
+
+        Assert.DoesNotMatch(
+            new Regex(@"catch\s*(\([^)]*\))?\s*\{\s*\}", RegexOptions.Multiline),
+            combinedSource);
+        Assert.Contains("TraceIgnoredDbInitializerException", combinedSource, StringComparison.Ordinal);
+        Assert.Contains("LogBestEffortSchemaWarning", combinedSource, StringComparison.Ordinal);
+        Assert.Contains("Best-effort schema operation failed", combinedSource, StringComparison.Ordinal);
+    }
+
     public void Dispose()
     {
         _dbContext.Dispose();
         _connection.Dispose();
+    }
+
+    private static DirectoryInfo FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (directory.GetFiles("*.sln").Length > 0)
+                return directory;
+
+            directory = directory.Parent;
+        }
+
+        throw new DirectoryNotFoundException("Repository root was not found.");
     }
 
     private sealed class TestCurrentUserContext : ICurrentUserContext

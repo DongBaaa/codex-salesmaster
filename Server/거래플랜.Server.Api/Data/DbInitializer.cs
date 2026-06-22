@@ -1,8 +1,9 @@
-﻿using 거래플랜.Server.Api.Domain;
+using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Security;
 using 거래플랜.Server.Api.Services;
 using 거래플랜.Shared.Contracts;
 using System.Data;
+using System.Diagnostics;
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -56,7 +57,7 @@ public static partial class DbInitializer
         var connectionResolver = scope.ServiceProvider.GetRequiredService<ITenantDatabaseConnectionResolver>();
         var fileStorage = scope.ServiceProvider.GetRequiredService<ICentralFileStorage>();
 
-        await EnsureBusinessDatabaseSchemaAsync(dbContext, cancellationToken);
+        await EnsureBusinessDatabaseSchemaAsync(dbContext, logger, cancellationToken);
         await EnsureOperationalRuntimeSchemaAsync(dbContext, cancellationToken);
         await VerifyRequiredOperationalSchemaAsync(dbContext, cancellationToken);
         await BackfillCustomerScopeFieldsAsync(dbContext, cancellationToken);
@@ -69,7 +70,7 @@ public static partial class DbInitializer
         {
             await EnsureDedicatedBusinessDatabaseExistsAsync(connectionInfo, logger, cancellationToken);
             await using var tenantDbContext = CreateDbContext(connectionInfo, revisionClock);
-            await EnsureBusinessDatabaseSchemaAsync(tenantDbContext, cancellationToken);
+            await EnsureBusinessDatabaseSchemaAsync(tenantDbContext, logger, cancellationToken);
             await EnsureOperationalRuntimeSchemaAsync(tenantDbContext, cancellationToken);
             await VerifyRequiredOperationalSchemaAsync(tenantDbContext, cancellationToken);
             await BackfillCustomerScopeFieldsAsync(tenantDbContext, cancellationToken);
@@ -225,6 +226,7 @@ public static partial class DbInitializer
 
     private static async Task EnsureBusinessDatabaseSchemaAsync(
         AppDbContext dbContext,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
         await EnsureDatabaseSchemaAsync(dbContext, cancellationToken);
@@ -232,16 +234,16 @@ public static partial class DbInitializer
         await EnsureCustomerContractsTableAsync(dbContext, cancellationToken);
         await EnsurePaymentAttachmentsTableAsync(dbContext, cancellationToken);
         await EnsureItemWarehouseStocksTableAsync(dbContext, cancellationToken);
-        await EnsureTransactionsTableAsync(dbContext, cancellationToken);
+        await EnsureTransactionsTableAsync(dbContext, logger, cancellationToken);
         await EnsureTransactionPrepaidDeltaColumnAsync(dbContext, cancellationToken);
         await EnsureTransactionAttachmentsTableAsync(dbContext, cancellationToken);
-        await EnsureInventoryTransfersTableAsync(dbContext, cancellationToken);
+        await EnsureInventoryTransfersTableAsync(dbContext, logger, cancellationToken);
         await EnsureRentalManagementCompaniesTableAsync(dbContext, cancellationToken);
-        await EnsureRentalBillingProfilesTableAsync(dbContext, cancellationToken);
-        await EnsureRentalAssetsTableAsync(dbContext, cancellationToken);
+        await EnsureRentalBillingProfilesTableAsync(dbContext, logger, cancellationToken);
+        await EnsureRentalAssetsTableAsync(dbContext, logger, cancellationToken);
         await EnsureRentalBillingEnhancementColumnsAsync(dbContext, cancellationToken);
         await EnsureLegacyRentalNamingColumnsAsync(dbContext, cancellationToken);
-        await EnsureRentalBillingLogsTableAsync(dbContext, cancellationToken);
+        await EnsureRentalBillingLogsTableAsync(dbContext, logger, cancellationToken);
         await EnsureCustomerTradeTypeColumnAsync(dbContext, cancellationToken);
         await EnsureCustomerRepresentativeColumnAsync(dbContext, cancellationToken);
         await EnsureCustomerBusinessTypeColumnAsync(dbContext, cancellationToken);
@@ -275,6 +277,45 @@ public static partial class DbInitializer
         await EnsureCustomerContractStoragePathColumnAsync(dbContext, cancellationToken);
         await EnsurePaymentAttachmentStoragePathColumnAsync(dbContext, cancellationToken);
         await EnsureTransactionAttachmentStoragePathColumnAsync(dbContext, cancellationToken);
+    }
+
+    private static async Task ExecuteSchemaSqlBestEffortAsync(
+        AppDbContext dbContext,
+        ILogger logger,
+        string operationName,
+        string sql,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            LogBestEffortSchemaWarning(dbContext, logger, operationName, sql, ex);
+        }
+    }
+
+    private static void LogBestEffortSchemaWarning(
+        AppDbContext dbContext,
+        ILogger logger,
+        string operationName,
+        string sql,
+        Exception exception)
+    {
+        logger.LogWarning(
+            exception,
+            "Best-effort schema operation failed. Operation={OperationName}; Provider={ProviderName}; Sql={Sql}",
+            operationName,
+            dbContext.Database.ProviderName ?? string.Empty,
+            sql);
+    }
+
+    private static void TraceIgnoredDbInitializerException(Exception exception)
+    {
+        Trace.TraceWarning(
+            "DbInitializer best-effort operation failed and was ignored: {0}",
+            exception);
     }
 
     private static async Task VerifyRequiredOperationalSchemaAsync(
@@ -693,8 +734,9 @@ public static partial class DbInitializer
                 "CREATE UNIQUE INDEX IF NOT EXISTS \"UX_CompanyProfiles_DefaultPerOffice_Active\" ON \"CompanyProfiles\" (\"OfficeCode\") WHERE COALESCE(\"IsDefaultForOffice\", false) = true AND COALESCE(\"IsDeleted\", false) = false AND COALESCE(\"IsActive\", true) = true;",
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
     }
 
@@ -1785,8 +1827,9 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -1816,8 +1859,9 @@ public static partial class DbInitializer
                 """,
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
     }
 
@@ -1848,8 +1892,9 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -1872,8 +1917,9 @@ public static partial class DbInitializer
                 """,
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -1882,8 +1928,9 @@ public static partial class DbInitializer
                 "CREATE INDEX IF NOT EXISTS \"IX_Users_TenantCode_OfficeCode\" ON \"Users\" (\"TenantCode\", \"OfficeCode\");",
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
     }
 
@@ -1979,8 +2026,9 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2044,8 +2092,9 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2056,8 +2105,9 @@ public static partial class DbInitializer
                 """,
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 #pragma warning restore EF1002
     }
@@ -2083,8 +2133,9 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2099,8 +2150,9 @@ public static partial class DbInitializer
                 """,
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2109,8 +2161,9 @@ public static partial class DbInitializer
                 "CREATE INDEX IF NOT EXISTS \"IX_Invoices_TenantCode\" ON \"Invoices\" (\"TenantCode\");",
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
     }
 
@@ -2129,8 +2182,9 @@ public static partial class DbInitializer
                 "CREATE INDEX IF NOT EXISTS \"IX_CompanyProfiles_OfficeCode_ProfileName\" ON \"CompanyProfiles\" (\"OfficeCode\", \"ProfileName\");",
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2139,8 +2193,9 @@ public static partial class DbInitializer
                 "CREATE INDEX IF NOT EXISTS \"IX_CompanyProfiles_OfficeCode_IsDefaultForOffice\" ON \"CompanyProfiles\" (\"OfficeCode\", \"IsDefaultForOffice\");",
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
     }
 
@@ -2168,8 +2223,9 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2188,8 +2244,9 @@ public static partial class DbInitializer
                 """,
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2198,8 +2255,9 @@ public static partial class DbInitializer
                 $"CREATE INDEX IF NOT EXISTS \"{indexName}\" ON \"{tableName}\" (\"OfficeCode\");",
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 #pragma warning restore EF1002
     }
@@ -2228,8 +2286,9 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2244,8 +2303,9 @@ public static partial class DbInitializer
                 """,
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2254,8 +2314,9 @@ public static partial class DbInitializer
                 $"CREATE INDEX IF NOT EXISTS \"{indexName}\" ON \"{tableName}\" (\"TenantCode\");",
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 #pragma warning restore EF1002
     }
@@ -2319,8 +2380,9 @@ public static partial class DbInitializer
                 """,
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2329,8 +2391,9 @@ public static partial class DbInitializer
                 "CREATE INDEX IF NOT EXISTS \"IX_Items_CategoryName\" ON \"Items\" (\"CategoryName\");",
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
     }
 
@@ -2359,8 +2422,9 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
     }
 
@@ -2389,8 +2453,9 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
     }
 
@@ -2437,8 +2502,9 @@ public static partial class DbInitializer
                 $"UPDATE \"Invoices\" SET \"VatMode\" = '{InvoiceVatModes.Included}' WHERE \"VatMode\" IS NULL OR TRIM(\"VatMode\") = '';",
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
     }
 
@@ -2462,8 +2528,9 @@ public static partial class DbInitializer
                 """,
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
     }
 
@@ -2484,8 +2551,9 @@ public static partial class DbInitializer
                 "CREATE INDEX IF NOT EXISTS \"IX_Invoices_VersionGroupId\" ON \"Invoices\" (\"VersionGroupId\");",
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2494,8 +2562,9 @@ public static partial class DbInitializer
                 "CREATE INDEX IF NOT EXISTS \"IX_Invoices_IsLatestVersion\" ON \"Invoices\" (\"IsLatestVersion\");",
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2504,8 +2573,9 @@ public static partial class DbInitializer
                 "CREATE INDEX IF NOT EXISTS \"IX_Invoices_LinkedRentalBillingProfileId\" ON \"Invoices\" (\"LinkedRentalBillingProfileId\");",
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2514,8 +2584,9 @@ public static partial class DbInitializer
                 "CREATE INDEX IF NOT EXISTS \"IX_Invoices_LinkedRentalBillingRunId\" ON \"Invoices\" (\"LinkedRentalBillingRunId\");",
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2528,8 +2599,9 @@ public static partial class DbInitializer
                 """,
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2542,8 +2614,9 @@ public static partial class DbInitializer
                 """,
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2556,8 +2629,9 @@ public static partial class DbInitializer
                 """,
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         var invoiceSnapshots = await dbContext.Invoices
@@ -2682,8 +2756,9 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         foreach (var sql in new[]
@@ -2697,9 +2772,10 @@ public static partial class DbInitializer
             {
                 await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);
             }
-            catch
-            {
-            }
+            catch (Exception ignoredDbInitializerException)
+        {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
+        }
         }
     }
 
@@ -2726,8 +2802,9 @@ public static partial class DbInitializer
             }
 #pragma warning restore EF1002
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2747,8 +2824,9 @@ public static partial class DbInitializer
             }
 #pragma warning restore EF1002
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2760,8 +2838,9 @@ public static partial class DbInitializer
                 """,
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
     }
 
@@ -2828,8 +2907,9 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2853,8 +2933,9 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
     }
 
@@ -2913,8 +2994,9 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2923,8 +3005,9 @@ public static partial class DbInitializer
                 "CREATE INDEX IF NOT EXISTS \"IX_PaymentAttachments_PaymentId\" ON \"PaymentAttachments\" (\"PaymentId\");",
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
     }
 
@@ -2967,8 +3050,9 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2986,8 +3070,9 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -2996,13 +3081,15 @@ public static partial class DbInitializer
                 "CREATE INDEX IF NOT EXISTS \"IX_ItemWarehouseStocks_WarehouseCode\" ON \"ItemWarehouseStocks\" (\"WarehouseCode\");",
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
     }
 
     private static async Task EnsureTransactionsTableAsync(
         AppDbContext dbContext,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
         var providerName = dbContext.Database.ProviderName ?? string.Empty;
@@ -3084,8 +3171,14 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ex)
         {
+            LogBestEffortSchemaWarning(
+                dbContext,
+                logger,
+                "ensure Transactions table",
+                "CREATE TABLE IF NOT EXISTS \"Transactions\"",
+                ex);
         }
 
         foreach (var sql in new[]
@@ -3095,7 +3188,12 @@ public static partial class DbInitializer
                      "CREATE INDEX IF NOT EXISTS \"IX_Transactions_OfficeCode\" ON \"Transactions\" (\"OfficeCode\");"
                  })
         {
-            try { await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken); } catch { }
+            await ExecuteSchemaSqlBestEffortAsync(
+                dbContext,
+                logger,
+                "ensure Transactions indexes",
+                sql,
+                cancellationToken);
         }
     }
 
@@ -3166,8 +3264,9 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -3176,13 +3275,15 @@ public static partial class DbInitializer
                 "CREATE INDEX IF NOT EXISTS \"IX_TransactionAttachments_TransactionId\" ON \"TransactionAttachments\" (\"TransactionId\");",
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
     }
 
     private static async Task EnsureInventoryTransfersTableAsync(
         AppDbContext dbContext,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
         var providerName = dbContext.Database.ProviderName ?? string.Empty;
@@ -3302,8 +3403,14 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ex)
         {
+            LogBestEffortSchemaWarning(
+                dbContext,
+                logger,
+                "ensure InventoryTransfers tables",
+                "CREATE TABLE IF NOT EXISTS \"InventoryTransfers\" / \"InventoryTransferLines\"",
+                ex);
         }
 
         foreach (var sql in new[]
@@ -3315,7 +3422,12 @@ public static partial class DbInitializer
                      "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransferLines_TransferId\" ON \"InventoryTransferLines\" (\"TransferId\");"
                  })
         {
-            try { await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken); } catch { }
+            await ExecuteSchemaSqlBestEffortAsync(
+                dbContext,
+                logger,
+                "ensure InventoryTransfers indexes",
+                sql,
+                cancellationToken);
         }
     }
 
@@ -3366,8 +3478,9 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
         try
@@ -3376,13 +3489,15 @@ public static partial class DbInitializer
                 "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalManagementCompanies_TenantCode_Code\" ON \"RentalManagementCompanies\" (\"TenantCode\", \"Code\");",
                 cancellationToken);
         }
-        catch
+        catch (Exception ignoredDbInitializerException)
         {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
     }
 
     private static async Task EnsureRentalBillingProfilesTableAsync(
         AppDbContext dbContext,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
         var providerName = dbContext.Database.ProviderName ?? string.Empty;
@@ -3486,8 +3601,14 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ex)
         {
+            LogBestEffortSchemaWarning(
+                dbContext,
+                logger,
+                "ensure RentalBillingProfiles table",
+                "CREATE TABLE IF NOT EXISTS \"RentalBillingProfiles\"",
+                ex);
         }
 
         foreach (var sql in new[]
@@ -3496,12 +3617,18 @@ public static partial class DbInitializer
                      "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingProfiles_OfficeCode\" ON \"RentalBillingProfiles\" (\"OfficeCode\");"
                  })
         {
-            try { await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken); } catch { }
+            await ExecuteSchemaSqlBestEffortAsync(
+                dbContext,
+                logger,
+                "ensure RentalBillingProfiles indexes",
+                sql,
+                cancellationToken);
         }
     }
 
     private static async Task EnsureRentalAssetsTableAsync(
         AppDbContext dbContext,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
         var providerName = dbContext.Database.ProviderName ?? string.Empty;
@@ -3621,8 +3748,14 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ex)
         {
+            LogBestEffortSchemaWarning(
+                dbContext,
+                logger,
+                "ensure RentalAssets table",
+                "CREATE TABLE IF NOT EXISTS \"RentalAssets\"",
+                ex);
         }
 
         foreach (var sql in new[]
@@ -3632,7 +3765,12 @@ public static partial class DbInitializer
                      "DROP INDEX IF EXISTS \"IX_RentalAssets_ManagementNumber\";"
                  })
         {
-            try { await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken); } catch { }
+            await ExecuteSchemaSqlBestEffortAsync(
+                dbContext,
+                logger,
+                "drop RentalAssets legacy indexes",
+                sql,
+                cancellationToken);
         }
 
         string[] activeOnlyIndexSql = providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase)
@@ -3653,12 +3791,18 @@ public static partial class DbInitializer
 
         foreach (var sql in activeOnlyIndexSql)
         {
-            try { await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken); } catch { }
+            await ExecuteSchemaSqlBestEffortAsync(
+                dbContext,
+                logger,
+                "ensure RentalAssets active-only indexes",
+                sql,
+                cancellationToken);
         }
     }
 
     private static async Task EnsureRentalBillingLogsTableAsync(
         AppDbContext dbContext,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
         var providerName = dbContext.Database.ProviderName ?? string.Empty;
@@ -3716,8 +3860,14 @@ public static partial class DbInitializer
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception ex)
         {
+            LogBestEffortSchemaWarning(
+                dbContext,
+                logger,
+                "ensure RentalBillingLogs table",
+                "CREATE TABLE IF NOT EXISTS \"RentalBillingLogs\"",
+                ex);
         }
 
         foreach (var sql in new[]
@@ -3726,7 +3876,12 @@ public static partial class DbInitializer
                      "CREATE INDEX IF NOT EXISTS \"IX_RentalBillingLogs_OfficeCode\" ON \"RentalBillingLogs\" (\"OfficeCode\");"
                  })
         {
-            try { await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken); } catch { }
+            await ExecuteSchemaSqlBestEffortAsync(
+                dbContext,
+                logger,
+                "ensure RentalBillingLogs indexes",
+                sql,
+                cancellationToken);
         }
     }
 

@@ -1,4 +1,4 @@
-﻿using System.Data.Common;
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Security;
@@ -266,9 +266,10 @@ public static partial class DbInitializer
             {
                 await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);
             }
-            catch
-            {
-            }
+            catch (Exception ignoredDbInitializerException)
+        {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
+        }
         }
     }
 
