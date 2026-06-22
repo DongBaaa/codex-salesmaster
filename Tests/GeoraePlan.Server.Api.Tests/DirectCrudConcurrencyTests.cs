@@ -688,6 +688,74 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task InvoicesController_Update_ForbidsTenantOfficeMismatchedExistingInvoice_ForOfficeScopedUser()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-invoice-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = new[] { PermissionNames.InvoiceEdit }
+        };
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "TENANT-MISMATCH-INVOICE-CUSTOMER",
+            NameMatchKey = "TENANTMISMATCHINVOICECUSTOMER",
+            TradeType = "Sales"
+        };
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "TENANT-MISMATCH-INV",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 23),
+            Memo = "original mismatch memo"
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(invoice);
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Include(x => x.Customer)
+            .Include(x => x.Lines)
+            .FirstAsync(x => x.Id == invoice.Id);
+        var dto = stored.ToDto();
+        dto.Memo = "should not be saved";
+        dto.TenantCode = TenantScopeCatalog.UsenetGroup;
+        dto.ExpectedRevision = stored.Revision;
+
+        var controller = new InvoicesController(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
+
+        var response = await controller.Update(stored.Id, dto, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(response.Result);
+        dbContext.ChangeTracker.Clear();
+        var unchanged = await dbContext.Invoices.IgnoreQueryFilters().SingleAsync(x => x.Id == invoice.Id);
+        Assert.Equal(TenantScopeCatalog.Itworld, unchanged.TenantCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, unchanged.OfficeCode);
+        Assert.Equal("original mismatch memo", unchanged.Memo);
+    }
+
+    [Fact]
     public async Task InvoicesController_Create_RecordsMutationReceipt_ForMobileRetry()
     {
         var currentUser = CreateAdminUser();

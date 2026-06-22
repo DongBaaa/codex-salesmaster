@@ -568,6 +568,9 @@ public sealed class OfficeScopeService
         if (HasGlobalDataScope)
             return true;
 
+        if (!IsExplicitTenantCompatibleWithAccessOffice(tenantCode, officeCode, fallbackOfficeCode))
+            return false;
+
         var normalizedTenant = ResolveEntityTenantCode(tenantCode, officeCode, fallbackOfficeCode);
         if (!string.Equals(normalizedTenant, CurrentTenantCode, StringComparison.OrdinalIgnoreCase))
             return false;
@@ -588,6 +591,9 @@ public sealed class OfficeScopeService
     {
         if (HasGlobalDataScope)
             return true;
+
+        if (!IsExplicitTenantCompatibleWithAccessOffice(tenantCode, officeCode, fallbackOfficeCode))
+            return false;
 
         var normalizedTenant = ResolveEntityTenantCode(tenantCode, officeCode, fallbackOfficeCode);
         if (!string.Equals(normalizedTenant, CurrentTenantCode, StringComparison.OrdinalIgnoreCase))
@@ -642,6 +648,31 @@ public sealed class OfficeScopeService
         }
 
         return TenantScopeCatalog.NormalizeTenantCodeOrDefault(tenantCode, CurrentTenantCode);
+    }
+
+    private static bool IsExplicitTenantCompatibleWithAccessOffice(
+        string? tenantCode,
+        string? officeCode,
+        string? fallbackOfficeCode = null)
+    {
+        if (!TenantScopeCatalog.TryNormalizeTenantCode(tenantCode, out var normalizedTenantCode))
+            return true;
+
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(officeCode, out var normalizedOfficeCode))
+            return TenantScopeCatalog.TenantContainsOffice(normalizedTenantCode, normalizedOfficeCode);
+
+        if (OfficeCodeCatalog.IsSharedOfficeCode(officeCode))
+        {
+            if (OfficeCodeCatalog.TryNormalizeOfficeCode(fallbackOfficeCode, out var normalizedFallbackOfficeCode))
+                return TenantScopeCatalog.TenantContainsOffice(normalizedTenantCode, normalizedFallbackOfficeCode);
+
+            return true;
+        }
+
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(fallbackOfficeCode, out var fallbackOffice))
+            return TenantScopeCatalog.TenantContainsOffice(normalizedTenantCode, fallbackOffice);
+
+        return true;
     }
 
     private static IEnumerable<string> ResolveOfficeScopesForAccess(string? officeCode, string? fallbackOfficeCode = null)
