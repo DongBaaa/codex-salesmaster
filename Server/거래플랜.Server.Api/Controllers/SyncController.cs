@@ -1787,6 +1787,16 @@ public sealed class SyncController : ControllerBase
             var originalCustomerId = dto.CustomerId;
             var existing = await _dbContext.Transactions.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
+            if (existing is not null &&
+                !await ValidateWritableRentalSettlementProfileReferenceAsync(
+                    existing.LinkedRentalBillingProfileId,
+                    dto,
+                    nameof(TransactionRecord),
+                    result,
+                    cancellationToken))
+            {
+                continue;
+            }
 
             Invoice? invoice = null;
             if (dto.LinkedInvoiceId.HasValue && dto.LinkedInvoiceId.Value != Guid.Empty)
@@ -4483,6 +4493,54 @@ public sealed class SyncController : ControllerBase
         return false;
     }
 
+    private async Task<bool> ValidateWritableRentalSettlementProfileReferenceAsync(
+        Guid? profileId,
+        SyncEntityDto dto,
+        string entityName,
+        SyncPushResult result,
+        CancellationToken cancellationToken,
+        bool allowMissingOrDeleted = true)
+    {
+        if (!profileId.HasValue || profileId.Value == Guid.Empty)
+            return true;
+
+        var profile = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => current.Id == profileId.Value)
+            .Select(current => new
+            {
+                current.IsDeleted,
+                current.ResponsibleOfficeCode,
+                current.TenantCode,
+                current.OfficeCode
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (profile is null || profile.IsDeleted)
+        {
+            if (allowMissingOrDeleted)
+                return true;
+
+            AddClientConflict(
+                dto,
+                entityName,
+                $"Referenced rental billing profile was not found: {profileId}.",
+                result);
+            return false;
+        }
+
+        if (_officeScopeService.CanWriteOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode, profile.OfficeCode))
+            return true;
+
+        AddClientConflict(
+            dto,
+            entityName,
+            $"Referenced rental billing profile is outside the writable office scope: {profileId}.",
+            result);
+        return false;
+    }
+
     private async Task<Customer?> FindWritableCustomerByNameAsync(string? customerName, CancellationToken cancellationToken)
     {
         var trimmedName = (customerName ?? string.Empty).Trim();
@@ -4667,6 +4725,17 @@ public sealed class SyncController : ControllerBase
             {
                 AddClientConflict(dto, nameof(Payment),
                     $"Referenced invoice is outside the writable office scope: {dto.InvoiceId}.", result);
+                continue;
+            }
+
+            if (!await ValidateWritableRentalSettlementProfileReferenceAsync(
+                    invoice.LinkedRentalBillingProfileId,
+                    dto,
+                    nameof(Payment),
+                    result,
+                    cancellationToken,
+                    allowMissingOrDeleted: false))
+            {
                 continue;
             }
 

@@ -5410,6 +5410,226 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsTransactionUpdate_WhenExistingRentalSettlementProfileIsOutsideWritableScope()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-payment-rental-scope",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.PaymentEdit]
+        };
+
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+        scopedDb.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-RENTAL-TX-OUT-SCOPE-CUSTOMER",
+            NameMatchKey = "SYNCRENTALTXOUTSCOPECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        scopedDb.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ManagementCompanyCode = OfficeCodeCatalog.Yeonsu,
+            ProfileKey = $"profile-out-scope-{profileId:N}",
+            CustomerName = "SYNC-RENTAL-TX-OUT-SCOPE-CUSTOMER",
+            BillingStatus = "청구중",
+            SettlementStatus = "부분입금",
+            CompletionStatus = "미완료",
+            MonthlyAmount = 100_000m,
+            SettledAmount = 40_000m,
+            OutstandingAmount = 60_000m,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new SyncRentalBillingRunSnapshot
+                {
+                    RunId = runId,
+                    RunKey = "2026-06",
+                    ScheduledDate = new DateOnly(2026, 6, 25),
+                    PeriodStartDate = new DateOnly(2026, 6, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    PeriodLabel = "2026-06",
+                    Status = "청구중",
+                    BilledAmount = 100_000m,
+                    SettledAmount = 40_000m,
+                    SettlementStatus = "부분입금"
+                }
+            })
+        });
+        scopedDb.Transactions.Add(new TransactionRecord
+        {
+            Id = transactionId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 26),
+            TransactionKind = "렌탈수금",
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId,
+            BankReceipt = 40_000m,
+            ReceiptTotal = 40_000m,
+            SettlementAmount = 40_000m
+        });
+        await scopedDb.SaveChangesAsync();
+        var storedTransaction = await scopedDb.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == transactionId);
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-transaction-out-scope-profile",
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = transactionId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = storedTransaction.TransactionDate,
+                    TransactionKind = "일반수금",
+                    BankReceipt = 40_000m,
+                    ReceiptTotal = 40_000m,
+                    SettlementAmount = 0m,
+                    Revision = storedTransaction.Revision,
+                    ExpectedRevision = storedTransaction.Revision,
+                    CreatedAtUtc = storedTransaction.CreatedAtUtc,
+                    UpdatedAtUtc = storedTransaction.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(TransactionRecord), StringComparison.Ordinal) &&
+            conflict.Reason.Contains("outside the writable office scope", StringComparison.OrdinalIgnoreCase));
+
+        var profile = await scopedDb.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == profileId);
+        Assert.Equal(40_000m, profile.SettledAmount);
+        Assert.Equal(60_000m, profile.OutstandingAmount);
+        Assert.NotNull(await scopedDb.Transactions.IgnoreQueryFilters()
+            .SingleAsync(transaction => transaction.Id == transactionId && transaction.LinkedRentalBillingProfileId == profileId));
+    }
+
+    [Fact]
+    public async Task Push_RejectsPaymentCreate_WhenInvoiceRentalSettlementProfileIsOutsideWritableScope()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-payment-invoice-rental-scope",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.PaymentEdit]
+        };
+
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        scopedDb.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-RENTAL-PAY-OUT-SCOPE-CUSTOMER",
+            NameMatchKey = "SYNCRENTALPAYOUTSCOPECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        scopedDb.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ManagementCompanyCode = OfficeCodeCatalog.Yeonsu,
+            ProfileKey = $"profile-out-scope-{profileId:N}",
+            CustomerName = "SYNC-RENTAL-PAY-OUT-SCOPE-CUSTOMER",
+            BillingStatus = "청구중",
+            SettlementStatus = "미입금",
+            CompletionStatus = "미완료",
+            MonthlyAmount = 100_000m,
+            SettledAmount = 0m,
+            OutstandingAmount = 100_000m
+        });
+        scopedDb.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-RENTAL-PAY-OUT-SCOPE",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 25),
+            TotalAmount = 100_000m,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId
+        });
+        await scopedDb.SaveChangesAsync();
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-payment-out-scope-profile",
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = paymentId,
+                    InvoiceId = invoiceId,
+                    PaymentDate = new DateOnly(2026, 6, 27),
+                    Amount = 30_000m,
+                    Note = "out-of-scope rental profile payment",
+                    CreatedAtUtc = new DateTime(2026, 6, 27, 1, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 27, 1, 1, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(Payment), StringComparison.Ordinal) &&
+            conflict.Reason.Contains("outside the writable office scope", StringComparison.OrdinalIgnoreCase));
+
+        Assert.False(await scopedDb.Payments.IgnoreQueryFilters().AnyAsync(payment => payment.Id == paymentId));
+        var profile = await scopedDb.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == profileId);
+        Assert.Equal(0m, profile.SettledAmount);
+        Assert.Equal(100_000m, profile.OutstandingAmount);
+    }
+
+    [Fact]
     public async Task Push_NormalizesUnspecifiedPurchaseReceivedAtUtc_ForInvoice()
     {
         var customer = new Customer

@@ -134,7 +134,7 @@ public sealed class RentalSettlementRecalculationService
     {
         var profile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, cancellationToken);
-        if (profile is null)
+        if (profile is null || profile.IsDeleted)
             return;
 
         var settledAmount = await GetRentalSettledAmountCoreAsync(billingProfileId, billingRunId, cancellationToken);
