@@ -73,11 +73,15 @@ public sealed class RentalSettlementRecalculationService
         {
             transaction.LinkedInvoiceId = null;
             transaction.LinkedInvoiceNumber = string.Empty;
+            transaction.LinkedRentalBillingProfileId = null;
+            transaction.LinkedRentalBillingRunId = null;
             transaction.SettlementAmount = 0m;
             if (string.Equals(transaction.TransactionKind, "전표수금", StringComparison.OrdinalIgnoreCase))
                 transaction.TransactionKind = "일반수금";
             else if (string.Equals(transaction.TransactionKind, "전표지급", StringComparison.OrdinalIgnoreCase))
                 transaction.TransactionKind = "일반지급";
+            else if (string.Equals(transaction.TransactionKind, "렌탈수금", StringComparison.OrdinalIgnoreCase))
+                transaction.TransactionKind = "일반수금";
         }
     }
 

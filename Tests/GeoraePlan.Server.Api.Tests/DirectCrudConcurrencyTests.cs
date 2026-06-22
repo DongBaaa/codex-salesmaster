@@ -2394,6 +2394,9 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         var detachedTransaction = await dbContext.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(transaction => transaction.Id == transactionId);
         Assert.Null(detachedTransaction.LinkedInvoiceId);
         Assert.Equal(0m, detachedTransaction.SettlementAmount);
+        Assert.Null(detachedTransaction.LinkedRentalBillingProfileId);
+        Assert.Null(detachedTransaction.LinkedRentalBillingRunId);
+        Assert.Equal("일반수금", detachedTransaction.TransactionKind);
         Assert.False(detachedTransaction.IsDeleted);
         var revertedProfile = await dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().SingleAsync(profile => profile.Id == profileId);
         Assert.Equal(0m, revertedProfile.SettledAmount);
