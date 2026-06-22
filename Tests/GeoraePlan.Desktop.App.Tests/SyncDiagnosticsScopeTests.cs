@@ -157,6 +157,110 @@ public sealed class SyncDiagnosticsScopeTests
         }
     }
 
+    [Fact]
+    public async Task RecordIssueAsync_CapturesSnapshotOnlyForCurrentSessionScope()
+    {
+        PrepareAppRoot("georaeplan-sync-diagnostics-snapshot-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            db.Settings.Add(new LocalSetting
+            {
+                Key = "Sync.LastError",
+                Value = "ITWORLD 전역 마지막 오류"
+            });
+
+            db.Customers.AddRange(
+                CreateDirtyCustomer(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet, "USENET dirty customer"),
+                CreateDirtyCustomer(TenantScopeCatalog.Itworld, OfficeCodeCatalog.Itworld, "ITWORLD dirty customer"));
+            db.Invoices.AddRange(
+                CreateDirtyInvoice(
+                    TenantScopeCatalog.UsenetGroup,
+                    OfficeCodeCatalog.Usenet,
+                    Guid.Parse("11111111-1111-1111-1111-111111111111")),
+                CreateDirtyInvoice(
+                    TenantScopeCatalog.Itworld,
+                    OfficeCodeCatalog.Itworld,
+                    Guid.Parse("22222222-2222-2222-2222-222222222222")));
+            db.RentalAssets.AddRange(
+                CreateDirtyRentalAsset(
+                    TenantScopeCatalog.UsenetGroup,
+                    OfficeCodeCatalog.Usenet,
+                    Guid.Parse("33333333-3333-3333-3333-333333333333"),
+                    "USENET-ASSET"),
+                CreateDirtyRentalAsset(
+                    TenantScopeCatalog.Itworld,
+                    OfficeCodeCatalog.Itworld,
+                    Guid.Parse("44444444-4444-4444-4444-444444444444"),
+                    "ITWORLD-ASSET"));
+            db.InventoryTransfers.AddRange(
+                CreateDirtyTransfer(DomainConstants.WarehouseUsenetMain, DomainConstants.WarehouseYeonsuMain),
+                CreateDirtyTransfer(DomainConstants.WarehouseItworldMain, DomainConstants.WarehouseItworldMain));
+            await db.SaveChangesAsync();
+
+            var diagnostics = new SyncDiagnosticsService(CreateOfficeSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet));
+
+            await diagnostics.RecordIssueAsync("manual-sync", "snapshot scope check timeout");
+            db.ChangeTracker.Clear();
+
+            var captured = await db.SyncDiagnosticEvents.AsNoTracking().SingleAsync();
+
+            Assert.Equal(OfficeCodeCatalog.Usenet, captured.OfficeCode);
+            Assert.Equal(TenantScopeCatalog.UsenetGroup, captured.TenantCode);
+            Assert.Equal(string.Empty, captured.LastKnownSyncError);
+            Assert.Equal(1, captured.DirtyCustomerCount);
+            Assert.Equal(1, captured.DirtyInvoiceCount);
+            Assert.Equal(1, captured.DirtyRentalAssetCount);
+            Assert.Equal(1, captured.DirtyInventoryTransferCount);
+            Assert.Equal(1, captured.MissingCustomerReferenceCount);
+            Assert.Equal(1, captured.MissingRentalItemReferenceCount);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RecordIssueAsync_UsesSelectedBusinessDatabaseOfficeForAdminDiagnostics()
+    {
+        PrepareAppRoot("georaeplan-sync-diagnostics-business-db-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            session.SetBusinessDatabase(TenantScopeCatalog.Itworld, "ITWORLD");
+            var diagnostics = new SyncDiagnosticsService(session);
+
+            await diagnostics.RecordIssueAsync("manual-sync", "selected business database diagnostic");
+            db.ChangeTracker.Clear();
+
+            var captured = await db.SyncDiagnosticEvents.AsNoTracking().SingleAsync();
+
+            Assert.Equal(TenantScopeCatalog.Itworld, captured.TenantCode);
+            Assert.Equal(OfficeCodeCatalog.Itworld, captured.OfficeCode);
+
+            var events = await diagnostics.GetEventsAsync(new SyncDiagnosticFilter(string.Empty, "전체", "전체", "전체", false));
+            var visible = Assert.Single(events);
+            Assert.Equal(captured.Id, visible.Id);
+            Assert.Equal(OfficeCodeCatalog.Itworld, visible.OfficeCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static LocalSyncDiagnosticEvent CreateDiagnosticEvent(
         Guid id,
         string status,
@@ -195,6 +299,55 @@ public sealed class SyncDiagnosticsScopeTests
             Status = status
         };
 
+    private static LocalCustomer CreateDirtyCustomer(string tenantCode, string officeCode, string name)
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = tenantCode,
+            OfficeCode = officeCode,
+            ResponsibleOfficeCode = officeCode,
+            NameOriginal = name,
+            NameMatchKey = name.ToUpperInvariant(),
+            IsDirty = true
+        };
+
+    private static LocalInvoice CreateDirtyInvoice(string tenantCode, string officeCode, Guid customerId)
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = tenantCode,
+            OfficeCode = officeCode,
+            ResponsibleOfficeCode = officeCode,
+            CustomerId = customerId,
+            InvoiceNumber = $"{officeCode}-INV",
+            VoucherType = VoucherType.Sales,
+            VersionGroupId = Guid.NewGuid(),
+            IsDirty = true
+        };
+
+    private static LocalRentalAsset CreateDirtyRentalAsset(string tenantCode, string officeCode, Guid itemId, string machineNumber)
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = tenantCode,
+            OfficeCode = officeCode,
+            ResponsibleOfficeCode = officeCode,
+            ManagementCompanyCode = officeCode,
+            ItemId = itemId,
+            MachineNumber = machineNumber,
+            IsDirty = true
+        };
+
+    private static LocalInventoryTransfer CreateDirtyTransfer(string fromWarehouseCode, string toWarehouseCode)
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            TransferNumber = $"{fromWarehouseCode}-{Guid.NewGuid():N}",
+            FromWarehouseCode = fromWarehouseCode,
+            ToWarehouseCode = toWarehouseCode,
+            IsDirty = true
+        };
+
     private static Task<string> ReadDiagnosticStatusAsync(LocalDbContext db, Guid eventId)
         => db.SyncDiagnosticEvents
             .AsNoTracking()
@@ -214,6 +367,24 @@ public sealed class SyncDiagnosticsScopeTests
             OfficeCode = officeCode,
             ScopeType = TenantScopeCatalog.ScopeOfficeOnly
         });
+        return session;
+    }
+
+    private static SessionState CreateAdminSession(string tenantCode, string officeCode)
+    {
+        var session = new SessionState();
+        session.SetSession(
+            "test-token",
+            new UserSessionDto
+            {
+                UserId = Guid.NewGuid(),
+                Username = $"{officeCode.ToLowerInvariant()}-admin",
+                Role = DomainConstants.RoleAdmin,
+                TenantCode = tenantCode,
+                OfficeCode = officeCode,
+                ScopeType = TenantScopeCatalog.ScopeAdmin
+            },
+            DateTime.UtcNow.AddDays(1));
         return session;
     }
 

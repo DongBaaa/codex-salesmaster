@@ -155,7 +155,7 @@ public sealed class SyncDiagnosticsService
         var snapshot = await CaptureSnapshotAsync(db, ct);
         var nowUtc = DateTime.UtcNow;
         var currentUserName = _session.User?.Username ?? string.Empty;
-        var currentOfficeCode = _session.OfficeCode;
+        var currentOfficeCode = ResolveCurrentDiagnosticOfficeCode(_session);
         var currentTenantCode = _session.TenantCode;
 
         var existing = await db.SyncDiagnosticEvents
@@ -348,7 +348,7 @@ public sealed class SyncDiagnosticsService
             MachineName = Environment.MachineName,
             AppVersion = GetAppVersion(),
             User = _session.User?.Username ?? string.Empty,
-            OfficeCode = _session.OfficeCode,
+            OfficeCode = ResolveCurrentDiagnosticOfficeCode(_session),
             TenantCode = _session.TenantCode,
             Summary = summary,
             Events = events.Select(ToListItem).ToList(),
@@ -389,34 +389,72 @@ public sealed class SyncDiagnosticsService
         DiagnosticsChanged?.Invoke();
     }
 
-    private static async Task<SyncDiagnosticSnapshot> CaptureSnapshotAsync(LocalDbContext db, CancellationToken ct)
+    private async Task<SyncDiagnosticSnapshot> CaptureSnapshotAsync(LocalDbContext db, CancellationToken ct)
     {
         var lastSyncRevisionRaw = await GetSettingAsync(db, "LastSyncRevision", ct);
-        var lastError = await GetSettingAsync(db, "Sync.LastError", ct) ?? string.Empty;
+        var lastError = _session.IsLoggedIn
+            ? string.Empty
+            : await GetSettingAsync(db, "Sync.LastError", ct) ?? string.Empty;
         _ = long.TryParse(lastSyncRevisionRaw, out var lastKnownSyncRevision);
 
-        var dirtyCustomerMasterCount = await db.CustomerMasters.IgnoreQueryFilters().CountAsync(current => current.IsDirty, ct);
-        var dirtyCustomerCount = await db.Customers.IgnoreQueryFilters().CountAsync(current => current.IsDirty, ct);
-        var dirtyInvoiceCount = await db.Invoices.IgnoreQueryFilters().CountAsync(current => current.IsDirty, ct);
-        var dirtyTransactionCount = await db.Transactions.IgnoreQueryFilters().CountAsync(current => current.IsDirty, ct);
-        var dirtyAttachmentCount = await db.TransactionAttachments.IgnoreQueryFilters().CountAsync(current => current.IsDirty, ct);
-        var dirtyPaymentCount = await db.Payments.IgnoreQueryFilters().CountAsync(current => current.IsDirty, ct);
-        var dirtyRentalAssetCount = await db.RentalAssets.IgnoreQueryFilters().CountAsync(current => current.IsDirty, ct);
-        var dirtyInventoryTransferCount = await db.InventoryTransfers.IgnoreQueryFilters().CountAsync(current => current.IsDirty, ct);
+        var dirtyCustomerMasterCount = _session.IsLoggedIn
+            ? (await db.CustomerMasters.IgnoreQueryFilters().AsNoTracking().Where(current => current.IsDirty).ToListAsync(ct))
+                .Count(current => CanCurrentSessionAccessDiagnosticScope(current.OfficeCode, current.TenantCode))
+            : await db.CustomerMasters.IgnoreQueryFilters().CountAsync(current => current.IsDirty, ct);
+        var dirtyCustomerCount = _session.IsLoggedIn
+            ? (await db.Customers.IgnoreQueryFilters().AsNoTracking().Where(current => current.IsDirty).ToListAsync(ct))
+                .Count(current => CanCurrentSessionAccessDiagnosticScope(current.ResponsibleOfficeCode, current.TenantCode, current.OfficeCode))
+            : await db.Customers.IgnoreQueryFilters().CountAsync(current => current.IsDirty, ct);
+        var dirtyInvoiceCount = _session.IsLoggedIn
+            ? (await db.Invoices.IgnoreQueryFilters().AsNoTracking().Where(current => current.IsDirty).ToListAsync(ct))
+                .Count(current => CanCurrentSessionAccessDiagnosticScope(current.ResponsibleOfficeCode, current.TenantCode, current.OfficeCode))
+            : await db.Invoices.IgnoreQueryFilters().CountAsync(current => current.IsDirty, ct);
+        var dirtyTransactionCount = _session.IsLoggedIn
+            ? (await db.Transactions.IgnoreQueryFilters().AsNoTracking().Where(current => current.IsDirty).ToListAsync(ct))
+                .Count(current => CanCurrentSessionAccessDiagnosticScope(current.ResponsibleOfficeCode, current.TenantCode, current.OfficeCode))
+            : await db.Transactions.IgnoreQueryFilters().CountAsync(current => current.IsDirty, ct);
+        var dirtyAttachmentCount = _session.IsLoggedIn
+            ? await CountScopedDirtyTransactionAttachmentsAsync(db, ct)
+            : await db.TransactionAttachments.IgnoreQueryFilters().CountAsync(current => current.IsDirty, ct);
+        var dirtyPaymentCount = _session.IsLoggedIn
+            ? await CountScopedDirtyPaymentsAsync(db, ct)
+            : await db.Payments.IgnoreQueryFilters().CountAsync(current => current.IsDirty, ct);
+        var dirtyRentalAssetCount = _session.IsLoggedIn
+            ? (await db.RentalAssets.IgnoreQueryFilters().AsNoTracking().Where(current => current.IsDirty).ToListAsync(ct))
+                .Count(current => CanCurrentSessionAccessDiagnosticScope(current.ResponsibleOfficeCode, current.TenantCode, current.OfficeCode))
+            : await db.RentalAssets.IgnoreQueryFilters().CountAsync(current => current.IsDirty, ct);
+        var dirtyInventoryTransferCount = _session.IsLoggedIn
+            ? (await db.InventoryTransfers.IgnoreQueryFilters().AsNoTracking().Where(current => current.IsDirty).ToListAsync(ct))
+                .Count(CanCurrentSessionAccessInventoryTransfer)
+            : await db.InventoryTransfers.IgnoreQueryFilters().CountAsync(current => current.IsDirty, ct);
 
         var customerIds = await db.Customers.IgnoreQueryFilters().Select(current => current.Id).ToListAsync(ct);
         var invoiceIds = await db.Invoices.IgnoreQueryFilters().Select(current => current.Id).ToListAsync(ct);
         var transactionIds = await db.Transactions.IgnoreQueryFilters().Select(current => current.Id).ToListAsync(ct);
         var itemIds = await db.Items.IgnoreQueryFilters().Select(current => current.Id).ToListAsync(ct);
 
-        var missingCustomerReferenceCount = await db.Invoices.IgnoreQueryFilters()
-            .CountAsync(current => current.CustomerId != Guid.Empty && !customerIds.Contains(current.CustomerId), ct);
-        var missingInvoiceReferenceCount = await db.Payments.IgnoreQueryFilters()
-            .CountAsync(current => current.InvoiceId != Guid.Empty && !invoiceIds.Contains(current.InvoiceId), ct);
-        var missingTransactionReferenceCount = await db.TransactionAttachments.IgnoreQueryFilters()
-            .CountAsync(current => current.TransactionId != Guid.Empty && !transactionIds.Contains(current.TransactionId), ct);
-        var missingRentalItemReferenceCount = await db.RentalAssets.IgnoreQueryFilters()
-            .CountAsync(current => current.ItemId.HasValue && !itemIds.Contains(current.ItemId.Value), ct);
+        var missingCustomerReferenceCount = _session.IsLoggedIn
+            ? (await db.Invoices.IgnoreQueryFilters().AsNoTracking()
+                    .Where(current => current.CustomerId != Guid.Empty && !customerIds.Contains(current.CustomerId))
+                    .ToListAsync(ct))
+                .Count(current => CanCurrentSessionAccessDiagnosticScope(current.ResponsibleOfficeCode, current.TenantCode, current.OfficeCode))
+            : await db.Invoices.IgnoreQueryFilters()
+                .CountAsync(current => current.CustomerId != Guid.Empty && !customerIds.Contains(current.CustomerId), ct);
+        var missingInvoiceReferenceCount = _session.IsLoggedIn
+            ? 0
+            : await db.Payments.IgnoreQueryFilters()
+                .CountAsync(current => current.InvoiceId != Guid.Empty && !invoiceIds.Contains(current.InvoiceId), ct);
+        var missingTransactionReferenceCount = _session.IsLoggedIn
+            ? 0
+            : await db.TransactionAttachments.IgnoreQueryFilters()
+                .CountAsync(current => current.TransactionId != Guid.Empty && !transactionIds.Contains(current.TransactionId), ct);
+        var missingRentalItemReferenceCount = _session.IsLoggedIn
+            ? (await db.RentalAssets.IgnoreQueryFilters().AsNoTracking()
+                    .Where(current => current.ItemId.HasValue && !itemIds.Contains(current.ItemId.Value))
+                    .ToListAsync(ct))
+                .Count(current => CanCurrentSessionAccessDiagnosticScope(current.ResponsibleOfficeCode, current.TenantCode, current.OfficeCode))
+            : await db.RentalAssets.IgnoreQueryFilters()
+                .CountAsync(current => current.ItemId.HasValue && !itemIds.Contains(current.ItemId.Value), ct);
 
         return new SyncDiagnosticSnapshot(
             lastKnownSyncRevision,
@@ -443,6 +481,64 @@ public sealed class SyncDiagnosticsService
 
     private static LocalDbContext CreateDbContext() => new();
 
+    private async Task<int> CountScopedDirtyTransactionAttachmentsAsync(LocalDbContext db, CancellationToken ct)
+    {
+        var dirtyAttachments = await db.TransactionAttachments
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => current.IsDirty)
+            .ToListAsync(ct);
+        if (dirtyAttachments.Count == 0)
+            return 0;
+
+        var transactionIds = dirtyAttachments
+            .Select(current => current.TransactionId)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (transactionIds.Count == 0)
+            return 0;
+
+        var transactions = await db.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => transactionIds.Contains(current.Id))
+            .ToDictionaryAsync(current => current.Id, ct);
+
+        return dirtyAttachments.Count(attachment =>
+            transactions.TryGetValue(attachment.TransactionId, out var transaction) &&
+            CanCurrentSessionAccessDiagnosticScope(transaction.ResponsibleOfficeCode, transaction.TenantCode, transaction.OfficeCode));
+    }
+
+    private async Task<int> CountScopedDirtyPaymentsAsync(LocalDbContext db, CancellationToken ct)
+    {
+        var dirtyPayments = await db.Payments
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => current.IsDirty)
+            .ToListAsync(ct);
+        if (dirtyPayments.Count == 0)
+            return 0;
+
+        var invoiceIds = dirtyPayments
+            .Select(current => current.InvoiceId)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (invoiceIds.Count == 0)
+            return 0;
+
+        var invoices = await db.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => invoiceIds.Contains(current.Id))
+            .ToDictionaryAsync(current => current.Id, ct);
+
+        return dirtyPayments.Count(payment =>
+            invoices.TryGetValue(payment.InvoiceId, out var invoice) &&
+            CanCurrentSessionAccessDiagnosticScope(invoice.ResponsibleOfficeCode, invoice.TenantCode, invoice.OfficeCode));
+    }
+
     private static void ApplySnapshot(LocalSyncDiagnosticEvent entity, SyncDiagnosticSnapshot snapshot)
     {
         entity.LastKnownSyncRevision = snapshot.LastKnownSyncRevision;
@@ -462,11 +558,14 @@ public sealed class SyncDiagnosticsService
     }
 
     private bool CanCurrentSessionAccessEvent(LocalSyncDiagnosticEvent entity)
+        => CanCurrentSessionAccessDiagnosticScope(entity.OfficeCode, entity.TenantCode);
+
+    private bool CanCurrentSessionAccessDiagnosticScope(string? officeCode, string? tenantCode, string? fallbackOfficeCode = null)
     {
         if (!_session.IsLoggedIn)
             return true;
 
-        var scope = ResolveDiagnosticScope(entity.OfficeCode, entity.TenantCode);
+        var scope = ResolveDiagnosticScope(officeCode, tenantCode, fallbackOfficeCode);
         if (string.Equals(scope.ScopeKey, "SHARED", StringComparison.OrdinalIgnoreCase))
             return _session.HasAdministrativePrivileges ||
                    string.Equals(_session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase);
@@ -474,34 +573,47 @@ public sealed class SyncDiagnosticsService
         var accessibleOfficeCodes = GetCurrentLoginDiagnosticOfficeCodes(_session);
         if (scope.ScopeKey.StartsWith("OFFICE:", StringComparison.OrdinalIgnoreCase))
         {
-            var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(scope.ScopeKey[7..], string.Empty);
-            return !string.IsNullOrWhiteSpace(officeCode) && accessibleOfficeCodes.Contains(officeCode);
+            var scopedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(scope.ScopeKey[7..], string.Empty);
+            return !string.IsNullOrWhiteSpace(scopedOfficeCode) && accessibleOfficeCodes.Contains(scopedOfficeCode);
         }
 
         if (scope.ScopeKey.StartsWith("TENANT:", StringComparison.OrdinalIgnoreCase))
         {
-            var tenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(scope.ScopeKey[7..], string.Empty);
-            return TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode)
+            var scopedTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(scope.ScopeKey[7..], string.Empty);
+            return TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(scopedTenantCode)
                 .Any(accessibleOfficeCodes.Contains);
         }
 
         return false;
     }
 
-    private static (string ScopeKey, string ScopeDisplayName) ResolveDiagnosticScope(string? officeCode, string? tenantCode)
+    private bool CanCurrentSessionAccessInventoryTransfer(LocalInventoryTransfer transfer)
+        => CanCurrentSessionAccessDiagnosticScope(ResolveOfficeCodeFromWarehouseCode(transfer.FromWarehouseCode), null) ||
+           CanCurrentSessionAccessDiagnosticScope(ResolveOfficeCodeFromWarehouseCode(transfer.ToWarehouseCode), null);
+
+    private static (string ScopeKey, string ScopeDisplayName) ResolveDiagnosticScope(string? officeCode, string? tenantCode, string? fallbackOfficeCode = null)
     {
-        var normalizedOfficeCode = (officeCode ?? string.Empty).Trim();
+        var normalizedTenantCode = TenantScopeCatalog.TryNormalizeTenantCode(tenantCode, out var tenant)
+            ? tenant
+            : string.Empty;
+        var normalizedOfficeCode = (string.IsNullOrWhiteSpace(officeCode) ? fallbackOfficeCode : officeCode) ?? string.Empty;
+        normalizedOfficeCode = normalizedOfficeCode.Trim();
         if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
         {
             normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(normalizedOfficeCode, OfficeCodeCatalog.Shared);
+            if (!string.IsNullOrWhiteSpace(normalizedTenantCode) &&
+                !OfficeCodeCatalog.IsSharedOfficeCode(normalizedOfficeCode) &&
+                !TenantScopeCatalog.TenantContainsOffice(normalizedTenantCode, normalizedOfficeCode))
+            {
+                return ($"TENANT:{normalizedTenantCode}", TenantScopeCatalog.GetTenantDisplayName(normalizedTenantCode));
+            }
+
             if (!OfficeCodeCatalog.IsSharedOfficeCode(normalizedOfficeCode))
                 return ($"OFFICE:{normalizedOfficeCode}", OfficeCodeCatalog.GetOfficeDisplayName(normalizedOfficeCode));
         }
 
-        var normalizedTenantCode = (tenantCode ?? string.Empty).Trim();
         if (!string.IsNullOrWhiteSpace(normalizedTenantCode))
         {
-            normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(normalizedTenantCode);
             return ($"TENANT:{normalizedTenantCode}", TenantScopeCatalog.GetTenantDisplayName(normalizedTenantCode));
         }
 
@@ -511,6 +623,8 @@ public sealed class SyncDiagnosticsService
     private static HashSet<string> GetCurrentLoginDiagnosticOfficeCodes(SessionState session)
     {
         var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            session.TenantCode,
+            ResolveCurrentDiagnosticOfficeCode(session),
             session.AuthenticatedTenantCode,
             session.OfficeCode);
         var scopeType = TenantScopeCatalog.NormalizeScopeTypeOrDefault(session.ScopeType);
@@ -527,6 +641,42 @@ public sealed class SyncDiagnosticsService
         [
             OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, string.Empty)
         ];
+    }
+
+    private static string ResolveCurrentDiagnosticOfficeCode(SessionState session)
+    {
+        var tenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(
+            session.TenantCode,
+            session.AuthenticatedTenantCode);
+        var sessionOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, string.Empty);
+        if (TenantScopeCatalog.TenantContainsOffice(tenantCode, sessionOfficeCode))
+            return sessionOfficeCode;
+
+        var businessOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.BusinessOfficeCode, string.Empty);
+        if (TenantScopeCatalog.TenantContainsOffice(tenantCode, businessOfficeCode))
+            return businessOfficeCode;
+
+        return TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode)
+                   .FirstOrDefault()
+               ?? sessionOfficeCode;
+    }
+
+    private static string ResolveOfficeCodeFromWarehouseCode(string? warehouseCode)
+    {
+        var normalizedWarehouseCode = (warehouseCode ?? string.Empty).Trim().ToUpperInvariant();
+        if (string.Equals(normalizedWarehouseCode, DomainConstants.WarehouseItworldMain, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalizedWarehouseCode, OfficeCodeCatalog.ItworldMainWarehouse, StringComparison.OrdinalIgnoreCase))
+        {
+            return OfficeCodeCatalog.Itworld;
+        }
+
+        if (string.Equals(normalizedWarehouseCode, DomainConstants.WarehouseYeonsuMain, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalizedWarehouseCode, OfficeCodeCatalog.YeonsuMainWarehouse, StringComparison.OrdinalIgnoreCase))
+        {
+            return OfficeCodeCatalog.Yeonsu;
+        }
+
+        return OfficeCodeCatalog.Usenet;
     }
 
     private static SyncDiagnosticListItem ToListItem(LocalSyncDiagnosticEvent entity)
