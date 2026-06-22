@@ -154,9 +154,15 @@ public sealed class SyncDiagnosticsService
         await using var db = CreateDbContext();
         var snapshot = await CaptureSnapshotAsync(db, ct);
         var nowUtc = DateTime.UtcNow;
+        var currentUserName = _session.User?.Username ?? string.Empty;
+        var currentOfficeCode = _session.OfficeCode;
+        var currentTenantCode = _session.TenantCode;
 
         var existing = await db.SyncDiagnosticEvents
             .Where(current => current.Status == "Open"
+                              && current.UserName == currentUserName
+                              && current.OfficeCode == currentOfficeCode
+                              && current.TenantCode == currentTenantCode
                               && current.SyncPhase == classification.SyncPhase
                               && current.NormalizedMessage == classification.NormalizedMessage
                               && current.EntityName == classification.EntityName
@@ -191,9 +197,9 @@ public sealed class SyncDiagnosticsService
                 EntityId = classification.EntityId,
                 ReferenceEntityName = classification.ReferenceEntityName,
                 ReferenceEntityId = classification.ReferenceEntityId,
-                UserName = _session.User?.Username ?? string.Empty,
-                OfficeCode = _session.OfficeCode,
-                TenantCode = _session.TenantCode,
+                UserName = currentUserName,
+                OfficeCode = currentOfficeCode,
+                TenantCode = currentTenantCode,
                 MachineName = Environment.MachineName,
                 AppVersion = GetAppVersion(),
                 SyncPhase = classification.SyncPhase,
@@ -225,7 +231,9 @@ public sealed class SyncDiagnosticsService
         if (!string.IsNullOrWhiteSpace(phase))
             query = query.Where(current => current.SyncPhase == phase);
 
-        var events = await query.ToListAsync(ct);
+        var events = (await query.ToListAsync(ct))
+            .Where(CanCurrentSessionAccessEvent)
+            .ToList();
         if (events.Count == 0)
             return;
 
@@ -245,17 +253,24 @@ public sealed class SyncDiagnosticsService
     public async Task<SyncDiagnosticSummary> GetSummaryAsync(CancellationToken ct = default)
     {
         await using var db = CreateDbContext();
-        var openIssueCount = await db.SyncDiagnosticEvents.CountAsync(current => current.Status == "Open", ct);
-        var recoverableIssueCount = await db.SyncDiagnosticEvents.CountAsync(current => current.Status == "Open" && current.IsRecoverable, ct);
-        var totalIssueCount = await db.SyncDiagnosticEvents.CountAsync(ct);
-        var lastFailure = await db.SyncDiagnosticEvents
+        var events = (await db.SyncDiagnosticEvents
+                .AsNoTracking()
+                .ToListAsync(ct))
+            .Where(CanCurrentSessionAccessEvent)
+            .ToList();
+        var openEvents = events
             .Where(current => current.Status == "Open")
             .OrderByDescending(current => current.LastOccurredAtUtc)
-            .Select(current => (DateTime?)current.LastOccurredAtUtc)
-            .FirstOrDefaultAsync(ct);
+            .ToList();
+        var openIssueCount = openEvents.Count;
+        var recoverableIssueCount = openEvents.Count(current => current.IsRecoverable);
+        var totalIssueCount = events.Count;
+        var lastOpenEvent = openEvents.FirstOrDefault();
+        var lastFailure = lastOpenEvent?.LastOccurredAtUtc;
 
         var lastSuccessRaw = await GetSettingAsync(db, "Sync.LastSuccessAt", ct);
-        var lastError = await GetSettingAsync(db, "Sync.LastError", ct) ?? string.Empty;
+        var lastError = lastOpenEvent?.RawMessage
+                        ?? (_session.IsLoggedIn ? string.Empty : await GetSettingAsync(db, "Sync.LastError", ct) ?? string.Empty);
         var lastSyncRevisionRaw = await GetSettingAsync(db, "LastSyncRevision", ct);
         _ = long.TryParse(lastSyncRevisionRaw, out var lastKnownSyncRevision);
         DateTime? lastSuccessAtUtc = null;
@@ -302,10 +317,12 @@ public sealed class SyncDiagnosticsService
                 current.OfficeCode.Contains(searchText));
         }
 
-        var rows = await query
+        var rows = (await query
             .OrderByDescending(current => current.LastOccurredAtUtc)
+            .ToListAsync(ct))
+            .Where(CanCurrentSessionAccessEvent)
             .Take(300)
-            .ToListAsync(ct);
+            .ToList();
 
         return rows.Select(ToListItem).ToList();
     }
@@ -318,10 +335,12 @@ public sealed class SyncDiagnosticsService
         if (eventIds is { Count: > 0 })
             eventsQuery = eventsQuery.Where(current => eventIds.Contains(current.Id));
 
-        var events = await eventsQuery
+        var events = (await eventsQuery
             .OrderByDescending(current => current.LastOccurredAtUtc)
+            .ToListAsync(ct))
+            .Where(CanCurrentSessionAccessEvent)
             .Take(300)
-            .ToListAsync(ct);
+            .ToList();
 
         var report = new
         {
@@ -357,9 +376,16 @@ public sealed class SyncDiagnosticsService
     public async Task ClearResolvedEventsAsync(CancellationToken ct = default)
     {
         await using var db = CreateDbContext();
-        await db.SyncDiagnosticEvents
-            .Where(current => current.Status != "Open")
-            .ExecuteDeleteAsync(ct);
+        var events = (await db.SyncDiagnosticEvents
+                .Where(current => current.Status != "Open")
+                .ToListAsync(ct))
+            .Where(CanCurrentSessionAccessEvent)
+            .ToList();
+        if (events.Count == 0)
+            return;
+
+        db.SyncDiagnosticEvents.RemoveRange(events);
+        await db.SaveChangesAsync(ct);
         DiagnosticsChanged?.Invoke();
     }
 
@@ -433,6 +459,74 @@ public sealed class SyncDiagnosticsService
         entity.MissingInvoiceReferenceCount = snapshot.MissingInvoiceReferenceCount;
         entity.MissingTransactionReferenceCount = snapshot.MissingTransactionReferenceCount;
         entity.MissingRentalItemReferenceCount = snapshot.MissingRentalItemReferenceCount;
+    }
+
+    private bool CanCurrentSessionAccessEvent(LocalSyncDiagnosticEvent entity)
+    {
+        if (!_session.IsLoggedIn)
+            return true;
+
+        var scope = ResolveDiagnosticScope(entity.OfficeCode, entity.TenantCode);
+        if (string.Equals(scope.ScopeKey, "SHARED", StringComparison.OrdinalIgnoreCase))
+            return _session.HasAdministrativePrivileges ||
+                   string.Equals(_session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase);
+
+        var accessibleOfficeCodes = GetCurrentLoginDiagnosticOfficeCodes(_session);
+        if (scope.ScopeKey.StartsWith("OFFICE:", StringComparison.OrdinalIgnoreCase))
+        {
+            var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(scope.ScopeKey[7..], string.Empty);
+            return !string.IsNullOrWhiteSpace(officeCode) && accessibleOfficeCodes.Contains(officeCode);
+        }
+
+        if (scope.ScopeKey.StartsWith("TENANT:", StringComparison.OrdinalIgnoreCase))
+        {
+            var tenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(scope.ScopeKey[7..], string.Empty);
+            return TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode)
+                .Any(accessibleOfficeCodes.Contains);
+        }
+
+        return false;
+    }
+
+    private static (string ScopeKey, string ScopeDisplayName) ResolveDiagnosticScope(string? officeCode, string? tenantCode)
+    {
+        var normalizedOfficeCode = (officeCode ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
+        {
+            normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(normalizedOfficeCode, OfficeCodeCatalog.Shared);
+            if (!OfficeCodeCatalog.IsSharedOfficeCode(normalizedOfficeCode))
+                return ($"OFFICE:{normalizedOfficeCode}", OfficeCodeCatalog.GetOfficeDisplayName(normalizedOfficeCode));
+        }
+
+        var normalizedTenantCode = (tenantCode ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(normalizedTenantCode))
+        {
+            normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(normalizedTenantCode);
+            return ($"TENANT:{normalizedTenantCode}", TenantScopeCatalog.GetTenantDisplayName(normalizedTenantCode));
+        }
+
+        return ("SHARED", "공용");
+    }
+
+    private static HashSet<string> GetCurrentLoginDiagnosticOfficeCodes(SessionState session)
+    {
+        var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            session.AuthenticatedTenantCode,
+            session.OfficeCode);
+        var scopeType = TenantScopeCatalog.NormalizeScopeTypeOrDefault(session.ScopeType);
+
+        if (session.HasAdministrativePrivileges ||
+            string.Equals(scopeType, TenantScopeCatalog.ScopeAdmin, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(scopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
+        {
+            return TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return
+        [
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, string.Empty)
+        ];
     }
 
     private static SyncDiagnosticListItem ToListItem(LocalSyncDiagnosticEvent entity)
