@@ -1506,8 +1506,10 @@ public sealed class RecycleBinController : ControllerBase
         var revisionCheck = EnsureRecycleBinMutationRevision(transfer, target);
         if (!revisionCheck.Success)
             return revisionCheck;
-        if (!_officeScopeService.CanWriteOfficeForDeliveries(transfer.SourceOfficeCode, transfer.TenantCode) &&
-            !_officeScopeService.CanWriteOfficeForDeliveries(transfer.TargetOfficeCode, transfer.TenantCode))
+        if (!_officeScopeService.CanWriteInventoryTransferRoute(
+                transfer.SourceOfficeCode,
+                transfer.TargetOfficeCode,
+                transfer.TenantCode))
         {
             return (false, "현재 계정으로 복원할 수 없는 재고이동입니다.");
         }
@@ -2245,8 +2247,10 @@ public sealed class RecycleBinController : ControllerBase
         var revisionCheck = EnsureRecycleBinMutationRevision(transfer, target);
         if (!revisionCheck.Success)
             return revisionCheck;
-        if (!_officeScopeService.CanWriteOfficeForDeliveries(transfer.SourceOfficeCode, transfer.TenantCode) &&
-            !_officeScopeService.CanWriteOfficeForDeliveries(transfer.TargetOfficeCode, transfer.TenantCode))
+        if (!_officeScopeService.CanWriteInventoryTransferRoute(
+                transfer.SourceOfficeCode,
+                transfer.TargetOfficeCode,
+                transfer.TenantCode))
         {
             return (false, "현재 계정으로 영구삭제할 수 없는 재고이동입니다.");
         }

@@ -411,13 +411,24 @@ public sealed class OfficeScopeService
 
     public IQueryable<InventoryTransfer> ApplyInventoryTransferScope(IQueryable<InventoryTransfer> query)
     {
-        if (HasGlobalDataScope || HasDeliveryWideReadScope)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
+        var tenantOffices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode);
+        if (HasDeliveryWideReadScope)
+        {
+            return query.Where(entity =>
+                entity.TenantCode == tenantCode &&
+                tenantOffices.Contains(entity.SourceOfficeCode) &&
+                tenantOffices.Contains(entity.TargetOfficeCode));
+        }
+
         var readableOffices = ResolveReadableOfficeCodes(DataArea.Deliveries);
         return query.Where(entity =>
             entity.TenantCode == tenantCode &&
+            tenantOffices.Contains(entity.SourceOfficeCode) &&
+            tenantOffices.Contains(entity.TargetOfficeCode) &&
             (readableOffices.Contains(entity.SourceOfficeCode) || readableOffices.Contains(entity.TargetOfficeCode)));
     }
 
@@ -586,6 +597,37 @@ public sealed class OfficeScopeService
     public bool CanWriteOfficeForDeliveries(string? officeCode, string? tenantCode = null, string? fallbackOfficeCode = null)
         => CanWriteOffice(officeCode, tenantCode, DataArea.Deliveries, fallbackOfficeCode);
 
+    public bool CanReadInventoryTransferRoute(string? sourceOfficeCode, string? targetOfficeCode, string? tenantCode)
+    {
+        if (HasGlobalDataScope)
+            return true;
+
+        if (!IsInventoryTransferRouteCompatibleWithTenant(sourceOfficeCode, targetOfficeCode, tenantCode))
+            return false;
+
+        if (!string.Equals(TenantScopeCatalog.NormalizeTenantCodeOrDefault(tenantCode), CurrentTenantCode, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return HasDeliveryWideReadScope ||
+               CanReadOfficeForDeliveries(sourceOfficeCode, tenantCode) ||
+               CanReadOfficeForDeliveries(targetOfficeCode, tenantCode);
+    }
+
+    public bool CanWriteInventoryTransferRoute(string? sourceOfficeCode, string? targetOfficeCode, string? tenantCode)
+    {
+        if (HasGlobalDataScope)
+            return true;
+
+        if (!IsInventoryTransferRouteCompatibleWithTenant(sourceOfficeCode, targetOfficeCode, tenantCode))
+            return false;
+
+        if (!string.Equals(TenantScopeCatalog.NormalizeTenantCodeOrDefault(tenantCode), CurrentTenantCode, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return CanWriteOfficeForDeliveries(sourceOfficeCode, tenantCode) ||
+               CanWriteOfficeForDeliveries(targetOfficeCode, tenantCode);
+    }
+
     public bool CanReadOfficeForCompanyProfiles(string? officeCode)
         => CanReadOffice(officeCode, null, DataArea.General);
 
@@ -748,6 +790,18 @@ public sealed class OfficeScopeService
             return normalizedFallback;
 
         return null;
+    }
+
+    private static bool IsInventoryTransferRouteCompatibleWithTenant(
+        string? sourceOfficeCode,
+        string? targetOfficeCode,
+        string? tenantCode)
+    {
+        if (!TenantScopeCatalog.TryNormalizeTenantCode(tenantCode, out var normalizedTenantCode))
+            return false;
+
+        return TenantScopeCatalog.TenantContainsOffice(normalizedTenantCode, sourceOfficeCode) &&
+               TenantScopeCatalog.TenantContainsOffice(normalizedTenantCode, targetOfficeCode);
     }
 
     private string ResolveOperationalOfficeForCreate(string? requestedOfficeCode, string? fallbackOfficeCode, DataArea area)

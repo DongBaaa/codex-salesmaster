@@ -2208,8 +2208,10 @@ public sealed class SyncController : ControllerBase
             var existing = await _dbContext.InventoryTransfers.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
             var canWriteExisting = existing is null
-                || _officeScopeService.CanWriteOfficeForDeliveries(existing.SourceOfficeCode, existing.TenantCode)
-                || _officeScopeService.CanWriteOfficeForDeliveries(existing.TargetOfficeCode, existing.TenantCode);
+                || _officeScopeService.CanWriteInventoryTransferRoute(
+                    existing.SourceOfficeCode,
+                    existing.TargetOfficeCode,
+                    existing.TenantCode);
             if (!canWriteExisting)
             {
                 AddClientConflict(dto, nameof(InventoryTransfer), "Current account cannot modify this office scope.", result);
@@ -2260,8 +2262,10 @@ public sealed class SyncController : ControllerBase
             }
 
             var canAccessTransfer =
-                _officeScopeService.CanWriteOfficeForDeliveries(dto.SourceOfficeCode, dto.TenantCode) ||
-                _officeScopeService.CanWriteOfficeForDeliveries(dto.TargetOfficeCode, dto.TenantCode);
+                _officeScopeService.CanWriteInventoryTransferRoute(
+                    dto.SourceOfficeCode,
+                    dto.TargetOfficeCode,
+                    dto.TenantCode);
             if (!canAccessTransfer)
             {
                 AddClientConflict(dto, nameof(InventoryTransfer),
@@ -2361,8 +2365,10 @@ public sealed class SyncController : ControllerBase
 
             var previousStockDeltas = await _invoiceStockSnapshotService.BuildInventoryTransferStockDeltasAsync(entity, cancellationToken);
             var canWriteExisting =
-                _officeScopeService.CanWriteOfficeForDeliveries(entity.SourceOfficeCode, entity.TenantCode) ||
-                _officeScopeService.CanWriteOfficeForDeliveries(entity.TargetOfficeCode, entity.TenantCode);
+                _officeScopeService.CanWriteInventoryTransferRoute(
+                    entity.SourceOfficeCode,
+                    entity.TargetOfficeCode,
+                    entity.TenantCode);
             if (!canWriteExisting)
             {
                 AddClientConflict(dto, nameof(InventoryTransfer), "Current account cannot modify this office scope.", result);

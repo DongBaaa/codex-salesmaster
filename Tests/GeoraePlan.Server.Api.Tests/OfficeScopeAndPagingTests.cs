@@ -388,6 +388,41 @@ public sealed class OfficeScopeAndPagingTests : IDisposable
     }
 
     [Fact]
+    public async Task OfficeOnlyUser_InventoryTransferScopeHidesCrossTenantRoute_WhenOneEndpointIsReadable()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet_delivery_user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var transfer = new InventoryTransfer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetOfficeCode = OfficeCodeCatalog.Itworld,
+            FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.ItworldMainWarehouse,
+            TransferNumber = "CROSS-TENANT-TRANSFER",
+            TransferDate = new DateOnly(2026, 6, 23),
+            TransferStatus = InventoryTransferStatusNormalizer.Pending
+        };
+        dbContext.InventoryTransfers.Add(transfer);
+        await dbContext.SaveChangesAsync();
+
+        var service = new OfficeScopeService(currentUser, dbContext);
+
+        Assert.True(service.CanReadOfficeForDeliveries(transfer.SourceOfficeCode, transfer.TenantCode));
+        Assert.False(TenantScopeCatalog.TenantContainsOffice(transfer.TenantCode, transfer.TargetOfficeCode));
+        Assert.Empty(await service.ApplyInventoryTransferScope(dbContext.InventoryTransfers.AsNoTracking()).ToListAsync());
+    }
+
+    [Fact]
     public async Task OfficeOnlyUser_OperationalScopesHideSharedResponsibleRows_WhenOwnerOfficeBelongsToAnotherTenant()
     {
         var currentUser = new TestCurrentUserContext

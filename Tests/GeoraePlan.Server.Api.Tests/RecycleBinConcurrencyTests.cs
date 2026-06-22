@@ -2122,6 +2122,99 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task RestoreInventoryTransfer_RejectsCrossTenantRoute_WhenOneEndpointWritable()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var transferId = Guid.NewGuid();
+        dbContext.InventoryTransfers.Add(new InventoryTransfer
+        {
+            Id = transferId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetOfficeCode = OfficeCodeCatalog.Itworld,
+            FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.ItworldMainWarehouse,
+            TransferNumber = "RESTORE-CROSS-TENANT-TRANSFER",
+            TransferDate = new DateOnly(2026, 6, 23),
+            TransferStatus = InventoryTransferStatusNormalizer.Pending,
+            IsDeleted = true
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = transferId,
+                        Kind = "inventory-transfer"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var result = Assert.Single(payload.Results);
+        Assert.False(result.Success);
+        Assert.Equal(0, payload.SucceededCount);
+        Assert.True(await dbContext.InventoryTransfers.IgnoreQueryFilters()
+            .Where(transfer => transfer.Id == transferId)
+            .Select(transfer => transfer.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task PurgeInventoryTransfer_RejectsCrossTenantRoute_WhenOneEndpointWritable()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var transferId = Guid.NewGuid();
+        dbContext.InventoryTransfers.Add(new InventoryTransfer
+        {
+            Id = transferId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetOfficeCode = OfficeCodeCatalog.Itworld,
+            FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.ItworldMainWarehouse,
+            TransferNumber = "PURGE-CROSS-TENANT-TRANSFER",
+            TransferDate = new DateOnly(2026, 6, 23),
+            TransferStatus = InventoryTransferStatusNormalizer.Pending,
+            IsDeleted = true
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = transferId,
+                        Kind = "inventory-transfer"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var result = Assert.Single(payload.Results);
+        Assert.False(result.Success);
+        Assert.Equal(0, payload.SucceededCount);
+        Assert.True(await dbContext.InventoryTransfers.IgnoreQueryFilters().AnyAsync(transfer => transfer.Id == transferId));
+    }
+
+    [Fact]
     public async Task PurgeInventoryTransfer_DeletesEvidenceStorageOnlyAfterDbCommit()
     {
         var currentUser = CreateOfficeOnlyUser();
