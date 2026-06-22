@@ -170,9 +170,11 @@ public sealed class PaymentDraftViewModel : ObservableObject
             _ = RefreshSyncSnapshotInBackgroundAsync();
 
             var invoices = await _api.GetInvoicesAsync(null);
+            var pendingState = await _syncCoordinator.LoadAsync();
+            pendingState.Normalize();
             Invoices.Clear();
             foreach (var invoice in invoices.OrderByDescending(x => x.InvoiceDate))
-                Invoices.Add(invoice);
+                Invoices.Add(MergePendingPaymentsIntoInvoice(invoice, pendingState));
 
             ApplyInitialInvoice();
 
@@ -431,6 +433,8 @@ public sealed class PaymentDraftViewModel : ObservableObject
                 attachment.PaymentId = payment.Id;
 
             var state = await _syncCoordinator.SavePaymentImmediatelyAsync(payment, Attachments, linkedTransaction);
+            if (state.PendingPaymentCount > 0)
+                ReplaceInvoiceSnapshot(MergePendingPaymentsIntoInvoice(latestInvoice, state));
             if (SyncCoordinator.IsConcurrencyConflictState(state))
             {
                 _refreshCoordinator.MarkInvoicesChanged();
@@ -474,6 +478,9 @@ public sealed class PaymentDraftViewModel : ObservableObject
         if (latest is null || latest.IsDeleted)
             return null;
 
+        var pendingState = await _syncCoordinator.LoadAsync();
+        pendingState.Normalize();
+        latest = MergePendingPaymentsIntoInvoice(latest, pendingState);
         ReplaceInvoiceSnapshot(latest);
         return latest;
     }
@@ -496,24 +503,53 @@ public sealed class PaymentDraftViewModel : ObservableObject
 
     private static IReadOnlyList<InvoiceDto> BuildSyncedInvoiceSnapshots(Models.MobileSyncState state)
     {
-        var paymentsByInvoiceId = state.SyncedPayments
-            .Where(payment => !payment.IsDeleted)
-            .GroupBy(payment => payment.InvoiceId)
-            .ToDictionary(
-                group => group.Key,
-                group => group
-                    .OrderBy(payment => payment.PaymentDate)
-                    .ThenBy(payment => payment.CreatedAtUtc)
-                    .Select(ClonePayment)
-                    .ToList());
-
         return state.SyncedInvoices
             .Where(invoice => !invoice.IsDeleted)
             .Select(invoice =>
             {
-                paymentsByInvoiceId.TryGetValue(invoice.Id, out var payments);
-                return CloneInvoiceForPaymentDraft(invoice, payments ?? []);
+                var payments = BuildEffectivePaymentsForInvoice(invoice.Id, state.SyncedPayments, state.PendingPush.Payments);
+                return CloneInvoiceForPaymentDraft(invoice, payments);
             })
+            .ToList();
+    }
+
+    private static InvoiceDto MergePendingPaymentsIntoInvoice(InvoiceDto invoice, Models.MobileSyncState state)
+    {
+        var payments = BuildEffectivePaymentsForInvoice(invoice.Id, invoice.Payments, state.PendingPush.Payments);
+        return CloneInvoiceForPaymentDraft(invoice, payments);
+    }
+
+    private static IReadOnlyList<PaymentDto> BuildEffectivePaymentsForInvoice(
+        Guid invoiceId,
+        IEnumerable<PaymentDto>? basePayments,
+        IEnumerable<PaymentDto>? pendingPayments)
+    {
+        var paymentsById = new Dictionary<Guid, PaymentDto>();
+        foreach (var payment in basePayments ?? Enumerable.Empty<PaymentDto>())
+        {
+            if (payment.InvoiceId != invoiceId || payment.IsDeleted)
+                continue;
+
+            paymentsById[payment.Id] = ClonePayment(payment);
+        }
+
+        foreach (var payment in pendingPayments ?? Enumerable.Empty<PaymentDto>())
+        {
+            if (payment.InvoiceId != invoiceId)
+                continue;
+
+            if (payment.IsDeleted)
+            {
+                paymentsById.Remove(payment.Id);
+                continue;
+            }
+
+            paymentsById[payment.Id] = ClonePayment(payment);
+        }
+
+        return paymentsById.Values
+            .OrderBy(payment => payment.PaymentDate)
+            .ThenBy(payment => payment.CreatedAtUtc)
             .ToList();
     }
 

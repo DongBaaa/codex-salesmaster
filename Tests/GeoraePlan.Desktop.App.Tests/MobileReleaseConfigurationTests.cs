@@ -1220,7 +1220,8 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("BuildSyncedInvoiceSnapshots", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("state.SyncedPayments", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("state.SyncedInvoices", viewModelSource, StringComparison.Ordinal);
-        Assert.Contains("CloneInvoiceForPaymentDraft(invoice, payments ?? [])", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("BuildEffectivePaymentsForInvoice(invoice.Id, state.SyncedPayments, state.PendingPush.Payments)", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("CloneInvoiceForPaymentDraft(invoice, payments)", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("Payments = payments.ToList()", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("동기화 캐시 전표", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("CalculateOutstandingAmount(value)", viewModelSource, StringComparison.Ordinal);
@@ -1554,6 +1555,24 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("SavePaymentImmediatelyAsync(payment, Attachments, linkedTransaction)", source, StringComparison.Ordinal);
         Assert.Contains("ExpectedRevision = latestInvoice.Revision", source, StringComparison.Ordinal);
         Assert.Contains("ExpectedRevision = invoice.Revision", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AndroidPaymentDraft_OutstandingAmountIncludesPendingPayments()
+    {
+        var root = FindRepositoryRoot();
+        var source = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "PaymentDraftViewModel.cs"));
+
+        Assert.Contains("MergePendingPaymentsIntoInvoice", source, StringComparison.Ordinal);
+        Assert.Contains("BuildEffectivePaymentsForInvoice", source, StringComparison.Ordinal);
+        Assert.Contains("state.PendingPush.Payments", source, StringComparison.Ordinal);
+        Assert.Contains("ReplaceInvoiceSnapshot(MergePendingPaymentsIntoInvoice(latestInvoice, state));", source, StringComparison.Ordinal);
+        Assert.Contains("latest = MergePendingPaymentsIntoInvoice(latest, pendingState);", source, StringComparison.Ordinal);
     }
 
     [Fact]
