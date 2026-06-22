@@ -2450,6 +2450,12 @@ public sealed partial class LocalStateService
             profile.UpdatedAtUtc = DateTime.UtcNow;
         }
 
+        var assignmentHistories = await _db.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .Where(current => current.AssetId == assetId)
+            .ToListAsync(ct);
+
+        _db.RentalAssetAssignmentHistories.RemoveRange(assignmentHistories);
         _db.RentalAssets.Remove(asset);
         await _db.SaveChangesAsync(ct);
         return OfficeMutationResult.Ok(assetId, "렌탈 자산 서버 영구삭제를 로컬에 반영했습니다.");
@@ -2571,6 +2577,12 @@ public sealed partial class LocalStateService
             profile.UpdatedAtUtc = now;
         }
 
+        var assignmentHistories = await _db.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .Where(current => current.AssetId == assetId)
+            .ToListAsync(ct);
+
+        _db.RentalAssetAssignmentHistories.RemoveRange(assignmentHistories);
         _db.RentalAssets.Remove(asset);
         AddPurgeAudit(nameof(LocalRentalAsset), asset.Id, new
         {
@@ -2578,6 +2590,7 @@ public sealed partial class LocalStateService
             asset.CustomerName,
             asset.ItemName,
             asset.InstallLocation,
+            RemovedAssignmentHistoryCount = assignmentHistories.Count,
             UpdatedProfileCount = profiles.Count
         }, session, now);
         await _db.SaveChangesAsync(ct);

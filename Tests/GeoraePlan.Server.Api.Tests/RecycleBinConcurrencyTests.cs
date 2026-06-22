@@ -1474,6 +1474,78 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PurgeRentalAsset_RemovesAssignmentHistories()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var assetId = Guid.NewGuid();
+        dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "PURGE-ASSET-HISTORY-001",
+            ManagementId = "PURGE-ASSET-HISTORY-001",
+            ManagementNumber = "PURGE-ASSET-HISTORY-001",
+            ItemName = "영구삭제 이력 자산",
+            IsDeleted = true
+        });
+        dbContext.RentalAssetAssignmentHistories.AddRange(
+            new RentalAssetAssignmentHistory
+            {
+                Id = Guid.NewGuid(),
+                AssetId = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ItemName = "영구삭제 이력 자산",
+                ManagementNumber = "PURGE-ASSET-HISTORY-001",
+                IsCurrent = true,
+                IsDeleted = false
+            },
+            new RentalAssetAssignmentHistory
+            {
+                Id = Guid.NewGuid(),
+                AssetId = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ItemName = "영구삭제 과거 이력 자산",
+                ManagementNumber = "PURGE-ASSET-HISTORY-001",
+                IsCurrent = false,
+                IsDeleted = true
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = assetId,
+                        Kind = "rental-asset"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.False(await dbContext.RentalAssets.IgnoreQueryFilters().AnyAsync(current => current.Id == assetId));
+        Assert.False(await dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().AnyAsync(current => current.AssetId == assetId));
+        Assert.True(await dbContext.RecycleBinPurgeRecords.AnyAsync(current => current.Kind == "rental-asset" && current.EntityId == assetId));
+    }
+
+    [Fact]
     public async Task PurgeTransaction_RejectsWhenLinkedPaymentIsActive()
     {
         var currentUser = CreateOfficeOnlyUser();

@@ -2161,6 +2161,11 @@ public sealed class RecycleBinController : ControllerBase
         [
             CreatePurgeRecord("rental-asset", asset.Id, asset.TenantCode, asset.ResponsibleOfficeCode)
         ], cancellationToken);
+        var assignmentHistories = await _dbContext.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .Where(current => current.AssetId == assetId)
+            .ToListAsync(cancellationToken);
+        _dbContext.RentalAssetAssignmentHistories.RemoveRange(assignmentHistories);
         _dbContext.RentalAssets.Remove(asset);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return (true, "렌탈 자산을 영구삭제했습니다.");
