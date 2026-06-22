@@ -69,6 +69,72 @@ public sealed class SyncSharedDirtyPermissionGuardTests
             entityDisplayName: "렌탈 관리업체 변경");
     }
 
+    [Fact]
+    public void DesktopPushCollections_HaveMatchingServerPermissionRequirements()
+    {
+        var root = FindRepositoryRoot();
+        var syncServiceSource = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Services",
+            "SyncService.cs"));
+        var serverSyncControllerSource = File.ReadAllText(Path.Combine(
+            root,
+            "Server",
+            "거래플랜.Server.Api",
+            "Controllers",
+            "SyncController.cs"));
+
+        AssertServerPermissionRequirement(syncServiceSource, serverSyncControllerSource, "CompanyProfiles", "CompanyProfileEdit");
+
+        foreach (var settingsCollection in new[]
+                 {
+                     "Units",
+                     "CustomerCategories",
+                     "PriceGradeOptions",
+                     "TradeTypeOptions",
+                     "ItemCategoryOptions"
+                 })
+        {
+            AssertServerPermissionRequirement(syncServiceSource, serverSyncControllerSource, settingsCollection, "SettingsEdit");
+        }
+
+        foreach (var customerCollection in new[] { "CustomerMasters", "Customers", "CustomerContracts" })
+            AssertServerPermissionRequirement(syncServiceSource, serverSyncControllerSource, customerCollection, "CustomerEdit");
+
+        foreach (var itemCollection in new[] { "Items", "ItemWarehouseStocks" })
+            AssertServerPermissionRequirement(syncServiceSource, serverSyncControllerSource, itemCollection, "ItemEdit");
+
+        AssertServerPermissionRequirement(syncServiceSource, serverSyncControllerSource, "Invoices", "InvoiceEdit");
+
+        foreach (var paymentCollection in new[] { "Transactions", "TransactionAttachments", "Payments" })
+            AssertServerPermissionRequirement(syncServiceSource, serverSyncControllerSource, paymentCollection, "PaymentEdit");
+
+        AssertServerPermissionRequirement(syncServiceSource, serverSyncControllerSource, "InventoryTransfers", "DeliveryEdit");
+        AssertServerPermissionRequirement(syncServiceSource, serverSyncControllerSource, "RentalManagementCompanies", "RentalSettingsEdit");
+
+        foreach (var rentalBillingCollection in new[] { "RentalBillingProfiles", "RentalBillingLogs" })
+        {
+            AssertServerPermissionRequirement(
+                syncServiceSource,
+                serverSyncControllerSource,
+                rentalBillingCollection,
+                "RentalProfileEdit",
+                "RentalEditAll");
+        }
+
+        foreach (var rentalAssetCollection in new[] { "RentalAssets", "RentalAssetAssignmentHistories" })
+        {
+            AssertServerPermissionRequirement(
+                syncServiceSource,
+                serverSyncControllerSource,
+                rentalAssetCollection,
+                "RentalAssetEdit",
+                "RentalEditAll");
+        }
+    }
+
     private static void AssertSharedPermissionMapping(
         string syncServiceSource,
         string localStateSource,
@@ -109,6 +175,32 @@ public sealed class SyncSharedDirtyPermissionGuardTests
             $"=> session.HasPermission(AppPermissionNames.{permissionName})",
             pendingSummarySource,
             StringComparison.Ordinal);
+    }
+
+    private static void AssertServerPermissionRequirement(
+        string syncServiceSource,
+        string serverSyncControllerSource,
+        string requestPropertyName,
+        params string[] permissionNames)
+    {
+        Assert.Contains(
+            $"{requestPropertyName} = ",
+            syncServiceSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            $"HasAny(request.{requestPropertyName})",
+            serverSyncControllerSource,
+            StringComparison.Ordinal);
+
+        var permissionPattern = string.Join(
+            "|",
+            permissionNames.Select(permission => Regex.Escape($"PermissionNames.{permission}")));
+        Assert.True(
+            Regex.IsMatch(
+                serverSyncControllerSource,
+                $@"HasAny\(request\.{Regex.Escape(requestPropertyName)}\).*?({permissionPattern})",
+                RegexOptions.Singleline),
+            $"{requestPropertyName} must be guarded by one of: {string.Join(", ", permissionNames)}.");
     }
 
     private static string FindRepositoryRoot()
