@@ -2690,6 +2690,31 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PaymentsController_Create_ForbidsInvoiceLinkedToRentalProfileOutsideWritableScope()
+    {
+        var currentUser = CreateOfficePaymentEditor();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var scenario = SeedOutOfScopeRentalLinkedInvoiceScenario(dbContext);
+        await dbContext.SaveChangesAsync();
+        var paymentId = Guid.NewGuid();
+
+        var controller = CreatePaymentsController(dbContext, currentUser);
+        var createResponse = await controller.Create(new PaymentDto
+        {
+            Id = paymentId,
+            InvoiceId = scenario.InvoiceId,
+            PaymentDate = new DateOnly(2026, 8, 26),
+            Amount = 40_000m,
+            Note = "must be rejected because rental profile is outside writable scope"
+        }, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(createResponse.Result);
+        Assert.False(await dbContext.Payments.IgnoreQueryFilters().AnyAsync(payment => payment.Id == paymentId));
+        await AssertOutOfScopeRentalSettlementUnchangedAsync(dbContext, scenario.ProfileId, settledAmount: 0m, outstandingAmount: 100_000m);
+    }
+
+    [Fact]
     public async Task PaymentsController_Create_RejectsInvoiceWhoseCustomerIsDeleted()
     {
         var currentUser = CreateAdminUser();
@@ -2764,6 +2789,34 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
 
         Assert.IsType<OkObjectResult>(updateResponse.Result);
         await AssertRentalSettlementAsync(dbContext, scenario.ProfileId, scenario.RunId, expectedSettled: 70_000m, expectedOutstanding: 30_000m);
+    }
+
+    [Fact]
+    public async Task PaymentsController_Update_ForbidsExistingRentalProfileOutsideWritableScope()
+    {
+        var currentUser = CreateOfficePaymentEditor();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var scenario = SeedOutOfScopeRentalLinkedInvoiceScenario(dbContext, existingPaymentAmount: 40_000m, storedSettledAmount: 40_000m);
+        await dbContext.SaveChangesAsync();
+        var storedPayment = await dbContext.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(payment => payment.Id == scenario.PaymentId);
+
+        var controller = CreatePaymentsController(dbContext, currentUser);
+        var updateResponse = await controller.Update(scenario.PaymentId, new PaymentDto
+        {
+            Id = scenario.PaymentId,
+            InvoiceId = scenario.InvoiceId,
+            PaymentDate = storedPayment.PaymentDate,
+            Amount = 70_000m,
+            Note = "must not update outside rental profile",
+            ExpectedRevision = storedPayment.Revision
+        }, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(updateResponse.Result);
+        var unchangedPayment = await dbContext.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(payment => payment.Id == scenario.PaymentId);
+        Assert.Equal(40_000m, unchangedPayment.Amount);
+        Assert.Equal("seeded out-of-scope rental payment", unchangedPayment.Note);
+        await AssertOutOfScopeRentalSettlementUnchangedAsync(dbContext, scenario.ProfileId, settledAmount: 40_000m, outstandingAmount: 60_000m);
     }
 
     [Fact]
@@ -2870,6 +2923,64 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
 
         Assert.IsType<NoContentResult>(deleteResponse);
         await AssertRentalSettlementAsync(dbContext, scenario.ProfileId, scenario.RunId, expectedSettled: 0m, expectedOutstanding: 100_000m);
+    }
+
+    [Fact]
+    public async Task PaymentsController_Delete_ForbidsExistingRentalProfileOutsideWritableScope()
+    {
+        var currentUser = CreateOfficePaymentEditor();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var scenario = SeedOutOfScopeRentalLinkedInvoiceScenario(dbContext, existingPaymentAmount: 40_000m, storedSettledAmount: 40_000m);
+        await dbContext.SaveChangesAsync();
+        var storedPayment = await dbContext.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(payment => payment.Id == scenario.PaymentId);
+
+        var controller = CreatePaymentsController(dbContext, currentUser);
+        var deleteResponse = await controller.Delete(scenario.PaymentId, storedPayment.Revision, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(deleteResponse);
+        var unchangedPayment = await dbContext.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(payment => payment.Id == scenario.PaymentId);
+        Assert.False(unchangedPayment.IsDeleted);
+        await AssertOutOfScopeRentalSettlementUnchangedAsync(dbContext, scenario.ProfileId, settledAmount: 40_000m, outstandingAmount: 60_000m);
+    }
+
+    [Fact]
+    public async Task InvoicesController_Delete_ForbidsRentalProfileOutsideWritableScope()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "invoice-editor-usenet",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = new[] { PermissionNames.InvoiceEdit }
+        };
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var scenario = SeedOutOfScopeRentalLinkedInvoiceScenario(dbContext, existingPaymentAmount: 40_000m, storedSettledAmount: 40_000m);
+        await dbContext.SaveChangesAsync();
+        var storedInvoice = await dbContext.Invoices.IgnoreQueryFilters().AsNoTracking().SingleAsync(invoice => invoice.Id == scenario.InvoiceId);
+        var controller = new InvoicesController(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
+
+        var deleteResponse = await controller.Delete(scenario.InvoiceId, storedInvoice.Revision, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(deleteResponse);
+        Assert.False(await dbContext.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.Id == scenario.InvoiceId)
+            .Select(invoice => invoice.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.Payments.IgnoreQueryFilters()
+            .Where(payment => payment.Id == scenario.PaymentId)
+            .Select(payment => payment.IsDeleted)
+            .SingleAsync());
+        await AssertOutOfScopeRentalSettlementUnchangedAsync(dbContext, scenario.ProfileId, settledAmount: 40_000m, outstandingAmount: 60_000m);
     }
 
     [Fact]
@@ -3920,6 +4031,108 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         return new RentalDirectPaymentScenario(customerId, profileId, runId, invoiceId, paymentId);
     }
 
+    private static OutOfScopeRentalLinkedInvoiceScenario SeedOutOfScopeRentalLinkedInvoiceScenario(
+        AppDbContext dbContext,
+        decimal? existingPaymentAmount = null,
+        decimal storedSettledAmount = 0m)
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var billedAmount = 100_000m;
+        var storedOutstandingAmount = Math.Max(0m, billedAmount - storedSettledAmount);
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Direct out-of-scope rental customer",
+            NameMatchKey = "DIRECTOUTOFSCOPERENTALCUSTOMER",
+            TradeType = "Sales"
+        });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ManagementCompanyCode = OfficeCodeCatalog.Yeonsu,
+            ProfileKey = $"profile-out-of-scope-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = "Direct out-of-scope rental customer",
+            BillingStatus = storedOutstandingAmount <= 0m ? "completed" : "in-progress",
+            SettlementStatus = storedSettledAmount <= 0m ? "pending" : storedOutstandingAmount > 0m ? "partial" : "settled",
+            CompletionStatus = storedOutstandingAmount <= 0m ? "completed" : "incomplete",
+            MonthlyAmount = billedAmount,
+            SettledAmount = storedSettledAmount,
+            OutstandingAmount = storedOutstandingAmount,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new ServerRentalBillingRunSnapshot
+                {
+                    RunId = runId,
+                    RunKey = "2026-08",
+                    ScheduledDate = new DateOnly(2026, 8, 25),
+                    PeriodStartDate = new DateOnly(2026, 8, 1),
+                    PeriodEndDate = new DateOnly(2026, 8, 31),
+                    PeriodLabel = "2026-08",
+                    Status = storedOutstandingAmount <= 0m ? "completed" : "in-progress",
+                    BilledAmount = billedAmount,
+                    SettledAmount = storedSettledAmount,
+                    SettlementStatus = storedSettledAmount <= 0m ? "pending" : storedOutstandingAmount > 0m ? "partial" : "settled",
+                    SettledDate = storedSettledAmount > 0m ? new DateOnly(2026, 8, 26) : null
+                }
+            })
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "RENTAL-OUT-OF-SCOPE-DIRECT-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 8, 25),
+            TotalAmount = billedAmount,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId
+        });
+        dbContext.InvoiceLines.Add(new InvoiceLine
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoiceId,
+            ItemNameOriginal = "Out-of-scope rental billing item",
+            Unit = "EA",
+            Quantity = 1m,
+            UnitPrice = billedAmount,
+            LineAmount = billedAmount
+        });
+
+        if (existingPaymentAmount.HasValue)
+        {
+            dbContext.Payments.Add(new Payment
+            {
+                Id = paymentId,
+                InvoiceId = invoiceId,
+                PaymentDate = new DateOnly(2026, 8, 26),
+                Amount = existingPaymentAmount.Value,
+                Note = "seeded out-of-scope rental payment"
+            });
+        }
+
+        return new OutOfScopeRentalLinkedInvoiceScenario(customerId, profileId, runId, invoiceId, paymentId);
+    }
+
     private static async Task AssertRentalSettlementAsync(
         AppDbContext dbContext,
         Guid profileId,
@@ -3953,7 +4166,31 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             Assert.Equal(new DateOnly(2026, 7, 26), run.SettledDate);
     }
 
+    private static async Task AssertOutOfScopeRentalSettlementUnchangedAsync(
+        AppDbContext dbContext,
+        Guid profileId,
+        decimal settledAmount,
+        decimal outstandingAmount)
+    {
+        var profile = await dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == profileId);
+
+        Assert.Equal(settledAmount, profile.SettledAmount);
+        Assert.Equal(outstandingAmount, profile.OutstandingAmount);
+        var run = Assert.Single(JsonSerializer.Deserialize<List<ServerRentalBillingRunSnapshot>>(profile.BillingRunsJson) ?? []);
+        Assert.Equal(settledAmount, run.SettledAmount);
+    }
+
     private sealed record RentalDirectPaymentScenario(
+        Guid CustomerId,
+        Guid ProfileId,
+        Guid RunId,
+        Guid InvoiceId,
+        Guid PaymentId);
+
+    private sealed record OutOfScopeRentalLinkedInvoiceScenario(
         Guid CustomerId,
         Guid ProfileId,
         Guid RunId,
@@ -3995,6 +4232,16 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             OfficeCode = OfficeCodeCatalog.Usenet,
             ScopeType = TenantScopeCatalog.ScopeAdmin,
             IsAdmin = true
+        };
+
+    private static TestCurrentUserContext CreateOfficePaymentEditor()
+        => new()
+        {
+            Username = "payment-editor-usenet",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = new[] { PermissionNames.PaymentEdit }
         };
 
     private sealed class ServerRentalBillingRunSnapshot

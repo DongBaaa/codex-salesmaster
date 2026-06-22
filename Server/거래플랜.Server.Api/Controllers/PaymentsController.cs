@@ -235,6 +235,8 @@ public sealed class PaymentsController : ControllerBase
             return BadRequest("Referenced invoice was not found.");
         if (!_officeScopeService.CanWriteOfficeForPayments(invoice.ResponsibleOfficeCode, invoice.TenantCode, invoice.OfficeCode))
             return Forbid();
+        if (await ValidateWritableInvoiceRentalBillingProfileAsync(invoice, allowMissingOrDeleted: false, cancellationToken) is { } rentalProfileScopeError)
+            return rentalProfileScopeError;
         if (dto.ExpectedRevision > 0 && invoice.Revision != dto.ExpectedRevision)
             return Conflict($"Referenced invoice revision mismatch. client={dto.ExpectedRevision}, server={invoice.Revision}");
         if (await ValidatePaymentAmountAsync(dto, currentPaymentId: null, cancellationToken) is { } paymentValidationError)
@@ -274,6 +276,8 @@ public sealed class PaymentsController : ControllerBase
             return Forbid();
         if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Payment)) is { } conflict)
             return conflict;
+        if (await ValidateWritableInvoiceRentalBillingProfileAsync(entity.Invoice, allowMissingOrDeleted: true, cancellationToken) is { } existingRentalProfileScopeError)
+            return existingRentalProfileScopeError;
 
         var targetInvoice = await _dbContext.Invoices
             .IgnoreQueryFilters()
@@ -284,6 +288,8 @@ public sealed class PaymentsController : ControllerBase
         {
             return Forbid();
         }
+        if (await ValidateWritableInvoiceRentalBillingProfileAsync(targetInvoice, allowMissingOrDeleted: false, cancellationToken) is { } targetRentalProfileScopeError)
+            return targetRentalProfileScopeError;
 
         if (await ValidatePaymentAmountAsync(dto, id, cancellationToken) is { } paymentValidationError)
             return paymentValidationError;
@@ -314,6 +320,8 @@ public sealed class PaymentsController : ControllerBase
             return Forbid();
         if (OptimisticConcurrencyGuard.Check(this, entity, expectedRevision, nameof(Payment)) is { } conflict)
             return conflict;
+        if (await ValidateWritableInvoiceRentalBillingProfileAsync(entity.Invoice, allowMissingOrDeleted: true, cancellationToken) is { } rentalProfileScopeError)
+            return rentalProfileScopeError;
 
         entity.IsDeleted = true;
         var attachments = await _dbContext.PaymentAttachments
@@ -339,6 +347,45 @@ public sealed class PaymentsController : ControllerBase
             .Distinct()
             .ToList();
         await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(targets, cancellationToken);
+    }
+
+    private async Task<ActionResult?> ValidateWritableInvoiceRentalBillingProfileAsync(
+        Invoice? invoice,
+        bool allowMissingOrDeleted,
+        CancellationToken cancellationToken)
+    {
+        if (invoice is null ||
+            !invoice.LinkedRentalBillingProfileId.HasValue ||
+            invoice.LinkedRentalBillingProfileId.Value == Guid.Empty)
+        {
+            return null;
+        }
+
+        var profile = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => current.Id == invoice.LinkedRentalBillingProfileId.Value)
+            .Select(current => new
+            {
+                current.IsDeleted,
+                current.ResponsibleOfficeCode,
+                current.TenantCode,
+                current.OfficeCode
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (profile is null || profile.IsDeleted)
+        {
+            if (allowMissingOrDeleted)
+                return null;
+
+            return BadRequest("Referenced rental billing profile was not found.");
+        }
+
+        if (!_officeScopeService.CanWriteOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode, profile.OfficeCode))
+            return Forbid();
+
+        return null;
     }
 
     private async Task<ActionResult?> ValidatePaymentAmountAsync(

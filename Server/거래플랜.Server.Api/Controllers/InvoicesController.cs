@@ -152,6 +152,8 @@ public sealed class InvoicesController : ControllerBase
             return Forbid();
         if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Invoice)) is { } conflict)
             return conflict;
+        if (await ValidateExistingLinkedRentalBillingProfileScopeAsync(entity.LinkedRentalBillingProfileId, cancellationToken) is { } existingRentalProfileScopeError)
+            return existingRentalProfileScopeError;
 
         var previousStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
         var customer = await _dbContext.Customers
@@ -219,6 +221,8 @@ public sealed class InvoicesController : ControllerBase
             return conflict;
         if (await ValidateInvoiceLineItemScopeAsync(entity.Lines, cancellationToken) is { } lineScopeError)
             return lineScopeError;
+        if (await ValidateExistingLinkedRentalBillingProfileScopeAsync(entity.LinkedRentalBillingProfileId, cancellationToken) is { } rentalProfileScopeError)
+            return rentalProfileScopeError;
 
         var rentalSettlementTargets = await _rentalSettlementRecalculationService.LoadRentalSettlementTargetsForInvoiceDeleteAsync([id], cancellationToken);
         var previousStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
@@ -325,14 +329,31 @@ public sealed class InvoicesController : ControllerBase
     private async Task<ActionResult?> ValidateLinkedRentalBillingProfileScopeAsync(
         InvoiceDto dto,
         CancellationToken cancellationToken)
+        => await ValidateLinkedRentalBillingProfileScopeAsync(
+            dto.LinkedRentalBillingProfileId,
+            allowMissingOrDeleted: false,
+            cancellationToken);
+
+    private async Task<ActionResult?> ValidateExistingLinkedRentalBillingProfileScopeAsync(
+        Guid? profileId,
+        CancellationToken cancellationToken)
+        => await ValidateLinkedRentalBillingProfileScopeAsync(
+            profileId,
+            allowMissingOrDeleted: true,
+            cancellationToken);
+
+    private async Task<ActionResult?> ValidateLinkedRentalBillingProfileScopeAsync(
+        Guid? profileId,
+        bool allowMissingOrDeleted,
+        CancellationToken cancellationToken)
     {
-        if (!dto.LinkedRentalBillingProfileId.HasValue || dto.LinkedRentalBillingProfileId.Value == Guid.Empty)
+        if (!profileId.HasValue || profileId.Value == Guid.Empty)
             return null;
 
         var profile = await _dbContext.RentalBillingProfiles
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(current => current.Id == dto.LinkedRentalBillingProfileId.Value)
+            .Where(current => current.Id == profileId.Value)
             .Select(current => new
             {
                 current.IsDeleted,
@@ -343,7 +364,12 @@ public sealed class InvoicesController : ControllerBase
             .FirstOrDefaultAsync(cancellationToken);
 
         if (profile is null || profile.IsDeleted)
+        {
+            if (allowMissingOrDeleted)
+                return null;
+
             return BadRequest("Referenced rental billing profile was not found.");
+        }
 
         if (!_officeScopeService.CanWriteOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode, profile.OfficeCode))
             return Forbid();
