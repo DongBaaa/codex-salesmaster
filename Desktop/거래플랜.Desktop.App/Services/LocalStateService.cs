@@ -6191,6 +6191,22 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return await CountDirtyAsync(ct);
 		}
 		int count = await CountDirtyAsync(ct);
+		if (!session.HasPermission(AppPermissionNames.CompanyProfileEdit))
+		{
+			count -= await _db.CompanyProfiles.IgnoreQueryFilters().CountAsync((LocalCompanyProfile entity) => entity.IsDirty, ct);
+		}
+		if (!session.HasPermission(AppPermissionNames.SettingsEdit))
+		{
+			count -= await _db.Units.IgnoreQueryFilters().CountAsync((LocalUnit entity) => entity.IsDirty, ct);
+			count -= await _db.CustomerCategories.IgnoreQueryFilters().CountAsync((LocalCustomerCategory entity) => entity.IsDirty, ct);
+			count -= await _db.PriceGradeOptions.IgnoreQueryFilters().CountAsync((LocalPriceGradeOption entity) => entity.IsDirty, ct);
+			count -= await _db.TradeTypeOptions.IgnoreQueryFilters().CountAsync((LocalTradeTypeOption entity) => entity.IsDirty, ct);
+			count -= await _db.ItemCategoryOptions.IgnoreQueryFilters().CountAsync((LocalItemCategoryOption entity) => entity.IsDirty, ct);
+		}
+		if (!session.HasPermission(AppPermissionNames.RentalSettingsEdit))
+		{
+			count -= await _db.RentalManagementCompanies.IgnoreQueryFilters().CountAsync((LocalRentalManagementCompany entity) => entity.IsDirty, ct);
+		}
 		int dirtyCustomerMasterCount = await _db.CustomerMasters.IgnoreQueryFilters().CountAsync((LocalCustomerMaster entity) => entity.IsDirty, ct);
 		if (dirtyCustomerMasterCount > 0)
 		{

@@ -103,6 +103,85 @@ public sealed class SyncScopePendingMessageTests
         Assert.True(dirtyAsset.IsDirty);
     }
 
+    [Fact]
+    public async Task CountDirtyAsync_OfficeUserWithoutSettingsPermission_IgnoresSharedSettingsDirty()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-shared-dirty-viewer-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            db.Units.Add(new LocalUnit
+            {
+                Id = Guid.NewGuid(),
+                Name = "감사 공용 단위",
+                IsDirty = true
+            });
+            await db.SaveChangesAsync();
+
+            var viewerSession = CreateOfficeSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), viewerSession);
+
+            Assert.Equal(1, await service.CountDirtyAsync());
+            Assert.Equal(0, await service.CountDirtyAsync(viewerSession));
+            Assert.Null(await service.GetPendingSyncWaitingMessageAsync(viewerSession, "status:"));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task PendingSyncWaitingMessage_SettingsEditor_ReportsSharedSettingsDirty()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-shared-dirty-editor-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            db.Units.Add(new LocalUnit
+            {
+                Id = Guid.NewGuid(),
+                Name = "감사 공용 단위",
+                IsDirty = true
+            });
+            await db.SaveChangesAsync();
+
+            var settingsEditorSession = CreateOfficeSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                AppPermissionNames.SettingsEdit);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), settingsEditorSession);
+
+            Assert.Equal(1, await service.CountDirtyAsync(settingsEditorSession));
+
+            var message = await service.GetPendingSyncWaitingMessageAsync(settingsEditorSession, "status:");
+
+            Assert.NotNull(message);
+            Assert.Contains("공용", message);
+            Assert.Contains("단위 변경", message);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static LocalRentalAsset CreateDirtyRentalAsset(
         string officeCode,
         string tenantCode,
@@ -139,6 +218,21 @@ public sealed class SyncScopePendingMessageTests
             TenantCode = tenantCode,
             OfficeCode = officeCode,
             ScopeType = TenantScopeCatalog.ScopeAdmin
+        });
+        return session;
+    }
+
+    private static SessionState CreateOfficeSession(string tenantCode, string officeCode, params string[] permissions)
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            Username = $"{officeCode.ToLowerInvariant()}-user",
+            Role = DomainConstants.RoleUser,
+            TenantCode = tenantCode,
+            OfficeCode = officeCode,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = permissions.ToList()
         });
         return session;
     }

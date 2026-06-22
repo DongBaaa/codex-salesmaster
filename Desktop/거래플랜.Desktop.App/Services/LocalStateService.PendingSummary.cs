@@ -323,9 +323,10 @@ public sealed partial class LocalStateService
     {
         if (string.Equals(bucket.ScopeKey, "SHARED", StringComparison.OrdinalIgnoreCase))
         {
-            var sharedMessage = session.HasAdministrativePrivileges
+            var canSyncSharedBucket = CanSyncSharedPendingBucket(bucket, session);
+            var sharedMessage = canSyncSharedBucket
                 ? "원인: 공용 마스터 변경이 아직 서버 반영 대기 중입니다. 동기화를 다시 실행하거나 동기화 진단에서 남은 항목을 확인하세요."
-                : "원인: 남은 변경은 공용 마스터 범위입니다. 관리자 전체 범위 세션으로 로그인한 뒤 다시 동기화해야 합니다.";
+                : "원인: 남은 변경은 공용 마스터 범위입니다. 해당 공용 마스터를 수정할 수 있는 계정으로 로그인한 뒤 다시 동기화해야 합니다.";
             return new PendingSyncBlockingReason(
                 bucket.ScopeKey,
                 bucket.ScopeDisplayName,
@@ -333,8 +334,8 @@ public sealed partial class LocalStateService
                 pendingCount,
                 sharedMessage,
                 string.Empty,
-                session.HasAdministrativePrivileges,
-                session.HasAdministrativePrivileges);
+                canSyncSharedBucket,
+                canSyncSharedBucket);
         }
 
         var currentOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, string.Empty);
@@ -497,7 +498,7 @@ public sealed partial class LocalStateService
     private static bool IsCurrentSessionPendingBucket(PendingSyncBucket bucket, SessionState session)
     {
         if (string.Equals(bucket.ScopeKey, "SHARED", StringComparison.OrdinalIgnoreCase))
-            return session.HasAdministrativePrivileges || CanWriteSharedOfficeScope(session);
+            return CanSyncSharedPendingBucket(bucket, session);
 
         var writableOfficeCodes = GetCurrentLoginSyncOfficeCodes(session);
 
@@ -517,6 +518,24 @@ public sealed partial class LocalStateService
         var currentOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, string.Empty);
         var currentTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session.TenantCode, session.OfficeCode);
         return IsCurrentPendingScope(bucket.ScopeKey, currentOfficeCode, currentTenantCode);
+    }
+
+    private static bool CanSyncSharedPendingBucket(PendingSyncBucket bucket, SessionState session)
+    {
+        if (session.HasAdministrativePrivileges || CanWriteSharedOfficeScope(session))
+            return true;
+
+        return bucket.EntityDisplayName switch
+        {
+            "회사정보 변경" => session.HasPermission(AppPermissionNames.CompanyProfileEdit),
+            "단위 변경" or
+                "거래처분류 변경" or
+                "가격등급 변경" or
+                "거래유형 변경" or
+                "품목분류 변경" => session.HasPermission(AppPermissionNames.SettingsEdit),
+            "렌탈 관리업체 변경" => session.HasPermission(AppPermissionNames.RentalSettingsEdit),
+            _ => false
+        };
     }
 
     private static HashSet<string> GetCurrentLoginSyncOfficeCodes(SessionState session)
