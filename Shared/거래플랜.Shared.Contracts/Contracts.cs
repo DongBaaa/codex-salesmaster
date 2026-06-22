@@ -639,6 +639,20 @@ public sealed class CustomerDetailDto
 {
     public CustomerDto Customer { get; set; } = new();
     public List<InvoiceDto> RecentInvoices { get; set; } = new();
+    public List<CustomerPaymentHistoryDto> RecentPayments { get; set; } = new();
+}
+
+public sealed class CustomerPaymentHistoryDto
+{
+    public Guid PaymentId { get; set; }
+    public Guid InvoiceId { get; set; }
+    public string InvoiceNumber { get; set; } = string.Empty;
+    public VoucherType VoucherType { get; set; } = VoucherType.Sales;
+    public DateOnly PaymentDate { get; set; }
+    public decimal Amount { get; set; }
+    public string Note { get; set; } = string.Empty;
+    public List<PaymentAttachmentDto> Attachments { get; set; } = new();
+    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 }
 
 public sealed class ItemCategorySummaryDto
@@ -671,6 +685,8 @@ public sealed class ConflictLogDto
     public Guid Id { get; set; }
     public Guid? UserId { get; set; }
     public string Username { get; set; } = string.Empty;
+    public Guid? ServerUserId { get; set; }
+    public string ServerUsername { get; set; } = string.Empty;
     public string EntityName { get; set; } = string.Empty;
     public string EntityId { get; set; } = string.Empty;
     public string ClientJson { get; set; } = string.Empty;

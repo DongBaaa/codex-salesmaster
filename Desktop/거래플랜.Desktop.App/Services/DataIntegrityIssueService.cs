@@ -51,6 +51,7 @@ public static class DataIntegrityIssueCodes
     public const string InvoiceLineMissingInvoiceReference = "invoice_line_missing_invoice_reference";
     public const string PaymentMissingInvoiceReference = "payment_missing_invoice_reference";
     public const string InvoiceLinkedTransactionPaymentMismatch = "invoice_linked_transaction_payment_mismatch";
+    public const string TransactionOperationalScopeMismatch = "transaction_operational_scope_mismatch";
     public const string RentalInvoiceDeletedPaymentDetachedTransaction = "rental_invoice_deleted_payment_detached_transaction";
     public const string TransactionAttachmentMissingTransactionReference = "transaction_attachment_missing_transaction_reference";
     public const string MissingAttachmentFiles = "missing_attachment_files";
@@ -406,6 +407,13 @@ public sealed class DataIntegrityIssueService
             "회계경리",
             "전표 연결 거래내역과 파생 수금/지급 행의 전표·금액 상태가 다릅니다.",
             "수금/지급 창에서 전표별 수금내역과 거래내역을 비교하고, 동기화 후에도 남으면 백업 기준으로 정리하세요."),
+        [DataIntegrityIssueCodes.TransactionOperationalScopeMismatch] = new(
+            DataIntegrityIssueCodes.TransactionOperationalScopeMismatch,
+            "수금/지급 scope 저장값 불일치",
+            "Error",
+            "회계경리",
+            "수금/지급 거래내역의 tenant·owner·담당지점 저장값이 거래처/연결 전표/렌탈 청구 범위와 맞지 않습니다.",
+            "수금/지급 창에서 해당 거래를 다시 저장하거나 동기화 진단/운영점검 후 scope 정리 작업을 수행하세요."),
         [DataIntegrityIssueCodes.RentalInvoiceDeletedPaymentDetachedTransaction] = new(
             DataIntegrityIssueCodes.RentalInvoiceDeletedPaymentDetachedTransaction,
             "렌탈 전표 복원 불완전",
@@ -522,6 +530,7 @@ public sealed class DataIntegrityIssueService
             {
                 Id = invoice.Id,
                 TenantCode = invoice.TenantCode,
+                OfficeCode = invoice.OfficeCode,
                 ResponsibleOfficeCode = invoice.ResponsibleOfficeCode,
                 InvoiceNumber = invoice.InvoiceNumber,
                 VoucherType = invoice.VoucherType,
@@ -573,19 +582,40 @@ public sealed class DataIntegrityIssueService
         var activeCustomersById = await LoadCustomersByIdsAsync(linkedCustomerIds, ct);
         var details = new List<DataIntegrityIssueDetail>();
         var scopedAssignmentHistories = activeAssignmentHistories
-            .Where(history => IsInSessionScope(history.TenantCode, history.ResponsibleOfficeCode, session))
+            .Where(history =>
+            {
+                allAssetsById.TryGetValue(history.AssetId, out var historyAsset);
+                LocalRentalBillingProfile? historyProfile = null;
+                if (history.BillingProfileId.HasValue && history.BillingProfileId.Value != Guid.Empty)
+                    activeProfilesById.TryGetValue(history.BillingProfileId.Value, out historyProfile);
+
+                var historyScope = ResolveAssignmentHistoryScope(history, historyAsset, historyProfile);
+                return IsInSessionScope(historyScope.TenantCode, historyScope.OfficeCode, session);
+            })
             .ToList();
         var scopedCustomers = activeCustomers
-            .Where(customer => IsInSessionScope(customer.TenantCode, ResolveCustomerOfficeCode(customer), session))
+            .Where(customer =>
+            {
+                var customerScope = ResolveCustomerScope(customer);
+                return IsInSessionScope(customerScope.TenantCode, customerScope.OfficeCode, session);
+            })
             .ToList();
         var scopedItems = activeItems
-            .Where(item => IsInSessionScope(item.TenantCode, item.OfficeCode, session))
+            .Where(item =>
+            {
+                var itemScope = ResolveItemScope(item);
+                return IsInSessionScope(itemScope.TenantCode, itemScope.OfficeCode, session);
+            })
             .ToList();
         var scopedWarehouses = activeWarehouses
-            .Where(warehouse => IsInSessionScope(null, warehouse.OfficeCode, session))
+            .Where(warehouse => IsInSessionScope(null, ResolveWarehouseOfficeCode(warehouse), session))
             .ToList();
         var scopedInvoices = activeInvoices
-            .Where(invoice => IsInSessionScope(invoice.TenantCode, invoice.ResponsibleOfficeCode, session))
+            .Where(invoice =>
+            {
+                var invoiceScope = ResolveInvoiceScope(invoice);
+                return IsInSessionScope(invoiceScope.TenantCode, invoiceScope.OfficeCode, session);
+            })
             .ToList();
         LogIntegrityScanStep(
             "Integrity scan scope filter",
@@ -697,6 +727,14 @@ public sealed class DataIntegrityIssueService
             "Integrity scan invoice linked transaction payment mismatch",
             stepStopwatch,
             $"issues={invoiceLinkedTransactionPaymentMismatchIssues.Count:N0}");
+
+        stepStopwatch.Restart();
+        var transactionOperationalScopeMismatchIssues = await LoadTransactionOperationalScopeMismatchIssuesAsync(session, ct);
+        details.AddRange(transactionOperationalScopeMismatchIssues);
+        LogIntegrityScanStep(
+            "Integrity scan transaction operational scope mismatch",
+            stepStopwatch,
+            $"issues={transactionOperationalScopeMismatchIssues.Count:N0}");
 
         stepStopwatch.Restart();
         var rentalInvoiceDetachedPaymentIssues = await LoadRentalInvoiceDeletedPaymentDetachedTransactionIssuesAsync(session, ct);
@@ -1117,7 +1155,8 @@ public sealed class DataIntegrityIssueService
 
         foreach (var customer in activeCustomers)
         {
-            if (!CanWriteCustomerScopeForIntegrity(session, ResolveCustomerOfficeCode(customer), customer.TenantCode))
+            var customerScope = ResolveCustomerScope(customer);
+            if (!CanWriteCustomerScopeForIntegrity(session, customerScope.OfficeCode, customerScope.TenantCode))
                 return OfficeMutationResult.Denied($"권한이 없어 {NormalizeDisplay(customer.NameOriginal, customer.Id.ToString("N"))} 거래처를 병합할 수 없습니다.");
         }
 
@@ -1664,7 +1703,11 @@ public sealed class DataIntegrityIssueService
             return [];
 
         var deletedItems = (await LoadDeletedIntegrityItemsByIdsAsync(residueItemIds, session, ct))
-            .Where(item => IsInSessionScope(item.TenantCode, item.OfficeCode, session))
+            .Where(item =>
+            {
+                var itemScope = ResolveItemScope(item);
+                return IsInSessionScope(itemScope.TenantCode, itemScope.OfficeCode, session);
+            })
             .OrderBy(item => item.NameOriginal)
             .ThenBy(item => item.SpecificationOriginal)
             .ThenBy(item => item.Id)
@@ -1680,6 +1723,7 @@ public sealed class DataIntegrityIssueService
         var issues = new List<DataIntegrityIssueDetail>();
         foreach (var item in deletedItems)
         {
+            var itemScope = ResolveItemScope(item);
             var stocks = stockRowsByItem.TryGetValue(item.Id, out var rows) ? rows : [];
             var stockTotal = stocks.Sum(stock => stock.Quantity);
             if (item.CurrentStock == 0m && stocks.Count == 0)
@@ -1694,11 +1738,12 @@ public sealed class DataIntegrityIssueService
                 entityType: "삭제 품목",
                 entityId: item.Id,
                 itemName: item.NameOriginal,
-                officeCode: item.OfficeCode,
+                officeCode: itemScope.OfficeCode,
                 currentValue: $"삭제 품목 현재고 {item.CurrentStock:N2} / 창고행 {stocks.Count:N0}건 / 창고합계 {stockTotal:N2}",
                 expectedValue: "삭제 품목 현재고 0 / 창고별 재고 행 없음",
                 message: $"{NormalizeDisplay(item.NameOriginal, "품목")} 삭제 품목에 재고 잔여가 남아 있습니다. {stockBreakdown}",
-                directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
+                directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics,
+                reviewInfo: BuildItemScopeReviewInfo(item, itemScope));
         }
 
         return issues;
@@ -1768,16 +1813,158 @@ public sealed class DataIntegrityIssueService
                 from invoice in invoiceGroup.DefaultIfEmpty()
                 where invoice == null
                 orderby line.InvoiceId, line.OrderIndex, line.Id
-                select line)
+                select new
+                {
+                    line.Id,
+                    line.InvoiceId,
+                    line.ItemId,
+                    line.ItemNameOriginal,
+                    line.LineAmount,
+                    line.OrderIndex,
+                    line.IsDeleted
+                })
             .ToListAsync(ct);
 
         if (lines.Count == 0)
             return [];
 
+        var lineIds = lines.Select(line => line.Id).Distinct().ToArray();
+        var itemIds = lines
+            .Where(line => line.ItemId.HasValue && line.ItemId.Value != Guid.Empty)
+            .Select(line => line.ItemId!.Value)
+            .Distinct()
+            .ToArray();
+        var scopeEvidenceByLineId = new Dictionary<Guid, List<(string Source, string OfficeCode)>>();
+
+        void AddScopeEvidence(Guid lineId, string source, string? officeCode)
+        {
+            if (!OfficeCodeCatalog.TryNormalizeOfficeCode(officeCode, out var normalizedOfficeCode))
+                return;
+
+            if (!scopeEvidenceByLineId.TryGetValue(lineId, out var evidence))
+            {
+                evidence = [];
+                scopeEvidenceByLineId[lineId] = evidence;
+            }
+
+            if (evidence.Any(current =>
+                    string.Equals(current.Source, source, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(current.OfficeCode, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+
+            evidence.Add((source, normalizedOfficeCode));
+        }
+
+        void AddWarehouseScopeEvidence(Guid lineId, string source, string? warehouseCode)
+        {
+            if (TryResolveOfficeCodeFromWarehouseEvidence(warehouseCode, out var officeCode))
+                AddScopeEvidence(lineId, source, officeCode);
+        }
+
+        var movementRows = await _db.InventoryMovements.IgnoreQueryFilters().AsNoTracking()
+            .Where(movement => movement.InvoiceLineId.HasValue && lineIds.Contains(movement.InvoiceLineId.Value))
+            .Select(movement => new
+            {
+                LineId = movement.InvoiceLineId!.Value,
+                movement.WarehouseCode
+            })
+            .ToListAsync(ct);
+        foreach (var movement in movementRows)
+            AddWarehouseScopeEvidence(movement.LineId, "InventoryMovement", movement.WarehouseCode);
+
+        var stockLayerRows = await _db.StockLayers.IgnoreQueryFilters().AsNoTracking()
+            .Where(layer => layer.SourceInvoiceLineId.HasValue && lineIds.Contains(layer.SourceInvoiceLineId.Value))
+            .Select(layer => new
+            {
+                LineId = layer.SourceInvoiceLineId!.Value,
+                layer.WarehouseCode
+            })
+            .ToListAsync(ct);
+        foreach (var layer in stockLayerRows)
+            AddWarehouseScopeEvidence(layer.LineId, "StockLayer", layer.WarehouseCode);
+
+        var costAllocationRows = await _db.CostAllocations.IgnoreQueryFilters().AsNoTracking()
+            .Where(allocation =>
+                lineIds.Contains(allocation.SalesInvoiceLineId) ||
+                (allocation.PurchaseInvoiceLineId.HasValue && lineIds.Contains(allocation.PurchaseInvoiceLineId.Value)))
+            .Select(allocation => new
+            {
+                allocation.SalesInvoiceLineId,
+                allocation.PurchaseInvoiceLineId,
+                allocation.WarehouseCode
+            })
+            .ToListAsync(ct);
+        foreach (var allocation in costAllocationRows)
+        {
+            if (lineIds.Contains(allocation.SalesInvoiceLineId))
+                AddWarehouseScopeEvidence(allocation.SalesInvoiceLineId, "CostAllocationSales", allocation.WarehouseCode);
+            if (allocation.PurchaseInvoiceLineId.HasValue && lineIds.Contains(allocation.PurchaseInvoiceLineId.Value))
+                AddWarehouseScopeEvidence(allocation.PurchaseInvoiceLineId.Value, "CostAllocationPurchase", allocation.WarehouseCode);
+        }
+
+        var serialRows = await (
+                from serial in _db.InvoiceLineSerials.IgnoreQueryFilters().AsNoTracking()
+                join ledger in _db.SerialLedgers.IgnoreQueryFilters().AsNoTracking()
+                    on serial.SerialNumber equals ledger.SerialNumber into ledgerGroup
+                from ledger in ledgerGroup.DefaultIfEmpty()
+                where lineIds.Contains(serial.InvoiceLineId) && ledger != null
+                select new
+                {
+                    serial.InvoiceLineId,
+                    ledger!.WarehouseCode
+                })
+            .ToListAsync(ct);
+        foreach (var serial in serialRows)
+            AddWarehouseScopeEvidence(serial.InvoiceLineId, "SerialLedger", serial.WarehouseCode);
+
+        var itemRows = await _db.Items.IgnoreQueryFilters().AsNoTracking()
+            .Where(item => itemIds.Contains(item.Id))
+            .Select(item => new
+            {
+                item.Id,
+                item.OfficeCode,
+                item.TenantCode
+            })
+            .ToListAsync(ct);
+        var itemOfficeById = itemRows
+            .Where(item => OfficeCodeCatalog.TryNormalizeOfficeCode(item.OfficeCode, out _))
+            .ToDictionary(
+                item => item.Id,
+                item => OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(item.OfficeCode),
+                EqualityComparer<Guid>.Default);
+        foreach (var line in lines.Where(line => line.ItemId.HasValue && itemOfficeById.ContainsKey(line.ItemId.Value)))
+            AddScopeEvidence(line.Id, "ItemOffice", itemOfficeById[line.ItemId!.Value]);
+
         var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, DomainConstants.OfficeUsenet);
         var issues = new List<DataIntegrityIssueDetail>(lines.Count);
         foreach (var line in lines)
         {
+            var issueOfficeCode = officeCode;
+            var reviewInfo = $"InvoiceId {line.InvoiceId:D} / ItemId {(line.ItemId.HasValue ? line.ItemId.Value.ToString("D") : "없음")}";
+            if (scopeEvidenceByLineId.TryGetValue(line.Id, out var scopeEvidence) && scopeEvidence.Count > 0)
+            {
+                var evidenceOfficeCodes = scopeEvidence
+                    .Select(evidence => evidence.OfficeCode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                if (!evidenceOfficeCodes.Any(evidenceOfficeCode => IsInSessionScope(null, evidenceOfficeCode, session)))
+                    continue;
+
+                issueOfficeCode = evidenceOfficeCodes.FirstOrDefault(evidenceOfficeCode =>
+                        IsInSessionScope(null, evidenceOfficeCode, session)) ??
+                    evidenceOfficeCodes[0];
+                reviewInfo += " / ScopeEvidence " + string.Join(", ", scopeEvidence
+                    .Select(evidence => $"{evidence.Source}:{evidence.OfficeCode}")
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
+            }
+            else
+            {
+                reviewInfo += " / ScopeEvidence 없음";
+            }
+
             var deletionState = line.IsDeleted ? "삭제" : "활성";
             AddGeneralIssue(
                 issues,
@@ -1785,11 +1972,12 @@ public sealed class DataIntegrityIssueService
                 entityType: "전표 세부내역",
                 entityId: line.Id,
                 itemName: line.ItemNameOriginal,
-                officeCode: officeCode,
+                officeCode: issueOfficeCode,
                 currentValue: $"InvoiceId {line.InvoiceId:D} / 금액 {line.LineAmount:N0} / 삭제상태 {deletionState}",
                 expectedValue: "참조 전표 행 존재",
                 message: $"{NormalizeDisplay(line.ItemNameOriginal, "전표 세부내역")} 행 {line.Id:N}의 전표 참조가 현재 로컬 DB에 없습니다.",
-                directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
+                directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics,
+                reviewInfo: reviewInfo);
         }
 
         return issues;
@@ -1805,29 +1993,85 @@ public sealed class DataIntegrityIssueService
                 join invoice in _db.Invoices.IgnoreQueryFilters().AsNoTracking()
                     on payment.InvoiceId equals invoice.Id into invoiceGroup
                 from invoice in invoiceGroup.DefaultIfEmpty()
+                join transaction in _db.Transactions.IgnoreQueryFilters().AsNoTracking()
+                    on payment.Id equals transaction.Id into transactionGroup
+                from transaction in transactionGroup.DefaultIfEmpty()
                 where invoice == null
                 orderby payment.PaymentDate, payment.Id
-                select payment)
+                select new
+                {
+                    PaymentId = payment.Id,
+                    payment.InvoiceId,
+                    payment.PaymentDate,
+                    payment.Amount,
+                    payment.IsDeleted,
+                    TransactionId = transaction == null ? null : (Guid?)transaction.Id,
+                    TransactionTenantCode = transaction == null ? null : transaction.TenantCode,
+                    TransactionOfficeCode = transaction == null ? null : transaction.ResponsibleOfficeCode,
+                    TransactionCustomerId = transaction == null ? null : (Guid?)transaction.CustomerId,
+                    TransactionDate = transaction == null ? null : (DateOnly?)transaction.TransactionDate,
+                    TransactionKind = transaction == null ? null : transaction.TransactionKind
+                })
             .ToListAsync(ct);
 
         if (payments.Count == 0)
             return [];
 
+        var customerIds = payments
+            .Where(payment => payment.TransactionCustomerId.HasValue && payment.TransactionCustomerId.Value != Guid.Empty)
+            .Select(payment => payment.TransactionCustomerId!.Value)
+            .Distinct()
+            .ToArray();
+        var customersById = customerIds.Length == 0
+            ? new Dictionary<Guid, LocalCustomer>()
+            : await _db.Customers.IgnoreQueryFilters().AsNoTracking()
+                .Where(customer => customerIds.Contains(customer.Id))
+                .ToDictionaryAsync(customer => customer.Id, ct);
         var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, DomainConstants.OfficeUsenet);
         var issues = new List<DataIntegrityIssueDetail>(payments.Count);
         foreach (var payment in payments)
         {
+            customersById.TryGetValue(payment.TransactionCustomerId ?? Guid.Empty, out var customer);
+            var scopedTenantCode = customer?.TenantCode ?? payment.TransactionTenantCode;
+            var scopedOfficeCode = customer is null
+                ? payment.TransactionOfficeCode
+                : ResolveCustomerOfficeCode(customer);
+            if (payment.TransactionId.HasValue && !IsInSessionScope(scopedTenantCode, scopedOfficeCode, session))
+                continue;
+
             var deletionState = payment.IsDeleted ? "삭제" : "활성";
+            var issueOfficeCode = payment.TransactionId.HasValue
+                ? OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(scopedOfficeCode, officeCode)
+                : officeCode;
+            var relatedIds = new[]
+                {
+                    payment.TransactionId ?? Guid.Empty,
+                    payment.TransactionCustomerId ?? Guid.Empty
+                }
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToArray();
             AddGeneralIssue(
                 issues,
                 DataIntegrityIssueCodes.PaymentMissingInvoiceReference,
                 entityType: "수금/지급",
-                entityId: payment.Id,
-                officeCode: officeCode,
+                entityId: payment.PaymentId,
+                customerName: customer?.NameOriginal,
+                officeCode: issueOfficeCode,
                 currentValue: $"InvoiceId {payment.InvoiceId:D} / 금액 {payment.Amount:N0} / 삭제상태 {deletionState}",
                 expectedValue: "참조 전표 행 존재",
-                message: $"{payment.PaymentDate:yyyy-MM-dd} 수금/지급 {payment.Id:N}의 전표 참조가 현재 로컬 DB에 없습니다.",
-                directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
+                message: $"{payment.PaymentDate:yyyy-MM-dd} 수금/지급 {payment.PaymentId:N}의 전표 참조가 현재 로컬 DB에 없습니다.",
+                directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics,
+                relatedEntityIds: relatedIds,
+                reviewInfo: string.Join(" / ", new[]
+                {
+                    payment.TransactionId.HasValue ? $"TransactionId {payment.TransactionId.Value:D}" : "TransactionId 없음",
+                    payment.TransactionCustomerId.HasValue ? $"CustomerId {payment.TransactionCustomerId.Value:D}" : "CustomerId 없음",
+                    $"ScopeTenant {NormalizeDisplay(scopedTenantCode, "-")}",
+                    $"ScopeOffice {NormalizeDisplay(scopedOfficeCode, "-")}",
+                    payment.TransactionDate.HasValue ? $"TransactionDate {payment.TransactionDate.Value:yyyy-MM-dd}" : "TransactionDate 없음",
+                    string.IsNullOrWhiteSpace(payment.TransactionKind) ? "TransactionKind 없음" : $"TransactionKind {payment.TransactionKind}"
+                }));
         }
 
         return issues;
@@ -1916,6 +2160,169 @@ public sealed class DataIntegrityIssueService
                     row.PaymentIsDeleted.HasValue ? $"PaymentDeleted {row.PaymentIsDeleted.Value}" : "PaymentDeleted -",
                     string.IsNullOrWhiteSpace(row.TransactionKind) ? "TransactionKind -" : $"TransactionKind {row.TransactionKind}",
                     string.IsNullOrWhiteSpace(row.LinkedInvoiceNumber) ? "LinkedInvoiceNumber -" : $"LinkedInvoiceNumber {row.LinkedInvoiceNumber}"
+                }));
+        }
+
+        return issues;
+    }
+
+    private async Task<List<DataIntegrityIssueDetail>> LoadTransactionOperationalScopeMismatchIssuesAsync(SessionState session, CancellationToken ct)
+    {
+        var rows = await (
+                from transaction in _db.Transactions.IgnoreQueryFilters().AsNoTracking()
+                    .Where(transaction => !transaction.IsDeleted)
+                join customer in _db.Customers.IgnoreQueryFilters().AsNoTracking().Where(customer => !customer.IsDeleted)
+                    on transaction.CustomerId equals customer.Id
+                join invoice in _db.Invoices.IgnoreQueryFilters().AsNoTracking().Where(invoice => !invoice.IsDeleted)
+                    on transaction.LinkedInvoiceId equals (Guid?)invoice.Id into invoiceGroup
+                from invoice in invoiceGroup.DefaultIfEmpty()
+                join profile in _db.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().Where(profile => !profile.IsDeleted)
+                    on transaction.LinkedRentalBillingProfileId equals (Guid?)profile.Id into profileGroup
+                from profile in profileGroup.DefaultIfEmpty()
+                orderby transaction.TransactionDate, transaction.Id
+                select new
+                {
+                    TransactionId = transaction.Id,
+                    TransactionTenantCode = transaction.TenantCode,
+                    TransactionOfficeCode = transaction.OfficeCode,
+                    TransactionResponsibleOfficeCode = transaction.ResponsibleOfficeCode,
+                    transaction.TransactionDate,
+                    transaction.TransactionKind,
+                    transaction.LinkedInvoiceId,
+                    transaction.LinkedInvoiceNumber,
+                    transaction.LinkedRentalBillingProfileId,
+                    transaction.LinkedRentalBillingRunId,
+                    transaction.SettlementAmount,
+                    transaction.ReceiptTotal,
+                    transaction.PaymentTotal,
+                    transaction.Note,
+                    CustomerId = customer.Id,
+                    CustomerName = customer.NameOriginal,
+                    CustomerTenantCode = customer.TenantCode,
+                    CustomerOfficeCode = customer.OfficeCode,
+                    CustomerResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+                    InvoiceId = invoice == null ? null : (Guid?)invoice.Id,
+                    InvoiceNumber = invoice == null ? null : invoice.InvoiceNumber,
+                    InvoiceLocalTempNumber = invoice == null ? null : invoice.LocalTempNumber,
+                    InvoiceOfficeCode = invoice == null ? null : invoice.OfficeCode,
+                    InvoiceResponsibleOfficeCode = invoice == null ? null : invoice.ResponsibleOfficeCode,
+                    ProfileId = profile == null ? null : (Guid?)profile.Id,
+                    ProfileKey = profile == null ? null : profile.ProfileKey,
+                    ProfileCustomerName = profile == null ? null : profile.CustomerName,
+                    ProfileOfficeCode = profile == null ? null : profile.OfficeCode,
+                    ProfileResponsibleOfficeCode = profile == null ? null : profile.ResponsibleOfficeCode,
+                    ProfileManagementCompanyCode = profile == null ? null : profile.ManagementCompanyCode
+                })
+            .ToListAsync(ct);
+
+        var issues = new List<DataIntegrityIssueDetail>();
+        foreach (var row in rows)
+        {
+            var customerResponsibleOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
+                row.CustomerResponsibleOfficeCode,
+                DomainConstants.OfficeUsenet);
+            var expectedResponsibleOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
+                row.InvoiceResponsibleOfficeCode ??
+                row.ProfileResponsibleOfficeCode ??
+                row.ProfileManagementCompanyCode ??
+                row.CustomerResponsibleOfficeCode,
+                customerResponsibleOfficeCode);
+            var expectedOwnerOfficeCode = OfficeCodeCatalog.ResolveOwningOfficeCode(
+                row.InvoiceOfficeCode ??
+                row.ProfileOfficeCode ??
+                row.CustomerOfficeCode,
+                expectedResponsibleOfficeCode,
+                row.CustomerOfficeCode);
+            var expectedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                row.TransactionTenantCode,
+                expectedOwnerOfficeCode,
+                row.CustomerTenantCode,
+                expectedResponsibleOfficeCode);
+
+            var hasMismatch = RequiresExactTenantCode(row.TransactionTenantCode, expectedTenantCode) ||
+                              RequiresExactOfficeScopeCode(row.TransactionOfficeCode, expectedOwnerOfficeCode) ||
+                              RequiresExactOfficeScopeCode(row.TransactionResponsibleOfficeCode, expectedResponsibleOfficeCode);
+            if (!hasMismatch)
+                continue;
+
+            if (!IsInSessionScope(row.TransactionTenantCode, row.TransactionResponsibleOfficeCode, session) &&
+                !IsInSessionScope(expectedTenantCode, expectedResponsibleOfficeCode, session))
+            {
+                continue;
+            }
+
+            var invoiceNumber = NormalizeDisplay(
+                !string.IsNullOrWhiteSpace(row.InvoiceNumber) ? row.InvoiceNumber : row.InvoiceLocalTempNumber,
+                row.LinkedInvoiceId.HasValue && row.LinkedInvoiceId.Value != Guid.Empty
+                    ? row.LinkedInvoiceId.Value.ToString("N")
+                    : "전표 미연결");
+            var profileDisplay = NormalizeDisplay(
+                !string.IsNullOrWhiteSpace(row.ProfileKey) ? row.ProfileKey : row.ProfileCustomerName,
+                row.LinkedRentalBillingProfileId.HasValue && row.LinkedRentalBillingProfileId.Value != Guid.Empty
+                    ? row.LinkedRentalBillingProfileId.Value.ToString("N")
+                    : "렌탈 미연결");
+            var amount = row.SettlementAmount > 0m
+                ? row.SettlementAmount
+                : Math.Max(Math.Max(row.ReceiptTotal, row.PaymentTotal), 0m);
+            var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+                expectedResponsibleOfficeCode,
+                row.TransactionResponsibleOfficeCode);
+            var entityId = row.InvoiceId.HasValue && row.InvoiceId.Value != Guid.Empty
+                ? row.InvoiceId
+                : row.TransactionId;
+            var directActionKind = row.InvoiceId.HasValue && row.InvoiceId.Value != Guid.Empty
+                ? DataIntegrityDirectActionKind.OpenPaymentForInvoice
+                : DataIntegrityDirectActionKind.OpenSyncDiagnostics;
+            var relatedIds = new[]
+                {
+                    row.TransactionId,
+                    row.CustomerId,
+                    row.InvoiceId ?? Guid.Empty,
+                    row.ProfileId ?? Guid.Empty
+                }
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToArray();
+            var storedScopeDisplay =
+                $"저장 scope {NormalizeTenantForDisplay(row.TransactionTenantCode, row.TransactionOfficeCode, row.TransactionResponsibleOfficeCode)} / " +
+                $"{NormalizeOfficeScopeForDisplay(row.TransactionOfficeCode, row.TransactionResponsibleOfficeCode)} / " +
+                $"{NormalizeOfficeScopeForDisplay(row.TransactionResponsibleOfficeCode, customerResponsibleOfficeCode)} / " +
+                $"거래 {row.TransactionDate:yyyy-MM-dd} / {PaymentFlowConstants.GetTransactionKindDisplayName(row.TransactionKind)} / 금액 {amount:N0}";
+            var expectedScopeDisplay =
+                $"기대 scope {expectedTenantCode} / {expectedOwnerOfficeCode} / {expectedResponsibleOfficeCode} / " +
+                $"전표 {invoiceNumber} / 렌탈 {profileDisplay}";
+            var issueMessage =
+                $"{row.TransactionDate:yyyy-MM-dd} {NormalizeDisplay(row.CustomerName, row.CustomerId.ToString("N"))} " +
+                "수금/지급 거래내역의 scope 저장값이 거래처/연결 전표/렌탈 청구 범위와 다릅니다.";
+
+            AddGeneralIssue(
+                issues,
+                DataIntegrityIssueCodes.TransactionOperationalScopeMismatch,
+                entityType: "수금/지급 거래내역",
+                entityId: entityId,
+                customerName: row.CustomerName,
+                officeCode: officeCode,
+                currentValue: storedScopeDisplay,
+                expectedValue: expectedScopeDisplay,
+                message: issueMessage,
+                directActionKind: directActionKind,
+                relatedEntityIds: relatedIds,
+                reviewInfo: string.Join(" / ", new[]
+                {
+                    $"TransactionId {row.TransactionId:D}",
+                    $"CustomerId {row.CustomerId:D}",
+                    row.LinkedInvoiceId.HasValue ? $"LinkedInvoiceId {row.LinkedInvoiceId.Value:D}" : "LinkedInvoiceId 없음",
+                    row.InvoiceId.HasValue ? $"ActiveInvoiceId {row.InvoiceId.Value:D}" : "ActiveInvoiceId 없음",
+                    row.LinkedRentalBillingProfileId.HasValue ? $"LinkedRentalBillingProfileId {row.LinkedRentalBillingProfileId.Value:D}" : "LinkedRentalBillingProfileId 없음",
+                    row.LinkedRentalBillingRunId.HasValue ? $"LinkedRentalBillingRunId {row.LinkedRentalBillingRunId.Value:D}" : "LinkedRentalBillingRunId 없음",
+                    $"StoredTenant {NormalizeDisplay(row.TransactionTenantCode, "-")}",
+                    $"StoredOwner {NormalizeDisplay(row.TransactionOfficeCode, "-")}",
+                    $"StoredResponsible {NormalizeDisplay(row.TransactionResponsibleOfficeCode, "-")}",
+                    $"ExpectedTenant {expectedTenantCode}",
+                    $"ExpectedOwner {expectedOwnerOfficeCode}",
+                    $"ExpectedResponsible {expectedResponsibleOfficeCode}",
+                    string.IsNullOrWhiteSpace(row.LinkedInvoiceNumber) ? "LinkedInvoiceNumber -" : $"LinkedInvoiceNumber {row.LinkedInvoiceNumber}",
+                    string.IsNullOrWhiteSpace(row.Note) ? "Note -" : $"Note {row.Note}"
                 }));
         }
 
@@ -2348,22 +2755,65 @@ public sealed class DataIntegrityIssueService
                     from transfer in transferGroup.DefaultIfEmpty()
                     where transfer == null
                     orderby line.TransferId, line.ItemNameOriginal, line.Id
-                    select line)
+                    select new
+                    {
+                        line.Id,
+                        line.TransferId,
+                        line.ItemId,
+                        line.ItemNameOriginal,
+                        line.Quantity,
+                        line.IsDeleted
+                    })
                 .ToListAsync(ct);
 
+            var transferLineItemIds = transferLines
+                .Where(line => line.ItemId.HasValue && line.ItemId.Value != Guid.Empty)
+                .Select(line => line.ItemId!.Value)
+                .Distinct()
+                .ToArray();
+            var transferLineItemsById = await _db.Items.IgnoreQueryFilters().AsNoTracking()
+                .Where(item => transferLineItemIds.Contains(item.Id))
+                .Select(item => new
+                {
+                    item.Id,
+                    item.TenantCode,
+                    item.OfficeCode
+                })
+                .ToDictionaryAsync(item => item.Id, ct);
             foreach (var line in transferLines)
             {
+                transferLineItemsById.TryGetValue(line.ItemId ?? Guid.Empty, out var itemScope);
+                var scopeOfficeCode = itemScope is not null &&
+                                      OfficeCodeCatalog.TryNormalizeOfficeCode(itemScope.OfficeCode, out var itemOfficeCode)
+                    ? itemOfficeCode
+                    : string.Empty;
+                if (!string.IsNullOrWhiteSpace(scopeOfficeCode) &&
+                    !IsInSessionScope(itemScope?.TenantCode, scopeOfficeCode, session))
+                {
+                    continue;
+                }
+
+                var issueOfficeCode = string.IsNullOrWhiteSpace(scopeOfficeCode)
+                    ? fallbackOfficeCode
+                    : scopeOfficeCode;
+                var reviewInfo = string.Join(" / ", new[]
+                {
+                    line.ItemId.HasValue ? $"ItemId {line.ItemId.Value:D}" : "ItemId 없음",
+                    string.IsNullOrWhiteSpace(itemScope?.TenantCode) ? "ScopeTenant -" : $"ScopeTenant {itemScope!.TenantCode}",
+                    string.IsNullOrWhiteSpace(scopeOfficeCode) ? "ScopeOffice -" : $"ScopeOffice {scopeOfficeCode}"
+                });
                 AddGeneralIssue(
                     issues,
                     DataIntegrityIssueCodes.InventoryTransferLineMissingTransferReference,
                     entityType: "재고이동 세부내역",
                     entityId: line.Id,
                     itemName: line.ItemNameOriginal,
-                    officeCode: fallbackOfficeCode,
+                    officeCode: issueOfficeCode,
                     currentValue: $"TransferId {line.TransferId:D} / 요청수량 {line.Quantity:N2} / 삭제상태 {(line.IsDeleted ? "삭제" : "활성")}",
                     expectedValue: "참조 재고이동 문서 행 존재",
                     message: $"{NormalizeDisplay(line.ItemNameOriginal, "재고이동 세부내역")} 행 {line.Id:N}의 재고이동 문서 참조가 현재 로컬 DB에 없습니다.",
-                    directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
+                    directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics,
+                    reviewInfo: reviewInfo);
             }
         }
 
@@ -2377,22 +2827,160 @@ public sealed class DataIntegrityIssueService
                 select log)
             .ToListAsync(ct);
 
-        foreach (var log in rentalLogs.Where(log => IsInSessionScope(log.TenantCode, log.ResponsibleOfficeCode, session)))
+        foreach (var log in rentalLogs)
         {
+            var scopeOfficeCode = ResolveRentalBillingLogScopeOfficeCode(log);
+            var scopeTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                log.TenantCode,
+                scopeOfficeCode,
+                log.TenantCode,
+                log.OfficeCode);
+            if (!IsInSessionScope(scopeTenantCode, scopeOfficeCode, session))
+            {
+                continue;
+            }
+
+            var reviewInfo = string.Join(" / ", new[]
+            {
+                $"BillingProfileId {log.BillingProfileId:D}",
+                $"TenantCode {NormalizeDisplay(log.TenantCode, "-")}",
+                $"OfficeCode {NormalizeDisplay(log.OfficeCode, "-")}",
+                $"ResponsibleOfficeCode {NormalizeDisplay(log.ResponsibleOfficeCode, "-")}",
+                $"ScopeTenant {scopeTenantCode}",
+                $"ScopeOffice {scopeOfficeCode}"
+            });
+
             AddGeneralIssue(
                 issues,
                 DataIntegrityIssueCodes.RentalBillingLogMissingProfileReference,
                 entityType: "렌탈 청구로그",
                 entityId: log.Id,
-                officeCode: log.ResponsibleOfficeCode,
+                officeCode: scopeOfficeCode,
                 currentValue: $"BillingProfileId {log.BillingProfileId:D} / 청구월 {NormalizeDisplay(log.BillingYearMonth, "미지정")} / 삭제상태 {(log.IsDeleted ? "삭제" : "활성")}",
                 expectedValue: "참조 청구 프로필 행 존재",
                 message: $"{NormalizeDisplay(log.BillingYearMonth, "렌탈 청구월")} 청구로그 {log.Id:N}의 청구 프로필 참조가 현재 로컬 DB에 없습니다.",
-                directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
+                directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics,
+                relatedEntityIds: [log.BillingProfileId],
+                reviewInfo: reviewInfo);
         }
 
         return issues;
     }
+
+    private static string ResolveRentalBillingLogScopeOfficeCode(LocalRentalBillingLog log)
+    {
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(log.ResponsibleOfficeCode, out var responsibleOfficeCode))
+            return responsibleOfficeCode;
+
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(log.OfficeCode, out var ownerOfficeCode))
+            return ownerOfficeCode;
+
+        return TenantScopeCatalog.TryNormalizeTenantCode(log.TenantCode, out var tenantCode) &&
+               string.Equals(tenantCode, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase)
+            ? OfficeCodeCatalog.Itworld
+            : OfficeCodeCatalog.Usenet;
+    }
+
+    private static (string TenantCode, string OfficeCode) ResolveAssignmentHistoryScope(
+        LocalRentalAssetAssignmentHistory history,
+        LocalRentalAsset? asset,
+        LocalRentalBillingProfile? profile)
+    {
+        string scopeOfficeCode;
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(history.ResponsibleOfficeCode, out var responsibleOfficeCode))
+        {
+            scopeOfficeCode = responsibleOfficeCode;
+        }
+        else if (asset is not null)
+        {
+            scopeOfficeCode = ResolveAssetOfficeCode(asset);
+        }
+        else if (profile is not null)
+        {
+            scopeOfficeCode = ResolveProfileOfficeCode(profile);
+        }
+        else
+        {
+            scopeOfficeCode = TenantScopeCatalog.TryNormalizeTenantCode(history.TenantCode, out var tenantCode) &&
+                              string.Equals(tenantCode, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase)
+                ? OfficeCodeCatalog.Itworld
+                : OfficeCodeCatalog.Usenet;
+        }
+
+        var scopeTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            history.TenantCode,
+            scopeOfficeCode,
+            history.TenantCode,
+            scopeOfficeCode);
+        return (scopeTenantCode, scopeOfficeCode);
+    }
+
+    private static (string TenantCode, string OfficeCode) ResolveInvoiceScope(IntegrityInvoiceSnapshot invoice)
+    {
+        string scopeOfficeCode;
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(invoice.ResponsibleOfficeCode, out var responsibleOfficeCode))
+        {
+            scopeOfficeCode = responsibleOfficeCode;
+        }
+        else if (OfficeCodeCatalog.TryNormalizeOfficeCode(invoice.OfficeCode, out var ownerOfficeCode))
+        {
+            scopeOfficeCode = ownerOfficeCode;
+        }
+        else
+        {
+            scopeOfficeCode = TenantScopeCatalog.TryNormalizeTenantCode(invoice.TenantCode, out var tenantCode) &&
+                              string.Equals(tenantCode, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase)
+                ? OfficeCodeCatalog.Itworld
+                : OfficeCodeCatalog.Usenet;
+        }
+
+        var scopeTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            invoice.TenantCode,
+            scopeOfficeCode,
+            invoice.TenantCode,
+            scopeOfficeCode);
+        return (scopeTenantCode, scopeOfficeCode);
+    }
+
+    private static (string TenantCode, string OfficeCode) ResolveItemScope(LocalItem item)
+    {
+        string scopeOfficeCode;
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(item.OfficeCode, out var itemOfficeCode))
+        {
+            scopeOfficeCode = itemOfficeCode;
+        }
+        else
+        {
+            scopeOfficeCode = TenantScopeCatalog.TryNormalizeTenantCode(item.TenantCode, out var tenantCode) &&
+                              string.Equals(tenantCode, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase)
+                ? OfficeCodeCatalog.Itworld
+                : OfficeCodeCatalog.Usenet;
+        }
+
+        var scopeTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            item.TenantCode,
+            scopeOfficeCode,
+            item.TenantCode,
+            scopeOfficeCode);
+        return (scopeTenantCode, scopeOfficeCode);
+    }
+
+    private static string BuildItemScopeReviewInfo(LocalItem item, (string TenantCode, string OfficeCode) itemScope)
+        => string.Join(" / ", new[]
+        {
+            $"TenantCode {NormalizeDisplay(item.TenantCode, "-")}",
+            $"OfficeCode {NormalizeDisplay(item.OfficeCode, "-")}",
+            $"ScopeTenant {itemScope.TenantCode}",
+            $"ScopeOffice {itemScope.OfficeCode}"
+        });
+
+    private static string BuildItemScopeReviewInfo(Guid itemId, (string TenantCode, string OfficeCode) itemScope)
+        => string.Join(" / ", new[]
+        {
+            $"ItemId {itemId:D}",
+            $"ScopeTenant {itemScope.TenantCode}",
+            $"ScopeOffice {itemScope.OfficeCode}"
+        });
 
     private async Task<List<LocalItem>> LoadDeletedIntegrityItemsByIdsAsync(
         IReadOnlyCollection<Guid> itemIds,
@@ -2752,44 +3340,52 @@ public sealed class DataIntegrityIssueService
                      .Select(customer => new
                      {
                          Customer = customer,
+                         Scope = ResolveCustomerScope(customer),
                          Key = BuildCustomerExactDuplicateKey(customer)
                      })
                      .Where(entry => !string.IsNullOrWhiteSpace(entry.Key))
-                     .GroupBy(entry => entry.Key, StringComparer.Ordinal)
+                     .GroupBy(entry => $"{entry.Scope.TenantCode}|{entry.Scope.OfficeCode}|{entry.Key}", StringComparer.Ordinal)
                      .Where(group => group.Count() > 1))
         {
             var rows = group.Select(entry => entry.Customer).OrderBy(customer => customer.NameOriginal).ToList();
+            var customerScope = ResolveCustomerScope(rows[0]);
             var relatedIds = rows.Select(row => row.Id).Distinct().ToList();
             AddGeneralIssue(issues, DataIntegrityIssueCodes.CustomerDuplicateCandidate,
                 entityType: "거래처",
                 entityId: rows[0].Id,
                 customerName: rows[0].NameOriginal,
-                officeCode: ResolveCustomerOfficeCode(rows[0]),
+                officeCode: customerScope.OfficeCode,
                 currentValue: BuildDuplicateDisplay(rows.Select(row => $"{row.NameOriginal}({row.Id:N})")),
                 expectedValue: "거래처명이 완전히 같은 경우만 1건으로 정리",
                 message: $"거래처명 '{rows[0].NameOriginal}' 완전 동일 중복 후보 {rows.Count:N0}건이 있습니다.",
                 directActionKind: DataIntegrityDirectActionKind.OpenCustomer,
                 relatedEntityIds: relatedIds,
-                reviewInfo: BuildCustomerDuplicateReviewInfo(rows, customerDuplicateUsages));
+                reviewInfo: string.Join(" / ", new[]
+                {
+                    BuildCustomerDuplicateReviewInfo(rows, customerDuplicateUsages),
+                    BuildCustomerScopeReviewInfo(rows[0], customerScope)
+                }));
         }
 
         foreach (var group in items
                      .Select(item => new
                      {
                          Item = item,
+                         Scope = ResolveItemScope(item),
                          Key = BuildItemExactDuplicateKey(item)
                      })
                      .Where(entry => !string.IsNullOrWhiteSpace(entry.Key))
-                     .GroupBy(entry => entry.Key, StringComparer.Ordinal)
+                     .GroupBy(entry => $"{entry.Scope.TenantCode}|{entry.Scope.OfficeCode}|{entry.Key}", StringComparer.Ordinal)
                      .Where(group => group.Count() > 1))
         {
             var rows = group.Select(entry => entry.Item).OrderBy(item => item.NameOriginal).ThenBy(item => item.SpecificationOriginal).ToList();
+            var itemScope = ResolveItemScope(rows[0]);
             var relatedIds = rows.Select(row => row.Id).Distinct().ToList();
             AddGeneralIssue(issues, DataIntegrityIssueCodes.ItemDuplicateCandidate,
                 entityType: "품목",
                 entityId: rows[0].Id,
                 itemName: rows[0].NameOriginal,
-                officeCode: OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(rows[0].OfficeCode, OfficeCodeCatalog.Shared),
+                officeCode: itemScope.OfficeCode,
                 currentValue: BuildDuplicateDisplay(rows.Select(row => $"{row.NameOriginal} / {row.SpecificationOriginal}({row.Id:N})")),
                 expectedValue: "품목명과 규격이 모두 완전히 같은 경우만 1건으로 정리",
                 message: $"품목명 '{rows[0].NameOriginal}' / 규격 '{rows[0].SpecificationOriginal}' 완전 동일 중복 후보 {rows.Count:N0}건이 있습니다.",
@@ -2802,7 +3398,7 @@ public sealed class DataIntegrityIssueService
                      .Select(warehouse => new
                      {
                          Warehouse = warehouse,
-                         OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(warehouse.OfficeCode, session.OfficeCode),
+                         OfficeCode = ResolveWarehouseOfficeCode(warehouse),
                          CodeKey = RentalCatalogValueNormalizer.NormalizeLooseKey(warehouse.Code),
                          NameKey = RentalCatalogValueNormalizer.NormalizeLooseKey(warehouse.Name)
                      })
@@ -2816,21 +3412,35 @@ public sealed class DataIntegrityIssueService
                      .Where(group => group.Select(entry => entry.Warehouse.Id).Distinct().Count() > 1))
         {
             var rows = group.Select(entry => entry.Warehouse).GroupBy(warehouse => warehouse.Id).Select(grouping => grouping.First()).OrderBy(warehouse => warehouse.Name).ToList();
+            var warehouseOfficeCode = group.Select(entry => entry.OfficeCode).FirstOrDefault() ?? ResolveWarehouseOfficeCode(rows[0]);
             var relatedIds = rows.Select(row => row.Id).Distinct().ToList();
             AddGeneralIssue(issues, DataIntegrityIssueCodes.WarehouseDuplicateCandidate,
                 entityType: "창고",
                 entityId: rows[0].Id,
-                officeCode: rows[0].OfficeCode,
+                officeCode: warehouseOfficeCode,
                 currentValue: BuildDuplicateDisplay(rows.Select(row => $"{row.Code} / {row.Name}({row.Id:N})")),
                 expectedValue: "같은 창고이면 1건으로 정리",
-                message: $"담당지점 {rows[0].OfficeCode} 창고 중복 후보 {rows.Count:N0}건이 있습니다.",
+                message: $"담당지점 {warehouseOfficeCode} 창고 중복 후보 {rows.Count:N0}건이 있습니다.",
                 directActionKind: DataIntegrityDirectActionKind.OpenEnvironmentSettings,
                 relatedEntityIds: relatedIds,
-                reviewInfo: BuildWarehouseDuplicateReviewInfo(rows, itemWarehouseStocks, inventoryMovements, session));
+                reviewInfo: string.Join(" / ", new[]
+                {
+                    BuildWarehouseDuplicateReviewInfo(rows, itemWarehouseStocks, inventoryMovements, session),
+                    BuildWarehouseScopeReviewInfo(rows[0], warehouseOfficeCode)
+                }));
         }
 
         foreach (var invoice in invoices)
         {
+            var invoiceScope = ResolveInvoiceScope(invoice);
+            var invoiceScopeReviewInfo = string.Join(" / ", new[]
+            {
+                $"TenantCode {NormalizeDisplay(invoice.TenantCode, "-")}",
+                $"OfficeCode {NormalizeDisplay(invoice.OfficeCode, "-")}",
+                $"ResponsibleOfficeCode {NormalizeDisplay(invoice.ResponsibleOfficeCode, "-")}",
+                $"ScopeTenant {invoiceScope.TenantCode}",
+                $"ScopeOffice {invoiceScope.OfficeCode}"
+            });
             invoiceLineTotalsByInvoiceId.TryGetValue(invoice.Id, out var lineTotal);
             var totals = InvoiceVatModes.CalculateTotals([lineTotal], invoice.VatMode);
             if (AmountDiffers(invoice.TotalAmount, totals.TotalAmount) ||
@@ -2840,11 +3450,12 @@ public sealed class DataIntegrityIssueService
                 AddGeneralIssue(issues, DataIntegrityIssueCodes.InvoiceAmountMismatch,
                     entityType: "전표",
                     entityId: invoice.Id,
-                    officeCode: invoice.ResponsibleOfficeCode,
+                    officeCode: invoiceScope.OfficeCode,
                     currentValue: $"공급 {invoice.SupplyAmount:N0} / 부가세 {invoice.VatAmount:N0} / 합계 {invoice.TotalAmount:N0}",
                     expectedValue: $"공급 {totals.SupplyAmount:N0} / 부가세 {totals.VatAmount:N0} / 합계 {totals.TotalAmount:N0}",
                     message: $"{invoice.InvoiceDate:yyyy-MM-dd} {FormatVoucherType(invoice.VoucherType)} 전표 {NormalizeDisplay(invoice.InvoiceNumber, invoice.Id.ToString("N"))} 금액 계산이 품목 합계와 다릅니다.",
-                    directActionKind: DataIntegrityDirectActionKind.OpenInvoice);
+                    directActionKind: DataIntegrityDirectActionKind.OpenInvoice,
+                    reviewInfo: invoiceScopeReviewInfo);
             }
 
             invoicePaymentTotalsByInvoiceId.TryGetValue(invoice.Id, out var settlementTotal);
@@ -2853,22 +3464,25 @@ public sealed class DataIntegrityIssueService
                 AddGeneralIssue(issues, DataIntegrityIssueCodes.InvoiceOverSettled,
                     entityType: "전표",
                     entityId: invoice.Id,
-                    officeCode: invoice.ResponsibleOfficeCode,
+                    officeCode: invoiceScope.OfficeCode,
                     currentValue: $"전표 {invoice.TotalAmount:N0} / 수금·지급 {settlementTotal:N0}",
                     expectedValue: "수금·지급 합계가 전표 합계 이하",
                     message: $"{invoice.InvoiceDate:yyyy-MM-dd} {FormatVoucherType(invoice.VoucherType)} 전표 {NormalizeDisplay(invoice.InvoiceNumber, invoice.Id.ToString("N"))}의 수금/지급 합계가 전표 금액보다 큽니다.",
-                    directActionKind: DataIntegrityDirectActionKind.OpenPaymentForInvoice);
+                    directActionKind: DataIntegrityDirectActionKind.OpenPaymentForInvoice,
+                    reviewInfo: invoiceScopeReviewInfo);
             }
         }
 
         var scopedItemIds = items.Select(item => item.Id).ToHashSet();
         var itemNameById = items.ToDictionary(item => item.Id, item => item.NameOriginal);
+        var itemScopeById = items.ToDictionary(item => item.Id, ResolveItemScope);
         var stockByItem = itemWarehouseStocks
             .Where(stock => scopedItemIds.Contains(stock.ItemId))
             .GroupBy(stock => stock.ItemId)
             .ToDictionary(group => group.Key, group => group.Sum(stock => stock.Quantity));
         foreach (var item in items.Where(item => ItemOperationalPolicy.SupportsInventory(item.TrackingType)))
         {
+            var itemScope = ResolveItemScope(item);
             stockByItem.TryGetValue(item.Id, out var stockTotal);
             if (!AmountDiffers(item.CurrentStock, stockTotal))
                 continue;
@@ -2877,11 +3491,12 @@ public sealed class DataIntegrityIssueService
                 entityType: "품목",
                 entityId: item.Id,
                 itemName: item.NameOriginal,
-                officeCode: item.OfficeCode,
+                officeCode: itemScope.OfficeCode,
                 currentValue: $"품목 현재재고 {item.CurrentStock:N2}",
                 expectedValue: $"창고별 합계 {stockTotal:N2}",
                 message: $"{NormalizeDisplay(item.NameOriginal, "품목")} 품목의 현재재고와 창고별 재고 합계가 다릅니다.",
-                directActionKind: DataIntegrityDirectActionKind.OpenInventoryItem);
+                directActionKind: DataIntegrityDirectActionKind.OpenInventoryItem,
+                reviewInfo: BuildItemScopeReviewInfo(item, itemScope));
         }
 
         var activeWarehouseCodes = warehouses
@@ -2898,11 +3513,16 @@ public sealed class DataIntegrityIssueService
                 entityType: "재고",
                 entityId: stock.ItemId,
                 itemName: itemNameById.GetValueOrDefault(stock.ItemId) ?? string.Empty,
-                officeCode: ResolveOfficeCodeFromWarehouseCode(warehouseCode, session.OfficeCode),
+                officeCode: itemScopeById.TryGetValue(stock.ItemId, out var stockItemScope)
+                    ? stockItemScope.OfficeCode
+                    : ResolveOfficeCodeFromWarehouseCode(warehouseCode, session.OfficeCode),
                 currentValue: warehouseCode,
                 expectedValue: "활성 창고 코드",
                 message: $"품목 재고 스냅샷이 존재하지 않거나 비활성인 창고 '{warehouseCode}'를 참조합니다.",
-                directActionKind: DataIntegrityDirectActionKind.OpenInventoryItem);
+                directActionKind: DataIntegrityDirectActionKind.OpenInventoryItem,
+                reviewInfo: itemScopeById.TryGetValue(stock.ItemId, out stockItemScope)
+                    ? $"Warehouse {warehouseCode} / {BuildItemScopeReviewInfo(stock.ItemId, stockItemScope)}"
+                    : $"Warehouse {warehouseCode}");
         }
 
         foreach (var movement in inventoryMovements.Where(movement => movement.ItemId.HasValue && scopedItemIds.Contains(movement.ItemId.Value)))
@@ -2915,11 +3535,16 @@ public sealed class DataIntegrityIssueService
                 entityType: "재고 이동",
                 entityId: movement.ItemId,
                 itemName: movement.ItemId.HasValue ? itemNameById.GetValueOrDefault(movement.ItemId.Value) ?? string.Empty : string.Empty,
-                officeCode: ResolveOfficeCodeFromWarehouseCode(warehouseCode, session.OfficeCode),
+                officeCode: movement.ItemId.HasValue && itemScopeById.TryGetValue(movement.ItemId.Value, out var movementItemScope)
+                    ? movementItemScope.OfficeCode
+                    : ResolveOfficeCodeFromWarehouseCode(warehouseCode, session.OfficeCode),
                 currentValue: warehouseCode,
                 expectedValue: "활성 창고 코드",
                 message: $"재고 이동 이력이 존재하지 않거나 비활성인 창고 '{warehouseCode}'를 참조합니다.",
-                directActionKind: DataIntegrityDirectActionKind.OpenInventoryItem);
+                directActionKind: DataIntegrityDirectActionKind.OpenInventoryItem,
+                reviewInfo: movement.ItemId.HasValue && itemScopeById.TryGetValue(movement.ItemId.Value, out movementItemScope)
+                    ? $"Warehouse {warehouseCode} / {BuildItemScopeReviewInfo(movement.ItemId.Value, movementItemScope)}"
+                    : $"Warehouse {warehouseCode}");
         }
     }
 
@@ -2930,10 +3555,11 @@ public sealed class DataIntegrityIssueService
                      .Select(customer => new
                      {
                          Customer = customer,
+                         Scope = ResolveCustomerScope(customer),
                          Key = BuildCustomerExactDuplicateKey(customer)
                      })
                      .Where(entry => !string.IsNullOrWhiteSpace(entry.Key))
-                     .GroupBy(entry => entry.Key, StringComparer.Ordinal)
+                     .GroupBy(entry => $"{entry.Scope.TenantCode}|{entry.Scope.OfficeCode}|{entry.Key}", StringComparer.Ordinal)
                      .Where(group => group.Count() > 1))
         {
             foreach (var entry in group)
@@ -2989,11 +3615,10 @@ public sealed class DataIntegrityIssueService
         if (string.IsNullOrWhiteSpace(customerName))
             return string.Empty;
 
-        var officeCode = ResolveCustomerOfficeCode(customer);
-        var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, officeCode);
+        var customerScope = ResolveCustomerScope(customer);
         return string.Join('|',
-            tenantCode,
-            officeCode,
+            customerScope.TenantCode,
+            customerScope.OfficeCode,
             customerName);
     }
 
@@ -3132,6 +3757,7 @@ public sealed class DataIntegrityIssueService
             : profile is not null
                 ? DataIntegrityDirectActionKind.OpenRentalBillingProfile
                 : DataIntegrityDirectActionKind.None;
+        var historyScope = ResolveAssignmentHistoryScope(history, asset, profile);
 
         issues.Add(new DataIntegrityIssueDetail
         {
@@ -3146,12 +3772,21 @@ public sealed class DataIntegrityIssueService
             CustomerName = NormalizeDisplay(history.CustomerName, asset?.CurrentCustomerName ?? asset?.CustomerName ?? profile?.CustomerName ?? string.Empty),
             ItemName = NormalizeDisplay(history.ItemName, asset?.ItemName ?? profile?.ItemName ?? string.Empty),
             AssetDisplayName = asset is null ? BuildHistoryDisplay(history) : BuildAssetDisplay(asset),
-            OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(history.ResponsibleOfficeCode, asset is null ? profile?.ResponsibleOfficeCode : ResolveAssetOfficeCode(asset)),
+            OfficeCode = historyScope.OfficeCode,
             CurrentValue = currentValue,
             ExpectedValue = expectedValue,
             Message = message,
             SuggestedAction = definition.SuggestedAction,
-            DirectActionKind = directActionKind
+            DirectActionKind = directActionKind,
+            ReviewInfo = string.Join(" / ", new[]
+            {
+                $"TenantCode {NormalizeDisplay(history.TenantCode, "-")}",
+                $"ResponsibleOfficeCode {NormalizeDisplay(history.ResponsibleOfficeCode, "-")}",
+                $"ScopeTenant {historyScope.TenantCode}",
+                $"ScopeOffice {historyScope.OfficeCode}",
+                history.BillingProfileId.HasValue ? $"BillingProfileId {history.BillingProfileId.Value:D}" : "BillingProfileId 없음",
+                history.AssetId == Guid.Empty ? "AssetId 없음" : $"AssetId {history.AssetId:D}"
+            })
         });
     }
 
@@ -3407,10 +4042,45 @@ public sealed class DataIntegrityIssueService
         return writableOffices.Contains(normalizedOffice);
     }
 
+    private static (string TenantCode, string OfficeCode) ResolveCustomerScope(LocalCustomer customer)
+    {
+        string scopeOfficeCode;
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(customer.ResponsibleOfficeCode, out var responsibleOfficeCode))
+        {
+            scopeOfficeCode = responsibleOfficeCode;
+        }
+        else if (OfficeCodeCatalog.TryNormalizeOfficeCode(customer.OfficeCode, out var ownerOfficeCode))
+        {
+            scopeOfficeCode = ownerOfficeCode;
+        }
+        else
+        {
+            scopeOfficeCode = TenantScopeCatalog.TryNormalizeTenantCode(customer.TenantCode, out var tenantCode) &&
+                              string.Equals(tenantCode, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase)
+                ? OfficeCodeCatalog.Itworld
+                : OfficeCodeCatalog.Usenet;
+        }
+
+        var scopeTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            customer.TenantCode,
+            scopeOfficeCode,
+            customer.TenantCode,
+            scopeOfficeCode);
+        return (scopeTenantCode, scopeOfficeCode);
+    }
+
     private static string ResolveCustomerOfficeCode(LocalCustomer customer)
-        => OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
-            string.IsNullOrWhiteSpace(customer.ResponsibleOfficeCode) ? customer.OfficeCode : customer.ResponsibleOfficeCode,
-            DomainConstants.OfficeUsenet);
+        => ResolveCustomerScope(customer).OfficeCode;
+
+    private static string BuildCustomerScopeReviewInfo(LocalCustomer customer, (string TenantCode, string OfficeCode) customerScope)
+        => string.Join(" / ", new[]
+        {
+            $"TenantCode {NormalizeDisplay(customer.TenantCode, "-")}",
+            $"OfficeCode {NormalizeDisplay(customer.OfficeCode, "-")}",
+            $"ResponsibleOfficeCode {NormalizeDisplay(customer.ResponsibleOfficeCode, "-")}",
+            $"ScopeTenant {customerScope.TenantCode}",
+            $"ScopeOffice {customerScope.OfficeCode}"
+        });
 
     private static string ResolveOfficeCodeFromWarehouseCode(string? warehouseCode, string fallbackOfficeCode)
     {
@@ -3421,6 +4091,63 @@ public sealed class DataIntegrityIssueService
             OfficeCodeCatalog.YeonsuMainWarehouse => OfficeCodeCatalog.Yeonsu,
             _ => OfficeCodeCatalog.Usenet
         };
+    }
+
+    private static string ResolveWarehouseOfficeCode(LocalWarehouse warehouse)
+    {
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(warehouse.OfficeCode, out var officeCode))
+            return officeCode;
+
+        if (TryResolveOfficeCodeFromWarehouseEvidence(warehouse.Code, out officeCode))
+            return officeCode;
+
+        return DomainConstants.OfficeUsenet;
+    }
+
+    private static string BuildWarehouseScopeReviewInfo(LocalWarehouse warehouse, string scopeOfficeCode)
+        => string.Join(" / ", new[]
+        {
+            $"OfficeCode {NormalizeDisplay(warehouse.OfficeCode, "-")}",
+            $"WarehouseCode {NormalizeDisplay(warehouse.Code, "-")}",
+            $"ScopeOffice {scopeOfficeCode}"
+        });
+
+    private static bool TryResolveOfficeCodeFromWarehouseEvidence(string? warehouseCode, out string officeCode)
+    {
+        var normalized = (warehouseCode ?? string.Empty).Trim().ToUpperInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            officeCode = string.Empty;
+            return false;
+        }
+
+        if (string.Equals(normalized, OfficeCodeCatalog.ItworldMainWarehouse, StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("ITWORLD", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("아이티월드", StringComparison.OrdinalIgnoreCase))
+        {
+            officeCode = OfficeCodeCatalog.Itworld;
+            return true;
+        }
+
+        if (string.Equals(normalized, OfficeCodeCatalog.YeonsuMainWarehouse, StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("YEONSU", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("연수", StringComparison.OrdinalIgnoreCase))
+        {
+            officeCode = OfficeCodeCatalog.Yeonsu;
+            return true;
+        }
+
+        if (string.Equals(normalized, OfficeCodeCatalog.UsenetMainWarehouse, StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("USENET", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("UZNET", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("유즈넷", StringComparison.OrdinalIgnoreCase))
+        {
+            officeCode = OfficeCodeCatalog.Usenet;
+            return true;
+        }
+
+        officeCode = string.Empty;
+        return false;
     }
 
     private static string NormalizeExactDuplicateText(string? value)
@@ -3550,9 +4277,13 @@ public sealed class DataIntegrityIssueService
 
         return query.Where(invoice =>
             officeCodes.Contains(invoice.ResponsibleOfficeCode) ||
+            officeCodes.Contains(invoice.OfficeCode) ||
             invoice.ResponsibleOfficeCode == null ||
             invoice.ResponsibleOfficeCode == string.Empty ||
-            sharedOfficeCodes.Contains(invoice.ResponsibleOfficeCode));
+            sharedOfficeCodes.Contains(invoice.ResponsibleOfficeCode) ||
+            invoice.OfficeCode == null ||
+            invoice.OfficeCode == string.Empty ||
+            sharedOfficeCodes.Contains(invoice.OfficeCode));
     }
 
     private static IQueryable<LocalRentalBillingProfile> ApplyOperationalAlertRentalProfileScopePrefilter(
@@ -3884,11 +4615,19 @@ public sealed class DataIntegrityIssueService
     private static string NormalizeOfficeForDisplay(string? officeCode, string? fallbackOfficeCode)
         => OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, fallbackOfficeCode);
 
+    private static string NormalizeOfficeScopeForDisplay(string? officeCode, string? fallbackOfficeCode)
+        => OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(officeCode, fallbackOfficeCode);
+
     private static string NormalizeTenantForDisplay(string? tenantCode, string? officeCode, string? responsibleOfficeCode)
         => TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(tenantCode, officeCode, tenantCode, responsibleOfficeCode);
 
     private static bool RequiresExactOfficeCode(string? currentOfficeCode, string expectedOfficeCode)
         => !OfficeCodeCatalog.TryNormalizeOfficeCode(currentOfficeCode, out var normalizedOfficeCode) ||
+           !string.Equals(normalizedOfficeCode, expectedOfficeCode, StringComparison.OrdinalIgnoreCase) ||
+           !string.Equals((currentOfficeCode ?? string.Empty).Trim(), expectedOfficeCode, StringComparison.OrdinalIgnoreCase);
+
+    private static bool RequiresExactOfficeScopeCode(string? currentOfficeCode, string expectedOfficeCode)
+        => !OfficeCodeCatalog.TryNormalizeScope(currentOfficeCode, out var normalizedOfficeCode) ||
            !string.Equals(normalizedOfficeCode, expectedOfficeCode, StringComparison.OrdinalIgnoreCase) ||
            !string.Equals((currentOfficeCode ?? string.Empty).Trim(), expectedOfficeCode, StringComparison.OrdinalIgnoreCase);
 
@@ -4018,6 +4757,7 @@ public sealed class DataIntegrityIssueService
     {
         public Guid Id { get; init; }
         public string TenantCode { get; init; } = TenantScopeCatalog.UsenetGroup;
+        public string OfficeCode { get; init; } = string.Empty;
         public string ResponsibleOfficeCode { get; init; } = DomainConstants.OfficeUsenet;
         public string InvoiceNumber { get; init; } = string.Empty;
         public VoucherType VoucherType { get; init; }

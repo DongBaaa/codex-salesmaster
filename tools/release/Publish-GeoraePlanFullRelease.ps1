@@ -5,6 +5,8 @@ param(
     [string]$Channel = 'stable',
     [switch]$DeployToLinuxPc,
     [switch]$NoRestore,
+    [switch]$DisableAndroidAot,
+    [switch]$DisableAndroidTrimming,
     [string]$DesktopMinimumSupportedVersion,
     [string]$AndroidMinimumSupportedVersion,
     [switch]$MandatoryDesktop,
@@ -18,6 +20,7 @@ param(
     [string]$LinuxRemoteOpsPath = '/srv/georaeplan/ops',
     [switch]$SkipPreDeployOperationalGate,
     [switch]$SkipPostDeployOperationalGate,
+    [switch]$AcceptRentalTemplateItemReferenceRisk,
     [string]$PreDeployBaseUrl = "",
     [string]$PreDeploySecretPath = "",
     [string]$PreDeployOutputDirectory = "",
@@ -148,6 +151,12 @@ $androidArgs = @(
 if ($NoRestore) {
     $androidArgs += '-NoRestore'
 }
+if ($DisableAndroidAot) {
+    $androidArgs += '-DisableAot'
+}
+if ($DisableAndroidTrimming) {
+    $androidArgs += '-DisableTrimming'
+}
 & powershell @androidArgs
 if ($LASTEXITCODE -ne 0) {
     throw 'android apk build failed.'
@@ -200,6 +209,9 @@ if ($DeployToLinuxPc) {
     }
     if ($SkipPostDeployOperationalGate) {
         $linuxArgs += '-SkipPostDeployOperationalGate'
+    }
+    if ($AcceptRentalTemplateItemReferenceRisk) {
+        $linuxArgs += '-AcceptRentalTemplateItemReferenceRisk'
     }
     if (-not [string]::IsNullOrWhiteSpace($PreDeployBaseUrl)) {
         $linuxArgs += @('-PreDeployBaseUrl', $PreDeployBaseUrl)

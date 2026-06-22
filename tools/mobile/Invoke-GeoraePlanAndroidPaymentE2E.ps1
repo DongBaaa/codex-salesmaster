@@ -12,6 +12,10 @@
     [switch]$SkipInstall,
     [switch]$KeepTemporaryData,
     [switch]$ExerciseStoppedServerDirtySync,
+    [switch]$ExerciseAttachmentUpload,
+    [switch]$ExerciseCameraAttachmentUpload,
+    [switch]$ExerciseAttachmentOpenUi,
+    [switch]$ExerciseAttachmentListFallback,
     [string]$DotNetPath,
     [string]$LocalApiProjectFile,
     [int]$StoppedServerOfflineTimeoutSeconds = 45
@@ -19,6 +23,16 @@
 
 $ErrorActionPreference = 'Stop'
 $script:GeoraePlanMobilePackageName = $PackageName
+
+if ($ExerciseAttachmentUpload -and $ExerciseCameraAttachmentUpload) {
+    throw 'Run either PDF attachment E2E or camera attachment E2E, not both.'
+}
+if ($ExerciseAttachmentOpenUi -and -not ($ExerciseAttachmentUpload -or $ExerciseCameraAttachmentUpload)) {
+    throw 'Attachment open UI E2E requires either PDF attachment E2E or camera attachment E2E.'
+}
+if ($ExerciseAttachmentListFallback -and -not $ExerciseAttachmentOpenUi) {
+    throw 'Attachment list fallback E2E requires attachment open UI E2E.'
+}
 
 function Resolve-AdbPath {
     param([string]$RequestedPath)
@@ -240,20 +254,50 @@ function Invoke-Adb {
         [Parameter(Mandatory = $true)][string[]]$Arguments
     )
 
-    $previousErrorActionPreference = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        $output = & $AdbPath @Arguments 2>&1
-        $exitCode = $LASTEXITCODE
-    }
-    finally {
-        $ErrorActionPreference = $previousErrorActionPreference
+    $lastOutput = $null
+    $lastExitCode = 0
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $previousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $lastOutput = & $AdbPath @Arguments 2>&1
+            $lastExitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+
+        if ($lastExitCode -eq 0) {
+            return $lastOutput
+        }
+
+        $joinedOutput = [string]::Join("`n", @($lastOutput))
+        $isDaemonConnectionFailure = $joinedOutput -match 'daemon still not running|cannot connect to daemon|cannot connect to 127\.0\.0\.1:5037|10060|actively refused|Connection refused'
+        if (-not $isDaemonConnectionFailure -or $attempt -eq 3) {
+            break
+        }
+
+        try { & $AdbPath start-server | Out-Null } catch {}
+        Start-Sleep -Seconds ([Math]::Min(2 * $attempt, 6))
     }
 
-    if ($exitCode -ne 0) {
-        throw "adb 실패: adb $($Arguments -join ' ')`n$output"
+    throw "adb failed after retry: adb $($Arguments -join ' ')`n$lastOutput"
+}
+
+function Set-MobileDiagnosticNetworkFault {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$PackageName,
+        [string]$Target
+    )
+
+    $script = "mkdir -p files/diagnostics && printf NETWORK\|$Target > files/diagnostics/next-fault.txt && cat files/diagnostics/next-fault.txt"
+    $quotedScript = "'$script'"
+    $output = Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'run-as', $PackageName, 'sh', '-c', $quotedScript)
+    if (($output -join "`n") -notmatch "NETWORK\|$([regex]::Escape($Target))") {
+        throw "모바일 진단 네트워크 fault 설정 확인 실패: $($output -join ' ')"
     }
-    return $output
 }
 
 function Install-MobileApk {
@@ -557,6 +601,105 @@ function Get-NodeCenterByText {
     return $null
 }
 
+
+function Get-NodeCenterByAttribute {
+    param(
+        [string]$Content,
+        [string]$Attribute,
+        [string]$Value,
+        [string]$ClassName = '',
+        [int]$MinY = 0
+    )
+
+    $escapedAttribute = [regex]::Escape($Attribute)
+    $escapedValue = [regex]::Escape($Value)
+    $matches = [regex]::Matches($Content, '<node\b[^>]*>')
+    foreach ($match in $matches) {
+        $node = $match.Value
+        if ($node -notmatch "$escapedAttribute=`"$escapedValue`"") {
+            continue
+        }
+        if (-not [string]::IsNullOrWhiteSpace($ClassName) -and $node -notmatch "class=`"$([regex]::Escape($ClassName))`"") {
+            continue
+        }
+        if ($node -match 'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"') {
+            $x1 = [int]$Matches[1]
+            $y1 = [int]$Matches[2]
+            $x2 = [int]$Matches[3]
+            $y2 = [int]$Matches[4]
+            if ($y1 -lt $MinY) {
+                continue
+            }
+            return [pscustomobject]@{
+                X = [int](($x1 + $x2) / 2)
+                Y = [int](($y1 + $y2) / 2)
+            }
+        }
+    }
+
+    return $null
+}
+
+function Tap-UiAttribute {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$Content,
+        [string]$Attribute,
+        [string]$Value,
+        [string]$StepName,
+        [string]$ClassName = '',
+        [int]$MinY = 0
+    )
+
+    $point = Get-NodeCenterByAttribute -Content $Content -Attribute $Attribute -Value $Value -ClassName $ClassName -MinY $MinY
+    if (-not $point -and -not [string]::IsNullOrWhiteSpace($ClassName)) {
+        $point = Get-NodeCenterByAttribute -Content $Content -Attribute $Attribute -Value $Value -ClassName '' -MinY $MinY
+    }
+    if (-not $point) {
+        throw "$StepName failed. Could not find node by $Attribute=$Value."
+    }
+
+    Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $point.X -Y $point.Y
+}
+
+function Grant-CameraPermissionIfPossible {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$PackageName
+    )
+
+    try {
+        Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'pm', 'grant', $PackageName, 'android.permission.CAMERA') | Out-Null
+    }
+    catch {
+        # 일부 Android 버전/상태에서는 이미 권한이 있거나 grant가 제한될 수 있습니다. 실제 권한 다이얼로그는 후속 UI 처리에서 다시 대응합니다.
+    }
+}
+
+function Dismiss-CameraPermissionDialogIfPresent {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$Content
+    )
+
+    $allowCandidates = @('While using the app', 'Only this time', '앱 사용 중에만 허용', '허용', 'Allow')
+    foreach ($text in $allowCandidates) {
+        $point = Get-NodeCenterByText -Content $Content -Text $text -ClassName 'android.widget.Button'
+        if (-not $point) {
+            $point = Get-NodeCenterByText -Content $Content -Text $text -ClassName ''
+        }
+        if ($point) {
+            Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $point.X -Y $point.Y
+            return $true
+        }
+    }
+
+    return $false
+}
+
 function Tap-Point {
     param(
         [string]$AdbPath,
@@ -758,6 +901,249 @@ function Set-AndroidText {
         Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'input', 'text', $safeText) | Out-Null
         Start-Sleep -Milliseconds 30
     }
+}
+
+function New-TestAttachmentPdf {
+    param(
+        [string]$EvidenceDirectory,
+        [string]$Timestamp
+    )
+
+    $fileName = "georaeplan-payment-e2e-$Timestamp.pdf"
+    $path = Join-Path $EvidenceDirectory $fileName
+    $content = @"
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 120] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 55 >>
+stream
+BT /F1 12 Tf 24 72 Td (GeoraePlan payment E2E) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f
+0000000009 00000 n
+0000000058 00000 n
+0000000115 00000 n
+0000000234 00000 n
+0000000340 00000 n
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+410
+%%EOF
+"@
+    [System.IO.File]::WriteAllText($path, $content, [System.Text.UTF8Encoding]::new($false))
+    return [pscustomobject]@{ LocalPath = $path; FileName = $fileName; RemotePath = "/sdcard/Download/$fileName" }
+}
+
+function Push-TestAttachmentToDevice {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [object]$Attachment
+    )
+
+    Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'mkdir', '-p', '/sdcard/Download') | Out-Null
+    Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'push', $Attachment.LocalPath, $Attachment.RemotePath) | Out-Null
+    try {
+        Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'am', 'broadcast', '-a', 'android.intent.action.MEDIA_SCANNER_SCAN_FILE', '-d', "file://$($Attachment.RemotePath)") | Out-Null
+    }
+    catch {
+        # Android 버전에 따라 media scanner broadcast가 제한될 수 있습니다. 파일 선택기 Recent/Downloads 노출 보조용이므로 실패해도 계속합니다.
+    }
+}
+
+function Select-PdfAttachmentFromDevice {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$EvidenceDirectory,
+        [string]$Timestamp,
+        [object]$Attachment
+    )
+
+    $attachmentButtonPoint = $null
+    $paymentDump = $null
+    for ($scrollAttempt = 0; $scrollAttempt -lt 6; $scrollAttempt++) {
+        $paymentDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-attachment-button-$scrollAttempt"
+        $attachmentButtonPoint = Get-NodeCenterByText -Content $paymentDump.Content -Text '내역 첨부하기' -ClassName 'android.widget.Button'
+        if (-not $attachmentButtonPoint) {
+            $attachmentButtonPoint = Get-NodeCenterByText -Content $paymentDump.Content -Text '내역 첨부하기' -ClassName ''
+        }
+        if ($attachmentButtonPoint) {
+            break
+        }
+
+        Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'input', 'swipe', '540', '2050', '540', '900', '700') | Out-Null
+        Start-Sleep -Seconds 2
+    }
+    if (-not $attachmentButtonPoint) {
+        throw '수금/지급 입력 화면에서 내역 첨부하기 버튼을 찾지 못했습니다.'
+    }
+
+    Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $attachmentButtonPoint.X -Y $attachmentButtonPoint.Y
+    $sheetDump = Wait-UiContainsAll `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-payment-e2e-$Timestamp-attachment-action-sheet" `
+        -Needles @('첨부 방식 선택', 'PDF 파일 업로드') `
+        -StepName '첨부 방식 선택' `
+        -TimeoutSeconds 45
+    Tap-UiText -AdbPath $AdbPath -DeviceId $DeviceId -Content $sheetDump.Content -Text 'PDF 파일 업로드' -ClassName 'android.widget.TextView' -StepName 'PDF 첨부 방식 선택'
+    Start-Sleep -Seconds 4
+
+    $pickerDump = $null
+    for ($attempt = 1; $attempt -le 12; $attempt++) {
+        $pickerDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-file-picker-$attempt"
+        if ($pickerDump.Content.Contains($Attachment.FileName)) {
+            Tap-UiText -AdbPath $AdbPath -DeviceId $DeviceId -Content $pickerDump.Content -Text $Attachment.FileName -ClassName 'android.widget.TextView' -StepName 'PDF 첨부 파일 선택'
+            Start-Sleep -Seconds 5
+            $selectedDump = Wait-UiContainsAll `
+                -AdbPath $AdbPath `
+                -DeviceId $DeviceId `
+                -EvidenceDirectory $EvidenceDirectory `
+                -Name "mobile-payment-e2e-$Timestamp-attachment-selected" `
+                -Needles @($Attachment.FileName, '첨부 1건') `
+                -StepName 'PDF 첨부 선택 완료' `
+                -TimeoutSeconds 60
+            return $selectedDump
+        }
+
+        if ($pickerDump.Content.Contains('Download') -or $pickerDump.Content.Contains('Downloads') -or $pickerDump.Content.Contains('다운로드')) {
+            Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'input', 'swipe', '540', '1900', '540', '650', '500') | Out-Null
+        }
+        else {
+            Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'input', 'keyevent', 'KEYCODE_SEARCH') | Out-Null
+            Start-Sleep -Seconds 1
+            Set-AndroidText -AdbPath $AdbPath -DeviceId $DeviceId -Text $Attachment.FileName
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    if ($pickerDump) {
+        Copy-Item -LiteralPath $pickerDump.Path -Destination (Join-Path $EvidenceDirectory "mobile-payment-e2e-$Timestamp-file-picker-not-found.xml") -Force
+    }
+    throw "Android 파일 선택기에서 테스트 PDF를 찾지 못했습니다: $($Attachment.FileName)"
+}
+
+
+function Select-CameraAttachmentFromDevice {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$EvidenceDirectory,
+        [string]$Timestamp,
+        [object]$Screen
+    )
+
+    $attachmentButtonPoint = $null
+    $paymentDump = $null
+    for ($scrollAttempt = 0; $scrollAttempt -lt 6; $scrollAttempt++) {
+        $paymentDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-camera-attachment-button-$scrollAttempt"
+        $attachmentButtonPoint = Get-NodeCenterByText -Content $paymentDump.Content -Text '내역 첨부하기' -ClassName 'android.widget.Button'
+        if (-not $attachmentButtonPoint) {
+            $attachmentButtonPoint = Get-NodeCenterByText -Content $paymentDump.Content -Text '내역 첨부하기' -ClassName ''
+        }
+        if ($attachmentButtonPoint) {
+            break
+        }
+
+        Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'input', 'swipe', '540', '2050', '540', '900', '700') | Out-Null
+        Start-Sleep -Seconds 2
+    }
+    if (-not $attachmentButtonPoint) {
+        throw 'Payment draft attachment button was not found.'
+    }
+
+    Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $attachmentButtonPoint.X -Y $attachmentButtonPoint.Y
+    $sheetDump = Wait-UiContainsAll `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-payment-e2e-$Timestamp-camera-attachment-action-sheet" `
+        -Needles @('첨부 방식 선택', '카메라 촬영 이미지 업로드') `
+        -StepName '카메라 촬영 이미지 업로드' `
+        -TimeoutSeconds 45
+    Tap-UiText -AdbPath $AdbPath -DeviceId $DeviceId -Content $sheetDump.Content -Text '카메라 촬영 이미지 업로드' -ClassName 'android.widget.TextView' -StepName '카메라 촬영 이미지 업로드'
+    Start-Sleep -Seconds 4
+
+    $cameraDump = $null
+    for ($attempt = 1; $attempt -le 20; $attempt++) {
+        $cameraDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-camera-open-$attempt"
+        if (Dismiss-CameraPermissionDialogIfPresent -AdbPath $AdbPath -DeviceId $DeviceId -Content $cameraDump.Content) {
+            Start-Sleep -Seconds 3
+            continue
+        }
+
+        if ($cameraDump.Content.Contains('Shutter') -or $cameraDump.Content.Contains('shutter_button')) {
+            break
+        }
+
+        Start-Sleep -Seconds 2
+    }
+
+    if (-not $cameraDump -or (-not $cameraDump.Content.Contains('Shutter') -and -not $cameraDump.Content.Contains('shutter_button'))) {
+        throw 'Android camera shutter button was not found.'
+    }
+
+    $shutterPoint = Get-NodeCenterByAttribute -Content $cameraDump.Content -Attribute 'content-desc' -Value 'Shutter' -ClassName ''
+    if (-not $shutterPoint) {
+        $shutterPoint = Get-NodeCenterByAttribute -Content $cameraDump.Content -Attribute 'resource-id' -Value 'com.android.camera2:id/shutter_button' -ClassName ''
+    }
+    if (-not $shutterPoint) {
+        $shutterPoint = [pscustomobject]@{ X = [int]($Screen.Width * 0.5); Y = [int]($Screen.Height * 0.9) }
+    }
+
+    Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $shutterPoint.X -Y $shutterPoint.Y
+    Start-Sleep -Seconds 5
+
+    $reviewDump = $null
+    for ($attempt = 1; $attempt -le 20; $attempt++) {
+        $reviewDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-camera-review-$attempt"
+        if ($reviewDump.Content.Contains('Done') -or $reviewDump.Content.Contains('done_button')) {
+            break
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    if (-not $reviewDump -or (-not $reviewDump.Content.Contains('Done') -and -not $reviewDump.Content.Contains('done_button'))) {
+        throw 'Android camera done button was not found after capture.'
+    }
+
+    $donePoint = Get-NodeCenterByAttribute -Content $reviewDump.Content -Attribute 'content-desc' -Value 'Done' -ClassName ''
+    if (-not $donePoint) {
+        $donePoint = Get-NodeCenterByAttribute -Content $reviewDump.Content -Attribute 'resource-id' -Value 'com.android.camera2:id/done_button' -ClassName ''
+    }
+    if (-not $donePoint) {
+        $donePoint = [pscustomobject]@{ X = [int]($Screen.Width * 0.75); Y = [int]($Screen.Height * 0.88) }
+    }
+
+    Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $donePoint.X -Y $donePoint.Y
+    Start-Sleep -Seconds 5
+
+    $selectedDump = Wait-UiContainsAll `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-payment-e2e-$Timestamp-camera-attachment-selected" `
+        -Needles @('첨부 1건', '카메라') `
+        -StepName 'camera attachment selected' `
+        -TimeoutSeconds 90
+    return $selectedDump
 }
 
 function New-MobileE2EAlphaSuffix {
@@ -1074,6 +1460,273 @@ function Wait-TestPaymentCreated {
     throw '모바일 수금/지급 저장 후 서버 지급내역 조회에서 테스트 지급내역을 찾지 못했습니다.'
 }
 
+function Get-TestPaymentAttachments {
+    param(
+        [string]$BaseUrl,
+        [hashtable]$Headers,
+        [string]$PaymentId
+    )
+
+    $attachments = Invoke-Api -Method Get -BaseUrl $BaseUrl -Relative "payments/$PaymentId/attachments" -Headers $Headers
+    if ($null -eq $attachments) {
+        return @()
+    }
+    return @($attachments)
+}
+
+function Get-TestPaymentAttachmentContent {
+    param(
+        [string]$BaseUrl,
+        [hashtable]$Headers,
+        [object]$Attachment,
+        [string]$EvidenceDirectory,
+        [string]$VoucherSlug,
+        [string]$Timestamp
+    )
+
+    if ($null -eq $Attachment -or [string]::IsNullOrWhiteSpace([string]$Attachment.id)) {
+        throw 'Server attachment content download requires a saved attachment id.'
+    }
+
+    $safeFileName = if ([string]::IsNullOrWhiteSpace([string]$Attachment.fileName)) {
+        "attachment-$($Attachment.id).bin"
+    }
+    else {
+        [IO.Path]::GetFileName([string]$Attachment.fileName)
+    }
+    $downloadPath = Join-Path $EvidenceDirectory "server-$VoucherSlug-payment-attachment-content-$Timestamp-$safeFileName"
+    $uri = $BaseUrl.TrimEnd('/') + "/payments/attachments/$($Attachment.id)/content"
+
+    Invoke-WebRequest -Method Get -Uri $uri -Headers $Headers -TimeoutSec 60 -OutFile $downloadPath | Out-Null
+    if (-not (Test-Path -LiteralPath $downloadPath)) {
+        throw "Server attachment content download did not create a file: $uri"
+    }
+
+    $length = (Get-Item -LiteralPath $downloadPath).Length
+    if ($length -le 0) {
+        throw "Server attachment content download was empty: attachment=$($Attachment.id)"
+    }
+    if ([long]$Attachment.fileSize -gt 0 -and $length -ne [long]$Attachment.fileSize) {
+        throw "Server attachment content size mismatch: expected=$($Attachment.fileSize), actual=$length, attachment=$($Attachment.id)"
+    }
+
+    $sha256 = (Get-FileHash -LiteralPath $downloadPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace([string]$Attachment.fileHash) -and
+        -not [string]::Equals($sha256, ([string]$Attachment.fileHash).Trim().ToLowerInvariant(), [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Server attachment content hash mismatch: expected=$($Attachment.fileHash), actual=$sha256, attachment=$($Attachment.id)"
+    }
+
+    return [pscustomobject]@{
+        Path = $downloadPath
+        Length = $length
+        Sha256 = $sha256
+    }
+}
+
+function Wait-TestPaymentAttachmentCreated {
+    param(
+        [string]$BaseUrl,
+        [hashtable]$Headers,
+        [string]$PaymentId,
+        [string]$ExpectedFileName,
+        [int]$Attempts = 12
+    )
+
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        $matches = Get-TestPaymentAttachments -BaseUrl $BaseUrl -Headers $Headers -PaymentId $PaymentId |
+            Where-Object {
+                [string]$_.fileName -eq $ExpectedFileName -and
+                [string]$_.mimeType -eq 'application/pdf' -and
+                [long]$_.fileSize -gt 0
+            }
+        if (@($matches).Count -gt 0) {
+            return @($matches)[0]
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    throw "모바일 수금/지급 첨부 업로드 후 서버 첨부 목록에서 테스트 PDF를 찾지 못했습니다: $ExpectedFileName"
+}
+
+function Wait-TestPaymentImageAttachmentCreated {
+    param(
+        [string]$BaseUrl,
+        [hashtable]$Headers,
+        [string]$PaymentId,
+        [string]$ExpectedAttachmentType = '카메라',
+        [int]$Attempts = 12
+    )
+
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        $matches = Get-TestPaymentAttachments -BaseUrl $BaseUrl -Headers $Headers -PaymentId $PaymentId |
+            Where-Object {
+                [string]$_.attachmentType -eq $ExpectedAttachmentType -and
+                ([string]$_.mimeType).StartsWith('image/', [StringComparison]::OrdinalIgnoreCase) -and
+                [long]$_.fileSize -gt 0 -and
+                -not [string]::IsNullOrWhiteSpace([string]$_.fileName)
+            }
+        if (@($matches).Count -gt 0) {
+            return @($matches)[0]
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    throw "Mobile payment camera attachment was not found on server after upload: payment=$PaymentId"
+}
+
+function Get-AndroidCurrentFocusSummary {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId
+    )
+
+    try {
+        $windowOutput = Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'dumpsys', 'window')
+        return (($windowOutput | Where-Object { $_ -match 'mCurrentFocus|mFocusedApp' }) -join ' | ')
+    }
+    catch {
+        return "focus-unavailable: $($_.Exception.Message)"
+    }
+}
+
+function Invoke-TestPaymentAttachmentOpenUi {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$EvidenceDirectory,
+        [string]$Timestamp,
+        [string]$VoucherSlug,
+        [object]$Screen,
+        [object]$Fixture,
+        [string]$PaymentId,
+        [object]$Attachment,
+        [string]$PackageName,
+        [bool]$ExerciseListFallback,
+        [System.Collections.Generic.List[object]]$Steps
+    )
+
+    if ($null -eq $Fixture -or [string]::IsNullOrWhiteSpace([string]$Fixture.CustomerName)) {
+        throw 'Attachment open UI E2E requires a fixture customer.'
+    }
+    if ($null -eq $Attachment -or [string]::IsNullOrWhiteSpace([string]$Attachment.fileName)) {
+        throw 'Attachment open UI E2E requires a saved attachment.'
+    }
+
+    for ($navAttempt = 0; $navAttempt -lt 4; $navAttempt++) {
+        $navDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$VoucherSlug-$Timestamp-attachment-open-nav-reset-$navAttempt"
+        if (-not $navDump.Content.Contains('content-desc="Navigate up"')) {
+            break
+        }
+        Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'input', 'keyevent', 'KEYCODE_BACK') | Out-Null
+        Start-Sleep -Seconds 3
+    }
+
+    $customersDump = Open-BottomTabAndAssert `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Timestamp $Timestamp `
+        -Screen $Screen `
+        -TabText '거래처' `
+        -FallbackXRatio 0.30 `
+        -StepName 'attachment-open-customers' `
+        -Needles @('거래처', '거래처명 / 전화 / 사업자번호') `
+        -Steps $Steps
+
+    Tap-UiText -AdbPath $AdbPath -DeviceId $DeviceId -Content $customersDump.Content -Text '거래처명 / 전화 / 사업자번호' -ClassName 'android.widget.EditText' -StepName '거래처 검색 입력'
+    Set-AndroidText -AdbPath $AdbPath -DeviceId $DeviceId -Text $Fixture.CustomerName
+    Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'input', 'keyevent', 'KEYCODE_ESCAPE') | Out-Null
+    Start-Sleep -Seconds 2
+
+    $typedDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$VoucherSlug-$Timestamp-attachment-open-customer-search-typed"
+    $lookupButton = Get-NodeCenterByText -Content $typedDump.Content -Text '조회' -ClassName 'android.widget.Button'
+    if ($lookupButton) {
+        Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $lookupButton.X -Y $lookupButton.Y
+    }
+    Start-Sleep -Seconds 6
+
+    $customerDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$VoucherSlug-$Timestamp-attachment-open-customer-result"
+    Assert-UiContains -Content $customerDump.Content -Needles @($Fixture.CustomerName) -StepName '첨부 열기 거래처 검색 결과'
+    Tap-UiText -AdbPath $AdbPath -DeviceId $DeviceId -Content $customerDump.Content -Text $Fixture.CustomerName -ClassName 'android.widget.TextView' -StepName '첨부 열기 거래처 선택'
+    Start-Sleep -Seconds 5
+
+    $detailDump = Wait-UiContainsAll `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-payment-e2e-$VoucherSlug-$Timestamp-attachment-open-customer-detail" `
+        -Needles @($Fixture.CustomerName, '수금/지급') `
+        -StepName '첨부 열기 거래처 상세' `
+        -TimeoutSeconds 90
+
+    Tap-UiText -AdbPath $AdbPath -DeviceId $DeviceId -Content $detailDump.Content -Text '수금/지급' -ClassName 'android.widget.Button' -StepName '거래처 수금/지급 탭'
+    Start-Sleep -Seconds 4
+
+    $paymentsDump = Wait-UiContainsAll `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-payment-e2e-$VoucherSlug-$Timestamp-attachment-open-payment-history" `
+        -Needles @('첨부 보기') `
+        -StepName '거래처 수금/지급 첨부 보기 버튼' `
+        -TimeoutSeconds 90
+
+    if ($ExerciseListFallback) {
+        $faultTarget = "payments/$PaymentId/attachments"
+        Set-MobileDiagnosticNetworkFault -AdbPath $AdbPath -DeviceId $DeviceId -PackageName $PackageName -Target $faultTarget
+        $Steps.Add([pscustomobject]@{ Step = "mobile-$VoucherSlug-payment-attachment-list-fallback-fault"; Result = 'PASS'; Detail = $faultTarget })
+    }
+
+    Tap-UiText -AdbPath $AdbPath -DeviceId $DeviceId -Content $paymentsDump.Content -Text '첨부 보기' -ClassName 'android.widget.Button' -StepName '거래처 첨부 보기 열기'
+    Start-Sleep -Seconds 4
+
+    $attachmentListDump = Wait-UiContainsAll `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-payment-e2e-$VoucherSlug-$Timestamp-attachment-open-list" `
+        -Needles @('수금/지급 첨부', [string]$Attachment.fileName, '열기') `
+        -StepName '수금/지급 첨부 목록' `
+        -TimeoutSeconds 90
+
+    $Steps.Add([pscustomobject]@{ Step = "mobile-$VoucherSlug-payment-attachment-list-opened"; Result = 'PASS'; Detail = "attachment=$($Attachment.id), file=$($Attachment.fileName), dump=$($attachmentListDump.Path)" })
+
+    Tap-UiText -AdbPath $AdbPath -DeviceId $DeviceId -Content $attachmentListDump.Content -Text '열기' -ClassName 'android.widget.Button' -StepName '수금/지급 첨부 파일 열기'
+    Start-Sleep -Seconds 8
+
+    $afterOpenDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$VoucherSlug-$Timestamp-attachment-open-after-tap"
+    $focusSummary = Get-AndroidCurrentFocusSummary -AdbPath $AdbPath -DeviceId $DeviceId
+    $friendlyNoViewer = $afterOpenDump.Content.Contains('열 수 있는 앱을 찾지 못했습니다')
+    $openedInApp = $afterOpenDump.Content.Contains('첨부 파일을 열었습니다.')
+    $androidResolver = $afterOpenDump.Content.Contains('Open with') -or $afterOpenDump.Content.Contains('Just once') -or $afterOpenDump.Content.Contains('Always')
+    $externalActivity = -not [string]::IsNullOrWhiteSpace($focusSummary) -and
+        -not $focusSummary.Contains($PackageName) -and
+        $focusSummary.IndexOf('nexuslauncher', [StringComparison]::OrdinalIgnoreCase) -lt 0 -and
+        $focusSummary.IndexOf('Launcher', [StringComparison]::OrdinalIgnoreCase) -lt 0
+
+    if (-not ($friendlyNoViewer -or $openedInApp -or $androidResolver -or $externalActivity)) {
+        if ($afterOpenDump.Content.Contains('첨부 열기 실패')) {
+            throw "첨부 열기 버튼이 사용자 친화적 안내 없이 실패했습니다: focus=$focusSummary"
+        }
+
+        throw "첨부 열기 버튼 실행 결과를 확인하지 못했습니다: focus=$focusSummary, dump=$($afterOpenDump.Path)"
+    }
+
+    $openResult = if ($externalActivity) {
+        "external-activity: $focusSummary"
+    }
+    elseif ($androidResolver) {
+        'android-resolver'
+    }
+    elseif ($openedInApp) {
+        'opened'
+    }
+    else {
+        'friendly-no-viewer'
+    }
+    $Steps.Add([pscustomobject]@{ Step = "mobile-$VoucherSlug-payment-attachment-open-button"; Result = 'PASS'; Detail = "result=$openResult, dump=$($afterOpenDump.Path)" })
+}
+
 function Get-SyncTransactionById {
     param(
         [string]$BaseUrl,
@@ -1198,6 +1851,10 @@ $fixture = $null
 $createdInvoice = $null
 $createdPayment = $null
 $createdTransaction = $null
+$createdAttachment = $null
+$createdAttachmentContent = $null
+$attachmentFixture = $null
+$attachmentModeText = if ($ExerciseCameraAttachmentUpload) { 'Camera' } elseif ($ExerciseAttachmentUpload) { 'PDF' } else { 'None' }
 $localApiStoppedForExercise = $false
 $resultStatus = 'FAIL'
 $errorMessage = $null
@@ -1314,6 +1971,28 @@ try {
     $paymentDump = Get-UiDump -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$voucherSlug-$timestamp-payment-page"
     Assert-UiContains -Content $paymentDump.Content -Needles @("$paymentAction 입력", $expectedMethod) -StepName '수금/지급 입력 화면'
 
+    if ($ExerciseAttachmentUpload) {
+        $attachmentFixture = New-TestAttachmentPdf -EvidenceDirectory $EvidenceDirectory -Timestamp $timestamp
+        Push-TestAttachmentToDevice -AdbPath $resolvedAdb -DeviceId $deviceId -Attachment $attachmentFixture
+        $selectedAttachmentDump = Select-PdfAttachmentFromDevice `
+            -AdbPath $resolvedAdb `
+            -DeviceId $deviceId `
+            -EvidenceDirectory $EvidenceDirectory `
+            -Timestamp "mobile-payment-e2e-$voucherSlug-$timestamp" `
+            -Attachment $attachmentFixture
+        $steps.Add([pscustomobject]@{ Step = "mobile-$voucherSlug-payment-attachment-selected"; Result = 'PASS'; Detail = "file=$($attachmentFixture.FileName), dump=$($selectedAttachmentDump.Path)" })
+    }
+    elseif ($ExerciseCameraAttachmentUpload) {
+        Grant-CameraPermissionIfPossible -AdbPath $resolvedAdb -DeviceId $deviceId -PackageName $PackageName
+        $selectedAttachmentDump = Select-CameraAttachmentFromDevice `
+            -AdbPath $resolvedAdb `
+            -DeviceId $deviceId `
+            -EvidenceDirectory $EvidenceDirectory `
+            -Timestamp "mobile-payment-e2e-$voucherSlug-$timestamp" `
+            -Screen $screen
+        $steps.Add([pscustomobject]@{ Step = "mobile-$voucherSlug-payment-camera-attachment-selected"; Result = 'PASS'; Detail = "dump=$($selectedAttachmentDump.Path)" })
+    }
+
     $saveButtonPoint = $null
     for ($scrollAttempt = 0; $scrollAttempt -lt 5; $scrollAttempt++) {
         $paymentDump = Get-UiDump -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$voucherSlug-$timestamp-payment-save-$scrollAttempt"
@@ -1419,6 +2098,73 @@ try {
         $steps.Add([pscustomobject]@{ Step = "mobile-$voucherSlug-payment-create"; Result = 'PASS'; Detail = "payment=$($createdPayment.id), transaction=$($createdTransaction.id), method=$expectedMethod, amount=$expectedAmount" })
     }
 
+    if ($ExerciseAttachmentUpload -or $ExerciseCameraAttachmentUpload) {
+        try {
+            if ($ExerciseAttachmentUpload) {
+                $createdAttachment = Wait-TestPaymentAttachmentCreated -BaseUrl $BaseUrl -Headers $headers -PaymentId $createdPayment.id -ExpectedFileName $attachmentFixture.FileName -Attempts 6
+            }
+            else {
+                $createdAttachment = Wait-TestPaymentImageAttachmentCreated -BaseUrl $BaseUrl -Headers $headers -PaymentId $createdPayment.id -ExpectedAttachmentType '카메라' -Attempts 6
+            }
+        }
+        catch {
+            $attachmentSyncDump = Open-BottomTabAndAssert `
+                -AdbPath $resolvedAdb `
+                -DeviceId $deviceId `
+                -EvidenceDirectory $EvidenceDirectory `
+                -Timestamp $timestamp `
+                -Screen $screen `
+                -TabText '동기화' `
+                -FallbackXRatio 0.84 `
+                -StepName 'sync-status-before-payment-attachment-upload' `
+                -Needles @('동기화 상태', '첨부', '권장 동기화 실행', '서버에서 받기', '서버에 올리기') `
+                -Steps $steps
+
+            Invoke-SyncNowAndAssert `
+                -AdbPath $resolvedAdb `
+                -DeviceId $deviceId `
+                -EvidenceDirectory $EvidenceDirectory `
+                -Timestamp $timestamp `
+                -SyncContent $attachmentSyncDump.Content `
+                -Steps $steps | Out-Null
+
+            if ($ExerciseAttachmentUpload) {
+                $createdAttachment = Wait-TestPaymentAttachmentCreated -BaseUrl $BaseUrl -Headers $headers -PaymentId $createdPayment.id -ExpectedFileName $attachmentFixture.FileName -Attempts 12
+            }
+            else {
+                $createdAttachment = Wait-TestPaymentImageAttachmentCreated -BaseUrl $BaseUrl -Headers $headers -PaymentId $createdPayment.id -ExpectedAttachmentType '카메라' -Attempts 12
+            }
+        }
+
+        $attachmentStepName = if ($ExerciseCameraAttachmentUpload) { "server-$voucherSlug-payment-camera-attachment-upload" } else { "server-$voucherSlug-payment-attachment-upload" }
+        $steps.Add([pscustomobject]@{ Step = $attachmentStepName; Result = 'PASS'; Detail = "attachment=$($createdAttachment.id), payment=$($createdPayment.id), type=$($createdAttachment.attachmentType), file=$($createdAttachment.fileName), mime=$($createdAttachment.mimeType), size=$($createdAttachment.fileSize)" })
+        $createdAttachmentContent = Get-TestPaymentAttachmentContent `
+            -BaseUrl $BaseUrl `
+            -Headers $headers `
+            -Attachment $createdAttachment `
+            -EvidenceDirectory $EvidenceDirectory `
+            -VoucherSlug $voucherSlug `
+            -Timestamp $timestamp
+        $steps.Add([pscustomobject]@{ Step = "server-$voucherSlug-payment-attachment-content-download"; Result = 'PASS'; Detail = "path=$($createdAttachmentContent.Path), bytes=$($createdAttachmentContent.Length), sha256=$($createdAttachmentContent.Sha256)" })
+
+        if ($ExerciseAttachmentOpenUi) {
+            Invoke-TestPaymentAttachmentOpenUi `
+                -AdbPath $resolvedAdb `
+                -DeviceId $deviceId `
+                -EvidenceDirectory $EvidenceDirectory `
+                -Timestamp $timestamp `
+                -VoucherSlug $voucherSlug `
+                -Screen $screen `
+                -Fixture $fixture `
+                -PaymentId $createdPayment.id `
+                -Attachment $createdAttachment `
+                -PackageName $PackageName `
+                -ExerciseListFallback ([bool]$ExerciseAttachmentListFallback) `
+                -Steps $steps
+        }
+    }
+
+
     $resultStatus = 'PASS'
 }
 catch {
@@ -1467,12 +2213,20 @@ $result = [pscustomobject]@{
     PackageName = $PackageName
     VoucherKind = $VoucherKind
     ExerciseStoppedServerDirtySync = [bool]$ExerciseStoppedServerDirtySync
+    ExerciseAttachmentOpenUi = [bool]$ExerciseAttachmentOpenUi
+    ExerciseAttachmentListFallback = [bool]$ExerciseAttachmentListFallback
     Result = $resultStatus
     Error = $errorMessage
     Fixture = if ($fixture) { [pscustomobject]@{ CustomerId = $fixture.Customer.id; CustomerName = $fixture.CustomerName; ItemId = $fixture.Item.id; ItemName = $fixture.ItemName } } else { $null }
     CreatedInvoiceId = if ($createdInvoice) { $createdInvoice.id } else { $null }
     CreatedPaymentId = if ($createdPayment) { $createdPayment.id } else { $null }
     CreatedTransactionId = if ($createdTransaction) { $createdTransaction.id } else { $null }
+    CreatedAttachmentId = if ($createdAttachment) { $createdAttachment.id } else { $null }
+    AttachmentMode = $attachmentModeText
+    AttachmentFileName = if ($createdAttachment) { $createdAttachment.fileName } elseif ($attachmentFixture) { $attachmentFixture.FileName } else { $null }
+    AttachmentMimeType = if ($createdAttachment) { $createdAttachment.mimeType } else { $null }
+    AttachmentContentPath = if ($createdAttachmentContent) { $createdAttachmentContent.Path } else { $null }
+    AttachmentContentSha256 = if ($createdAttachmentContent) { $createdAttachmentContent.Sha256 } else { $null }
     Steps = $steps
     Cleanup = $cleanupSteps
 }
@@ -1490,6 +2244,11 @@ $mdLines = @(
     "- 전표유형: $VoucherKind",
     "- 기본 방식: $expectedMethod",
     "- 실제 API 중단 dirty 동기화 실행: $([bool]$ExerciseStoppedServerDirtySync)",
+    "- PDF attachment upload exercised: $([bool]$ExerciseAttachmentUpload)",
+    "- Camera attachment upload exercised: $([bool]$ExerciseCameraAttachmentUpload)",
+    "- Attachment open UI exercised: $([bool]$ExerciseAttachmentOpenUi)",
+    "- Attachment list fallback exercised: $([bool]$ExerciseAttachmentListFallback)",
+    "- Attachment mode: $attachmentModeText",
     "- 결과: $resultStatus",
     "- 오류: $errorMessage",
     '',
@@ -1499,6 +2258,7 @@ $mdLines = @(
     "- 대상 전표: $($result.CreatedInvoiceId)",
     "- 생성 수금/지급: $($result.CreatedPaymentId)",
     "- 연결 거래내역: $($result.CreatedTransactionId)",
+    "- 생성 첨부: $($result.CreatedAttachmentId) / $($result.AttachmentFileName) / $($result.AttachmentMimeType)",
     '',
     '## 단계',
     ''

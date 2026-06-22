@@ -205,6 +205,7 @@ public sealed class JsonSyncStateStore
                state.PendingRentalManagementCompanyCount > 0 ||
                state.PendingRentalBillingProfileCount > 0 ||
                state.PendingRentalAssetCount > 0 ||
+               state.PendingRentalAssetAssignmentHistoryCount > 0 ||
                state.PendingRentalBillingLogCount > 0 ||
                state.PendingPaymentAttachmentCount > 0 ||
                (state.PendingPush.Customers?.Count ?? 0) > 0 ||
@@ -227,6 +228,7 @@ public sealed class JsonSyncStateStore
         target.ConsecutiveFailureCount = source.ConsecutiveFailureCount;
         target.LastPulledCustomerCount = source.LastPulledCustomerCount;
         target.LastPulledItemCount = source.LastPulledItemCount;
+        target.LastPulledItemWarehouseStockCount = source.LastPulledItemWarehouseStockCount;
         target.LastPulledPriceGradeOptionCount = source.LastPulledPriceGradeOptionCount;
         target.LastPulledInvoiceCount = source.LastPulledInvoiceCount;
         target.LastPulledPaymentCount = source.LastPulledPaymentCount;
@@ -236,7 +238,11 @@ public sealed class JsonSyncStateStore
         target.LastPulledRentalManagementCompanyCount = source.LastPulledRentalManagementCompanyCount;
         target.LastPulledRentalBillingProfileCount = source.LastPulledRentalBillingProfileCount;
         target.LastPulledRentalAssetCount = source.LastPulledRentalAssetCount;
+        target.LastPulledRentalAssetAssignmentHistoryCount = source.LastPulledRentalAssetAssignmentHistoryCount;
         target.LastPulledRentalBillingLogCount = source.LastPulledRentalBillingLogCount;
+        target.SyncedCustomers = source.SyncedCustomers;
+        target.SyncedItems = source.SyncedItems;
+        target.SyncedItemWarehouseStocks = source.SyncedItemWarehouseStocks;
         target.SyncedInvoices = source.SyncedInvoices;
         target.SyncedPayments = source.SyncedPayments;
         target.SyncedTransactions = source.SyncedTransactions;
@@ -245,6 +251,7 @@ public sealed class JsonSyncStateStore
         target.SyncedRentalManagementCompanies = source.SyncedRentalManagementCompanies;
         target.SyncedRentalBillingProfiles = source.SyncedRentalBillingProfiles;
         target.SyncedRentalAssets = source.SyncedRentalAssets;
+        target.SyncedRentalAssetAssignmentHistories = source.SyncedRentalAssetAssignmentHistories;
         target.SyncedRentalBillingLogs = source.SyncedRentalBillingLogs;
         target.SyncedPriceGradeOptions = source.SyncedPriceGradeOptions;
         target.PendingPush = source.PendingPush;

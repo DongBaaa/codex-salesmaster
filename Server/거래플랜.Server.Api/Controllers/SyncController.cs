@@ -113,7 +113,7 @@ public sealed class SyncController : ControllerBase
 
         var response = new SyncPullResponse
         {
-            CompanyProfiles = await _dbContext.CompanyProfiles.IgnoreQueryFilters().AsNoTracking()
+            CompanyProfiles = await _officeScopeService.ApplyCompanyProfileScope(_dbContext.CompanyProfiles.IgnoreQueryFilters().AsNoTracking())
                 .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
             Units = DeduplicatePulledUnits(await _dbContext.Units.IgnoreQueryFilters().AsNoTracking()
                 .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken)),
@@ -307,7 +307,8 @@ public sealed class SyncController : ControllerBase
         await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
         try
         {
-            await UpsertEntitiesAsync(request.CompanyProfiles ?? [], _dbContext.CompanyProfiles,
+            var scopedCompanyProfiles = await PrepareScopedCompanyProfilesAsync(request.CompanyProfiles ?? [], result, cancellationToken);
+            await UpsertEntitiesAsync(scopedCompanyProfiles, _dbContext.CompanyProfiles,
                 (e, d) => e.Apply(d), d => new CompanyProfile { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
             await UpsertUnitsAsync(request.Units ?? [], result, deviceId, cancellationToken);
             await UpsertCustomerCategoriesAsync(request.CustomerCategories ?? [], result, deviceId, cancellationToken);
@@ -462,7 +463,7 @@ public sealed class SyncController : ControllerBase
                 await _inventoryLedgerService.RebuildAsync(cancellationToken);
 
             await _dbContext.SaveChangesAsync(cancellationToken);
-            await PopulateAcceptedRevisionsAsync(result, request.CompanyProfiles ?? [], _dbContext.CompanyProfiles, nameof(CompanyProfile), cancellationToken);
+            await PopulateAcceptedRevisionsAsync(result, scopedCompanyProfiles, _dbContext.CompanyProfiles, nameof(CompanyProfile), cancellationToken);
             await PopulateAcceptedRevisionsAsync(result, request.Units ?? [], _dbContext.Units, nameof(Unit), cancellationToken);
             await PopulateAcceptedRevisionsAsync(result, request.CustomerCategories ?? [], _dbContext.CustomerCategories, nameof(CustomerCategory), cancellationToken);
             await PopulateAcceptedRevisionsAsync(result, request.PriceGradeOptions ?? [], _dbContext.PriceGradeOptions, nameof(PriceGradeOption), cancellationToken);
@@ -478,6 +479,7 @@ public sealed class SyncController : ControllerBase
             await PopulateAcceptedRevisionsAsync(result, validInventoryTransfers, _dbContext.InventoryTransfers, nameof(InventoryTransfer), cancellationToken);
             await PopulateAcceptedRevisionsAsync(result, scopedRentalCompanies, _dbContext.RentalManagementCompanies, nameof(RentalManagementCompany), cancellationToken);
             await PopulateAcceptedRevisionsAsync(result, validRentalProfiles, _dbContext.RentalBillingProfiles, nameof(RentalBillingProfile), cancellationToken);
+            await DeduplicateOpenConflictLogsForResultAsync(result.Conflicts, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
         }
         catch
@@ -567,13 +569,13 @@ public sealed class SyncController : ControllerBase
 
             if (HasExpectedRevisionConflict(entity, dto))
             {
-                AddServerConflict(dto, entity, entityName, BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result);
+                await AddServerConflictAsync(dto, entity, entityName, BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result, cancellationToken);
                 continue;
             }
 
             if (IsServerEntityNewer(entity, dto))
             {
-                AddServerConflict(dto, entity, entityName, "Server version is newer.", result);
+                await AddServerConflictAsync(dto, entity, entityName, "Server version is newer.", result, cancellationToken);
                 continue;
             }
 
@@ -657,13 +659,13 @@ public sealed class SyncController : ControllerBase
 
             if (HasExpectedRevisionConflict(entity, dto))
             {
-                AddServerConflict(dto, entity, nameof(CustomerCategory), BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result);
+                await AddServerConflictAsync(dto, entity, nameof(CustomerCategory), BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result, cancellationToken);
                 continue;
             }
 
             if (IsServerEntityNewer(entity, dto))
             {
-                AddServerConflict(dto, entity, nameof(CustomerCategory), "Server version is newer.", result);
+                await AddServerConflictAsync(dto, entity, nameof(CustomerCategory), "Server version is newer.", result, cancellationToken);
                 continue;
             }
 
@@ -779,13 +781,13 @@ public sealed class SyncController : ControllerBase
 
             if (HasExpectedRevisionConflict(entity, dto))
             {
-                AddServerConflict(dto, entity, nameof(Unit), BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result);
+                await AddServerConflictAsync(dto, entity, nameof(Unit), BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result, cancellationToken);
                 continue;
             }
 
             if (IsServerEntityNewer(entity, dto))
             {
-                AddServerConflict(dto, entity, nameof(Unit), "Server version is newer.", result);
+                await AddServerConflictAsync(dto, entity, nameof(Unit), "Server version is newer.", result, cancellationToken);
                 continue;
             }
 
@@ -850,13 +852,13 @@ public sealed class SyncController : ControllerBase
 
             if (HasExpectedRevisionConflict(entity, dto))
             {
-                AddServerConflict(dto, entity, entityName, BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result);
+                await AddServerConflictAsync(dto, entity, entityName, BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result, cancellationToken);
                 continue;
             }
 
             if (IsServerEntityNewer(entity, dto))
             {
-                AddServerConflict(dto, entity, entityName, "Server version is newer.", result);
+                await AddServerConflictAsync(dto, entity, entityName, "Server version is newer.", result, cancellationToken);
                 continue;
             }
 
@@ -907,7 +909,7 @@ public sealed class SyncController : ControllerBase
             if (dto.VersionGroupId == Guid.Empty)
                 dto.VersionGroupId = entity.VersionGroupId == Guid.Empty ? entity.Id : entity.VersionGroupId;
 
-            if (!_officeScopeService.CanWriteOfficeForInvoices(entity.ResponsibleOfficeCode, entity.TenantCode))
+            if (!_officeScopeService.CanWriteOfficeForInvoices(entity.ResponsibleOfficeCode, entity.TenantCode, entity.OfficeCode))
             {
                 AddClientConflict(dto, nameof(Invoice), "Current account cannot modify this office scope.", result);
                 continue;
@@ -915,13 +917,13 @@ public sealed class SyncController : ControllerBase
 
             if (HasExpectedRevisionConflict(entity, dto))
             {
-                AddServerConflict(dto, entity, nameof(Invoice), BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result);
+                await AddServerConflictAsync(dto, entity, nameof(Invoice), BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result, cancellationToken);
                 continue;
             }
 
             if (IsServerEntityNewer(entity, dto))
             {
-                AddServerConflict(dto, entity, nameof(Invoice), "Server version is newer.", result);
+                await AddServerConflictAsync(dto, entity, nameof(Invoice), "Server version is newer.", result, cancellationToken);
                 continue;
             }
 
@@ -1043,6 +1045,55 @@ public sealed class SyncController : ControllerBase
         targets.Add((profileId.Value, runId));
     }
 
+    private async Task<List<CompanyProfileDto>> PrepareScopedCompanyProfilesAsync(
+        IEnumerable<CompanyProfileDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        var scoped = new List<CompanyProfileDto>();
+
+        foreach (var dto in payload)
+        {
+            var existing = await _dbContext.CompanyProfiles.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(profile => profile.Id == dto.Id, cancellationToken);
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForCompanyProfiles(existing.OfficeCode))
+            {
+                AddClientConflict(dto, nameof(CompanyProfile), "Current account cannot modify this company profile office scope.", result);
+                continue;
+            }
+
+            if (OfficeCodeCatalog.TryNormalizeOfficeCode(dto.OfficeCode, out var requestedOfficeCode))
+            {
+                if (!_officeScopeService.CanWriteOfficeForCompanyProfiles(requestedOfficeCode))
+                {
+                    AddClientConflict(dto, nameof(CompanyProfile), "Requested company profile office is outside the writable office scope.", result);
+                    continue;
+                }
+
+                dto.OfficeCode = requestedOfficeCode;
+            }
+            else if (OfficeCodeCatalog.TryNormalizeOfficeCode(existing?.OfficeCode, out var existingOfficeCode) &&
+                     _officeScopeService.CanWriteOfficeForCompanyProfiles(existingOfficeCode))
+            {
+                dto.OfficeCode = existingOfficeCode;
+            }
+            else
+            {
+                dto.OfficeCode = _officeScopeService.CurrentOfficeCode;
+            }
+
+            if (!_officeScopeService.CanWriteOfficeForCompanyProfiles(dto.OfficeCode))
+            {
+                AddClientConflict(dto, nameof(CompanyProfile), "Current account cannot modify this company profile office scope.", result);
+                continue;
+            }
+
+            scoped.Add(dto);
+        }
+
+        return scoped;
+    }
+
     private async Task<List<CustomerMasterDto>> PrepareScopedCustomerMastersAsync(
         IEnumerable<CustomerMasterDto> payload,
         SyncPushResult result,
@@ -1104,7 +1155,7 @@ public sealed class SyncController : ControllerBase
         {
             var existing = await _dbContext.Customers.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
-            if (existing is not null && !_officeScopeService.CanWriteOfficeForCustomers(existing.ResponsibleOfficeCode, existing.TenantCode))
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForCustomers(existing.ResponsibleOfficeCode, existing.TenantCode, existing.OfficeCode))
             {
                 AddClientConflict(dto, nameof(Customer), "Current account cannot modify this office scope.", result);
                 continue;
@@ -1287,6 +1338,19 @@ public sealed class SyncController : ControllerBase
             {
                 AddClientConflict(dto, nameof(Item), "Current account cannot modify this office scope.", result);
                 continue;
+            }
+
+            if (dto.IsDeleted && existing is not null && !existing.IsDeleted)
+            {
+                var referenceBlockMessage = await ItemDeletionReferenceGuard.BuildActiveReferenceBlockMessageAsync(
+                    _dbContext,
+                    existing.Id,
+                    cancellationToken);
+                if (referenceBlockMessage is not null)
+                {
+                    AddClientConflict(dto, nameof(Item), referenceBlockMessage, result);
+                    continue;
+                }
             }
 
             dto.OfficeCode = resolvedOfficeCode;
@@ -1572,7 +1636,7 @@ public sealed class SyncController : ControllerBase
         {
             var existing = await _dbContext.Transactions.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
-            if (existing is not null && !_officeScopeService.CanWriteOfficeForPayments(existing.ResponsibleOfficeCode, existing.TenantCode))
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForPayments(existing.ResponsibleOfficeCode, existing.TenantCode, existing.OfficeCode))
             {
                 AddClientConflict(dto, nameof(TransactionRecord), "Current account cannot modify this office scope.", result);
                 continue;
@@ -1641,11 +1705,50 @@ public sealed class SyncController : ControllerBase
                         "transaction-invoice-link-cleared",
                         $"수금/지급 '{dto.Id:D}'은(는) 연결 전표를 찾지 못해 전표 연결을 해제하고 일반 처리 기준으로 보정했습니다.");
                 }
-                else if (!_officeScopeService.CanWriteOfficeForPayments(invoice.ResponsibleOfficeCode, invoice.TenantCode))
+                else if (!_officeScopeService.CanWriteOfficeForPayments(invoice.ResponsibleOfficeCode, invoice.TenantCode, invoice.OfficeCode))
                 {
                     AddClientConflict(dto, nameof(TransactionRecord),
                         $"Referenced invoice is outside the writable payment office scope: {dto.LinkedInvoiceId}.", result);
                     continue;
+                }
+
+                if (invoice is not null && (invoice.Customer is null || invoice.Customer.IsDeleted))
+                {
+                    if (dto.IsDeleted)
+                    {
+                        valid.Add(dto);
+                        continue;
+                    }
+
+                    AddClientConflict(dto, nameof(TransactionRecord),
+                        $"Referenced invoice customer was not found: {invoice.CustomerId}.", result);
+                    continue;
+                }
+
+                if (invoice is not null && existing is null && !dto.IsDeleted && dto.ExpectedRevision > 0 && invoice.Revision != dto.ExpectedRevision)
+                {
+                    AddClientConflict(dto, nameof(TransactionRecord),
+                        $"Referenced invoice revision mismatch. client={dto.ExpectedRevision}, server={invoice.Revision}", result);
+                    continue;
+                }
+
+                var transactionSettlementAmount = Math.Abs(dto.SettlementAmount);
+                if (invoice is not null && existing is null && !dto.IsDeleted && dto.ExpectedRevision > 0 && transactionSettlementAmount > 0m)
+                {
+                    var serverSettledAmounts = await _dbContext.Payments.IgnoreQueryFilters()
+                        .Where(payment =>
+                            payment.InvoiceId == invoice.Id &&
+                            !payment.IsDeleted &&
+                            payment.Id != dto.Id)
+                        .Select(payment => payment.Amount)
+                        .ToListAsync(cancellationToken);
+                    var outstandingAmount = Math.Max(0m, invoice.TotalAmount - serverSettledAmounts.Sum());
+                    if (transactionSettlementAmount > outstandingAmount)
+                    {
+                        AddClientConflict(dto, nameof(TransactionRecord),
+                            $"Transaction amount exceeds current outstanding balance. outstanding={outstandingAmount:N0}, amount={transactionSettlementAmount:N0}.", result);
+                        continue;
+                    }
                 }
             }
 
@@ -1671,7 +1774,7 @@ public sealed class SyncController : ControllerBase
                         "transaction-rental-link-cleared",
                         $"수금/지급 '{dto.Id:D}'은(는) 연결 렌탈 청구 대상을 찾지 못해 렌탈 연결을 해제하고 일반 수금으로 보정했습니다.");
                 }
-                else if (!_officeScopeService.CanWriteOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode))
+                else if (!_officeScopeService.CanWriteOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode, profile.OfficeCode))
                 {
                     AddClientConflict(dto, nameof(TransactionRecord),
                         $"Referenced rental billing profile is outside the writable office scope: {dto.LinkedRentalBillingProfileId}.", result);
@@ -1727,10 +1830,18 @@ public sealed class SyncController : ControllerBase
                 }
             }
 
-            if (!_officeScopeService.CanReadOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode))
+            if (!_officeScopeService.CanWriteOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode))
             {
+                if (dto.IsDeleted &&
+                    existing is not null &&
+                    _officeScopeService.CanWriteOfficeForPayments(existing.ResponsibleOfficeCode, existing.TenantCode, existing.OfficeCode))
+                {
+                    valid.Add(dto);
+                    continue;
+                }
+
                 AddClientConflict(dto, nameof(TransactionRecord),
-                    $"Referenced customer is outside the readable office scope: {dto.CustomerId}.", result);
+                    $"Referenced customer is outside the writable office scope: {dto.CustomerId}.", result);
                 continue;
             }
 
@@ -1809,7 +1920,7 @@ public sealed class SyncController : ControllerBase
                 .Include(current => current.Transaction)
                 .FirstOrDefaultAsync(current => current.Id == dto.Id, cancellationToken);
             if (existing?.Transaction is not null &&
-                !_officeScopeService.CanWriteOfficeForPayments(existing.Transaction.ResponsibleOfficeCode, existing.Transaction.TenantCode))
+                !_officeScopeService.CanWriteOfficeForPayments(existing.Transaction.ResponsibleOfficeCode, existing.Transaction.TenantCode, existing.Transaction.OfficeCode))
             {
                 AddClientConflict(dto, nameof(TransactionAttachment),
                     $"Existing transaction is outside the writable office scope: {existing.TransactionId}.", result);
@@ -1836,7 +1947,7 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            if (!_officeScopeService.CanWriteOfficeForPayments(transaction.ResponsibleOfficeCode, transaction.TenantCode))
+            if (!_officeScopeService.CanWriteOfficeForPayments(transaction.ResponsibleOfficeCode, transaction.TenantCode, transaction.OfficeCode))
             {
                 AddClientConflict(dto, nameof(TransactionAttachment),
                     $"Referenced transaction is outside the writable office scope: {dto.TransactionId}.", result);
@@ -2066,13 +2177,13 @@ public sealed class SyncController : ControllerBase
 
             if (HasExpectedRevisionConflict(entity, dto))
             {
-                AddServerConflict(dto, entity, nameof(InventoryTransfer), BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result);
+                await AddServerConflictAsync(dto, entity, nameof(InventoryTransfer), BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result, cancellationToken);
                 continue;
             }
 
             if (IsServerEntityNewer(entity, dto))
             {
-                AddServerConflict(dto, entity, nameof(InventoryTransfer), "Server version is newer.", result);
+                await AddServerConflictAsync(dto, entity, nameof(InventoryTransfer), "Server version is newer.", result, cancellationToken);
                 continue;
             }
 
@@ -2219,7 +2330,7 @@ public sealed class SyncController : ControllerBase
                 }
             }
 
-            if (existing is not null && !_officeScopeService.CanWriteOfficeForRentals(existing.ResponsibleOfficeCode, existing.TenantCode))
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForRentals(existing.ResponsibleOfficeCode, existing.TenantCode, existing.OfficeCode))
             {
                 AddClientConflict(dto, nameof(RentalBillingProfile), "Current account cannot modify this office scope.", result);
                 continue;
@@ -2369,13 +2480,13 @@ public sealed class SyncController : ControllerBase
 
             if (HasExpectedRevisionConflict(entity, dto))
             {
-                AddServerConflict(dto, entity, nameof(RentalBillingProfile), BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result);
+                await AddServerConflictAsync(dto, entity, nameof(RentalBillingProfile), BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision), result, cancellationToken);
                 continue;
             }
 
             if (IsServerEntityNewer(entity, dto))
             {
-                AddServerConflict(dto, entity, nameof(RentalBillingProfile), "Server version is newer.", result);
+                await AddServerConflictAsync(dto, entity, nameof(RentalBillingProfile), "Server version is newer.", result, cancellationToken);
                 continue;
             }
 
@@ -2444,7 +2555,7 @@ public sealed class SyncController : ControllerBase
                 }
             }
 
-            if (!_officeScopeService.CanWriteOfficeForRentals(dto.ResponsibleOfficeCode, dto.TenantCode))
+            if (!_officeScopeService.CanWriteOfficeForRentals(dto.ResponsibleOfficeCode, dto.TenantCode, dto.OfficeCode))
             {
                 AddClientConflict(dto, nameof(RentalBillingProfile),
                     $"Rental billing profile resolves outside the writable office scope: {dto.ResponsibleOfficeCode}.", result);
@@ -2552,6 +2663,50 @@ public sealed class SyncController : ControllerBase
                     .SetProperty(conflict => conflict.ResolvedAtUtc, now)
                     .SetProperty(conflict => conflict.ResolutionNote, normalizedNote),
                 cancellationToken);
+    }
+
+    private async Task DeduplicateOpenConflictLogsForResultAsync(
+        IReadOnlyCollection<ConflictLogDto> conflicts,
+        CancellationToken cancellationToken)
+    {
+        if (conflicts.Count == 0)
+            return;
+
+        var fingerprints = conflicts
+            .Select(conflict => new
+            {
+                EntityName = (conflict.EntityName ?? string.Empty).Trim(),
+                EntityId = (conflict.EntityId ?? string.Empty).Trim(),
+                Reason = conflict.Reason ?? string.Empty
+            })
+            .Where(conflict =>
+                !string.IsNullOrWhiteSpace(conflict.EntityName) ||
+                !string.IsNullOrWhiteSpace(conflict.EntityId) ||
+                !string.IsNullOrWhiteSpace(conflict.Reason))
+            .Distinct()
+            .ToList();
+
+        foreach (var fingerprint in fingerprints)
+        {
+            var ids = await _dbContext.ConflictLogs
+                .Where(conflict =>
+                    conflict.Status != "Resolved" &&
+                    conflict.EntityName == fingerprint.EntityName &&
+                    conflict.EntityId == fingerprint.EntityId &&
+                    conflict.Reason == fingerprint.Reason)
+                .OrderByDescending(conflict => conflict.CreatedAtUtc)
+                .ThenByDescending(conflict => conflict.Id)
+                .Select(conflict => conflict.Id)
+                .ToListAsync(cancellationToken);
+
+            if (ids.Count <= 1)
+                continue;
+
+            var duplicateIds = ids.Skip(1).ToList();
+            await _dbContext.ConflictLogs
+                .Where(conflict => duplicateIds.Contains(conflict.Id))
+                .ExecuteDeleteAsync(cancellationToken);
+        }
     }
 
     private static string NormalizeDeviceId(string? deviceId)
@@ -2678,7 +2833,7 @@ public sealed class SyncController : ControllerBase
                     dto.Id = existing.Id;
             }
 
-            if (existing is not null && !_officeScopeService.CanWriteOfficeForRentals(existing.ResponsibleOfficeCode, existing.TenantCode))
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForRentals(existing.ResponsibleOfficeCode, existing.TenantCode, existing.OfficeCode))
             {
                 AddClientConflict(dto, nameof(RentalAsset), "Current account cannot modify this office scope.", result);
                 continue;
@@ -2760,7 +2915,7 @@ public sealed class SyncController : ControllerBase
             }
 
             if (asset is not null && !asset.IsDeleted &&
-                !_officeScopeService.CanWriteOfficeForRentals(asset.ResponsibleOfficeCode, asset.TenantCode))
+                !_officeScopeService.CanWriteOfficeForRentals(asset.ResponsibleOfficeCode, asset.TenantCode, asset.OfficeCode))
             {
                 AddClientConflict(dto, nameof(RentalAssetAssignmentHistory),
                     $"Referenced rental asset is outside the writable office scope: {dto.AssetId}.", result);
@@ -2789,7 +2944,7 @@ public sealed class SyncController : ControllerBase
                              ?? asset?.TenantCode
                              ?? dto.TenantCode;
 
-            if (!_officeScopeService.CanWriteOfficeForRentals(responsibleOfficeCode, tenantCode))
+            if (!_officeScopeService.CanWriteOfficeForRentals(responsibleOfficeCode, tenantCode, officeCode))
             {
                 AddClientConflict(dto, nameof(RentalAssetAssignmentHistory), "Current account cannot modify this office scope.", result);
                 continue;
@@ -2854,7 +3009,7 @@ public sealed class SyncController : ControllerBase
 
             if (billingProfile is not null &&
                 !billingProfile.IsDeleted &&
-                !_officeScopeService.CanWriteOfficeForRentals(billingProfile.ResponsibleOfficeCode, billingProfile.TenantCode))
+                !_officeScopeService.CanWriteOfficeForRentals(billingProfile.ResponsibleOfficeCode, billingProfile.TenantCode, billingProfile.OfficeCode))
             {
                 AddClientConflict(dto, nameof(RentalAssetAssignmentHistory),
                     $"Referenced rental billing profile is outside the writable office scope: {dto.BillingProfileId.Value}.", result);
@@ -3175,7 +3330,7 @@ public sealed class SyncController : ControllerBase
 
             if (billingProfile is not null)
             {
-                if (!_officeScopeService.CanWriteOfficeForRentals(billingProfile.ResponsibleOfficeCode, billingProfile.TenantCode))
+                if (!_officeScopeService.CanWriteOfficeForRentals(billingProfile.ResponsibleOfficeCode, billingProfile.TenantCode, billingProfile.OfficeCode))
                 {
                     AddClientConflict(dto, nameof(RentalAsset),
                         $"Referenced rental billing profile is outside the writable office scope: {billingProfile.Id}.", result);
@@ -3258,7 +3413,7 @@ public sealed class SyncController : ControllerBase
             .Where(profile => !profile.IsDeleted)
             .ToListAsync(cancellationToken);
         candidates = candidates
-            .Where(profile => _officeScopeService.CanReadOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode))
+            .Where(profile => _officeScopeService.CanReadOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode, profile.OfficeCode))
             .ToList();
         var scopedCandidates = candidates
             .Where(profile => RentalBillingProfileMatchesRentalAssetScope(profile, preferredOfficeCode, preferredTenantCode))
@@ -3827,8 +3982,8 @@ public sealed class SyncController : ControllerBase
            _officeScopeService.CanReadOfficeForRentals(item.OfficeCode, item.TenantCode);
 
     private bool CanReadCustomerForRentalReference(Customer customer)
-        => _officeScopeService.CanReadOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode) ||
-           _officeScopeService.CanReadOfficeForRentals(customer.ResponsibleOfficeCode, customer.TenantCode);
+        => _officeScopeService.CanReadOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode) ||
+           _officeScopeService.CanReadOfficeForRentals(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode);
 
     private async Task<List<RentalBillingLogDto>> PrepareScopedRentalBillingLogsAsync(
         IEnumerable<RentalBillingLogDto> payload,
@@ -3841,7 +3996,7 @@ public sealed class SyncController : ControllerBase
         {
             var existing = await _dbContext.RentalBillingLogs.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
-            if (existing is not null && !_officeScopeService.CanWriteOfficeForRentals(existing.ResponsibleOfficeCode, existing.TenantCode))
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForRentals(existing.ResponsibleOfficeCode, existing.TenantCode, existing.OfficeCode))
             {
                 AddClientConflict(dto, nameof(RentalBillingLog), "Current account cannot modify this office scope.", result);
                 continue;
@@ -3883,7 +4038,7 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            if (!_officeScopeService.CanWriteOfficeForRentals(billingProfile.ResponsibleOfficeCode, billingProfile.TenantCode))
+            if (!_officeScopeService.CanWriteOfficeForRentals(billingProfile.ResponsibleOfficeCode, billingProfile.TenantCode, billingProfile.OfficeCode))
             {
                 AddClientConflict(dto, nameof(RentalBillingLog),
                     $"Referenced rental billing profile is outside the writable office scope: {dto.BillingProfileId}.", result);
@@ -3926,7 +4081,7 @@ public sealed class SyncController : ControllerBase
 
                 if (existing is not null)
                 {
-                    if (!_officeScopeService.CanWriteOfficeForInvoices(existing.ResponsibleOfficeCode, existing.TenantCode))
+                    if (!_officeScopeService.CanWriteOfficeForInvoices(existing.ResponsibleOfficeCode, existing.TenantCode, existing.OfficeCode))
                     {
                         AddClientConflict(dto, nameof(Invoice),
                             "Current account cannot modify this office scope.", result);
@@ -3935,7 +4090,7 @@ public sealed class SyncController : ControllerBase
 
                     customer = existing.Customer;
                     if ((customer is null || customer.IsDeleted) && !string.IsNullOrWhiteSpace(dto.CustomerName))
-                        customer = await FindReadableCustomerByNameAsync(dto.CustomerName, cancellationToken);
+                        customer = await FindWritableCustomerByNameAsync(dto.CustomerName, cancellationToken);
 
                     if (customer is not null && !customer.IsDeleted)
                     {
@@ -3985,7 +4140,7 @@ public sealed class SyncController : ControllerBase
 
                 if (!string.IsNullOrWhiteSpace(dto.CustomerName))
                 {
-                    customer = await FindReadableCustomerByNameAsync(dto.CustomerName, cancellationToken);
+                    customer = await FindWritableCustomerByNameAsync(dto.CustomerName, cancellationToken);
                     if (customer is not null && !customer.IsDeleted)
                     {
                         dto.CustomerId = customer.Id;
@@ -4025,10 +4180,25 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            if (!_officeScopeService.CanReadOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode))
+            if (!_officeScopeService.CanWriteOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode))
             {
+                if (dto.IsDeleted &&
+                    existing is not null &&
+                    _officeScopeService.CanWriteOfficeForInvoices(existing.ResponsibleOfficeCode, existing.TenantCode, existing.OfficeCode))
+                {
+                    dto.CustomerId = existing.CustomerId;
+                    if (!await ValidateReadableInvoiceLineItemsAsync(dto, result, cancellationToken))
+                        continue;
+                    if (!await ValidateWritableInvoiceRentalBillingProfileAsync(dto, result, cancellationToken))
+                        continue;
+
+                    valid.Add(dto);
+                    continue;
+                }
+
                 if (existing is not null &&
-                    _officeScopeService.CanWriteOfficeForInvoices(existing.ResponsibleOfficeCode, existing.TenantCode))
+                    existing.CustomerId != customer.Id &&
+                    _officeScopeService.CanWriteOfficeForInvoices(existing.ResponsibleOfficeCode, existing.TenantCode, existing.OfficeCode))
                 {
                     dto.CustomerId = existing.CustomerId;
                     dto.ResponsibleOfficeCode = _officeScopeService.ResolveInvoiceResponsibleScopeForCreate(
@@ -4062,11 +4232,11 @@ public sealed class SyncController : ControllerBase
                 }
 
                 AddClientConflict(dto, nameof(Invoice),
-                    $"Referenced customer is outside the readable office scope: {dto.CustomerId}.", result);
+                    $"Referenced customer is outside the writable office scope: {dto.CustomerId}.", result);
                 continue;
             }
 
-            if (existing is not null && !_officeScopeService.CanWriteOfficeForInvoices(existing.ResponsibleOfficeCode, existing.TenantCode))
+            if (existing is not null && !_officeScopeService.CanWriteOfficeForInvoices(existing.ResponsibleOfficeCode, existing.TenantCode, existing.OfficeCode))
             {
                 AddClientConflict(dto, nameof(Invoice),
                     "Current account cannot modify this office scope.", result);
@@ -4133,7 +4303,14 @@ public sealed class SyncController : ControllerBase
         foreach (var itemId in itemIds)
         {
             if (!items.TryGetValue(itemId, out var item))
-                continue;
+            {
+                AddClientConflict(
+                    dto,
+                    nameof(Invoice),
+                    $"Referenced invoice line item was not found: {itemId}.",
+                    result);
+                return false;
+            }
 
             if (_officeScopeService.CanReadOfficeForItems(item.OfficeCode, item.TenantCode))
                 continue;
@@ -4168,7 +4345,8 @@ public sealed class SyncController : ControllerBase
             {
                 current.IsDeleted,
                 current.ResponsibleOfficeCode,
-                current.TenantCode
+                current.TenantCode,
+                current.OfficeCode
             })
             .FirstOrDefaultAsync(cancellationToken);
 
@@ -4182,7 +4360,7 @@ public sealed class SyncController : ControllerBase
             return false;
         }
 
-        if (_officeScopeService.CanWriteOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode))
+        if (_officeScopeService.CanWriteOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode, profile.OfficeCode))
             return true;
 
         AddClientConflict(
@@ -4193,19 +4371,22 @@ public sealed class SyncController : ControllerBase
         return false;
     }
 
-    private async Task<Customer?> FindReadableCustomerByNameAsync(string? customerName, CancellationToken cancellationToken)
+    private async Task<Customer?> FindWritableCustomerByNameAsync(string? customerName, CancellationToken cancellationToken)
     {
         var trimmedName = (customerName ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(trimmedName))
             return null;
 
         var nameMatchKey = MatchKeyNormalizer.Normalize(trimmedName);
-        return await _officeScopeService.ApplyCustomerScope(_dbContext.Customers.IgnoreQueryFilters())
+        var candidates = await _officeScopeService.ApplyCustomerScope(_dbContext.Customers.IgnoreQueryFilters())
             .Where(customer => !customer.IsDeleted)
-            .FirstOrDefaultAsync(customer =>
+            .Where(customer =>
                     customer.NameOriginal == trimmedName ||
-                    customer.NameMatchKey == nameMatchKey,
-                cancellationToken);
+                    customer.NameMatchKey == nameMatchKey)
+            .ToListAsync(cancellationToken);
+
+        return candidates.FirstOrDefault(customer =>
+            _officeScopeService.CanWriteOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode));
     }
 
     private async Task<List<CustomerContractDto>> FilterValidCustomerContractsAsync(
@@ -4342,7 +4523,7 @@ public sealed class SyncController : ControllerBase
                 .ThenInclude(invoice => invoice!.Customer)
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
             if (existing?.Invoice is not null &&
-                !_officeScopeService.CanWriteOfficeForPayments(existing.Invoice.ResponsibleOfficeCode, existing.Invoice.TenantCode))
+                !_officeScopeService.CanWriteOfficeForPayments(existing.Invoice.ResponsibleOfficeCode, existing.Invoice.TenantCode, existing.Invoice.OfficeCode))
             {
                 AddClientConflict(dto, nameof(Payment),
                     $"Existing invoice is outside the writable office scope: {existing.InvoiceId}.", result);
@@ -4370,10 +4551,30 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            if (!_officeScopeService.CanWriteOfficeForPayments(invoice.ResponsibleOfficeCode, invoice.TenantCode))
+            if (!_officeScopeService.CanWriteOfficeForPayments(invoice.ResponsibleOfficeCode, invoice.TenantCode, invoice.OfficeCode))
             {
                 AddClientConflict(dto, nameof(Payment),
                     $"Referenced invoice is outside the writable office scope: {dto.InvoiceId}.", result);
+                continue;
+            }
+
+            if (invoice.Customer is null || invoice.Customer.IsDeleted)
+            {
+                if (dto.IsDeleted)
+                {
+                    valid.Add(dto);
+                    continue;
+                }
+
+                AddClientConflict(dto, nameof(Payment),
+                    $"Referenced invoice customer was not found: {invoice.CustomerId}.", result);
+                continue;
+            }
+
+            if (existing is null && !dto.IsDeleted && dto.ExpectedRevision > 0 && invoice.Revision != dto.ExpectedRevision)
+            {
+                AddClientConflict(dto, nameof(Payment),
+                    $"Referenced invoice revision mismatch. client={dto.ExpectedRevision}, server={invoice.Revision}", result);
                 continue;
             }
 
@@ -4537,12 +4738,13 @@ public sealed class SyncController : ControllerBase
 
             if (dto.ExpectedRevision > 0 && entity.Revision != dto.ExpectedRevision)
             {
-                AddServerConflict(
+                await AddServerConflictAsync(
                     dto,
                     entity,
                     nameof(ItemWarehouseStock),
                     BuildExpectedRevisionConflictReason(dto.ExpectedRevision, entity.Revision),
-                    result);
+                    result,
+                    cancellationToken);
                 continue;
             }
 
@@ -4550,7 +4752,7 @@ public sealed class SyncController : ControllerBase
                 dto.Revision > 0 &&
                 entity.Revision > dto.Revision)
             {
-                AddServerConflict(dto, entity, nameof(ItemWarehouseStock), "Server version is newer.", result);
+                await AddServerConflictAsync(dto, entity, nameof(ItemWarehouseStock), "Server version is newer.", result, cancellationToken);
                 continue;
             }
 
@@ -4806,12 +5008,21 @@ public sealed class SyncController : ControllerBase
         });
     }
 
-    private void AddServerConflict<TDto, TEntity>(TDto client, TEntity server, string entityName, string reason, SyncPushResult result)
+    private async Task AddServerConflictAsync<TDto, TEntity>(
+        TDto client,
+        TEntity server,
+        string entityName,
+        string reason,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
     {
         var conflict = BuildConflict(client, server, entityName, reason);
         _dbContext.ConflictLogs.Add(conflict);
         result.ConflictCount++;
-        result.Conflicts.Add(conflict.ToDto());
+
+        var dto = conflict.ToDto();
+        await PopulateServerConflictActorAsync(dto, cancellationToken);
+        result.Conflicts.Add(dto);
     }
 
     private ConflictLog BuildConflict<TDto, TEntity>(TDto client, TEntity server, string entityName, string reason)
@@ -4832,6 +5043,26 @@ public sealed class SyncController : ControllerBase
             Reason = reason,
             CreatedAtUtc = DateTime.UtcNow
         };
+    }
+
+    private async Task PopulateServerConflictActorAsync(ConflictLogDto conflict, CancellationToken cancellationToken)
+    {
+        var entityName = (conflict.EntityName ?? string.Empty).Trim();
+        var entityId = (conflict.EntityId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(entityName) || string.IsNullOrWhiteSpace(entityId))
+            return;
+
+        var latestAudit = await _dbContext.AuditLogs
+            .AsNoTracking()
+            .Where(audit => audit.EntityName == entityName && audit.EntityId == entityId)
+            .OrderByDescending(audit => audit.CreatedAtUtc)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (latestAudit is null)
+            return;
+
+        conflict.ServerUserId = latestAudit.UserId;
+        conflict.ServerUsername = latestAudit.Username;
     }
 
     private static string SerializeConflictServerSnapshot(object? server)
@@ -4920,7 +5151,6 @@ public sealed class SyncController : ControllerBase
         foreach (var contract in contracts)
         {
             contract.IsDeleted = true;
-            contract.IsPrimary = false;
             contract.UpdatedAtUtc = DateTime.UtcNow;
         }
     }

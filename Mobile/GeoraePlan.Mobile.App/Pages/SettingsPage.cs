@@ -17,6 +17,8 @@ public sealed class SettingsPage : ContentPage
         BindingContext = _viewModel;
 
         var recycleBinButton = GeoraePlanTheme.CreateButton("휴지통 보기", GeoraePlanTheme.Brown);
+        recycleBinButton.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.CanManageRecycleBin));
+        recycleBinButton.SetBinding(VisualElement.IsEnabledProperty, nameof(SettingsViewModel.CanManageRecycleBin));
         recycleBinButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
                 async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<RecycleBinPage>()),

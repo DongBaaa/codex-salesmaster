@@ -1321,26 +1321,27 @@
                             <Button Content="새로고침"
                                     Background="#455A64"
                                     Command="{Binding ReloadRecycleBinCommand}"
-                                    Margin="0,0,6,0"/>
+                                    Margin="0,0,6,0"
+                                    IsEnabled="{Binding CanReloadRecycleBin}"/>
                             <Button Content="현재 필터 전체 선택"
                                     Background="#546E7A"
                                     Command="{Binding MarkAllFilteredRecycleBinEntriesCommand}"
                                     Margin="0,0,6,0"
-                                    IsEnabled="{Binding HasRecycleBinEntries}"/>
+                                    IsEnabled="{Binding CanMarkFilteredRecycleBinEntries}"/>
                             <Button Content="선택 해제"
                                     Background="#37474F"
                                     Command="{Binding ClearRecycleBinMarksCommand}"
                                     Margin="0,0,6,0"
-                                    IsEnabled="{Binding HasMarkedRecycleBinEntries}"/>
+                                    IsEnabled="{Binding CanMutateMarkedRecycleBinEntries}"/>
                             <Button Content="체크 항목 복원"
                                     Background="#1E88E5"
                                     Command="{Binding RestoreMarkedRecycleBinEntriesCommand}"
                                     Margin="0,0,6,0"
-                                    IsEnabled="{Binding HasMarkedRecycleBinEntries}"/>
+                                    IsEnabled="{Binding CanMutateMarkedRecycleBinEntries}"/>
                             <Button Content="체크 항목 영구삭제"
                                     Background="#C62828"
                                     Command="{Binding PermanentlyDeleteMarkedRecycleBinEntriesCommand}"
-                                    IsEnabled="{Binding HasMarkedRecycleBinEntries}"/>
+                                    IsEnabled="{Binding CanMutateMarkedRecycleBinEntries}"/>
                             <TextBlock Text="{Binding MarkedRecycleBinCount, StringFormat=선택 {0:N0}건}"
                                        Foreground="#FFD54F"
                                        VerticalAlignment="Center"
@@ -1454,11 +1455,11 @@
                                                 Background="#1565C0"
                                                 Command="{Binding RestoreSelectedRecycleBinEntryCommand}"
                                                 Margin="0,0,8,0"
-                                                IsEnabled="{Binding HasSelectedRecycleBinEntry}"/>
+                                                IsEnabled="{Binding CanMutateSelectedRecycleBinEntry}"/>
                                         <Button Content="선택 항목 영구삭제"
                                                 Background="#C62828"
                                                 Command="{Binding PermanentlyDeleteSelectedRecycleBinEntryCommand}"
-                                                IsEnabled="{Binding HasSelectedRecycleBinEntry}"/>
+                                                IsEnabled="{Binding CanMutateSelectedRecycleBinEntry}"/>
                                     </WrapPanel>
                                 </StackPanel>
                             </ScrollViewer>

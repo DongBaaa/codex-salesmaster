@@ -13,6 +13,7 @@ public sealed class ItemsPage : ContentPage
 {
     private readonly ItemsViewModel _viewModel;
     private readonly MobileRefreshCoordinator _refreshCoordinator;
+    private readonly SessionStore _sessionStore;
     private readonly Grid _categoryButtonGrid;
     private int _seenItemsVersion;
 
@@ -22,8 +23,11 @@ public sealed class ItemsPage : ContentPage
 
         _viewModel = ServiceHelper.GetRequiredService<ItemsViewModel>();
         _refreshCoordinator = ServiceHelper.GetRequiredService<MobileRefreshCoordinator>();
+        _sessionStore = ServiceHelper.GetRequiredService<SessionStore>();
         _refreshCoordinator.AllChanged += HandleRealtimeRefreshRequested;
         BindingContext = _viewModel;
+
+        var canEditItems = _sessionStore.GetSnapshot().CanEditItems;
 
         _viewModel.ItemCategories.CollectionChanged += HandleCategoryCollectionChanged;
         _viewModel.PropertyChanged += HandleViewModelPropertyChanged;
@@ -32,6 +36,8 @@ public sealed class ItemsPage : ContentPage
         var categoryGuide = GeoraePlanTheme.CreateBodyText("자주 쓰는 분류를 선택하면 해당 분류 품목만 빠르게 확인할 수 있습니다.", true, 12);
         categoryGuide.LineHeight = 1.0;
         var newItemFromCategoryButton = GeoraePlanTheme.CreateCompactButton("신규 품목", GeoraePlanTheme.Success);
+        newItemFromCategoryButton.IsVisible = canEditItems;
+        newItemFromCategoryButton.IsEnabled = canEditItems;
         newItemFromCategoryButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(OpenNewItemAsync, "품목 신규등록");
 
@@ -54,6 +60,8 @@ public sealed class ItemsPage : ContentPage
         changeCategoryButton.Clicked += (_, _) => _viewModel.ClearSelectedCategory();
 
         var newItemButton = GeoraePlanTheme.CreateCompactButton("신규", GeoraePlanTheme.Success);
+        newItemButton.IsVisible = canEditItems;
+        newItemButton.IsEnabled = canEditItems;
         newItemButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(OpenNewItemAsync, "품목 신규등록");
 
@@ -194,6 +202,10 @@ public sealed class ItemsPage : ContentPage
         detailSpecification.LineHeight = 1.0;
         detailSpecification.SetBinding(Label.TextProperty, nameof(ItemsViewModel.SelectedItemSpecification));
 
+        var detailIdentity = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
+        detailIdentity.LineHeight = 1.0;
+        detailIdentity.SetBinding(Label.TextProperty, nameof(ItemsViewModel.SelectedItemIdentitySummary));
+
         var detailPrice = GeoraePlanTheme.CreateBodyText(string.Empty, true, 12);
         detailPrice.LineHeight = 1.0;
         detailPrice.SetBinding(Label.TextProperty, nameof(ItemsViewModel.SelectedItemPriceSummary));
@@ -207,10 +219,14 @@ public sealed class ItemsPage : ContentPage
         detailMemo.SetBinding(Label.TextProperty, nameof(ItemsViewModel.SelectedItemMemo));
 
         var editItemButton = GeoraePlanTheme.CreateCompactButton("수정", GeoraePlanTheme.Purple);
+        editItemButton.IsVisible = canEditItems;
+        editItemButton.IsEnabled = canEditItems;
         editItemButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(OpenEditItemAsync, "품목 수정");
 
         var deleteItemButton = GeoraePlanTheme.CreateCompactButton("삭제", GeoraePlanTheme.Danger);
+        deleteItemButton.IsVisible = canEditItems;
+        deleteItemButton.IsEnabled = canEditItems;
         deleteItemButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(OpenDeleteItemAsync, "품목 삭제");
 
@@ -262,6 +278,7 @@ public sealed class ItemsPage : ContentPage
         var detailCard = GeoraePlanTheme.CreateCompactCard(
             detailTitle,
             detailSpecification,
+            detailIdentity,
             detailPrice,
             detailStock,
             detailMemo,
@@ -392,6 +409,9 @@ try
 
     private async Task OpenNewItemAsync()
     {
+        if (!await EnsureCanEditItemsAsync("신규등록"))
+            return;
+
         await Navigation.PushModalAsync(new ItemEditPage(
             null,
             _viewModel.SelectedCategory?.Name,
@@ -407,6 +427,9 @@ try
     private async Task OpenEditItemAsync()
     {
         if (_viewModel.SelectedItem is null)
+            return;
+
+        if (!await EnsureCanEditItemsAsync("수정"))
             return;
 
         await Navigation.PushModalAsync(new ItemEditPage(
@@ -426,6 +449,9 @@ try
         if (_viewModel.SelectedItem is null)
             return;
 
+        if (!await EnsureCanEditItemsAsync("삭제"))
+            return;
+
         var deletedItemId = _viewModel.SelectedItem.Id;
         await Navigation.PushModalAsync(new ItemEditPage(
             _viewModel.SelectedItem,
@@ -442,6 +468,17 @@ try
                 await _viewModel.RefreshAsync();
                 RebuildCategoryButtons();
             }));
+    }
+
+    private async Task<bool> EnsureCanEditItemsAsync(string actionText)
+    {
+        if (_sessionStore.GetSnapshot().CanEditItems)
+            return true;
+
+        var message = $"권한이 없어 품목을 {actionText}할 수 없습니다.";
+        _viewModel.StatusMessage = message;
+        await DisplayAlert("권한 확인", message, "확인");
+        return false;
     }
 
     private sealed class ItemPriceConverter : IValueConverter
@@ -471,7 +508,21 @@ try
                 return string.Empty;
 
             var unit = string.IsNullOrWhiteSpace(item.Unit) ? "EA" : item.Unit;
-            return $"단위 {unit} · 현재재고 {item.CurrentStock:N0}";
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(item.CategoryName))
+                parts.Add(item.CategoryName.Trim());
+            if (!string.IsNullOrWhiteSpace(item.ItemKind))
+                parts.Add(item.ItemKind.Trim());
+            if (!string.IsNullOrWhiteSpace(item.TrackingType))
+                parts.Add(item.TrackingType.Trim());
+            if (!string.IsNullOrWhiteSpace(item.MaterialNumber))
+                parts.Add($"자재 {item.MaterialNumber.Trim()}");
+            if (!string.IsNullOrWhiteSpace(item.SerialNumber))
+                parts.Add($"S/N {item.SerialNumber.Trim()}");
+            parts.Add($"단위 {unit}");
+            parts.Add($"현재재고 {item.CurrentStock:N0}");
+
+            return string.Join(" · ", parts);
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)

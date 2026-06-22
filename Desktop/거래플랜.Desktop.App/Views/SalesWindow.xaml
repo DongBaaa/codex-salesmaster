@@ -628,6 +628,7 @@
                             <DataGridTextColumn Header="운영유형" Binding="{Binding ItemKind}" Width="86"/>
                             <DataGridTextColumn Header="재고방식" Binding="{Binding TrackingType}" Width="72"/>
                             <DataGridTextColumn Header="규격" Binding="{Binding SpecificationOriginal}" Width="116"/>
+                            <DataGridTextColumn Header="자재번호" Binding="{Binding MaterialNumber}" Width="110"/>
                             <DataGridTextColumn Header="현재재고" Binding="{Binding CurrentStock, StringFormat=N0}" Width="84"/>
                             <DataGridTextColumn Header="매출단가" Binding="{Binding SalePrice, StringFormat=N0}" Width="84"/>
                             <DataGridTextColumn Header="소매단가" Binding="{Binding RetailPrice, StringFormat=N0}" Width="84"/>

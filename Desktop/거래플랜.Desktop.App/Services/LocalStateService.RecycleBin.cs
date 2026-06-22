@@ -1228,7 +1228,13 @@ public sealed partial class LocalStateService
             .IgnoreQueryFilters()
             .Where(current => current.Id == target.Id || current.VersionGroupId == versionGroupId)
             .ToListAsync(ct);
+        var invoiceIds = groupInvoices.Select(current => current.Id).Distinct().ToList();
+        var deletedPayments = await _db.Payments
+            .IgnoreQueryFilters()
+            .Where(current => invoiceIds.Contains(current.InvoiceId) && current.IsDeleted)
+            .ToListAsync(ct);
 
+        _db.Payments.RemoveRange(deletedPayments);
         _db.Invoices.RemoveRange(groupInvoices);
         await _db.SaveChangesAsync(ct);
 

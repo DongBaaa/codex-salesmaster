@@ -604,6 +604,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             _activeFilterReloadSignature = BuildCurrentFilterReloadSignature();
             var requestVersion = Interlocked.Increment(ref _filterReloadVersion);
             var selectedId = SelectedRow?.SelectionId;
+            var selectedRowBeforeReload = SelectedRow;
+            var preserveSelectedEditor = ShouldPreserveSelectedEditorDuringReload();
             IsBusy = true;
             StatusMessage = "렌탈 청구 목록을 조회하는 중입니다. 데이터가 많은 경우 잠시 걸릴 수 있습니다.";
             try
@@ -653,9 +655,22 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
                 if (selectedId.HasValue)
                 {
-                    SelectRow(selectedId.Value);
-                    if (SelectedRow is null)
+                    var reloadedSelection = FindRow(selectedId.Value);
+                    if (reloadedSelection is not null)
+                    {
+                        if (preserveSelectedEditor)
+                            PreserveEditorAfterReload(selectedRowBeforeReload);
+                        else
+                            SelectedRow = reloadedSelection;
+                    }
+                    else if (preserveSelectedEditor)
+                    {
+                        PreserveEditorAfterReload(selectedRowBeforeReload);
+                    }
+                    else
+                    {
                         NewProfile();
+                    }
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -671,6 +686,25 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             }
         }
         while (_pendingFilterReload && !ct.IsCancellationRequested);
+    }
+
+    private bool ShouldPreserveSelectedEditorDuringReload()
+    {
+        if (SelectedRow is null)
+            return false;
+        if (!HasMeaningfulDraftState())
+            return false;
+
+        return string.IsNullOrWhiteSpace(_selectedRowBaselineSignature) ||
+               HasUnsavedEditorChangesAgainstBaseline();
+    }
+
+    private void PreserveEditorAfterReload(RentalBillingViewRow? selectedRowBeforeReload)
+    {
+        if (selectedRowBeforeReload is not null && !ReferenceEquals(SelectedRow, selectedRowBeforeReload))
+            SelectedRow = selectedRowBeforeReload;
+
+        StatusMessage = "목록은 새로고침했지만 저장하지 않은 렌탈 청구 편집 내용은 보존했습니다. 저장하거나 취소한 뒤 다른 항목을 선택하세요.";
     }
 
     [RelayCommand]
@@ -2503,12 +2537,15 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private void SelectRow(Guid entityId)
     {
-        SelectedRow = Rows.FirstOrDefault(row =>
+        SelectedRow = FindRow(entityId);
+    }
+
+    private RentalBillingViewRow? FindRow(Guid entityId)
+        => Rows.FirstOrDefault(row =>
             row.SelectionId == entityId ||
             row.Source.Id == entityId ||
             row.GroupedSelectionIds.Contains(entityId) ||
             row.GroupedPersistedProfileIds.Contains(entityId));
-    }
 
     private async Task RefreshEditRevisionFromStoreAsync(Guid profileId)
     {

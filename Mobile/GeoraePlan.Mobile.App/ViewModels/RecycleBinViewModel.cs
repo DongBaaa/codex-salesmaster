@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using GeoraePlan.Mobile.App.Models;
 using GeoraePlan.Mobile.App.Services;
 using 거래플랜.Shared.Contracts;
 
@@ -7,15 +8,17 @@ namespace GeoraePlan.Mobile.App.ViewModels;
 public sealed class RecycleBinViewModel : ObservableObject
 {
     private readonly GeoraePlanApiClient _api;
+    private readonly SessionStore _sessionStore;
 
     private string _searchText = string.Empty;
     private string _selectedKind = string.Empty;
     private string _statusMessage = "운영 서버 휴지통을 조회하세요.";
     private bool _isBusy;
 
-    public RecycleBinViewModel(GeoraePlanApiClient api)
+    public RecycleBinViewModel(GeoraePlanApiClient api, SessionStore sessionStore)
     {
         _api = api;
+        _sessionStore = sessionStore;
         RefreshCommand = new AsyncCommand(RefreshAsync);
 
         KindOptions.Add(new RecycleBinFilterOption(string.Empty, "전체"));
@@ -28,6 +31,7 @@ public sealed class RecycleBinViewModel : ObservableObject
 
     public ObservableCollection<RecycleBinEntryDto> Entries { get; } = new();
     public ObservableCollection<RecycleBinFilterOption> KindOptions { get; } = new();
+    public bool CanManageRecycleBinData => _sessionStore.GetSnapshot().CanManageRecycleBin;
 
     public string SearchText
     {
@@ -60,6 +64,13 @@ public sealed class RecycleBinViewModel : ObservableObject
         if (IsBusy)
             return;
 
+        if (!CanManageRecycleBinData)
+        {
+            ReplaceEntries([]);
+            StatusMessage = "휴지통 조회/복원 권한이 없습니다. 관리자에게 Data.BackupRestore 권한을 요청하세요.";
+            return;
+        }
+
         try
         {
             IsBusy = true;
@@ -79,6 +90,12 @@ public sealed class RecycleBinViewModel : ObservableObject
     {
         if (entry is null || IsBusy)
             return;
+
+        if (!CanManageRecycleBinData)
+        {
+            StatusMessage = "휴지통 복원 권한이 없습니다. 관리자에게 Data.BackupRestore 권한을 요청하세요.";
+            return;
+        }
 
         try
         {
@@ -103,6 +120,12 @@ public sealed class RecycleBinViewModel : ObservableObject
     {
         if (entry is null || IsBusy)
             return;
+
+        if (!CanManageRecycleBinData)
+        {
+            StatusMessage = "휴지통 영구삭제 권한이 없습니다. 관리자에게 Data.BackupRestore 권한을 요청하세요.";
+            return;
+        }
 
         try
         {
@@ -132,6 +155,13 @@ public sealed class RecycleBinViewModel : ObservableObject
 
     private async Task RefreshCoreAsync()
     {
+        if (!CanManageRecycleBinData)
+        {
+            ReplaceEntries([]);
+            StatusMessage = "휴지통 조회/복원 권한이 없습니다. 관리자에게 Data.BackupRestore 권한을 요청하세요.";
+            return;
+        }
+
         StatusMessage = "휴지통을 조회하고 있습니다.";
         var result = await _api.GetRecycleBinAsync(SelectedKind, SearchText);
         ReplaceEntries(result);

@@ -11,6 +11,7 @@ public sealed class CustomerPaymentHistoryRow
     public decimal Amount { get; init; }
     public string Note { get; init; } = string.Empty;
     public int AttachmentCount { get; init; }
+    public IReadOnlyList<PaymentAttachmentDto> Attachments { get; init; } = [];
     public DateTime UpdatedAtUtc { get; init; }
     public VoucherType VoucherType { get; init; } = VoucherType.Sales;
 
@@ -37,7 +38,23 @@ public sealed class CustomerPaymentHistoryRow
             Amount = payment.Amount,
             Note = payment.Note,
             AttachmentCount = payment.Attachments?.Count ?? 0,
+            Attachments = payment.Attachments?.Where(attachment => !attachment.IsDeleted).ToList() ?? [],
             UpdatedAtUtc = payment.UpdatedAtUtc
         };
     }
+
+    public static CustomerPaymentHistoryRow From(CustomerPaymentHistoryDto payment)
+        => new()
+        {
+            PaymentId = payment.PaymentId,
+            InvoiceId = payment.InvoiceId,
+            InvoiceNumber = payment.InvoiceNumber,
+            VoucherType = payment.VoucherType,
+            PaymentDate = payment.PaymentDate,
+            Amount = payment.Amount,
+            Note = payment.Note,
+            AttachmentCount = payment.Attachments?.Count ?? 0,
+            Attachments = payment.Attachments?.Where(attachment => !attachment.IsDeleted).ToList() ?? [],
+            UpdatedAtUtc = payment.UpdatedAtUtc
+        };
 }

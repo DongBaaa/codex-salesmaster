@@ -30,6 +30,7 @@ public sealed class RentalsPage : ContentPage
             {
                 new ColumnDefinition(GridLength.Star),
                 new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Star),
                 new ColumnDefinition(GridLength.Star)
             }
         };
@@ -46,9 +47,14 @@ public sealed class RentalsPage : ContentPage
         logsButton.SetBinding(Button.BackgroundColorProperty, nameof(RentalsViewModel.BillingLogsButtonColor));
         logsButton.Clicked += (_, _) => _viewModel.ShowBillingLogs();
 
+        var assignmentHistoriesButton = GeoraePlanTheme.CreateCompactButton("설치이력", GeoraePlanTheme.SecondaryButton);
+        assignmentHistoriesButton.SetBinding(Button.BackgroundColorProperty, nameof(RentalsViewModel.AssignmentHistoriesButtonColor));
+        assignmentHistoriesButton.Clicked += (_, _) => _viewModel.ShowAssignmentHistories();
+
         sectionGrid.Add(profilesButton);
         sectionGrid.Add(assetsButton, 1, 0);
         sectionGrid.Add(logsButton, 2, 0);
+        sectionGrid.Add(assignmentHistoriesButton, 3, 0);
 
         var searchBar = GeoraePlanTheme.CreateSearchBar("거래처 / 장비 / 청구상태 검색");
         searchBar.SetBinding(SearchBar.TextProperty, nameof(RentalsViewModel.SearchText));
@@ -99,6 +105,11 @@ public sealed class RentalsPage : ContentPage
         billingLogList.SetBinding(VisualElement.IsVisibleProperty, nameof(RentalsViewModel.IsBillingLogsSection));
         billingLogList.SetBinding(VisualElement.HeightRequestProperty, nameof(RentalsViewModel.CurrentListHeight));
 
+        var assignmentHistoryList = CreateAssignmentHistoriesView();
+        assignmentHistoryList.SetBinding(ItemsView.ItemsSourceProperty, nameof(RentalsViewModel.AssignmentHistories));
+        assignmentHistoryList.SetBinding(VisualElement.IsVisibleProperty, nameof(RentalsViewModel.IsAssignmentHistoriesSection));
+        assignmentHistoryList.SetBinding(VisualElement.HeightRequestProperty, nameof(RentalsViewModel.CurrentListHeight));
+
         Content = new ScrollView
         {
             Content = new VerticalStackLayout
@@ -109,7 +120,7 @@ public sealed class RentalsPage : ContentPage
                 {
                     GeoraePlanTheme.CreateCompactCard(
                         GeoraePlanTheme.CreateSectionTitle("렌탈 조회", 15),
-                        GeoraePlanTheme.CreateBodyText("같은 서버 sync 데이터 기준으로 청구프로필, 자산, 청구 이력을 조회합니다.", true, 12),
+                        GeoraePlanTheme.CreateBodyText("같은 서버 sync 데이터 기준으로 청구프로필, 자산, 청구 이력, 설치 이력을 조회합니다.", true, 12),
                         GeoraePlanTheme.CreateBodyText("모바일 렌탈은 조회 전용입니다. 청구 생성, 입금 등록, 프로필/자산 수정은 PC 렌탈 청구관리에서 처리하세요.", true, 12),
                         sectionGrid,
                         searchBar,
@@ -119,7 +130,8 @@ public sealed class RentalsPage : ContentPage
                         statusLabel),
                     profileList,
                     assetList,
-                    billingLogList
+                    billingLogList,
+                    assignmentHistoryList
                 }
             }
         };
@@ -261,6 +273,45 @@ if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
 
                 var note = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 note.SetBinding(Label.TextProperty, nameof(RentalBillingHistoryDisplayRow.Note));
+
+                return new Border
+                {
+                    BackgroundColor = GeoraePlanTheme.SurfaceAlt,
+                    Stroke = GeoraePlanTheme.Border,
+                    StrokeShape = new RoundRectangle { CornerRadius = 12 },
+                    Padding = 12,
+                    Margin = new Thickness(0, 0, 0, 8),
+                    Content = new VerticalStackLayout
+                    {
+                        Spacing = 4,
+                        Children = { title, subtitle, meta, note }
+                    }
+                };
+            })
+        };
+    }
+
+    private static CollectionView CreateAssignmentHistoriesView()
+    {
+        return new CollectionView
+        {
+            SelectionMode = SelectionMode.None,
+            BackgroundColor = Colors.Transparent,
+            EmptyView = GeoraePlanTheme.CreateBodyText("동기화된 설치 이력이 없습니다.", true, 12),
+            ItemTemplate = new DataTemplate(() =>
+            {
+                var title = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 13);
+                title.FontAttributes = FontAttributes.Bold;
+                title.SetBinding(Label.TextProperty, nameof(RentalAssignmentHistoryDisplayRow.Title));
+
+                var subtitle = GeoraePlanTheme.CreateBodyText(string.Empty, true, 12);
+                subtitle.SetBinding(Label.TextProperty, nameof(RentalAssignmentHistoryDisplayRow.Subtitle));
+
+                var meta = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
+                meta.SetBinding(Label.TextProperty, nameof(RentalAssignmentHistoryDisplayRow.Meta));
+
+                var note = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
+                note.SetBinding(Label.TextProperty, nameof(RentalAssignmentHistoryDisplayRow.Note));
 
                 return new Border
                 {

@@ -238,6 +238,19 @@ public sealed class ItemsController : ControllerBase
         if (OptimisticConcurrencyGuard.Check(this, entity, expectedRevision, nameof(Item)) is { } conflict)
             return conflict;
 
+        var referenceBlockMessage = await ItemDeletionReferenceGuard.BuildActiveReferenceBlockMessageAsync(
+            _dbContext,
+            id,
+            cancellationToken);
+        if (referenceBlockMessage is not null)
+        {
+            return Conflict(new
+            {
+                error = ItemDeletionReferenceGuard.ConflictCode,
+                message = referenceBlockMessage
+            });
+        }
+
         entity.IsDeleted = true;
         var warehouseStocks = await _dbContext.ItemWarehouseStocks
             .Where(stock => stock.ItemId == id)
@@ -249,4 +262,3 @@ public sealed class ItemsController : ControllerBase
         return NoContent();
     }
 }
-

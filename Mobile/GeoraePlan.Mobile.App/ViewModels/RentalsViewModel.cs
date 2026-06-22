@@ -10,7 +10,8 @@ public enum RentalMobileSection
 {
     BillingProfiles = 0,
     Assets = 1,
-    BillingLogs = 2
+    BillingLogs = 2,
+    AssignmentHistories = 3
 }
 
 public sealed class RentalsViewModel : ObservableObject
@@ -35,6 +36,7 @@ public sealed class RentalsViewModel : ObservableObject
     public ObservableCollection<RentalBillingProfileDto> BillingProfiles { get; } = new();
     public ObservableCollection<RentalAssetDto> RentalAssets { get; } = new();
     public ObservableCollection<RentalBillingHistoryDisplayRow> BillingLogs { get; } = new();
+    public ObservableCollection<RentalAssignmentHistoryDisplayRow> AssignmentHistories { get; } = new();
 
     public AsyncCommand RefreshCommand { get; }
     public AsyncCommand SyncNowCommand { get; }
@@ -68,9 +70,11 @@ public sealed class RentalsViewModel : ObservableObject
             OnPropertyChanged(nameof(IsProfilesSection));
             OnPropertyChanged(nameof(IsAssetsSection));
             OnPropertyChanged(nameof(IsBillingLogsSection));
+            OnPropertyChanged(nameof(IsAssignmentHistoriesSection));
             OnPropertyChanged(nameof(ProfilesButtonColor));
             OnPropertyChanged(nameof(AssetsButtonColor));
             OnPropertyChanged(nameof(BillingLogsButtonColor));
+            OnPropertyChanged(nameof(AssignmentHistoriesButtonColor));
             OnPropertyChanged(nameof(CurrentSectionTitle));
             OnPropertyChanged(nameof(CurrentSectionSummary));
             OnPropertyChanged(nameof(CurrentListHeight));
@@ -80,16 +84,19 @@ public sealed class RentalsViewModel : ObservableObject
     public bool IsProfilesSection => SelectedSection == RentalMobileSection.BillingProfiles;
     public bool IsAssetsSection => SelectedSection == RentalMobileSection.Assets;
     public bool IsBillingLogsSection => SelectedSection == RentalMobileSection.BillingLogs;
+    public bool IsAssignmentHistoriesSection => SelectedSection == RentalMobileSection.AssignmentHistories;
 
     public Color ProfilesButtonColor => IsProfilesSection ? Theme.GeoraePlanTheme.Accent : Theme.GeoraePlanTheme.SecondaryButton;
     public Color AssetsButtonColor => IsAssetsSection ? Theme.GeoraePlanTheme.Accent : Theme.GeoraePlanTheme.SecondaryButton;
     public Color BillingLogsButtonColor => IsBillingLogsSection ? Theme.GeoraePlanTheme.Accent : Theme.GeoraePlanTheme.SecondaryButton;
+    public Color AssignmentHistoriesButtonColor => IsAssignmentHistoriesSection ? Theme.GeoraePlanTheme.Accent : Theme.GeoraePlanTheme.SecondaryButton;
 
     public string CurrentSectionTitle => SelectedSection switch
     {
         RentalMobileSection.BillingProfiles => "청구프로필",
         RentalMobileSection.Assets => "렌탈자산",
         RentalMobileSection.BillingLogs => "청구 이력",
+        RentalMobileSection.AssignmentHistories => "설치 이력",
         _ => "렌탈"
     };
 
@@ -98,6 +105,7 @@ public sealed class RentalsViewModel : ObservableObject
         RentalMobileSection.BillingProfiles => $"청구프로필 {BillingProfiles.Count:N0}건",
         RentalMobileSection.Assets => $"렌탈자산 {RentalAssets.Count:N0}건",
         RentalMobileSection.BillingLogs => $"청구 이력 {BillingLogs.Count:N0}건",
+        RentalMobileSection.AssignmentHistories => $"설치 이력 {AssignmentHistories.Count:N0}건",
         _ => string.Empty
     };
 
@@ -106,6 +114,7 @@ public sealed class RentalsViewModel : ObservableObject
         RentalMobileSection.BillingProfiles => CalculateListHeight(BillingProfiles.Count, 116, 56, 5),
         RentalMobileSection.Assets => CalculateListHeight(RentalAssets.Count, 116, 56, 5),
         RentalMobileSection.BillingLogs => CalculateListHeight(BillingLogs.Count, 112, 56, 5),
+        RentalMobileSection.AssignmentHistories => CalculateListHeight(AssignmentHistories.Count, 118, 56, 5),
         _ => 56
     };
 
@@ -115,6 +124,7 @@ public sealed class RentalsViewModel : ObservableObject
     public void ShowBillingProfiles() => SelectedSection = RentalMobileSection.BillingProfiles;
     public void ShowRentalAssets() => SelectedSection = RentalMobileSection.Assets;
     public void ShowBillingLogs() => SelectedSection = RentalMobileSection.BillingLogs;
+    public void ShowAssignmentHistories() => SelectedSection = RentalMobileSection.AssignmentHistories;
 
     public bool TryNavigateBackOneStep()
     {
@@ -135,7 +145,13 @@ public sealed class RentalsViewModel : ObservableObject
         {
             IsBusy = true;
             StatusMessage = "렌탈 서버 동기화 데이터를 확인하고 있습니다.";
-            await _syncCoordinator.RefreshIfServerChangedAsync("rentals-refresh", TimeSpan.FromSeconds(5));
+            var state = await _syncCoordinator.RefreshIfServerChangedAsync("rentals-refresh", TimeSpan.FromSeconds(5));
+            if (ShouldHideCachedDataAfterSyncFailure(state))
+            {
+                ClearRentalDisplay($"렌탈 데이터를 표시할 수 없습니다. {state.LastError}");
+                return;
+            }
+
             await LoadFromStateAsync();
         }
         catch (Exception ex)
@@ -159,7 +175,14 @@ public sealed class RentalsViewModel : ObservableObject
             StatusMessage = "렌탈 데이터를 서버와 동기화하는 중입니다.";
             var state = await _syncCoordinator.SynchronizeNowAsync();
             if (!string.IsNullOrWhiteSpace(state.LastError))
+            {
                 StatusMessage = $"동기화 주의: {state.LastError}";
+                if (ShouldHideCachedDataAfterSyncFailure(state))
+                {
+                    ClearRentalDisplay($"렌탈 데이터를 표시할 수 없습니다. {state.LastError}");
+                    return;
+                }
+            }
 
             await LoadFromStateAsync();
         }
@@ -178,39 +201,137 @@ public sealed class RentalsViewModel : ObservableObject
         var state = await _syncStateStore.LoadAsync();
         state.Normalize();
 
+        var effectiveBillingProfiles = MergeForDisplay(
+            state.SyncedRentalBillingProfiles,
+            state.PendingPush.RentalBillingProfiles);
+        var effectiveRentalAssets = MergeForDisplay(
+            state.SyncedRentalAssets,
+            state.PendingPush.RentalAssets);
+        var effectiveAssignmentHistories = MergeForDisplay(
+            state.SyncedRentalAssetAssignmentHistories,
+            state.PendingPush.RentalAssetAssignmentHistories);
+        var effectiveBillingLogs = MergeForDisplay(
+            state.SyncedRentalBillingLogs,
+            state.PendingPush.RentalBillingLogs);
+        var effectiveInvoices = MergeForDisplay(
+            state.SyncedInvoices,
+            state.PendingPush.Invoices);
+        var effectiveTransactions = MergeForDisplay(
+            state.SyncedTransactions,
+            state.PendingPush.Transactions);
+        var effectivePayments = MergeForDisplay(
+            state.SyncedPayments,
+            state.PendingPush.Payments);
+
         var companyMap = state.SyncedRentalManagementCompanies
             .GroupBy(x => NormalizeKey(x.Code))
             .ToDictionary(group => group.Key, group => Normalize(group.First().Name, group.First().Code), StringComparer.OrdinalIgnoreCase);
-        var profileMap = state.SyncedRentalBillingProfiles
+        var profileMap = effectiveBillingProfiles
             .ToDictionary(x => x.Id, x => x, EqualityComparer<Guid>.Default);
+        var assetMap = effectiveRentalAssets
+            .GroupBy(x => x.Id)
+            .ToDictionary(group => group.Key, group => group.First(), EqualityComparer<Guid>.Default);
 
-        var filteredProfiles = state.SyncedRentalBillingProfiles
+        var filteredProfiles = effectiveBillingProfiles
             .Where(profile => MatchesProfile(profile, companyMap))
             .OrderBy(profile => profile.CustomerName)
             .ThenBy(profile => profile.ProfileKey)
             .ToList();
-        var filteredAssets = state.SyncedRentalAssets
+        var filteredAssets = effectiveRentalAssets
             .Where(asset => MatchesAsset(asset, companyMap, profileMap))
             .OrderBy(asset => asset.CustomerName)
             .ThenBy(asset => asset.ItemName)
             .ToList();
-        var filteredLogs = BuildBillingHistoryRows(state, profileMap)
+        var filteredLogs = BuildBillingHistoryRows(
+                effectiveBillingProfiles,
+                effectiveInvoices,
+                effectiveTransactions,
+                effectivePayments,
+                effectiveBillingLogs,
+                profileMap)
             .Where(MatchesBillingHistory)
             .OrderByDescending(row => row.SortDate)
             .ThenBy(row => row.CustomerName)
             .ThenBy(row => row.ProfileKey)
             .ToList();
+        var filteredAssignmentHistories = BuildAssignmentHistoryRows(effectiveAssignmentHistories, profileMap, assetMap)
+            .Where(MatchesAssignmentHistory)
+            .OrderByDescending(row => row.SortDate)
+            .ThenBy(row => row.CustomerName)
+            .ThenBy(row => row.ManagementNumber)
+            .ToList();
 
         Replace(BillingProfiles, filteredProfiles);
         Replace(RentalAssets, filteredAssets);
         Replace(BillingLogs, filteredLogs);
+        Replace(AssignmentHistories, filteredAssignmentHistories);
 
+        var totalCount = filteredProfiles.Count + filteredAssets.Count + filteredLogs.Count + filteredAssignmentHistories.Count;
         _lastRefreshUtc = DateTime.UtcNow;
-        StatusMessage = filteredProfiles.Count + filteredAssets.Count + filteredLogs.Count == 0
+        StatusMessage = totalCount == 0
             ? "동기화된 렌탈 데이터가 없습니다."
-            : $"렌탈 동기화 데이터 총 {filteredProfiles.Count + filteredAssets.Count + filteredLogs.Count:N0}건을 불러왔습니다.";
+            : $"렌탈 동기화 데이터 총 {totalCount:N0}건을 불러왔습니다.";
         OnPropertyChanged(nameof(CurrentSectionSummary));
         OnPropertyChanged(nameof(CurrentListHeight));
+    }
+
+    private void ClearRentalDisplay(string message)
+    {
+        BillingProfiles.Clear();
+        RentalAssets.Clear();
+        BillingLogs.Clear();
+        AssignmentHistories.Clear();
+        _lastRefreshUtc = DateTime.UtcNow;
+        StatusMessage = message;
+        OnPropertyChanged(nameof(CurrentSectionSummary));
+        OnPropertyChanged(nameof(CurrentListHeight));
+    }
+
+    private static bool ShouldHideCachedDataAfterSyncFailure(MobileSyncState state)
+        => !string.IsNullOrWhiteSpace(state.LastError) && !state.LastFailureAllowsCachedDisplay;
+
+    private static List<T> MergeForDisplay<T>(
+        IEnumerable<T>? synced,
+        IEnumerable<T>? pending)
+        where T : SyncEntityDto
+    {
+        var map = new Dictionary<Guid, T>();
+
+        foreach (var entity in synced ?? Enumerable.Empty<T>())
+            AddDisplayEntity(map, entity, preferIncoming: false);
+
+        foreach (var entity in pending ?? Enumerable.Empty<T>())
+            AddDisplayEntity(map, entity, preferIncoming: true);
+
+        return map.Values.ToList();
+    }
+
+    private static void AddDisplayEntity<T>(
+        IDictionary<Guid, T> map,
+        T entity,
+        bool preferIncoming)
+        where T : SyncEntityDto
+    {
+        if (entity.Id == Guid.Empty)
+            return;
+
+        if (entity.IsDeleted)
+        {
+            map.Remove(entity.Id);
+            return;
+        }
+
+        if (preferIncoming || !map.TryGetValue(entity.Id, out var current) || IsNewerDisplayEntity(entity, current))
+            map[entity.Id] = entity;
+    }
+
+    private static bool IsNewerDisplayEntity<T>(T candidate, T current)
+        where T : SyncEntityDto
+    {
+        if (candidate.Revision != current.Revision)
+            return candidate.Revision > current.Revision;
+
+        return candidate.UpdatedAtUtc >= current.UpdatedAtUtc;
     }
 
     private bool MatchesProfile(RentalBillingProfileDto profile, IReadOnlyDictionary<string, string> companyMap)
@@ -270,6 +391,23 @@ public sealed class RentalsViewModel : ObservableObject
                || Contains(row.OfficeCode, q);
     }
 
+    private bool MatchesAssignmentHistory(RentalAssignmentHistoryDisplayRow row)
+    {
+        if (string.IsNullOrWhiteSpace(SearchText))
+            return true;
+
+        var q = SearchText.Trim();
+        return Contains(row.Title, q)
+               || Contains(row.Subtitle, q)
+               || Contains(row.Meta, q)
+               || Contains(row.Note, q)
+               || Contains(row.ProfileKey, q)
+               || Contains(row.CustomerName, q)
+               || Contains(row.ManagementNumber, q)
+               || Contains(row.MachineNumber, q)
+               || Contains(row.OfficeCode, q);
+    }
+
     private static void Replace<T>(ObservableCollection<T> target, IEnumerable<T> source)
     {
         target.Clear();
@@ -309,12 +447,35 @@ public sealed class RentalsViewModel : ObservableObject
         return (visibleRows * rowHeight) + Math.Max(0, visibleRows - 1) * 8;
     }
 
+    private static List<RentalAssignmentHistoryDisplayRow> BuildAssignmentHistoryRows(
+        IReadOnlyCollection<RentalAssetAssignmentHistoryDto> assignmentHistories,
+        IReadOnlyDictionary<Guid, RentalBillingProfileDto> profileMap,
+        IReadOnlyDictionary<Guid, RentalAssetDto> assetMap)
+    {
+        var rows = new List<RentalAssignmentHistoryDisplayRow>();
+        foreach (var history in assignmentHistories.Where(history => !history.IsDeleted))
+        {
+            RentalBillingProfileDto? profile = null;
+            if (history.BillingProfileId.HasValue)
+                profileMap.TryGetValue(history.BillingProfileId.Value, out profile);
+
+            assetMap.TryGetValue(history.AssetId, out var asset);
+            rows.Add(RentalAssignmentHistoryDisplayRow.FromHistory(history, profile, asset));
+        }
+
+        return rows;
+    }
+
     private static List<RentalBillingHistoryDisplayRow> BuildBillingHistoryRows(
-        MobileSyncState state,
+        IReadOnlyCollection<RentalBillingProfileDto> billingProfiles,
+        IReadOnlyCollection<InvoiceDto> invoices,
+        IReadOnlyCollection<TransactionDto> transactions,
+        IReadOnlyCollection<PaymentDto> payments,
+        IReadOnlyCollection<RentalBillingLogDto> billingLogs,
         IReadOnlyDictionary<Guid, RentalBillingProfileDto> profileMap)
     {
         var rows = new List<RentalBillingHistoryDisplayRow>();
-        foreach (var log in state.SyncedRentalBillingLogs.Where(log => !log.IsDeleted))
+        foreach (var log in billingLogs.Where(log => !log.IsDeleted))
         {
             rows.Add(RentalBillingHistoryDisplayRow.FromLog(
                 log,
@@ -335,13 +496,13 @@ public sealed class RentalsViewModel : ObservableObject
             return evidence;
         }
 
-        foreach (var profile in profileMap.Values.Where(profile => !profile.IsDeleted))
+        foreach (var profile in billingProfiles.Where(profile => !profile.IsDeleted))
         {
             foreach (var run in ParseBillingRuns(profile.BillingRunsJson))
                 GetEvidence(profile.Id, run.RunId).AddRun(profile, run);
         }
 
-        foreach (var invoice in state.SyncedInvoices.Where(invoice =>
+        foreach (var invoice in invoices.Where(invoice =>
                      !invoice.IsDeleted &&
                      invoice.IsLatestVersion &&
                      invoice.VoucherType == VoucherType.Sales &&
@@ -353,7 +514,7 @@ public sealed class RentalsViewModel : ObservableObject
                 invoice);
         }
 
-        foreach (var transaction in state.SyncedTransactions.Where(transaction =>
+        foreach (var transaction in transactions.Where(transaction =>
                      !transaction.IsDeleted &&
                      transaction.LinkedRentalBillingProfileId.HasValue &&
                      transaction.LinkedRentalBillingRunId.HasValue))
@@ -363,7 +524,7 @@ public sealed class RentalsViewModel : ObservableObject
                 transaction);
         }
 
-        var invoiceById = state.SyncedInvoices
+        var invoiceById = invoices
             .Where(invoice =>
                 !invoice.IsDeleted &&
                 invoice.IsLatestVersion &&
@@ -372,12 +533,12 @@ public sealed class RentalsViewModel : ObservableObject
                 invoice.LinkedRentalBillingRunId.HasValue)
             .GroupBy(invoice => invoice.Id)
             .ToDictionary(group => group.Key, group => group.First());
-        var transactionIds = state.SyncedTransactions
+        var transactionIds = transactions
             .Where(transaction => !transaction.IsDeleted)
             .Select(transaction => transaction.Id)
             .ToHashSet();
 
-        foreach (var payment in state.SyncedPayments.Where(payment => !payment.IsDeleted))
+        foreach (var payment in payments.Where(payment => !payment.IsDeleted))
         {
             if (!invoiceById.TryGetValue(payment.InvoiceId, out var invoice))
                 continue;
@@ -446,6 +607,66 @@ public sealed class RentalsViewModel : ObservableObject
 
     private static DateOnly? Max(DateOnly? current, DateOnly candidate)
         => !current.HasValue || candidate > current.Value ? candidate : current;
+}
+
+public sealed class RentalAssignmentHistoryDisplayRow
+{
+    public string Title { get; init; } = string.Empty;
+    public string Subtitle { get; init; } = string.Empty;
+    public string Meta { get; init; } = string.Empty;
+    public string Note { get; init; } = string.Empty;
+    public string ProfileKey { get; init; } = string.Empty;
+    public string CustomerName { get; init; } = string.Empty;
+    public string ManagementNumber { get; init; } = string.Empty;
+    public string MachineNumber { get; init; } = string.Empty;
+    public string OfficeCode { get; init; } = string.Empty;
+    public DateTime SortDate { get; init; }
+
+    public static RentalAssignmentHistoryDisplayRow FromHistory(
+        RentalAssetAssignmentHistoryDto history,
+        RentalBillingProfileDto? profile,
+        RentalAssetDto? asset)
+    {
+        var customerName = FirstText(history.CustomerName, profile?.CustomerName, asset?.CustomerName, "거래처 미지정");
+        var itemName = FirstText(history.ItemName, profile?.ItemName, asset?.ItemName, "품목 미지정");
+        var profileKey = FirstText(history.BillingProfileDisplay, profile?.ProfileKey, "프로필 미지정");
+        var managementNumber = FirstText(history.ManagementNumber, asset?.ManagementNumber, asset?.AssetKey, "관리번호 미지정");
+        var machineNumber = FirstText(history.MachineNumber, asset?.MachineNumber, "기계번호 미지정");
+        var installLocation = FirstText(history.InstallLocation, asset?.InstallLocation, asset?.CurrentLocation, "설치 위치 미지정");
+        var officeCode = FirstText(history.ResponsibleOfficeCode, asset?.ResponsibleOfficeCode, profile?.ResponsibleOfficeCode, history.OfficeCode, "미정");
+        var stateLabel = history.IsCurrent ? "현재" : "과거";
+        var linkedAt = history.LinkedAtUtc == default ? DateTime.MinValue : history.LinkedAtUtc;
+
+        return new RentalAssignmentHistoryDisplayRow
+        {
+            Title = $"{stateLabel} · {customerName} · {itemName}",
+            Subtitle = $"관리번호 {managementNumber} / 기계번호 {machineNumber}",
+            Meta = $"연결 {FormatDateTime(history.LinkedAtUtc)} / 해제 {FormatDateTime(history.UnlinkedAtUtc)} / 월 {history.MonthlyFee:N0}원 / 지점 {officeCode}",
+            Note = string.IsNullOrWhiteSpace(history.ChangeReason)
+                ? $"{profileKey} · {installLocation}"
+                : $"{history.ChangeReason.Trim()} · {profileKey} · {installLocation}",
+            ProfileKey = profileKey,
+            CustomerName = customerName,
+            ManagementNumber = managementNumber,
+            MachineNumber = machineNumber,
+            OfficeCode = officeCode,
+            SortDate = linkedAt
+        };
+    }
+
+    private static string FirstText(params string?[] values)
+        => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? string.Empty;
+
+    private static string FormatDateTime(DateTime? value)
+    {
+        if (!value.HasValue || value.Value == default)
+            return "미정";
+
+        var dateTime = value.Value.Kind == DateTimeKind.Utc
+            ? value.Value.ToLocalTime()
+            : value.Value;
+        return dateTime.ToString("yyyy-MM-dd HH:mm");
+    }
 }
 
 public sealed class MobileRentalBillingRunEvidence

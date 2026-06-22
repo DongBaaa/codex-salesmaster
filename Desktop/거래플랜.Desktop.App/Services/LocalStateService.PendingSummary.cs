@@ -195,6 +195,19 @@ public sealed partial class LocalStateService
                 .ToListAsync(ct),
             "렌탈 청구이력 변경");
 
+        AppendBuckets(
+            buckets,
+            await _db.SyncOutboxEntries
+                .AsNoTracking()
+                .Where(entry => entry.Status != "Acknowledged")
+                .Select(entry => new DirtyScopeRow(
+                    string.IsNullOrWhiteSpace(entry.ResponsibleOfficeCode)
+                        ? entry.OfficeCode
+                        : entry.ResponsibleOfficeCode,
+                    entry.TenantCode))
+                .ToListAsync(ct),
+            "동기화 전송 확인");
+
         var orderedBuckets = buckets
             .OrderByDescending(bucket => bucket.Count)
             .ThenBy(bucket => bucket.ScopeDisplayName, StringComparer.Ordinal)

@@ -724,6 +724,155 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FlagsDeletedContractRestoreCandidatesForActiveCustomers()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "RESTORE-CANDIDATE-CUSTOMER",
+            NameMatchKey = "RESTORECANDIDATECUSTOMER",
+            TradeType = "sales",
+            Notes = "before restore candidate"
+        };
+        var contractId = Guid.NewGuid();
+        dbContext.Customers.Add(customer);
+        dbContext.CustomerContracts.Add(new CustomerContract
+        {
+            Id = contractId,
+            CustomerId = customer.Id,
+            ContractType = "primary contract",
+            FileName = "restore-candidate-contract.pdf",
+            MimeType = "application/pdf",
+            FileHash = "RESTORE-CANDIDATE",
+            FileSize = 1,
+            IsPrimary = true,
+            IsDeleted = false
+        });
+        await dbContext.SaveChangesAsync();
+
+        var deletedContract = await dbContext.CustomerContracts
+            .IgnoreQueryFilters()
+            .SingleAsync(contract => contract.Id == contractId);
+        deletedContract.IsDeleted = true;
+        await dbContext.SaveChangesAsync();
+
+        var activeCustomer = await dbContext.Customers
+            .IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == customer.Id);
+        activeCustomer.Notes = "after restore candidate";
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var reportResponse = await controller.GetReport(CancellationToken.None);
+        var reportOk = Assert.IsType<OkObjectResult>(reportResponse.Result);
+        var report = Assert.IsType<IntegrityReportDto>(reportOk.Value);
+        var issue = Assert.Single(report.Issues, current => current.Code == "active_customer_deleted_contract_restore_candidate");
+        Assert.Equal("Warning", issue.Severity);
+        Assert.Equal(1, issue.Count);
+
+        var detailResponse = await controller.GetReportDetails("active_customer_deleted_contract_restore_candidate", CancellationToken.None);
+        var detailOk = Assert.IsType<OkObjectResult>(detailResponse.Result);
+        var detail = Assert.IsType<IntegrityIssueDetailResultDto>(detailOk.Value);
+        var row = Assert.Single(detail.Rows);
+        Assert.Equal(FormatGuidForTest(contractId), row.EntityIdText);
+        Assert.Contains("restore-candidate-contract.pdf", row.PrimaryText, StringComparison.Ordinal);
+        Assert.Contains("RESTORE-CANDIDATE-CUSTOMER", row.ReferenceText, StringComparison.Ordinal);
+        Assert.False(string.IsNullOrWhiteSpace(row.DetailText));
+    }
+
+    [Fact]
+    public async Task GetReport_FlagsReadOnlySharedCustomerBusinessReferences()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "READ-SHARED-BUSINESS-CUSTOMER",
+            NameMatchKey = "READSHAREDBUSINESSCUSTOMER",
+            TradeType = "Sales"
+        };
+        var invoiceId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+        dbContext.Customers.Add(customer);
+        dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        {
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Usenet,
+            ShareCustomers = true,
+            AllowTargetWrite = false
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "READ-ONLY-SHARED-CUSTOMER-INVOICE",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 19),
+            TotalAmount = 100m,
+            SupplyAmount = 91m,
+            VatAmount = 9m
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = transactionId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 19),
+            TransactionKind = "GeneralReceipt",
+            SettlementAmount = 100m,
+            ReceiptTotal = 100m
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var reportResponse = await controller.GetReport(CancellationToken.None);
+        var reportOk = Assert.IsType<OkObjectResult>(reportResponse.Result);
+        var report = Assert.IsType<IntegrityReportDto>(reportOk.Value);
+        var issue = Assert.Single(report.Issues, current => current.Code == "read_only_shared_customer_business_refs");
+        Assert.Equal("Warning", issue.Severity);
+        Assert.Equal(2, issue.Count);
+
+        var detailResponse = await controller.GetReportDetails("read_only_shared_customer_business_refs", CancellationToken.None);
+        var detailOk = Assert.IsType<OkObjectResult>(detailResponse.Result);
+        var detail = Assert.IsType<IntegrityIssueDetailResultDto>(detailOk.Value);
+        Assert.Equal(2, detail.Rows.Count);
+        Assert.Contains(detail.Rows, row =>
+            row.EntityIdText == FormatGuidForTest(invoiceId) &&
+            row.PrimaryText.Contains("READ-ONLY-SHARED-CUSTOMER-INVOICE", StringComparison.Ordinal) &&
+            row.ReferenceText.Contains("READ-SHARED-BUSINESS-CUSTOMER", StringComparison.Ordinal));
+        Assert.Contains(detail.Rows, row =>
+            row.EntityIdText == FormatGuidForTest(transactionId) &&
+            row.PrimaryText.Contains("GeneralReceipt", StringComparison.Ordinal) &&
+            row.ReferenceText.Contains("READ-SHARED-BUSINESS-CUSTOMER", StringComparison.Ordinal));
+        Assert.All(detail.Rows, row =>
+        {
+            Assert.Contains(OfficeCodeCatalog.Yeonsu, row.ScopeText, StringComparison.Ordinal);
+            Assert.Contains(OfficeCodeCatalog.Usenet, row.ScopeText, StringComparison.Ordinal);
+            Assert.False(string.IsNullOrWhiteSpace(row.DetailText));
+        });
+    }
+
+    [Fact]
     public async Task GetReport_DoesNotExposeUnscopableHardMissingChildRowsToOfficeScopedUsers()
     {
         var currentUser = CreateOfficeScopedUser();
@@ -3243,6 +3392,158 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FlagsRentalBillingTemplateMissingItemReferences()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var activeItemId = Guid.NewGuid();
+        var deletedItemId = Guid.NewGuid();
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Template item integrity customer",
+            NameMatchKey = "TEMPLATEITEMINTEGRITYCUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.Items.AddRange(
+            new Item
+            {
+                Id = activeItemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Active rental template item",
+                NameMatchKey = "ACTIVERENTALTEMPLATEITEM",
+                TrackingType = ItemTrackingTypes.NonStock
+            },
+            new Item
+            {
+                Id = deletedItemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Deleted rental template item",
+                NameMatchKey = "DELETEDRENTALTEMPLATEITEM",
+                TrackingType = ItemTrackingTypes.NonStock,
+                IsDeleted = true
+            });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            CustomerId = customerId,
+            CustomerName = "Template item integrity customer",
+            ProfileKey = "PROFILE-TEMPLATE-MISSING-ITEM",
+            ItemName = "렌탈료",
+            BillingType = "혼합",
+            MonthlyAmount = 3_000m,
+            BillingTemplateJson = JsonSerializer.Serialize(new object[]
+            {
+                new
+                {
+                    DisplayItemName = "ItemId 없는 청구품목",
+                    Quantity = 1m,
+                    UnitPrice = 1_000m,
+                    Amount = 1_000m
+                },
+                new
+                {
+                    ItemId = deletedItemId,
+                    DisplayItemName = "삭제 품목 청구품목",
+                    Quantity = 1m,
+                    UnitPrice = 1_000m,
+                    Amount = 1_000m
+                },
+                new
+                {
+                    ItemId = activeItemId,
+                    DisplayItemName = "정상 품목 청구품목",
+                    Quantity = 1m,
+                    UnitPrice = 1_000m,
+                    Amount = 1_000m
+                }
+            }),
+            IsActive = true
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var report = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issue = Assert.Single(report.Issues, current => current.Code == "rental_billing_template_missing_item_refs");
+        Assert.Equal("Error", issue.Severity);
+        Assert.Equal(2, issue.Count);
+
+        var detailsResponse = await controller.GetReportDetails("rental_billing_template_missing_item_refs", CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+        Assert.Equal(2, details.Rows.Count);
+        Assert.Contains(details.Rows, row => row.DetailText.Contains("ItemId 없음", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(details.Rows, row => row.DetailText.Contains(deletedItemId.ToString("D"), StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task GetReport_FlagsRentalBillingTemplateInvalidJson()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Template invalid json customer",
+            NameMatchKey = "TEMPLATEINVALIDJSONCUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            CustomerId = customerId,
+            CustomerName = "Template invalid json customer",
+            ProfileKey = "PROFILE-TEMPLATE-INVALID-JSON",
+            ItemName = "렌탈료",
+            BillingType = "묶음",
+            MonthlyAmount = 100_000m,
+            BillingTemplateJson = "[{\"ItemId\":",
+            IsActive = true
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var report = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issue = Assert.Single(report.Issues, current => current.Code == "rental_billing_template_invalid_json");
+
+        Assert.Equal("Error", issue.Severity);
+        Assert.Equal(1, issue.Count);
+
+        var detailsResponse = await controller.GetReportDetails("rental_billing_template_invalid_json", CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+        var row = Assert.Single(details.Rows);
+
+        Assert.Equal("렌탈청구프로필", row.EntityType);
+        Assert.Contains("PROFILE-TEMPLATE-INVALID-JSON", row.DetailText, StringComparison.Ordinal);
+        Assert.Contains("JSON 파싱 실패", row.ReferenceText, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task GetReport_DoesNotWarnProfileAssetMonthlyMismatch_WhenTemplateMatchesProfileAmount()
     {
         var currentUser = CreateAdminUser();
@@ -3711,6 +4012,124 @@ public sealed class IntegrityControllerTests : IDisposable
         var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
 
         Assert.Empty(details.Rows);
+    }
+
+    [Fact]
+    public async Task GetReport_FlagsActiveDocumentLinesReferencingDeletedItems()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var invoiceItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Deleted invoice line item",
+            NameMatchKey = "DELETEDINVOICELINEITEM",
+            TrackingType = ItemTrackingTypes.Stock,
+            IsDeleted = true
+        };
+        var transferItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Deleted transfer line item",
+            NameMatchKey = "DELETEDTRANSFERLINEITEM",
+            TrackingType = ItemTrackingTypes.Stock,
+            IsDeleted = true
+        };
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Deleted item ref customer",
+            NameMatchKey = "DELETEDITEMREFCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var invoiceLineId = Guid.NewGuid();
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "INV-DELETED-ITEM-REF",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 19),
+            SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            TotalAmount = 100m,
+            SupplyAmount = 91m,
+            VatAmount = 9m,
+            Lines =
+            [
+                new InvoiceLine
+                {
+                    Id = invoiceLineId,
+                    ItemId = invoiceItem.Id,
+                    ItemNameOriginal = invoiceItem.NameOriginal,
+                    ItemTrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    Quantity = 1m,
+                    UnitPrice = 100m,
+                    LineAmount = 100m,
+                    OrderIndex = 1
+                }
+            ]
+        };
+        var transferLineId = Guid.NewGuid();
+        var transfer = new InventoryTransfer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetOfficeCode = OfficeCodeCatalog.Usenet,
+            TransferNumber = "TR-DELETED-ITEM-REF",
+            TransferDate = new DateOnly(2026, 6, 19),
+            FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            TransferStatus = InventoryTransferStatusNormalizer.Pending,
+            Lines =
+            [
+                new InventoryTransferLine
+                {
+                    Id = transferLineId,
+                    ItemId = transferItem.Id,
+                    ItemNameOriginal = transferItem.NameOriginal,
+                    Unit = "EA",
+                    Quantity = 1m
+                }
+            ]
+        };
+        dbContext.Items.AddRange(invoiceItem, transferItem);
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(invoice);
+        dbContext.InventoryTransfers.Add(transfer);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var reportResponse = await controller.GetReport(CancellationToken.None);
+        var reportOk = Assert.IsType<OkObjectResult>(reportResponse.Result);
+        var report = Assert.IsType<IntegrityReportDto>(reportOk.Value);
+        var issues = report.Issues.ToDictionary(issue => issue.Code, StringComparer.OrdinalIgnoreCase);
+
+        Assert.Equal(1, issues["active_invoice_line_missing_item_refs"].Count);
+        Assert.Equal(1, issues["active_inventory_transfer_line_missing_item_refs"].Count);
+
+        var invoiceDetail = await GetSingleDetailRowAsync(controller, "active_invoice_line_missing_item_refs");
+        Assert.Equal(FormatGuidForTest(invoiceLineId), invoiceDetail.EntityIdText);
+        Assert.Contains(FormatGuidForTest(invoiceItem.Id), invoiceDetail.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains("INV-DELETED-ITEM-REF", invoiceDetail.DetailText, StringComparison.Ordinal);
+
+        var transferDetail = await GetSingleDetailRowAsync(controller, "active_inventory_transfer_line_missing_item_refs");
+        Assert.Equal(FormatGuidForTest(transferLineId), transferDetail.EntityIdText);
+        Assert.Contains(FormatGuidForTest(transferItem.Id), transferDetail.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains("TR-DELETED-ITEM-REF", transferDetail.DetailText, StringComparison.Ordinal);
     }
 
     public void Dispose()

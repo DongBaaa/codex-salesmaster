@@ -31,12 +31,14 @@ public partial class SalesWindow : Window
         _editSessionMonitor = EntityEditSessionMonitor.TryCreate(
             this,
             "판매/구매 전표",
-            () => new EditSessionSubject(
-                "Invoice",
-                vm.InvoiceId.ToString("D"),
-                string.IsNullOrWhiteSpace(vm.CustomerName)
-                    ? "전표 편집"
-                    : $"{vm.CustomerName} 전표"));
+            () => vm.InvoiceId == Guid.Empty
+                ? null
+                : new EditSessionSubject(
+                    "Invoice",
+                    vm.InvoiceId.ToString("D"),
+                    string.IsNullOrWhiteSpace(vm.CustomerName)
+                        ? "전표 편집"
+                        : $"{vm.CustomerName} 전표"));
     }
 
     private void Window_KeyDown(object sender, KeyEventArgs e)

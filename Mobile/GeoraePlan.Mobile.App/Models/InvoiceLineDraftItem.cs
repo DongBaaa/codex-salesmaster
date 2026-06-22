@@ -20,6 +20,21 @@ public sealed class InvoiceLineDraftItem
     public DateOnly? RentalEndDate { get; set; }
     public int OrderIndex { get; set; }
     public decimal LineAmount => Math.Round(Quantity * UnitPrice, 2, MidpointRounding.AwayFromZero);
+    public string IdentitySummary
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(SpecificationOriginal))
+                parts.Add($"규격 {SpecificationOriginal.Trim()}");
+            if (!string.IsNullOrWhiteSpace(MaterialNumber))
+                parts.Add($"자재 {MaterialNumber.Trim()}");
+            if (!string.IsNullOrWhiteSpace(SerialNumber))
+                parts.Add($"S/N {SerialNumber.Trim()}");
+
+            return parts.Count == 0 ? "규격/자재번호 없음" : string.Join(" · ", parts);
+        }
+    }
 
     public static InvoiceLineDraftItem FromItem(ItemDto item, decimal quantity = 1m)
     {

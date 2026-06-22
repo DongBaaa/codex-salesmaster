@@ -10,14 +10,19 @@ public sealed class PaymentAttachmentsPage : ContentPage
     private readonly PaymentAttachmentsViewModel _viewModel;
     private readonly Guid _paymentId;
     private readonly string _titleText;
+    private readonly IReadOnlyList<PaymentAttachmentDto> _fallbackAttachments;
     private bool _initialized;
 
-    public PaymentAttachmentsPage(Guid paymentId, string titleText)
+    public PaymentAttachmentsPage(
+        Guid paymentId,
+        string titleText,
+        IEnumerable<PaymentAttachmentDto>? fallbackAttachments = null)
     {
         GeoraePlanTheme.ApplyPage(this, "수금/지급 첨부");
 
         _paymentId = paymentId;
         _titleText = titleText;
+        _fallbackAttachments = fallbackAttachments?.Where(attachment => attachment is not null && !attachment.IsDeleted).ToList() ?? [];
         _viewModel = ServiceHelper.GetRequiredService<PaymentAttachmentsViewModel>();
         BindingContext = _viewModel;
 
@@ -122,7 +127,7 @@ if (_initialized)
             return;
 
         _initialized = true;
-        await _viewModel.InitializeAsync(_paymentId, _titleText);
+        await _viewModel.InitializeAsync(_paymentId, _titleText, _fallbackAttachments);
             },
             "수금/지급 첨부 화면 초기화");
     }

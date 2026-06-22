@@ -153,18 +153,18 @@ public sealed class SyncViewModel : ObservableObject
     {
         LastRevisionText = state.LastRevision.ToString("N0");
         PendingText =
-            $"저장 대기: 거래처 {state.PendingCustomerCount}건 / 품목 {state.PendingItemCount}건 / 전표 {state.PendingInvoiceCount}건 / 수금·지급 {state.PendingPaymentCount}건 / 첨부 {state.PendingPaymentAttachmentCount}건"
+            $"저장 대기: 거래처 {state.PendingCustomerCount}건 / 품목 {state.PendingItemCount}건 / 재고 {state.PendingItemWarehouseStockCount}건 / 전표 {state.PendingInvoiceCount}건 / 수금·지급 {state.PendingPaymentCount}건 / 첨부 {state.PendingPaymentAttachmentCount}건"
             + $" / 거래 {state.PendingTransactionCount}건 / 거래첨부 {state.PendingTransactionAttachmentCount}건 / 재고이동 {state.PendingInventoryTransferCount}건"
-            + $" / 렌탈 {state.PendingRentalBillingProfileCount + state.PendingRentalAssetCount + state.PendingRentalBillingLogCount}건";
+            + $" / 렌탈 {state.PendingRentalBillingProfileCount + state.PendingRentalAssetCount + state.PendingRentalAssetAssignmentHistoryCount + state.PendingRentalBillingLogCount}건";
         LastPullSummary =
-            $"마지막 서버 받기: 거래처 {state.LastPulledCustomerCount} / 품목 {state.LastPulledItemCount} / 전표 {state.LastPulledInvoiceCount} / 수금·지급 {state.LastPulledPaymentCount}"
+            $"마지막 서버 받기: 거래처 {state.LastPulledCustomerCount} / 품목 {state.LastPulledItemCount} / 재고 {state.LastPulledItemWarehouseStockCount} / 전표 {state.LastPulledInvoiceCount} / 수금·지급 {state.LastPulledPaymentCount}"
             + $" / 거래 {state.LastPulledTransactionCount} / 거래첨부 {state.LastPulledTransactionAttachmentCount}"
-            + $" / 재고이동 {state.LastPulledInventoryTransferCount} / 렌탈 {state.LastPulledRentalBillingProfileCount + state.LastPulledRentalAssetCount + state.LastPulledRentalBillingLogCount}";
+            + $" / 재고이동 {state.LastPulledInventoryTransferCount} / 렌탈 {state.LastPulledRentalBillingProfileCount + state.LastPulledRentalAssetCount + state.LastPulledRentalAssetAssignmentHistoryCount + state.LastPulledRentalBillingLogCount}";
 
-        if (state.PendingCustomerCount > 0 || state.PendingItemCount > 0)
+        if (state.PendingCustomerCount > 0 || state.PendingItemCount > 0 || state.PendingItemWarehouseStockCount > 0)
         {
             HasAttention = true;
-            AttentionText = $"거래처 {state.PendingCustomerCount:N0}건 / 품목 {state.PendingItemCount:N0}건이 서버 올리기 대기 중입니다. 네트워크가 복구되면 자동으로 다시 올립니다.";
+            AttentionText = $"거래처 {state.PendingCustomerCount:N0}건 / 품목 {state.PendingItemCount:N0}건 / 재고 {state.PendingItemWarehouseStockCount:N0}건이 서버 올리기 대기 중입니다. 네트워크가 복구되면 자동으로 다시 올립니다.";
         }
         else if (state.PendingPaymentAttachmentCount > 0)
         {

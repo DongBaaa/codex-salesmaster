@@ -55,8 +55,12 @@ public sealed class ItemEditPage : ContentPage
         _memoEditor = GeoraePlanTheme.CreateCompactEditor("메모", 86);
         _memoEditor.Text = item?.SimpleMemo ?? string.Empty;
 
+        var canEditItems = _sessionStore.GetSnapshot().CanEditItems;
+
         _statusLabel = GeoraePlanTheme.CreateStatusLabel();
-        _statusLabel.Text = isEdit
+        _statusLabel.Text = !canEditItems
+            ? "권한이 없어 품목을 저장/삭제할 수 없습니다."
+            : isEdit
             ? "수정 후 저장하면 PC와 모바일 품목 목록에 함께 반영됩니다."
             : "필수 항목은 품명입니다. 재고/단가는 필요 시 0으로 둘 수 있습니다.";
 
@@ -65,13 +69,15 @@ public sealed class ItemEditPage : ContentPage
         guide.LineHeight = 1.0;
 
         var saveButton = GeoraePlanTheme.CreateButton("저장", GeoraePlanTheme.Success);
+        saveButton.IsEnabled = canEditItems;
         saveButton.Clicked += (_, _) => MobileErrorHandler.FireAndForget(SaveAsync, "품목 저장");
 
         var cancelButton = GeoraePlanTheme.CreateButton("취소", GeoraePlanTheme.SecondaryButton);
         cancelButton.Clicked += (_, _) => MobileErrorHandler.FireAndForget(CloseAsync, "품목 편집 닫기");
 
         var deleteButton = GeoraePlanTheme.CreateButton("삭제", GeoraePlanTheme.Danger);
-        deleteButton.IsVisible = isEdit;
+        deleteButton.IsVisible = isEdit && canEditItems;
+        deleteButton.IsEnabled = canEditItems;
         deleteButton.Clicked += (_, _) => MobileErrorHandler.FireAndForget(DeleteAsync, "품목 삭제");
 
         var actionGrid = new Grid
@@ -172,6 +178,13 @@ public sealed class ItemEditPage : ContentPage
         if (_isBusy)
             return;
 
+        if (!_sessionStore.GetSnapshot().CanEditItems)
+        {
+            _statusLabel.Text = "권한이 없어 품목을 저장할 수 없습니다.";
+            await DisplayAlert("권한 확인", _statusLabel.Text, "확인");
+            return;
+        }
+
         var name = Read(_nameEntry);
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -196,6 +209,7 @@ public sealed class ItemEditPage : ContentPage
             var saved = _source is null
                 ? await _api.CreateItemAsync(dto)
                 : await _api.UpdateItemAsync(dto);
+            saved = EnsureSavedResult(saved, "품목 저장");
 
             _statusLabel.Text = "품목 저장 완료";
             await _afterSaved(saved);
@@ -220,10 +234,21 @@ public sealed class ItemEditPage : ContentPage
         }
     }
 
+    private static T EnsureSavedResult<T>(T? result, string operationName)
+        where T : SyncEntityDto
+        => result ?? throw new HttpRequestException($"{operationName} 응답이 비어 있어 서버 반영 여부를 확인할 수 없습니다.");
+
     private async Task DeleteAsync()
     {
         if (_isBusy || _source is null)
             return;
+
+        if (!_sessionStore.GetSnapshot().CanEditItems)
+        {
+            _statusLabel.Text = "권한이 없어 품목을 삭제할 수 없습니다.";
+            await DisplayAlert("권한 확인", _statusLabel.Text, "확인");
+            return;
+        }
 
         var confirm = await DisplayAlert("품목 삭제", $"'{_source.NameOriginal}' 품목을 삭제할까요?", "삭제", "취소");
         if (!confirm)

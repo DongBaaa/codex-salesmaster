@@ -345,7 +345,7 @@ public sealed class InvoiceDraftPage : ContentPage
 
                 var specLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 specLabel.LineHeight = 1.0;
-                specLabel.SetBinding(Label.TextProperty, new Binding(nameof(InvoiceLineDraftItem.SpecificationOriginal), stringFormat: "규격 {0}"));
+                specLabel.SetBinding(Label.TextProperty, nameof(InvoiceLineDraftItem.IdentitySummary));
 
                 var qtyPriceLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 qtyPriceLabel.LineHeight = 1.0;
@@ -468,6 +468,7 @@ public sealed class InvoiceDraftPage : ContentPage
         var saveButton = GeoraePlanTheme.CreateCompactButton("전표 저장", GeoraePlanTheme.Accent);
         saveButton.SetBinding(Button.TextProperty, nameof(InvoiceDraftViewModel.SaveButtonText));
         saveButton.SetBinding(Button.CommandProperty, nameof(InvoiceDraftViewModel.SaveDraftCommand));
+        saveButton.SetBinding(VisualElement.IsEnabledProperty, nameof(InvoiceDraftViewModel.CanCreateInvoices));
 
         var statusLabel = GeoraePlanTheme.CreateStatusLabel();
         statusLabel.SetBinding(Label.TextProperty, nameof(InvoiceDraftViewModel.StatusMessage));
@@ -533,6 +534,9 @@ public sealed class InvoiceDraftPage : ContentPage
 
         var sheetSpec = GeoraePlanTheme.CreateBodyText(string.Empty, true, 12);
         sheetSpec.SetBinding(Label.TextProperty, nameof(InvoiceDraftViewModel.SelectedItemSheetSpecification));
+
+        var sheetIdentity = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
+        sheetIdentity.SetBinding(Label.TextProperty, nameof(InvoiceDraftViewModel.SelectedItemIdentitySummary));
 
         var sheetPrice = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
         sheetPrice.SetBinding(Label.TextProperty, nameof(InvoiceDraftViewModel.SelectedItemPriceSummary));
@@ -652,6 +656,7 @@ public sealed class InvoiceDraftPage : ContentPage
                 {
                     sheetTitle,
                     sheetSpec,
+                    sheetIdentity,
                     sheetPrice,
                     sheetStock,
                     sheetMemo,
@@ -871,9 +876,7 @@ try
             titleLabel.MaxLines = 2;
             titleLabel.TextColor = matchesCurrentCategory ? Colors.White : GeoraePlanTheme.TextPrimary;
 
-            var specText = string.IsNullOrWhiteSpace(recent.SpecificationOriginal)
-                ? string.IsNullOrWhiteSpace(recent.CategoryName) ? "최근 선택 품목" : recent.CategoryName
-                : recent.SpecificationOriginal;
+            var specText = recent.SecondaryText;
             var specLabel = GeoraePlanTheme.CreateBodyText(specText, true, 11);
             specLabel.LineBreakMode = LineBreakMode.TailTruncation;
             specLabel.MaxLines = 1;
@@ -953,7 +956,21 @@ try
                 return string.Empty;
 
             var unit = string.IsNullOrWhiteSpace(item.Unit) ? "EA" : item.Unit;
-            return $"단위 {unit} · 현재재고 {item.CurrentStock:N0}";
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(item.CategoryName))
+                parts.Add(item.CategoryName.Trim());
+            if (!string.IsNullOrWhiteSpace(item.ItemKind))
+                parts.Add(item.ItemKind.Trim());
+            if (!string.IsNullOrWhiteSpace(item.TrackingType))
+                parts.Add(item.TrackingType.Trim());
+            if (!string.IsNullOrWhiteSpace(item.MaterialNumber))
+                parts.Add($"자재 {item.MaterialNumber.Trim()}");
+            if (!string.IsNullOrWhiteSpace(item.SerialNumber))
+                parts.Add($"S/N {item.SerialNumber.Trim()}");
+            parts.Add($"단위 {unit}");
+            parts.Add($"현재재고 {item.CurrentStock:N0}");
+
+            return string.Join(" · ", parts);
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)

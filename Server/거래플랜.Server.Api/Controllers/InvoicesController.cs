@@ -91,9 +91,9 @@ public sealed class InvoicesController : ControllerBase
         var customer = await _dbContext.Customers
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(x => x.Id == dto.CustomerId, cancellationToken);
-        if (customer is null)
+        if (customer is null || customer.IsDeleted)
             return BadRequest("Referenced customer was not found.");
-        if (!_officeScopeService.CanReadOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode))
+        if (!_officeScopeService.CanWriteOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode))
             return Forbid();
 
         dto.ResponsibleOfficeCode = _officeScopeService.ResolveInvoiceResponsibleScopeForCreate(
@@ -114,6 +114,7 @@ public sealed class InvoicesController : ControllerBase
             return rentalProfileScopeError;
 
         var entity = new Invoice { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
+        dto.Id = entity.Id;
         entity.Apply(dto);
         if (string.IsNullOrWhiteSpace(entity.InvoiceNumber))
         {
@@ -129,6 +130,7 @@ public sealed class InvoicesController : ControllerBase
             cancellationToken);
 
         _dbContext.Invoices.Add(entity);
+        await ProcessedSyncMutationRecorder.RecordAsync(_dbContext, dto, nameof(Invoice), cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await RecalculateRentalSettlementsForInvoiceSaveAsync(null, entity, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -146,7 +148,7 @@ public sealed class InvoicesController : ControllerBase
         var entity = await _dbContext.Invoices.Include(x => x.Customer).Include(x => x.Lines)
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
-        if (!_officeScopeService.CanWriteOfficeForInvoices(entity.ResponsibleOfficeCode, entity.TenantCode))
+        if (!_officeScopeService.CanWriteOfficeForInvoices(entity.ResponsibleOfficeCode, entity.TenantCode, entity.OfficeCode))
             return Forbid();
         if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Invoice)) is { } conflict)
             return conflict;
@@ -155,9 +157,9 @@ public sealed class InvoicesController : ControllerBase
         var customer = await _dbContext.Customers
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(x => x.Id == dto.CustomerId, cancellationToken);
-        if (customer is null)
+        if (customer is null || customer.IsDeleted)
             return BadRequest("Referenced customer was not found.");
-        if (!_officeScopeService.CanReadOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode))
+        if (!_officeScopeService.CanWriteOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode))
             return Forbid();
 
         dto.ResponsibleOfficeCode = _officeScopeService.ResolveInvoiceResponsibleScopeForCreate(
@@ -194,6 +196,7 @@ public sealed class InvoicesController : ControllerBase
             currentStockDeltas,
             cancellationToken);
 
+        await ProcessedSyncMutationRecorder.RecordAsync(_dbContext, dto, nameof(Invoice), cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await RecalculateRentalSettlementsForInvoiceSaveAsync(previousRentalTarget, entity, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -210,10 +213,12 @@ public sealed class InvoicesController : ControllerBase
 
         var entity = await _dbContext.Invoices.Include(x => x.Customer).Include(x => x.Lines).FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
-        if (!_officeScopeService.CanWriteOfficeForInvoices(entity.ResponsibleOfficeCode, entity.TenantCode))
+        if (!_officeScopeService.CanWriteOfficeForInvoices(entity.ResponsibleOfficeCode, entity.TenantCode, entity.OfficeCode))
             return Forbid();
         if (OptimisticConcurrencyGuard.Check(this, entity, expectedRevision, nameof(Invoice)) is { } conflict)
             return conflict;
+        if (await ValidateInvoiceLineItemScopeAsync(entity.Lines, cancellationToken) is { } lineScopeError)
+            return lineScopeError;
 
         var rentalSettlementTargets = await _rentalSettlementRecalculationService.LoadRentalSettlementTargetsForInvoiceDeleteAsync([id], cancellationToken);
         var previousStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
@@ -277,7 +282,38 @@ public sealed class InvoicesController : ControllerBase
         foreach (var itemId in itemIds)
         {
             if (!items.TryGetValue(itemId, out var item))
-                continue;
+                return BadRequest($"Referenced invoice line item was not found: {itemId}.");
+
+            if (!_officeScopeService.CanReadOfficeForItems(item.OfficeCode, item.TenantCode))
+                return Forbid();
+        }
+
+        return null;
+    }
+
+    private async Task<ActionResult?> ValidateInvoiceLineItemScopeAsync(
+        IEnumerable<InvoiceLine>? lines,
+        CancellationToken cancellationToken)
+    {
+        var itemIds = (lines ?? [])
+            .Where(line => !line.IsDeleted && line.ItemId.HasValue && line.ItemId.Value != Guid.Empty)
+            .Select(line => line.ItemId!.Value)
+            .Distinct()
+            .ToList();
+        if (itemIds.Count == 0)
+            return null;
+
+        var items = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item => itemIds.Contains(item.Id) && !item.IsDeleted)
+            .Select(item => new { item.Id, item.OfficeCode, item.TenantCode })
+            .ToDictionaryAsync(item => item.Id, cancellationToken);
+
+        foreach (var itemId in itemIds)
+        {
+            if (!items.TryGetValue(itemId, out var item))
+                return BadRequest($"Referenced invoice line item was not found: {itemId}.");
 
             if (!_officeScopeService.CanReadOfficeForItems(item.OfficeCode, item.TenantCode))
                 return Forbid();
@@ -301,14 +337,15 @@ public sealed class InvoicesController : ControllerBase
             {
                 current.IsDeleted,
                 current.ResponsibleOfficeCode,
-                current.TenantCode
+                current.TenantCode,
+                current.OfficeCode
             })
             .FirstOrDefaultAsync(cancellationToken);
 
         if (profile is null || profile.IsDeleted)
             return BadRequest("Referenced rental billing profile was not found.");
 
-        if (!_officeScopeService.CanWriteOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode))
+        if (!_officeScopeService.CanWriteOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode, profile.OfficeCode))
             return Forbid();
 
         return null;

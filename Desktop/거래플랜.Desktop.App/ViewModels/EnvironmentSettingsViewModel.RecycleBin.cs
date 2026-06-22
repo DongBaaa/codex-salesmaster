@@ -56,7 +56,13 @@ public sealed partial class EnvironmentSettingsViewModel
     public bool HasMarkedRecycleBinEntries => MarkedRecycleBinCount > 0;
     public bool HasSelectedRecycleBinDependencies => SelectedRecycleBinDependencies.Count > 0;
     public bool HasSelectedRecycleBinMergeCandidates => SelectedRecycleBinMergeCandidates.Count > 0;
+    public bool CanManageRecycleBinData => _session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.DataBackupRestore);
+    public bool CanReloadRecycleBin => CanManageRecycleBinData;
+    public bool CanMarkFilteredRecycleBinEntries => CanManageRecycleBinData && HasRecycleBinEntries;
+    public bool CanMutateSelectedRecycleBinEntry => CanManageRecycleBinData && HasSelectedRecycleBinEntry;
+    public bool CanMutateMarkedRecycleBinEntries => CanManageRecycleBinData && HasMarkedRecycleBinEntries;
     public bool CanMergeSelectedRecycleBinCustomer => SelectedRecycleBinEntry?.Kind == RecycleBinEntityKind.Customer &&
+                                                      CanManageRecycleBinData &&
                                                       SelectedRecycleBinEntry is not null &&
                                                       SelectedRecycleBinMergeTarget is not null;
 
@@ -65,10 +71,15 @@ public sealed partial class EnvironmentSettingsViewModel
     partial void OnSelectedRecycleBinEntryChanged(RecycleBinEntry? value)
     {
         OnPropertyChanged(nameof(HasSelectedRecycleBinEntry));
+        OnPropertyChanged(nameof(CanMutateSelectedRecycleBinEntry));
         OnPropertyChanged(nameof(CanMergeSelectedRecycleBinCustomer));
         _ = LoadSelectedRecycleBinContextAsync(value);
     }
-    partial void OnMarkedRecycleBinCountChanged(int value) => OnPropertyChanged(nameof(HasMarkedRecycleBinEntries));
+    partial void OnMarkedRecycleBinCountChanged(int value)
+    {
+        OnPropertyChanged(nameof(HasMarkedRecycleBinEntries));
+        OnPropertyChanged(nameof(CanMutateMarkedRecycleBinEntries));
+    }
     partial void OnSelectedRecycleBinMergeTargetChanged(RecycleBinCustomerMergeCandidate? value)
         => OnPropertyChanged(nameof(CanMergeSelectedRecycleBinCustomer));
 
@@ -103,6 +114,13 @@ public sealed partial class EnvironmentSettingsViewModel
     {
         try
         {
+            if (!CanManageRecycleBinData)
+            {
+                ClearRecycleBinEntriesForPermissionDenied();
+                StatusMessage = "휴지통 조회/복원 권한이 없습니다. 관리자에게 Data.BackupRestore 권한을 요청하세요.";
+                return;
+            }
+
             IsBusy = true;
             DetachRecycleBinEntryHandlers(_allRecycleBinEntries);
             _allRecycleBinEntries = await _local.GetRecycleBinEntriesAsync(_session);
@@ -122,6 +140,12 @@ public sealed partial class EnvironmentSettingsViewModel
     [RelayCommand]
     private async Task RestoreSelectedRecycleBinEntryAsync()
     {
+        if (!CanManageRecycleBinData)
+        {
+            StatusMessage = "휴지통 복원 권한이 없습니다. 관리자에게 Data.BackupRestore 권한을 요청하세요.";
+            return;
+        }
+
         if (SelectedRecycleBinEntry is null)
         {
             StatusMessage = "복원할 휴지통 항목을 선택하세요.";
@@ -142,6 +166,12 @@ public sealed partial class EnvironmentSettingsViewModel
     [RelayCommand]
     private async Task RestoreMarkedRecycleBinEntriesAsync()
     {
+        if (!CanManageRecycleBinData)
+        {
+            StatusMessage = "휴지통 복원 권한이 없습니다. 관리자에게 Data.BackupRestore 권한을 요청하세요.";
+            return;
+        }
+
         var markedEntries = GetMarkedRecycleBinEntries();
         if (markedEntries.Count == 0)
         {
@@ -163,6 +193,12 @@ public sealed partial class EnvironmentSettingsViewModel
     [RelayCommand]
     private async Task PermanentlyDeleteSelectedRecycleBinEntryAsync()
     {
+        if (!CanManageRecycleBinData)
+        {
+            StatusMessage = "휴지통 영구삭제 권한이 없습니다. 관리자에게 Data.BackupRestore 권한을 요청하세요.";
+            return;
+        }
+
         if (SelectedRecycleBinEntry is null)
         {
             StatusMessage = "영구삭제할 휴지통 항목을 선택하세요.";
@@ -183,6 +219,12 @@ public sealed partial class EnvironmentSettingsViewModel
     [RelayCommand]
     private async Task PermanentlyDeleteMarkedRecycleBinEntriesAsync()
     {
+        if (!CanManageRecycleBinData)
+        {
+            StatusMessage = "휴지통 영구삭제 권한이 없습니다. 관리자에게 Data.BackupRestore 권한을 요청하세요.";
+            return;
+        }
+
         var markedEntries = GetMarkedRecycleBinEntries();
         if (markedEntries.Count == 0)
         {
@@ -204,6 +246,12 @@ public sealed partial class EnvironmentSettingsViewModel
     [RelayCommand]
     private async Task MergeSelectedRecycleBinCustomerAsync()
     {
+        if (!CanManageRecycleBinData)
+        {
+            StatusMessage = "휴지통 거래처 병합 권한이 없습니다. 관리자에게 Data.BackupRestore 권한을 요청하세요.";
+            return;
+        }
+
         if (SelectedRecycleBinEntry?.Kind != RecycleBinEntityKind.Customer)
         {
             StatusMessage = "병합할 삭제 거래처를 먼저 선택하세요.";
@@ -278,6 +326,12 @@ public sealed partial class EnvironmentSettingsViewModel
     [RelayCommand]
     private void MarkAllFilteredRecycleBinEntries()
     {
+        if (!CanManageRecycleBinData)
+        {
+            StatusMessage = "휴지통 선택 권한이 없습니다. 관리자에게 Data.BackupRestore 권한을 요청하세요.";
+            return;
+        }
+
         foreach (var entry in RecycleBinEntries)
             entry.IsMarked = true;
 
@@ -290,6 +344,12 @@ public sealed partial class EnvironmentSettingsViewModel
     [RelayCommand]
     private void ClearRecycleBinMarks()
     {
+        if (!CanManageRecycleBinData)
+        {
+            StatusMessage = "휴지통 선택 권한이 없습니다. 관리자에게 Data.BackupRestore 권한을 요청하세요.";
+            return;
+        }
+
         foreach (var entry in _allRecycleBinEntries)
             entry.IsMarked = false;
 
@@ -440,6 +500,19 @@ public sealed partial class EnvironmentSettingsViewModel
 
         RefreshMarkedRecycleBinCount();
         OnPropertyChanged(nameof(HasRecycleBinEntries));
+        OnPropertyChanged(nameof(CanMarkFilteredRecycleBinEntries));
+    }
+
+    private void ClearRecycleBinEntriesForPermissionDenied()
+    {
+        DetachRecycleBinEntryHandlers(_allRecycleBinEntries);
+        _allRecycleBinEntries = new List<RecycleBinEntry>();
+        RecycleBinEntries.Clear();
+        SelectedRecycleBinEntry = null;
+        RefreshRecycleBinSummary();
+        RefreshMarkedRecycleBinCount();
+        OnPropertyChanged(nameof(HasRecycleBinEntries));
+        OnPropertyChanged(nameof(CanMarkFilteredRecycleBinEntries));
     }
 
     private void RefreshRecycleBinSummary()

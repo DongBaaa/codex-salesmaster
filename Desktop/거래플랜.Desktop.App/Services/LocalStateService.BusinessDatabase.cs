@@ -47,7 +47,8 @@ public sealed partial class LocalStateService
                || await _db.RentalAssets.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
                || await _db.RentalBillingLogs.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
                || await _db.Invoices.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
-               || await _db.Payments.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct);
+               || await _db.Payments.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.SyncOutboxEntries.AnyAsync(entry => entry.Status != "Acknowledged", ct);
     }
 
     public async Task<bool> HasVisibleBusinessCacheAsync(SessionState session, CancellationToken ct = default)

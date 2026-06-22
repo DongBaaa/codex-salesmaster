@@ -12,6 +12,7 @@ public sealed class InvoicesPage : ContentPage
     private readonly InvoicesViewModel _viewModel;
     private readonly MobileRefreshCoordinator _refreshCoordinator;
     private readonly SyncCoordinator _syncCoordinator;
+    private readonly SessionStore _sessionStore;
     private int _seenInvoicesVersion;
 
     public InvoicesPage()
@@ -21,6 +22,7 @@ public sealed class InvoicesPage : ContentPage
         _viewModel = ServiceHelper.GetRequiredService<InvoicesViewModel>();
         _refreshCoordinator = ServiceHelper.GetRequiredService<MobileRefreshCoordinator>();
         _syncCoordinator = ServiceHelper.GetRequiredService<SyncCoordinator>();
+        _sessionStore = ServiceHelper.GetRequiredService<SessionStore>();
         _refreshCoordinator.AllChanged += HandleRealtimeRefreshRequested;
         BindingContext = _viewModel;
 
@@ -81,19 +83,27 @@ public sealed class InvoicesPage : ContentPage
         searchGrid.Add(searchBar);
         searchGrid.Add(searchActions, 1, 0);
 
+        var canCreateInvoices = _sessionStore.GetSnapshot().CanCreateInvoices;
         var createSalesInvoiceButton = GeoraePlanTheme.CreateCompactButton("판매 작성", GeoraePlanTheme.Success);
+        createSalesInvoiceButton.IsVisible = canCreateInvoices;
+        createSalesInvoiceButton.IsEnabled = canCreateInvoices;
         createSalesInvoiceButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
                 async () => await Shell.Current.Navigation.PushAsync(new InvoiceDraftPage(VoucherType.Sales)),
                 "전표 작업");
 
         var createPurchaseInvoiceButton = GeoraePlanTheme.CreateCompactButton("구매 작성", GeoraePlanTheme.Brown);
+        createPurchaseInvoiceButton.IsVisible = canCreateInvoices;
+        createPurchaseInvoiceButton.IsEnabled = canCreateInvoices;
         createPurchaseInvoiceButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
                 async () => await Shell.Current.Navigation.PushAsync(new InvoiceDraftPage(VoucherType.Purchase)),
                 "전표 작업");
 
+        var canCreatePayments = _sessionStore.GetSnapshot().CanCreatePayments;
         var createPaymentButton = GeoraePlanTheme.CreateCompactButton("수금/지급", GeoraePlanTheme.Purple);
+        createPaymentButton.IsVisible = canCreatePayments;
+        createPaymentButton.IsEnabled = canCreatePayments;
         createPaymentButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
                 async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<PaymentDraftPage>()),
@@ -243,6 +253,8 @@ public sealed class InvoicesPage : ContentPage
         paymentsView.SetBinding(VisualElement.HeightRequestProperty, nameof(InvoicesViewModel.SelectedInvoicePaymentsHeight));
 
         var selectedPaymentButton = GeoraePlanTheme.CreateCompactButton("수금/지급", GeoraePlanTheme.Purple);
+        selectedPaymentButton.IsVisible = canCreatePayments;
+        selectedPaymentButton.IsEnabled = canCreatePayments;
         selectedPaymentButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
                 async () =>
@@ -253,6 +265,8 @@ public sealed class InvoicesPage : ContentPage
                 "전표 작업");
 
         var selectedEditButton = GeoraePlanTheme.CreateCompactButton("전표 수정", GeoraePlanTheme.Accent);
+        selectedEditButton.IsVisible = canCreateInvoices;
+        selectedEditButton.IsEnabled = canCreateInvoices;
         selectedEditButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
                 async () =>

@@ -48,8 +48,12 @@ public sealed class CustomerEditPage : ContentPage
         _notesEditor = GeoraePlanTheme.CreateCompactEditor("메모사항", 86);
         _notesEditor.Text = customer?.Notes ?? string.Empty;
 
+        var canEditCustomers = _sessionStore.GetSnapshot().CanEditCustomers;
+
         _statusLabel = GeoraePlanTheme.CreateStatusLabel();
-        _statusLabel.Text = isEdit
+        _statusLabel.Text = !canEditCustomers
+            ? "권한이 없어 거래처를 저장/삭제할 수 없습니다."
+            : isEdit
             ? "수정 후 저장하면 PC와 동일 서버 데이터에 반영됩니다."
             : "필수 항목은 거래처명입니다. 저장 후 PC/모바일에서 함께 조회됩니다.";
 
@@ -58,13 +62,15 @@ public sealed class CustomerEditPage : ContentPage
         guide.LineHeight = 1.0;
 
         var saveButton = GeoraePlanTheme.CreateButton("저장", GeoraePlanTheme.Success);
+        saveButton.IsEnabled = canEditCustomers;
         saveButton.Clicked += (_, _) => MobileErrorHandler.FireAndForget(SaveAsync, "거래처 저장");
 
         var cancelButton = GeoraePlanTheme.CreateButton("취소", GeoraePlanTheme.SecondaryButton);
         cancelButton.Clicked += (_, _) => MobileErrorHandler.FireAndForget(CloseAsync, "거래처 편집 닫기");
 
         var deleteButton = GeoraePlanTheme.CreateButton("삭제", GeoraePlanTheme.Danger);
-        deleteButton.IsVisible = isEdit;
+        deleteButton.IsVisible = isEdit && canEditCustomers;
+        deleteButton.IsEnabled = canEditCustomers;
         deleteButton.Clicked += (_, _) => MobileErrorHandler.FireAndForget(DeleteAsync, "거래처 삭제");
 
         var actionGrid = new Grid
@@ -141,6 +147,13 @@ public sealed class CustomerEditPage : ContentPage
         if (_isBusy)
             return;
 
+        if (!_sessionStore.GetSnapshot().CanEditCustomers)
+        {
+            _statusLabel.Text = "권한이 없어 거래처를 저장할 수 없습니다.";
+            await DisplayAlert("권한 확인", _statusLabel.Text, "확인");
+            return;
+        }
+
         var name = Read(_nameEntry);
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -165,6 +178,7 @@ public sealed class CustomerEditPage : ContentPage
             var saved = _source is null
                 ? await _api.CreateCustomerAsync(dto)
                 : await _api.UpdateCustomerAsync(dto);
+            saved = EnsureSavedResult(saved, "거래처 저장");
 
             _statusLabel.Text = "거래처 저장 완료";
             await _afterSaved(saved);
@@ -189,10 +203,21 @@ public sealed class CustomerEditPage : ContentPage
         }
     }
 
+    private static T EnsureSavedResult<T>(T? result, string operationName)
+        where T : SyncEntityDto
+        => result ?? throw new HttpRequestException($"{operationName} 응답이 비어 있어 서버 반영 여부를 확인할 수 없습니다.");
+
     private async Task DeleteAsync()
     {
         if (_isBusy || _source is null)
             return;
+
+        if (!_sessionStore.GetSnapshot().CanEditCustomers)
+        {
+            _statusLabel.Text = "권한이 없어 거래처를 삭제할 수 없습니다.";
+            await DisplayAlert("권한 확인", _statusLabel.Text, "확인");
+            return;
+        }
 
         var confirm = await DisplayAlert("거래처 삭제", $"'{_source.NameOriginal}' 거래처를 삭제할까요?", "삭제", "취소");
         if (!confirm)

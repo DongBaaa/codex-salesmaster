@@ -20,6 +20,7 @@ public sealed class SettingsViewModel : ObservableObject
     private bool _isUpdateAvailable;
     private bool _isCheckingForUpdate;
     private bool _canViewIntegrityReport;
+    private bool _canManageRecycleBin;
 
     public SettingsViewModel(SettingsService settings, SessionStore sessionStore, MobileAppUpdateService updateService)
     {
@@ -94,6 +95,12 @@ public sealed class SettingsViewModel : ObservableObject
         set => SetProperty(ref _canViewIntegrityReport, value);
     }
 
+    public bool CanManageRecycleBin
+    {
+        get => _canManageRecycleBin;
+        set => SetProperty(ref _canManageRecycleBin, value);
+    }
+
     public AsyncCommand SaveCommand { get; }
     public AsyncCommand LogoutCommand { get; }
     public AsyncCommand CheckForUpdatesCommand { get; }
@@ -108,6 +115,7 @@ public sealed class SettingsViewModel : ObservableObject
         UpdateNotes = "새 버전 확인을 눌러 최신 APK를 조회할 수 있습니다.";
         var session = _sessionStore.GetSnapshot();
         CanViewIntegrityReport = session.CanViewIntegrityReport;
+        CanManageRecycleBin = session.CanManageRecycleBin;
         IntegrityAccessText = CanViewIntegrityReport
             ? "운영 서버 무결성 결과를 읽기 전용으로 확인할 수 있습니다."
             : "운영점검은 관리자 또는 Settings.Edit 권한 계정만 사용할 수 있습니다.";

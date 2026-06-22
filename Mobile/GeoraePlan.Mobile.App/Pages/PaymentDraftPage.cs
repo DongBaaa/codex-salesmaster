@@ -132,6 +132,7 @@ public sealed class PaymentDraftPage : ContentPage
         var saveButton = GeoraePlanTheme.CreateButton("수금/지급 저장", GeoraePlanTheme.Accent);
         saveButton.SetBinding(Button.TextProperty, nameof(PaymentDraftViewModel.SaveButtonText));
         saveButton.SetBinding(Button.CommandProperty, nameof(PaymentDraftViewModel.SaveDraftCommand));
+        saveButton.SetBinding(VisualElement.IsEnabledProperty, nameof(PaymentDraftViewModel.CanCreatePayments));
 
         var statusLabel = GeoraePlanTheme.CreateStatusLabel();
         statusLabel.SetBinding(Label.TextProperty, nameof(PaymentDraftViewModel.StatusMessage));

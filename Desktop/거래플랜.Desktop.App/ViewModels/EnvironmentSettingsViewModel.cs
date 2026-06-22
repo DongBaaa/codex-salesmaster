@@ -262,7 +262,10 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     {
         CompanyProfiles.Clear();
         foreach (var profile in await _local.GetCompanyProfilesAsync())
-            CompanyProfiles.Add(profile);
+        {
+            if (IsCompanyProfileVisibleToCurrentSession(profile))
+                CompanyProfiles.Add(profile);
+        }
 
         RefreshCompanyProfileOptions();
         if (SelectedCompanyProfile is not null)
@@ -291,6 +294,13 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(CurrentUserCompanyProfileId))
         {
             StatusMessage = "현재 사용자에 연결할 회사설정을 선택하세요.";
+            return;
+        }
+
+        if (!TryResolveCompanyProfileForOffice(CurrentUserCompanyProfileId, _session.OfficeCode, out _))
+        {
+            StatusMessage = "현재 사용자 담당지점과 일치하는 회사설정만 선택할 수 있습니다.";
+            CurrentUserCompanyProfileId = ResolveDefaultCompanyProfileId(_session.OfficeCode);
             return;
         }
 
@@ -589,6 +599,13 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(EditingUserCompanyProfileId))
         {
             StatusMessage = "사용자 회사설정을 선택하세요.";
+            return;
+        }
+
+        if (!TryResolveCompanyProfileForOffice(EditingUserCompanyProfileId, EditingUserOfficeCode, out _))
+        {
+            StatusMessage = "사용자 담당지점과 일치하는 회사설정을 선택하세요.";
+            EditingUserCompanyProfileId = ResolveDefaultCompanyProfileId(EditingUserOfficeCode);
             return;
         }
 
@@ -948,7 +965,10 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         if (!IsCurrentAssignedCompanyProfileLoad(version))
             return;
 
-        EditingUserCompanyProfileId = assignedId?.ToString("D") ?? ResolveDefaultCompanyProfileId(officeCode);
+        var assignedIdText = assignedId?.ToString("D");
+        EditingUserCompanyProfileId = TryResolveCompanyProfileForOffice(assignedIdText, officeCode, out var profile)
+            ? profile.Id.ToString("D")
+            : ResolveDefaultCompanyProfileId(officeCode);
     }
 
     private bool IsCurrentAssignedCompanyProfileLoad(int version)
@@ -956,6 +976,15 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
 
     private async Task PersistCurrentUserCompanyProfileSelectionAsync(string? companyProfileId)
     {
+        if (!TryResolveCompanyProfileForOffice(companyProfileId, _session.OfficeCode, out var profile))
+        {
+            companyProfileId = ResolveDefaultCompanyProfileId(_session.OfficeCode);
+        }
+        else
+        {
+            companyProfileId = profile.Id.ToString("D");
+        }
+
         await _local.SetAssignedCompanyProfileAsync(_session.User?.Username, ParseCompanyProfileId(companyProfileId));
         await LoadCurrentUserCompanyProfileAsync();
     }
@@ -970,6 +999,32 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
                           string.Equals(current.OfficeCode, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase))
                       ?? CompanyProfiles.FirstOrDefault();
         return profile?.Id.ToString("D") ?? string.Empty;
+    }
+
+    private bool IsCompanyProfileVisibleToCurrentSession(LocalCompanyProfile profile)
+        => CanEditCompanyProfiles ||
+           string.Equals(
+               NormalizeOfficeCode(profile.OfficeCode),
+               NormalizeOfficeCode(_session.OfficeCode),
+               StringComparison.OrdinalIgnoreCase);
+
+    private bool TryResolveCompanyProfileForOffice(string? companyProfileId, string? officeCode, out LocalCompanyProfile profile)
+    {
+        profile = null!;
+        var parsed = ParseCompanyProfileId(companyProfileId);
+        if (!parsed.HasValue)
+            return false;
+
+        var normalizedOfficeCode = NormalizeOfficeCode(officeCode);
+        var candidate = CompanyProfiles.FirstOrDefault(current => current.Id == parsed.Value);
+        if (candidate is null ||
+            !string.Equals(NormalizeOfficeCode(candidate.OfficeCode), normalizedOfficeCode, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        profile = candidate;
+        return true;
     }
 
     private static Guid? ParseCompanyProfileId(string? value)

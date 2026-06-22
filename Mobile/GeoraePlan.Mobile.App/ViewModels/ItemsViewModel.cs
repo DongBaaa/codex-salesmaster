@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using GeoraePlan.Mobile.App.Models;
 using GeoraePlan.Mobile.App.Services;
 using 거래플랜.Shared.Contracts;
 
@@ -22,6 +23,8 @@ public sealed class ItemsViewModel : ObservableObject
 
     private readonly GeoraePlanApiClient _api;
     private readonly SessionStore _sessionStore;
+    private readonly JsonSyncStateStore _syncStateStore;
+    private readonly SyncCoordinator _syncCoordinator;
 
     private string _searchText = string.Empty;
     private string _statusMessage = "품목분류를 선택하세요.";
@@ -32,10 +35,16 @@ public sealed class ItemsViewModel : ObservableObject
     private string _sessionTenantCode = string.Empty;
     private string _sessionUsername = string.Empty;
 
-    public ItemsViewModel(GeoraePlanApiClient api, SessionStore sessionStore)
+    public ItemsViewModel(
+        GeoraePlanApiClient api,
+        SessionStore sessionStore,
+        JsonSyncStateStore syncStateStore,
+        SyncCoordinator syncCoordinator)
     {
         _api = api;
         _sessionStore = sessionStore;
+        _syncStateStore = syncStateStore;
+        _syncCoordinator = syncCoordinator;
         RefreshCommand = new AsyncCommand(RefreshAsync);
     }
 
@@ -101,6 +110,7 @@ public sealed class ItemsViewModel : ObservableObject
             OnPropertyChanged(nameof(HasSelectedItem));
             OnPropertyChanged(nameof(SelectedItemTitle));
             OnPropertyChanged(nameof(SelectedItemSpecification));
+            OnPropertyChanged(nameof(SelectedItemIdentitySummary));
             OnPropertyChanged(nameof(SelectedItemPriceSummary));
             OnPropertyChanged(nameof(SelectedItemStockSummary));
             OnPropertyChanged(nameof(SelectedItemMemo));
@@ -144,6 +154,8 @@ public sealed class ItemsViewModel : ObservableObject
             ? "규격 정보 없음"
             : $"규격: {SelectedItem.SpecificationOriginal}";
 
+    public string SelectedItemIdentitySummary => BuildItemIdentitySummary(SelectedItem);
+
     public string SelectedItemPriceSummary => SelectedItem is null
         ? "기본 단가 정보 없음"
         : $"매입 {SelectedItem.PurchasePrice:N0}원 / 판매 {SelectedItem.SalePrice:N0}원 / 소매 {SelectedItem.RetailPrice:N0}원";
@@ -181,6 +193,7 @@ public sealed class ItemsViewModel : ObservableObject
             EnsureSessionContext();
 
             StatusMessage = "품목분류를 불러오고 있습니다.";
+            await _syncCoordinator.RefreshIfServerChangedAsync("items-refresh", TimeSpan.FromSeconds(5));
             var categories = await _api.GetItemCategoriesAsync();
             ReplaceCategories(categories);
 
@@ -213,6 +226,13 @@ public sealed class ItemsViewModel : ObservableObject
         }
         catch (Exception ex)
         {
+            if (MobileRetryableNetworkFailure.IsRetryable(ex) &&
+                await TryLoadCategoriesFromSyncedStateAsync(preserveSelectedCategory, $"품목 화면 초기화 실패: {ex.Message}"))
+            {
+                return;
+            }
+
+            ClearAllItemDisplay();
             StatusMessage = $"품목 화면 초기화 실패: {ex.Message}";
         }
         finally
@@ -247,6 +267,19 @@ public sealed class ItemsViewModel : ObservableObject
         StatusMessage = "품목분류를 선택하거나 품명/규격으로 검색하세요.";
         OnPropertyChanged(nameof(ItemListHeight));
         OnPropertyChanged(nameof(SelectedCategorySummary));
+    }
+
+    private void ClearAllItemDisplay()
+    {
+        ItemCategories.Clear();
+        SelectedCategory = null;
+        SearchText = string.Empty;
+        Items.Clear();
+        ClearSelectedItem();
+        OnPropertyChanged(nameof(ItemListHeight));
+        OnPropertyChanged(nameof(SelectedCategorySummary));
+        OnPropertyChanged(nameof(CanShowItemList));
+        OnPropertyChanged(nameof(ItemListLabelText));
     }
 
     public bool TryNavigateBackOneStep()
@@ -290,7 +323,19 @@ public sealed class ItemsViewModel : ObservableObject
         }
         catch (Exception ex)
         {
+            if (MobileRetryableNetworkFailure.IsRetryable(ex) &&
+                await TrySearchItemsFromSyncedStateAsync($"품목 조회 실패: {ex.Message}"))
+            {
+                return;
+            }
+
+            Items.Clear();
+            ClearSelectedItem();
             StatusMessage = $"품목 조회 실패: {ex.Message}";
+            OnPropertyChanged(nameof(ItemListHeight));
+            OnPropertyChanged(nameof(SelectedCategorySummary));
+            OnPropertyChanged(nameof(CanShowItemList));
+            OnPropertyChanged(nameof(ItemListLabelText));
         }
         finally
         {
@@ -334,32 +379,22 @@ public sealed class ItemsViewModel : ObservableObject
 
             var selected = detail?.Item ?? item;
             selected.CategoryName = NormalizeCategoryName(selected.CategoryName);
-            SelectedItem = selected;
-
-            SelectedItemBranchStocks.Clear();
-            var branchStocks = detail?.BranchStocks ?? new List<ItemWarehouseStockDto>();
-            foreach (var stock in branchStocks)
-                SelectedItemBranchStocks.Add(stock);
-
-            if (SelectedItemBranchStocks.Count == 0 && selected.Id != Guid.Empty)
-            {
-                SelectedItemBranchStocks.Add(new ItemWarehouseStockDto
-                {
-                    ItemId = selected.Id,
-                    WarehouseCode = "전체",
-                    Quantity = selected.CurrentStock,
-                    UpdatedAtUtc = DateTime.UtcNow
-                });
-            }
-
-            OnPropertyChanged(nameof(SelectedItemBranchStocksHeight));
+            PopulateSelectedItem(selected, detail?.BranchStocks ?? []);
             StatusMessage = $"{selected.NameOriginal} 품목을 선택했습니다.";
         }
         catch (Exception ex)
         {
-            SelectedItem = item;
-            SelectedItemBranchStocks.Clear();
-            OnPropertyChanged(nameof(SelectedItemBranchStocksHeight));
+            if (!MobileRetryableNetworkFailure.IsRetryable(ex))
+            {
+                ClearSelectedItem();
+                StatusMessage = $"{item.NameOriginal} 품목 상세를 사용할 수 없습니다. 삭제되었거나 현재 권한/담당지점 범위 밖일 수 있습니다. ({ex.Message})";
+                return;
+            }
+
+            if (await TrySelectItemFromSyncedStateAsync(item, $"품목 상세 조회 실패: {ex.Message}"))
+                return;
+
+            PopulateSelectedItem(item, []);
             StatusMessage = $"품목 상세 조회 실패: {ex.Message}";
         }
         finally
@@ -433,6 +468,195 @@ public sealed class ItemsViewModel : ObservableObject
         OnPropertyChanged(nameof(CanShowItemList));
         OnPropertyChanged(nameof(ItemListLabelText));
     }
+
+    private async Task<bool> TryLoadCategoriesFromSyncedStateAsync(bool preserveSelectedCategory, string reason)
+    {
+        var state = await _syncStateStore.LoadAsync();
+        state.Normalize();
+
+        var syncedItems = GetActiveSyncedItems(state).ToList();
+        if (syncedItems.Count == 0)
+            return false;
+
+        ReplaceCategories(BuildCategorySummaries(syncedItems));
+
+        if (!preserveSelectedCategory || SelectedCategory is null)
+        {
+            if (HasSearchText)
+                await TrySearchItemsFromSyncedStateAsync(reason);
+            else
+            {
+                SelectedCategory = null;
+                Items.Clear();
+                ClearSelectedItem();
+                StatusMessage = $"{reason} / 동기화 캐시 품목분류 {ItemCategories.Count:N0}개를 표시합니다.";
+                OnPropertyChanged(nameof(ItemListHeight));
+                OnPropertyChanged(nameof(SelectedCategorySummary));
+                OnPropertyChanged(nameof(CanShowItemList));
+                OnPropertyChanged(nameof(ItemListLabelText));
+            }
+        }
+        else
+        {
+            var matchedCategory = FindCategoryByName(SelectedCategory.Name);
+            if (matchedCategory is null)
+            {
+                ClearSelectedCategory();
+                StatusMessage = $"{reason} / 동기화 캐시에 선택 분류가 없어 분류를 다시 선택하세요.";
+            }
+            else
+            {
+                SelectedCategory = matchedCategory;
+                await TrySearchItemsFromSyncedStateAsync(reason);
+            }
+        }
+
+        _lastRefreshUtc = DateTime.UtcNow;
+        return true;
+    }
+
+    private async Task<bool> TrySearchItemsFromSyncedStateAsync(string reason)
+    {
+        var state = await _syncStateStore.LoadAsync();
+        state.Normalize();
+
+        var syncedItems = GetActiveSyncedItems(state).ToList();
+        if (syncedItems.Count == 0)
+            return false;
+
+        var normalizedCategory = SelectedCategory is null
+            ? string.Empty
+            : NormalizeCategoryName(SelectedCategory.Name);
+        var trimmedSearch = SearchText.Trim();
+
+        var filtered = syncedItems
+            .Where(item => SelectedCategory is null || CategoryEquals(item.CategoryName, normalizedCategory))
+            .Where(item => string.IsNullOrWhiteSpace(trimmedSearch) || MatchesItem(item, trimmedSearch))
+            .OrderBy(item => item.NameOriginal, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+        Items.Clear();
+        foreach (var item in filtered)
+        {
+            item.CategoryName = NormalizeCategoryName(item.CategoryName);
+            Items.Add(item);
+        }
+
+        if (SelectedItem is not null && Items.All(item => item.Id != SelectedItem.Id))
+            ClearSelectedItem();
+
+        StatusMessage = filtered.Count == 0
+            ? $"{reason} / 동기화 캐시 기준 검색 결과가 없습니다."
+            : SelectedCategory is null
+                ? $"{reason} / 동기화 캐시 전체 품목 검색결과 {filtered.Count:N0}건"
+                : $"{reason} / 동기화 캐시 {normalizedCategory} 분류 품목 {filtered.Count:N0}건";
+        OnPropertyChanged(nameof(ItemListHeight));
+        OnPropertyChanged(nameof(SelectedCategorySummary));
+        OnPropertyChanged(nameof(CanShowItemList));
+        OnPropertyChanged(nameof(ItemListLabelText));
+        return true;
+    }
+
+    private async Task<bool> TrySelectItemFromSyncedStateAsync(ItemDto item, string reason)
+    {
+        if (item.Id == Guid.Empty)
+            return false;
+
+        var state = await _syncStateStore.LoadAsync();
+        state.Normalize();
+
+        var selected = state.SyncedItems
+            .Where(candidate => !candidate.IsDeleted)
+            .FirstOrDefault(candidate => candidate.Id == item.Id) ?? item;
+        var branchStocks = state.SyncedItemWarehouseStocks
+            .Where(stock => stock.ItemId == item.Id)
+            .OrderBy(stock => stock.WarehouseCode, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (selected == item && branchStocks.Count == 0)
+            return false;
+
+        PopulateSelectedItem(selected, branchStocks);
+        StatusMessage = $"{reason} / 동기화 캐시 기준으로 {selected.NameOriginal} 품목을 표시합니다.";
+        return true;
+    }
+
+    private void PopulateSelectedItem(ItemDto selected, IEnumerable<ItemWarehouseStockDto> branchStocks)
+    {
+        selected.CategoryName = NormalizeCategoryName(selected.CategoryName);
+        SelectedItem = selected;
+
+        SelectedItemBranchStocks.Clear();
+        foreach (var stock in branchStocks)
+            SelectedItemBranchStocks.Add(stock);
+
+        if (SelectedItemBranchStocks.Count == 0 && selected.Id != Guid.Empty)
+        {
+            SelectedItemBranchStocks.Add(new ItemWarehouseStockDto
+            {
+                ItemId = selected.Id,
+                WarehouseCode = "전체",
+                Quantity = selected.CurrentStock,
+                UpdatedAtUtc = selected.UpdatedAtUtc == default ? DateTime.UtcNow : selected.UpdatedAtUtc
+            });
+        }
+
+        OnPropertyChanged(nameof(SelectedItemBranchStocksHeight));
+    }
+
+    private static IEnumerable<ItemDto> GetActiveSyncedItems(MobileSyncState state)
+        => state.SyncedItems
+            .Where(item => !item.IsDeleted)
+            .Select(item =>
+            {
+                item.CategoryName = NormalizeCategoryName(item.CategoryName);
+                return item;
+            });
+
+    private static IReadOnlyList<ItemCategorySummaryDto> BuildCategorySummaries(IEnumerable<ItemDto> items)
+        => items
+            .GroupBy(item => NormalizeCategoryName(item.CategoryName), StringComparer.OrdinalIgnoreCase)
+            .Select(group => new ItemCategorySummaryDto
+            {
+                Name = group.Key,
+                ItemCount = group.Count()
+            })
+            .OrderBy(GetCategorySortKey)
+            .ThenBy(category => category.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+    private static bool MatchesItem(ItemDto item, string query)
+        => Contains(item.NameOriginal, query)
+           || Contains(item.NameMatchKey, query)
+           || Contains(item.SpecificationOriginal, query)
+           || Contains(item.SpecificationMatchKey, query)
+           || Contains(item.MaterialNumber, query)
+           || Contains(item.SerialNumber, query)
+           || Contains(item.CategoryName, query);
+
+    private static string BuildItemIdentitySummary(ItemDto? item)
+    {
+        if (item is null)
+            return "품목 식별 정보 없음";
+
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(item.CategoryName))
+            parts.Add($"분류 {item.CategoryName.Trim()}");
+        if (!string.IsNullOrWhiteSpace(item.ItemKind))
+            parts.Add($"구분 {item.ItemKind.Trim()}");
+        if (!string.IsNullOrWhiteSpace(item.TrackingType))
+            parts.Add($"재고방식 {item.TrackingType.Trim()}");
+        if (!string.IsNullOrWhiteSpace(item.MaterialNumber))
+            parts.Add($"자재 {item.MaterialNumber.Trim()}");
+        if (!string.IsNullOrWhiteSpace(item.SerialNumber))
+            parts.Add($"S/N {item.SerialNumber.Trim()}");
+
+        return parts.Count == 0 ? "품목 식별 정보 없음" : string.Join(" · ", parts);
+    }
+
+    private static bool Contains(string? source, string query)
+        => !string.IsNullOrWhiteSpace(source) &&
+           source.Contains(query, StringComparison.CurrentCultureIgnoreCase);
 
     private void ReplaceCategories(IEnumerable<ItemCategorySummaryDto> categories)
     {

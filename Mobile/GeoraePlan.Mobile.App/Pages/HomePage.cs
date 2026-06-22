@@ -70,19 +70,27 @@ public sealed class HomePage : ContentPage
         var refreshButton = GeoraePlanTheme.CreateButton("상태 새로고침", GeoraePlanTheme.SecondaryButton);
         refreshButton.SetBinding(Button.CommandProperty, nameof(HomeViewModel.RefreshCommand));
 
+        var canCreateInvoices = _sessionStore.GetSnapshot().CanCreateInvoices;
         var createSalesInvoiceButton = GeoraePlanTheme.CreateButton("판매 작성", GeoraePlanTheme.Success);
+        createSalesInvoiceButton.IsVisible = canCreateInvoices;
+        createSalesInvoiceButton.IsEnabled = canCreateInvoices;
         createSalesInvoiceButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
                 async () => await Shell.Current.Navigation.PushAsync(new InvoiceDraftPage(VoucherType.Sales)),
                 "빠른 메뉴 이동");
 
         var createPurchaseInvoiceButton = GeoraePlanTheme.CreateButton("구매 작성", GeoraePlanTheme.Brown);
+        createPurchaseInvoiceButton.IsVisible = canCreateInvoices;
+        createPurchaseInvoiceButton.IsEnabled = canCreateInvoices;
         createPurchaseInvoiceButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
                 async () => await Shell.Current.Navigation.PushAsync(new InvoiceDraftPage(VoucherType.Purchase)),
                 "빠른 메뉴 이동");
 
+        var canCreatePayments = _sessionStore.GetSnapshot().CanCreatePayments;
         var createPaymentButton = GeoraePlanTheme.CreateButton("수금/지급", GeoraePlanTheme.Purple);
+        createPaymentButton.IsVisible = canCreatePayments;
+        createPaymentButton.IsEnabled = canCreatePayments;
         createPaymentButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
                 async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<PaymentDraftPage>()),
@@ -100,7 +108,10 @@ public sealed class HomePage : ContentPage
                 async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<RentalsPage>()),
                 "빠른 메뉴 이동");
 
+        var canManageRecycleBin = _sessionStore.GetSnapshot().CanManageRecycleBin;
         var recycleBinButton = GeoraePlanTheme.CreateButton("휴지통", GeoraePlanTheme.SecondaryButton);
+        recycleBinButton.IsVisible = canManageRecycleBin;
+        recycleBinButton.IsEnabled = canManageRecycleBin;
         recycleBinButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
                 async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<RecycleBinPage>()),

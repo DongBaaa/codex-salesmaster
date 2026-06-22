@@ -83,10 +83,42 @@ public sealed class CustomersController : ControllerBase
             .Select(invoice => invoice.ToDto())
             .ToListAsync(cancellationToken);
 
+        var recentPayments = await _officeScopeService.ApplyPaymentScope(_dbContext.Payments
+            .AsNoTracking()
+            .Include(payment => payment.Attachments)
+            .Include(payment => payment.Invoice)
+            .ThenInclude(invoice => invoice!.Customer)
+            .Where(payment => payment.Invoice != null && payment.Invoice.CustomerId == id))
+            .OrderByDescending(payment => payment.PaymentDate)
+            .ThenByDescending(payment => payment.UpdatedAtUtc)
+            .Take(50)
+            .Select(payment => new CustomerPaymentHistoryDto
+            {
+                PaymentId = payment.Id,
+                InvoiceId = payment.InvoiceId,
+                InvoiceNumber = payment.Invoice == null
+                    ? string.Empty
+                    : (string.IsNullOrWhiteSpace(payment.Invoice.InvoiceNumber)
+                        ? payment.Invoice.LocalTempNumber
+                        : payment.Invoice.InvoiceNumber),
+                VoucherType = payment.Invoice == null ? VoucherType.Sales : payment.Invoice.VoucherType,
+                PaymentDate = payment.PaymentDate,
+                Amount = payment.Amount,
+                Note = payment.Note,
+                Attachments = payment.Attachments
+                    .Where(attachment => !attachment.IsDeleted)
+                    .OrderByDescending(attachment => attachment.UploadedAtUtc)
+                    .Select(attachment => attachment.ToDto(false))
+                    .ToList(),
+                UpdatedAtUtc = payment.UpdatedAtUtc
+            })
+            .ToListAsync(cancellationToken);
+
         return Ok(new CustomerDetailDto
         {
             Customer = entity.ToDto(),
-            RecentInvoices = recentInvoices
+            RecentInvoices = recentInvoices,
+            RecentPayments = recentPayments
         });
     }
 
@@ -171,7 +203,7 @@ public sealed class CustomersController : ControllerBase
 
         var entity = await _dbContext.Customers.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
-        if (!_officeScopeService.CanWriteOfficeForCustomers(entity.ResponsibleOfficeCode, entity.TenantCode))
+        if (!_officeScopeService.CanWriteOfficeForCustomers(entity.ResponsibleOfficeCode, entity.TenantCode, entity.OfficeCode))
             return Forbid();
         if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Customer)) is { } conflict)
             return conflict;
@@ -204,7 +236,7 @@ public sealed class CustomersController : ControllerBase
 
         var entity = await _dbContext.Customers.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
-        if (!_officeScopeService.CanWriteOfficeForCustomers(entity.ResponsibleOfficeCode, entity.TenantCode))
+        if (!_officeScopeService.CanWriteOfficeForCustomers(entity.ResponsibleOfficeCode, entity.TenantCode, entity.OfficeCode))
             return Forbid();
         if (OptimisticConcurrencyGuard.Check(this, entity, expectedRevision, nameof(Customer)) is { } conflict)
             return conflict;
@@ -230,10 +262,7 @@ public sealed class CustomersController : ControllerBase
             .Where(contract => contract.CustomerId == id && !contract.IsDeleted))
             .ToListAsync(cancellationToken);
         foreach (var contract in contracts)
-        {
             contract.IsDeleted = true;
-            contract.IsPrimary = false;
-        }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         return NoContent();
@@ -292,5 +321,3 @@ public sealed class CustomersController : ControllerBase
         dto.TradeType = CustomerClassificationNormalizer.NormalizeTradeTypeOrDefault(rawTradeType);
     }
 }
-
-

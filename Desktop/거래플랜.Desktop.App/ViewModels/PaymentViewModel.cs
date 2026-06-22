@@ -38,6 +38,7 @@ public sealed partial class PaymentViewModel : ObservableObject
     private Guid? _editingTransactionId;
     private long _editingTransactionRevision;
     private bool _suppressTransactionKindChange;
+    private bool _isApplyingSuggestedAmounts;
     private int _historyLoadVersion;
     private int _attachmentLoadVersion;
     private int _contextRefreshVersion;
@@ -321,15 +322,58 @@ public sealed partial class PaymentViewModel : ObservableObject
         RequestRefreshContext();
     }
 
-    partial void OnCashReceiptChanged(decimal value) => RecalcReceipt();
-    partial void OnCardReceiptChanged(decimal value) => RecalcReceipt();
-    partial void OnBankReceiptChanged(decimal value) => RecalcReceipt();
-    partial void OnDiscountAppliedChanged(decimal value) => RecalcReceipt();
+    partial void OnCashReceiptChanged(decimal value)
+    {
+        InvalidateSettlementSuggestionForManualInput();
+        RecalcReceipt();
+    }
 
-    partial void OnCashPaymentChanged(decimal value) => RecalcPayment();
-    partial void OnCardPaymentChanged(decimal value) => RecalcPayment();
-    partial void OnBankPaymentChanged(decimal value) => RecalcPayment();
-    partial void OnDiscountReceivedChanged(decimal value) => RecalcPayment();
+    partial void OnCardReceiptChanged(decimal value)
+    {
+        InvalidateSettlementSuggestionForManualInput();
+        RecalcReceipt();
+    }
+
+    partial void OnBankReceiptChanged(decimal value)
+    {
+        InvalidateSettlementSuggestionForManualInput();
+        RecalcReceipt();
+    }
+
+    partial void OnDiscountAppliedChanged(decimal value)
+    {
+        InvalidateSettlementSuggestionForManualInput();
+        RecalcReceipt();
+    }
+
+    partial void OnCashPaymentChanged(decimal value)
+    {
+        InvalidateSettlementSuggestionForManualInput();
+        RecalcPayment();
+    }
+
+    partial void OnCardPaymentChanged(decimal value)
+    {
+        InvalidateSettlementSuggestionForManualInput();
+        RecalcPayment();
+    }
+
+    partial void OnBankPaymentChanged(decimal value)
+    {
+        InvalidateSettlementSuggestionForManualInput();
+        RecalcPayment();
+    }
+
+    partial void OnDiscountReceivedChanged(decimal value)
+    {
+        InvalidateSettlementSuggestionForManualInput();
+        RecalcPayment();
+    }
+
+    partial void OnSettlementAmountChanged(decimal value)
+    {
+        InvalidateSettlementSuggestionForManualInput();
+    }
 
     partial void OnSelectedHistoryChanged(LocalTransaction? value)
     {
@@ -424,6 +468,27 @@ public sealed partial class PaymentViewModel : ObservableObject
             : kind == PaymentFlowConstants.TransactionKindInvoicePayment;
     }
 
+    private void InvalidateSettlementSuggestionForManualInput()
+    {
+        if (_isApplyingSuggestedAmounts)
+            return;
+
+        Interlocked.Increment(ref _settlementSuggestionVersion);
+    }
+
+    private void ApplySuggestedAmountChanges(Action changeAction)
+    {
+        _isApplyingSuggestedAmounts = true;
+        try
+        {
+            changeAction();
+        }
+        finally
+        {
+            _isApplyingSuggestedAmounts = false;
+        }
+    }
+
     private async Task LoadHistoryAsync(Guid customerId, int version)
     {
         var currentSelectedId = SelectedHistory?.Id;
@@ -459,14 +524,19 @@ public sealed partial class PaymentViewModel : ObservableObject
             return;
         }
 
+        var currentSelectedId = SelectedAttachment?.TransactionId == transactionId
+            ? SelectedAttachment.Id
+            : (Guid?)null;
         var items = await _local.GetTransactionAttachmentsAsync(transactionId, _session);
         if (!IsCurrentAttachmentLoad(version))
             return;
 
         Attachments.Clear();
-        SelectedAttachment = null;
         foreach (var attachment in items)
             Attachments.Add(attachment);
+        SelectedAttachment = currentSelectedId.HasValue
+            ? Attachments.FirstOrDefault(current => current.Id == currentSelectedId.Value)
+            : null;
     }
 
     private void ResetCustomerDisplay()
@@ -608,8 +678,11 @@ public sealed partial class PaymentViewModel : ObservableObject
         {
             if (forceResetAmounts)
             {
-                CashReceipt = CardReceipt = BankReceipt = DiscountApplied = ReceiptTotal = 0m;
-                CashPayment = CardPayment = BankPayment = DiscountReceived = PaymentTotal = 0m;
+                ApplySuggestedAmountChanges(() =>
+                {
+                    CashReceipt = CardReceipt = BankReceipt = DiscountApplied = ReceiptTotal = 0m;
+                    CashPayment = CardPayment = BankPayment = DiscountReceived = PaymentTotal = 0m;
+                });
             }
 
             if (_linkedInvoice is not null && SelectedCustomer is not null)
@@ -631,7 +704,7 @@ public sealed partial class PaymentViewModel : ObservableObject
         }
 
         if (forceResetAmounts && IsCurrentSettlementSuggestion(version))
-            SettlementAmount = 0m;
+            ApplySuggestedAmountChanges(() => SettlementAmount = 0m);
     }
 
     private async Task ApplyInvoiceDefaultSettlementAsync(bool forceResetAmounts, bool advanceOnly, int version)
@@ -647,20 +720,23 @@ public sealed partial class PaymentViewModel : ObservableObject
         if (advanceOnly)
             suggested = Math.Min(suggested, AdvanceBalance);
 
-        SettlementAmount = Math.Max(0m, suggested);
-        if (!forceResetAmounts)
-            return;
+        ApplySuggestedAmountChanges(() =>
+        {
+            SettlementAmount = Math.Max(0m, suggested);
+            if (!forceResetAmounts)
+                return;
 
-        CashReceipt = CardReceipt = BankReceipt = DiscountApplied = ReceiptTotal = 0m;
-        CashPayment = CardPayment = BankPayment = DiscountReceived = PaymentTotal = 0m;
+            CashReceipt = CardReceipt = BankReceipt = DiscountApplied = ReceiptTotal = 0m;
+            CashPayment = CardPayment = BankPayment = DiscountReceived = PaymentTotal = 0m;
 
-        if (advanceOnly || SettlementAmount <= 0m)
-            return;
+            if (advanceOnly || SettlementAmount <= 0m)
+                return;
 
-        if (_linkedInvoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement)
-            BankPayment = SettlementAmount;
-        else
-            BankReceipt = SettlementAmount;
+            if (_linkedInvoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement)
+                BankPayment = SettlementAmount;
+            else
+                BankReceipt = SettlementAmount;
+        });
     }
 
     private async Task ApplyRentalDefaultSettlementAsync(bool forceResetAmounts, int version)
@@ -672,12 +748,15 @@ public sealed partial class PaymentViewModel : ObservableObject
         if (!IsCurrentSettlementSuggestion(version))
             return;
 
-        SettlementAmount = Math.Max(0m, summary.OutstandingAmount > 0m ? summary.OutstandingAmount : summary.BilledAmount);
-        if (!forceResetAmounts)
-            return;
+        ApplySuggestedAmountChanges(() =>
+        {
+            SettlementAmount = Math.Max(0m, summary.OutstandingAmount > 0m ? summary.OutstandingAmount : summary.BilledAmount);
+            if (!forceResetAmounts)
+                return;
 
-        CashPayment = CardPayment = BankPayment = DiscountReceived = PaymentTotal = 0m;
-        ApplyRentalReceiptAmountByBillingMethod(SettlementAmount);
+            CashPayment = CardPayment = BankPayment = DiscountReceived = PaymentTotal = 0m;
+            ApplyRentalReceiptAmountByBillingMethod(SettlementAmount);
+        });
     }
 
     private static RentalReceiptTarget ResolveRentalReceiptTarget(string? billingMethod)

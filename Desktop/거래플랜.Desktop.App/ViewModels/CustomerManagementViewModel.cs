@@ -326,16 +326,15 @@ public sealed partial class CustomerManagementViewModel : ObservableObject, IDis
             filtered = filtered.Where(MatchesSelectedOfficeFilter);
 
         var list = ApplySorting(filtered).ToList();
+        var selectedCustomerId = SelectedCustomer?.Id;
 
         Customers.Clear();
         foreach (var row in list)
             Customers.Add(row);
 
-        if (SelectedCustomer is not null && Customers.All(row => row.Id != SelectedCustomer.Id))
-            SelectedCustomer = null;
-
-        if (SelectedCustomer is null)
-            SelectedCustomer = Customers.FirstOrDefault();
+        SelectedCustomer = selectedCustomerId.HasValue
+            ? Customers.FirstOrDefault(row => row.Id == selectedCustomerId.Value) ?? Customers.FirstOrDefault()
+            : Customers.FirstOrDefault();
     }
 
     partial void OnSearchTextChanged(string value)

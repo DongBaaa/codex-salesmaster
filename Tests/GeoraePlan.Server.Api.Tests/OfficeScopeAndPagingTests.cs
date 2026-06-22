@@ -388,6 +388,226 @@ public sealed class OfficeScopeAndPagingTests : IDisposable
     }
 
     [Fact]
+    public async Task OfficeOnlyUser_OperationalScopesUseOwnerOffice_WhenResponsibleOfficeIsBlank()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu_user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var visibleCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = string.Empty,
+            NameOriginal = "VISIBLE-BLANK-CUSTOMER",
+            NameMatchKey = "VISIBLEBLANKCUSTOMER",
+            TradeType = "Sales"
+        };
+        var hiddenCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = string.Empty,
+            NameOriginal = "HIDDEN-BLANK-CUSTOMER",
+            NameMatchKey = "HIDDENBLANKCUSTOMER",
+            TradeType = "Sales"
+        };
+        var visibleInvoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = visibleCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = string.Empty,
+            InvoiceNumber = "INV-BLANK-VISIBLE",
+            InvoiceDate = new DateOnly(2026, 6, 22)
+        };
+        var hiddenInvoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = hiddenCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = string.Empty,
+            InvoiceNumber = "INV-BLANK-HIDDEN",
+            InvoiceDate = new DateOnly(2026, 6, 22)
+        };
+        var visiblePayment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = visibleInvoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 22),
+            Amount = 10_000m,
+            Note = "PAYMENT-BLANK-VISIBLE"
+        };
+        var hiddenPayment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = hiddenInvoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 22),
+            Amount = 10_000m,
+            Note = "PAYMENT-BLANK-HIDDEN"
+        };
+        var visibleTransaction = new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = visibleCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = string.Empty,
+            TransactionKind = "TRANSACTION-BLANK-VISIBLE",
+            ReceiptTotal = 10_000m
+        };
+        var hiddenTransaction = new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = hiddenCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = string.Empty,
+            TransactionKind = "TRANSACTION-BLANK-HIDDEN",
+            ReceiptTotal = 10_000m
+        };
+        var visibleProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = string.Empty,
+            ProfileKey = "PROFILE-BLANK-VISIBLE",
+            CustomerId = visibleCustomer.Id,
+            CustomerName = visibleCustomer.NameOriginal
+        };
+        var hiddenProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = string.Empty,
+            ProfileKey = "PROFILE-BLANK-HIDDEN",
+            CustomerId = hiddenCustomer.Id,
+            CustomerName = hiddenCustomer.NameOriginal
+        };
+
+        dbContext.Customers.AddRange(visibleCustomer, hiddenCustomer);
+        dbContext.Invoices.AddRange(visibleInvoice, hiddenInvoice);
+        dbContext.Payments.AddRange(visiblePayment, hiddenPayment);
+        dbContext.Transactions.AddRange(visibleTransaction, hiddenTransaction);
+        dbContext.TransactionAttachments.AddRange(
+            new TransactionAttachment
+            {
+                Id = Guid.NewGuid(),
+                TransactionId = visibleTransaction.Id,
+                FileName = "visible.pdf",
+                MimeType = "application/pdf"
+            },
+            new TransactionAttachment
+            {
+                Id = Guid.NewGuid(),
+                TransactionId = hiddenTransaction.Id,
+                FileName = "hidden.pdf",
+                MimeType = "application/pdf"
+            });
+        dbContext.RentalBillingProfiles.AddRange(visibleProfile, hiddenProfile);
+        dbContext.RentalAssets.AddRange(
+            new RentalAsset
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ResponsibleOfficeCode = string.Empty,
+                AssetKey = "ASSET-BLANK-VISIBLE",
+                CustomerId = visibleCustomer.Id,
+                BillingProfileId = visibleProfile.Id
+            },
+            new RentalAsset
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = string.Empty,
+                AssetKey = "ASSET-BLANK-HIDDEN",
+                CustomerId = hiddenCustomer.Id,
+                BillingProfileId = hiddenProfile.Id
+            });
+        dbContext.RentalBillingLogs.AddRange(
+            new RentalBillingLog
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ResponsibleOfficeCode = string.Empty,
+                BillingProfileId = visibleProfile.Id,
+                BillingYearMonth = "202606"
+            },
+            new RentalBillingLog
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = string.Empty,
+                BillingProfileId = hiddenProfile.Id,
+                BillingYearMonth = "202607"
+            });
+        await dbContext.SaveChangesAsync();
+
+        var service = new OfficeScopeService(currentUser, dbContext);
+
+        var customers = await service.ApplyCustomerScope(dbContext.Customers.AsNoTracking())
+            .Select(customer => customer.NameOriginal)
+            .ToListAsync();
+        var invoices = await service.ApplyInvoiceScope(dbContext.Invoices.AsNoTracking())
+            .Select(invoice => invoice.InvoiceNumber)
+            .ToListAsync();
+        var payments = await service.ApplyPaymentScope(dbContext.Payments.AsNoTracking().Include(payment => payment.Invoice))
+            .Select(payment => payment.Note)
+            .ToListAsync();
+        var transactions = await service.ApplyTransactionScope(dbContext.Transactions.AsNoTracking())
+            .Select(transaction => transaction.TransactionKind)
+            .ToListAsync();
+        var transactionAttachments = await service.ApplyTransactionAttachmentScope(dbContext.TransactionAttachments.AsNoTracking().Include(attachment => attachment.Transaction))
+            .Select(attachment => attachment.FileName)
+            .ToListAsync();
+        var profiles = await service.ApplyRentalBillingProfileScope(dbContext.RentalBillingProfiles.AsNoTracking())
+            .Select(profile => profile.ProfileKey)
+            .ToListAsync();
+        var assets = await service.ApplyRentalAssetScope(dbContext.RentalAssets.AsNoTracking())
+            .Select(asset => asset.AssetKey)
+            .ToListAsync();
+        var logs = await service.ApplyRentalBillingLogScope(dbContext.RentalBillingLogs.AsNoTracking())
+            .Select(log => log.BillingYearMonth)
+            .ToListAsync();
+
+        Assert.Equal(["VISIBLE-BLANK-CUSTOMER"], customers);
+        Assert.Equal(["INV-BLANK-VISIBLE"], invoices);
+        Assert.Equal(["PAYMENT-BLANK-VISIBLE"], payments);
+        Assert.Equal(["TRANSACTION-BLANK-VISIBLE"], transactions);
+        Assert.Equal(["visible.pdf"], transactionAttachments);
+        Assert.Equal(["PROFILE-BLANK-VISIBLE"], profiles);
+        Assert.Equal(["ASSET-BLANK-VISIBLE"], assets);
+        Assert.Equal(["202606"], logs);
+
+        Assert.False(service.CanReadOfficeForInvoices(string.Empty, TenantScopeCatalog.UsenetGroup));
+        Assert.False(service.CanWriteOfficeForInvoices(string.Empty, TenantScopeCatalog.UsenetGroup));
+        Assert.False(service.CanReadOfficeForPayments(string.Empty, TenantScopeCatalog.UsenetGroup));
+        Assert.False(service.CanWriteOfficeForPayments(string.Empty, TenantScopeCatalog.UsenetGroup));
+        Assert.True(service.CanReadOfficeForInvoices(string.Empty, TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Yeonsu));
+        Assert.True(service.CanWriteOfficeForInvoices(string.Empty, TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Yeonsu));
+        Assert.True(service.CanReadOfficeForPayments(string.Empty, TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Yeonsu));
+        Assert.True(service.CanWriteOfficeForPayments(string.Empty, TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Yeonsu));
+        Assert.False(service.CanReadOfficeForInvoices(string.Empty, TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet));
+        Assert.False(service.CanWriteOfficeForPayments(string.Empty, TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet));
+    }
+
+    [Fact]
     public async Task UsenetOfficeUser_DoesNotGainAdministrativeWriteAccess_OnlyFromOfficeCode()
     {
         var userId = Guid.NewGuid();
@@ -631,6 +851,289 @@ public sealed class OfficeScopeAndPagingTests : IDisposable
         Assert.Equal(260, items.Count);
         Assert.Equal("CUSTOMER-001", items.First().NameOriginal);
         Assert.Equal("CUSTOMER-260", items.Last().NameOriginal);
+    }
+
+    [Fact]
+    public async Task CustomersController_GetDetail_ReturnsRecentPaymentsOutsideRecentInvoiceWindow()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "PAYMENT-HISTORY-CUSTOMER",
+            NameMatchKey = "PAYMENTHISTORYCUSTOMER",
+            TradeType = "매출"
+        };
+        dbContext.Customers.Add(customer);
+
+        var oldInvoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "OLD-INVOICE-WITH-RECENT-PAYMENT",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2024, 1, 1),
+            TotalAmount = 10000m
+        };
+        dbContext.Invoices.Add(oldInvoice);
+
+        dbContext.Invoices.AddRange(Enumerable.Range(1, 25).Select(index => new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = $"RECENT-INVOICE-{index:D2}",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 1, 1).AddDays(index),
+            TotalAmount = 1000m + index
+        }));
+
+        var recentPayment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = oldInvoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 19),
+            Amount = 7000m,
+            Note = "recent payment on old invoice"
+        };
+        var attachment = new PaymentAttachment
+        {
+            Id = Guid.NewGuid(),
+            PaymentId = recentPayment.Id,
+            AttachmentType = "PDF",
+            FileName = "old-invoice-payment.pdf",
+            MimeType = "application/pdf",
+            FileSize = 12,
+            FileHash = "hash",
+            Description = "recent evidence",
+            UploadedAtUtc = new DateTime(2026, 6, 19, 1, 0, 0, DateTimeKind.Utc)
+        };
+        dbContext.Payments.Add(recentPayment);
+        dbContext.PaymentAttachments.Add(attachment);
+        await dbContext.SaveChangesAsync();
+
+        var controller = new CustomersController(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext),
+            new StubCentralFileStorage());
+
+        var response = await controller.GetDetail(customer.Id, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var detail = Assert.IsType<CustomerDetailDto>(ok.Value);
+
+        Assert.Equal(20, detail.RecentInvoices.Count);
+        Assert.DoesNotContain(detail.RecentInvoices, invoice => invoice.Id == oldInvoice.Id);
+
+        var payment = Assert.Single(detail.RecentPayments, row => row.PaymentId == recentPayment.Id);
+        Assert.Equal(oldInvoice.Id, payment.InvoiceId);
+        Assert.Equal("OLD-INVOICE-WITH-RECENT-PAYMENT", payment.InvoiceNumber);
+        Assert.Equal(VoucherType.Sales, payment.VoucherType);
+        Assert.Equal(recentPayment.PaymentDate, payment.PaymentDate);
+        Assert.Equal(recentPayment.Amount, payment.Amount);
+        Assert.Single(payment.Attachments);
+    }
+
+    [Fact]
+    public async Task InvoicesController_Create_RejectsDeletedLineItemReference()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "REST-DELETED-LINE-ITEM-CUSTOMER",
+            NameMatchKey = "RESTDELETEDLINEITEMCUSTOMER",
+            TradeType = "매출"
+        };
+        var deletedItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "REST-DELETED-LINE-ITEM",
+            NameMatchKey = "RESTDELETEDLINEITEM",
+            IsDeleted = true
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Items.Add(deletedItem);
+        await dbContext.SaveChangesAsync();
+
+        var controller = new InvoicesController(
+            dbContext,
+            currentUser,
+            new InvoiceNumberService(dbContext),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
+
+        var invoiceId = Guid.NewGuid();
+        var response = await controller.Create(new InvoiceDto
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            VoucherType = VoucherType.Sales,
+            VatMode = InvoiceVatModes.None,
+            InvoiceDate = new DateOnly(2026, 6, 19),
+            Lines =
+            [
+                new InvoiceLineDto
+                {
+                    Id = Guid.NewGuid(),
+                    InvoiceId = invoiceId,
+                    ItemId = deletedItem.Id,
+                    ItemNameOriginal = deletedItem.NameOriginal,
+                    Unit = "EA",
+                    Quantity = 1m,
+                    UnitPrice = 1000m,
+                    LineAmount = 1000m
+                }
+            ]
+        }, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(response.Result);
+        Assert.Contains("Referenced invoice line item was not found", badRequest.Value?.ToString(), StringComparison.Ordinal);
+        Assert.False(await dbContext.Invoices.IgnoreQueryFilters().AnyAsync(invoice => invoice.Id == invoiceId));
+        Assert.False(await dbContext.InvoiceLines.IgnoreQueryFilters().AnyAsync(line => line.InvoiceId == invoiceId));
+    }
+
+    [Fact]
+    public async Task InvoicesController_Create_RejectsDeletedCustomerReference()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        var deletedCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "REST-DELETED-INVOICE-CUSTOMER",
+            NameMatchKey = "RESTDELETEDINVOICECUSTOMER",
+            TradeType = "매출",
+            IsDeleted = true
+        };
+        dbContext.Customers.Add(deletedCustomer);
+        await dbContext.SaveChangesAsync();
+
+        var controller = new InvoicesController(
+            dbContext,
+            currentUser,
+            new InvoiceNumberService(dbContext),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
+
+        var invoiceId = Guid.NewGuid();
+        var response = await controller.Create(new InvoiceDto
+        {
+            Id = invoiceId,
+            CustomerId = deletedCustomer.Id,
+            CustomerName = deletedCustomer.NameOriginal,
+            TenantCode = deletedCustomer.TenantCode,
+            OfficeCode = deletedCustomer.OfficeCode,
+            ResponsibleOfficeCode = deletedCustomer.ResponsibleOfficeCode,
+            VoucherType = VoucherType.Sales,
+            VatMode = InvoiceVatModes.None,
+            InvoiceDate = new DateOnly(2026, 6, 19)
+        }, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(response.Result);
+        Assert.Equal("Referenced customer was not found.", badRequest.Value);
+        Assert.False(await dbContext.Invoices.IgnoreQueryFilters().AnyAsync(invoice => invoice.Id == invoiceId));
+    }
+
+    [Fact]
+    public async Task InvoicesController_Update_RejectsDeletedCustomerReference()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        var activeCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "REST-ACTIVE-INVOICE-CUSTOMER",
+            NameMatchKey = "RESTACTIVEINVOICECUSTOMER",
+            TradeType = "매출"
+        };
+        var deletedCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "REST-DELETED-INVOICE-UPDATE-CUSTOMER",
+            NameMatchKey = "RESTDELETEDINVOICEUPDATECUSTOMER",
+            TradeType = "매출",
+            IsDeleted = true
+        };
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = activeCustomer.Id,
+            TenantCode = activeCustomer.TenantCode,
+            OfficeCode = activeCustomer.OfficeCode,
+            ResponsibleOfficeCode = activeCustomer.ResponsibleOfficeCode,
+            InvoiceNumber = "REST-UPDATE-DELETED-CUSTOMER",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 19),
+            Memo = "before"
+        };
+        dbContext.Customers.AddRange(activeCustomer, deletedCustomer);
+        dbContext.Invoices.Add(invoice);
+        await dbContext.SaveChangesAsync();
+
+        var controller = new InvoicesController(
+            dbContext,
+            currentUser,
+            new InvoiceNumberService(dbContext),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
+
+        var response = await controller.Update(invoice.Id, new InvoiceDto
+        {
+            Id = invoice.Id,
+            CustomerId = deletedCustomer.Id,
+            CustomerName = deletedCustomer.NameOriginal,
+            TenantCode = deletedCustomer.TenantCode,
+            OfficeCode = deletedCustomer.OfficeCode,
+            ResponsibleOfficeCode = deletedCustomer.ResponsibleOfficeCode,
+            InvoiceNumber = invoice.InvoiceNumber,
+            VoucherType = VoucherType.Sales,
+            VatMode = InvoiceVatModes.None,
+            InvoiceDate = invoice.InvoiceDate,
+            Memo = "after"
+        }, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(response.Result);
+        Assert.Equal("Referenced customer was not found.", badRequest.Value);
+
+        dbContext.ChangeTracker.Clear();
+        var storedInvoice = await dbContext.Invoices.IgnoreQueryFilters().SingleAsync(row => row.Id == invoice.Id);
+        Assert.Equal(activeCustomer.Id, storedInvoice.CustomerId);
+        Assert.Equal("before", storedInvoice.Memo);
     }
 
     [Fact]

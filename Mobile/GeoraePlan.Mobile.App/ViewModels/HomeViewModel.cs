@@ -89,10 +89,10 @@ public sealed class HomeViewModel : ObservableObject
             HasPendingNotice = true;
             PendingNoticeText = $"첨부 {sync.PendingPaymentAttachmentCount:N0}건 업로드 대기 중입니다. 네트워크 복구 후 자동 재시도됩니다.";
         }
-        else if (sync.PendingCustomerCount > 0 || sync.PendingItemCount > 0 || sync.PendingInvoiceCount > 0 || sync.PendingPaymentCount > 0)
+        else if (sync.PendingCustomerCount > 0 || sync.PendingItemCount > 0 || sync.PendingItemWarehouseStockCount > 0 || sync.PendingInvoiceCount > 0 || sync.PendingPaymentCount > 0 || sync.PendingRentalBillingProfileCount > 0 || sync.PendingRentalAssetCount > 0 || sync.PendingRentalAssetAssignmentHistoryCount > 0 || sync.PendingRentalBillingLogCount > 0)
         {
             HasPendingNotice = true;
-            PendingNoticeText = $"거래처 {sync.PendingCustomerCount:N0}건 / 품목 {sync.PendingItemCount:N0}건 / 전표 {sync.PendingInvoiceCount:N0}건 / 수금·지급 {sync.PendingPaymentCount:N0}건 업로드 대기 중입니다.";
+            PendingNoticeText = $"거래처 {sync.PendingCustomerCount:N0}건 / 품목 {sync.PendingItemCount:N0}건 / 재고 {sync.PendingItemWarehouseStockCount:N0}건 / 전표 {sync.PendingInvoiceCount:N0}건 / 수금·지급 {sync.PendingPaymentCount:N0}건 / 렌탈 {sync.PendingRentalBillingProfileCount + sync.PendingRentalAssetCount + sync.PendingRentalAssetAssignmentHistoryCount + sync.PendingRentalBillingLogCount:N0}건 업로드 대기 중입니다.";
         }
         else
         {

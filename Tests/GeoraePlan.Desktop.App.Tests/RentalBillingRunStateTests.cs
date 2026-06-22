@@ -227,6 +227,97 @@ public sealed class RentalBillingRunStateTests
     }
 
     [Fact]
+    public async Task StartBilling_MixedTemplateKeepsTemplateOrderInPersistedInvoiceLines()
+    {
+        PrepareAppRoot("georaeplan-rental-mixed-template-line-order");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Mixed template invoice customer";
+            var bundleAssetId = Guid.NewGuid();
+            var individualAssetIds = new[] { Guid.NewGuid(), Guid.NewGuid() };
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            db.RentalAssets.Add(CreateRentalAsset(bundleAssetId, customerName, profileId));
+            foreach (var assetId in individualAssetIds)
+                db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
+
+            var profile = CreateBillingProfile(profileId, [bundleAssetId, .. individualAssetIds], customerName, customerId);
+            profile.BillingType = "혼합";
+            profile.BillingCycleMonths = 2;
+            profile.MonthlyAmount = 230_000m;
+            profile.BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    DisplayItemName = "Bundle support fee",
+                    BillingLineMode = "묶음",
+                    RepresentativeAssetId = bundleAssetId,
+                    Quantity = 1m,
+                    UnitPrice = 30_000m,
+                    Amount = 30_000m,
+                    IncludedAssetIds = [bundleAssetId]
+                },
+                new()
+                {
+                    DisplayItemName = "Individual device fee",
+                    BillingLineMode = "개별",
+                    Quantity = 1m,
+                    UnitPrice = 100_000m,
+                    Amount = 200_000m,
+                    IncludedAssetIds = individualAssetIds.ToList()
+                }
+            });
+            db.RentalBillingProfiles.Add(profile);
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+
+            var result = await service.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+
+            Assert.True(result.Success, result.Message);
+            var invoice = await db.Invoices
+                .Include(current => current.Lines)
+                .AsNoTracking()
+                .SingleAsync(current => current.LinkedRentalBillingProfileId == profileId);
+            var orderedLines = invoice.Lines
+                .Where(line => !line.IsDeleted)
+                .OrderBy(line => line.OrderIndex)
+                .ToList();
+
+            Assert.Equal(6, orderedLines.Count);
+            Assert.Equal(Enumerable.Range(1, 6), orderedLines.Select(line => line.OrderIndex));
+            Assert.All(orderedLines, line =>
+                Assert.Contains("사무기기 렌탈대금", line.ItemNameOriginal, StringComparison.Ordinal));
+            Assert.All(orderedLines.Take(2), line =>
+            {
+                Assert.Equal(30_000m, line.LineAmount);
+            });
+            Assert.All(orderedLines.Skip(2), line =>
+            {
+                Assert.Equal(100_000m, line.LineAmount);
+            });
+            Assert.Equal(460_000m, invoice.TotalAmount);
+
+            var persisted = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(current => current.Id == profileId);
+            var run = Assert.Single(DeserializeRuns(persisted.BillingRunsJson));
+            Assert.Equal("묶음", run.Items[0].BillingLineMode);
+            Assert.Equal("개별", run.Items[1].BillingLineMode);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task GetBillingRows_StartMonthSevenBeforeFirstRun_ShowsJulyPeriodWithoutOutstandingPreview()
     {
         PrepareAppRoot("georaeplan-rental-start-month-seven-preview");

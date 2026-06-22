@@ -161,22 +161,45 @@ function Resolve-LatestApk {
 
     $deploymentRoot = Join-Path $ProjectRoot '배포'
     $artifactRoot = Join-Path $ProjectRoot 'Mobile\artifacts\android'
+    $searchRoots = @($deploymentRoot, $artifactRoot)
 
-    foreach ($searchRoot in @($deploymentRoot, $artifactRoot)) {
-        if (-not (Test-Path -LiteralPath $searchRoot)) {
-            continue
-        }
+    $apk = $searchRoots |
+        Where-Object { Test-Path -LiteralPath $_ } |
+        ForEach-Object { Get-ChildItem -LiteralPath $_ -Recurse -File -Filter '*.apk' -ErrorAction SilentlyContinue } |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
 
-        $apk = Get-ChildItem -LiteralPath $searchRoot -Recurse -File -Filter '*.apk' -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 1
-
-        if ($apk) {
-            return $apk
-        }
+    if ($apk) {
+        return $apk
     }
 
     throw '설치할 APK 파일을 찾지 못했습니다.'
+}
+
+function Install-MobileApk {
+    param(
+        [Parameter(Mandatory = $true)][string]$AdbPath,
+        [Parameter(Mandatory = $true)][string]$DeviceId,
+        [Parameter(Mandatory = $true)][string]$PackageName,
+        [Parameter(Mandatory = $true)][string]$ApkPath
+    )
+
+    $installOutput = & $AdbPath -s $DeviceId install -r $ApkPath 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        return
+    }
+
+    $installText = ($installOutput | Out-String).Trim()
+    if ($installText -match 'INSTALL_FAILED_VERSION_DOWNGRADE') {
+        throw "APK 설치에 실패했습니다. 설치 대상 APK가 기기에 설치된 앱보다 낮은 버전입니다. 최신 APK를 빌드한 뒤 다시 실행하세요. apk=$ApkPath detail=$installText"
+    }
+
+    & $AdbPath -s $DeviceId uninstall $PackageName | Out-Null
+    $retryOutput = & $AdbPath -s $DeviceId install -r $ApkPath 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $retryText = ($retryOutput | Out-String).Trim()
+        throw "APK 설치에 실패했습니다. apk=$ApkPath first=$installText retry=$retryText"
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
@@ -226,14 +249,7 @@ if (-not $SkipBuild) {
 }
 
 $apk = Resolve-LatestApk -ProjectRoot $ProjectRoot
-& $adbPath -s $deviceId install -r -d $apk.FullName
-if ($LASTEXITCODE -ne 0) {
-    & $adbPath -s $deviceId uninstall $PackageName | Out-Null
-    & $adbPath -s $deviceId install -r -d $apk.FullName
-    if ($LASTEXITCODE -ne 0) {
-        throw 'APK 설치에 실패했습니다.'
-    }
-}
+Install-MobileApk -AdbPath $adbPath -DeviceId $deviceId -PackageName $PackageName -ApkPath $apk.FullName
 & $adbPath -s $deviceId shell monkey -p $PackageName -c android.intent.category.LAUNCHER 1 | Out-Null
 
 Write-Host "android_studio=$androidStudioPath"

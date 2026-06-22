@@ -76,7 +76,7 @@ public sealed class PaymentsController : ControllerBase
             .ThenInclude(payment => payment!.Invoice)
             .ThenInclude(invoice => invoice!.Customer)
             .FirstOrDefaultAsync(x => x.Id == attachmentId, cancellationToken);
-        if (attachment is not null && !_officeScopeService.CanReadOfficeForPayments(attachment.Payment?.Invoice?.ResponsibleOfficeCode, attachment.Payment?.Invoice?.TenantCode))
+        if (attachment is not null && !_officeScopeService.CanReadOfficeForPayments(attachment.Payment?.Invoice?.ResponsibleOfficeCode, attachment.Payment?.Invoice?.TenantCode, attachment.Payment?.Invoice?.OfficeCode))
             attachment = null;
         if (attachment is null)
             return NotFound();
@@ -120,7 +120,7 @@ public sealed class PaymentsController : ControllerBase
             .Include(x => x.Invoice)
             .ThenInclude(invoice => invoice!.Customer)
             .FirstOrDefaultAsync(x => x.Id == paymentId, cancellationToken);
-        if (payment is not null && !_officeScopeService.CanWriteOfficeForPayments(payment.Invoice?.ResponsibleOfficeCode, payment.Invoice?.TenantCode))
+        if (payment is not null && !_officeScopeService.CanWriteOfficeForPayments(payment.Invoice?.ResponsibleOfficeCode, payment.Invoice?.TenantCode, payment.Invoice?.OfficeCode))
             return Forbid();
         if (payment is null)
             return NotFound();
@@ -233,14 +233,18 @@ public sealed class PaymentsController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == dto.InvoiceId, cancellationToken);
         if (invoice is null)
             return BadRequest("Referenced invoice was not found.");
-        if (!_officeScopeService.CanWriteOfficeForPayments(invoice.ResponsibleOfficeCode, invoice.TenantCode))
+        if (!_officeScopeService.CanWriteOfficeForPayments(invoice.ResponsibleOfficeCode, invoice.TenantCode, invoice.OfficeCode))
             return Forbid();
+        if (dto.ExpectedRevision > 0 && invoice.Revision != dto.ExpectedRevision)
+            return Conflict($"Referenced invoice revision mismatch. client={dto.ExpectedRevision}, server={invoice.Revision}");
         if (await ValidatePaymentAmountAsync(dto, currentPaymentId: null, cancellationToken) is { } paymentValidationError)
             return paymentValidationError;
 
         var entity = new Payment { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
+        dto.Id = entity.Id;
         entity.Apply(dto);
         _dbContext.Payments.Add(entity);
+        await ProcessedSyncMutationRecorder.RecordAsync(_dbContext, dto, nameof(Payment), cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await RecalculateRentalSettlementsForPaymentInvoicesAsync([invoice], cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -266,7 +270,7 @@ public sealed class PaymentsController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null)
             return NotFound();
-        if (entity.Invoice is null || !_officeScopeService.CanWriteOfficeForPayments(entity.Invoice.ResponsibleOfficeCode, entity.Invoice.TenantCode))
+        if (entity.Invoice is null || !_officeScopeService.CanWriteOfficeForPayments(entity.Invoice.ResponsibleOfficeCode, entity.Invoice.TenantCode, entity.Invoice.OfficeCode))
             return Forbid();
         if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Payment)) is { } conflict)
             return conflict;
@@ -276,7 +280,7 @@ public sealed class PaymentsController : ControllerBase
             .AsNoTracking()
             .FirstOrDefaultAsync(x => x.Id == dto.InvoiceId, cancellationToken);
         if (targetInvoice is not null &&
-            !_officeScopeService.CanWriteOfficeForPayments(targetInvoice.ResponsibleOfficeCode, targetInvoice.TenantCode))
+            !_officeScopeService.CanWriteOfficeForPayments(targetInvoice.ResponsibleOfficeCode, targetInvoice.TenantCode, targetInvoice.OfficeCode))
         {
             return Forbid();
         }
@@ -286,6 +290,7 @@ public sealed class PaymentsController : ControllerBase
 
         var previousInvoice = entity.Invoice;
         entity.Apply(dto);
+        await ProcessedSyncMutationRecorder.RecordAsync(_dbContext, dto, nameof(Payment), cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await RecalculateRentalSettlementsForPaymentInvoicesAsync([previousInvoice, targetInvoice], cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -305,7 +310,7 @@ public sealed class PaymentsController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null)
             return NotFound();
-        if (entity.Invoice is null || !_officeScopeService.CanWriteOfficeForPayments(entity.Invoice.ResponsibleOfficeCode, entity.Invoice.TenantCode))
+        if (entity.Invoice is null || !_officeScopeService.CanWriteOfficeForPayments(entity.Invoice.ResponsibleOfficeCode, entity.Invoice.TenantCode, entity.Invoice.OfficeCode))
             return Forbid();
         if (OptimisticConcurrencyGuard.Check(this, entity, expectedRevision, nameof(Payment)) is { } conflict)
             return conflict;
@@ -353,6 +358,7 @@ public sealed class PaymentsController : ControllerBase
         var invoice = await _dbContext.Invoices
             .IgnoreQueryFilters()
             .AsNoTracking()
+            .Include(x => x.Customer)
             .Include(x => x.Payments)
             .FirstOrDefaultAsync(x => x.Id == dto.InvoiceId, cancellationToken);
         if (invoice is null || invoice.IsDeleted)
@@ -361,6 +367,15 @@ public sealed class PaymentsController : ControllerBase
             {
                 error = "invoice_not_found",
                 message = "연결 전표를 찾을 수 없습니다. 최신 전표를 다시 조회한 뒤 저장하세요."
+            });
+        }
+
+        if (invoice.Customer is null || invoice.Customer.IsDeleted)
+        {
+            return BadRequest(new
+            {
+                error = "invoice_customer_not_found",
+                message = "연결 전표의 거래처를 찾을 수 없습니다. 최신 전표/거래처를 다시 조회한 뒤 저장하세요."
             });
         }
 

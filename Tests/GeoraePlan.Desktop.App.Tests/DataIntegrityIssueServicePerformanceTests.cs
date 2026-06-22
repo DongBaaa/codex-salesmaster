@@ -122,6 +122,123 @@ public sealed class DataIntegrityIssueServicePerformanceTests
     }
 
     [Fact]
+    public async Task ScanAsync_DoesNotLeakOutOfScopeCustomerDuplicateWithBlankResponsibleAndOffice()
+    {
+        PrepareAppRoot("georaeplan-integrity-customer-blank-office-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var first = CreateDuplicateCustomer(9903, OfficeCodeCatalog.Itworld, "Itworld Blank Customer");
+            first.OfficeCode = string.Empty;
+            first.ResponsibleOfficeCode = string.Empty;
+            first.TenantCode = TenantScopeCatalog.Itworld;
+            var second = CreateDuplicateCustomer(9904, OfficeCodeCatalog.Itworld, "Itworld Blank Customer");
+            second.OfficeCode = string.Empty;
+            second.ResponsibleOfficeCode = string.Empty;
+            second.TenantCode = TenantScopeCatalog.Itworld;
+            db.Customers.AddRange(first, second);
+            await db.SaveChangesAsync();
+
+            var usenetResult = await new DataIntegrityIssueService(db).ScanAsync(CreateAdminSession());
+            Assert.DoesNotContain(usenetResult.Issues, issue =>
+                issue.Code == DataIntegrityIssueCodes.CustomerDuplicateCandidate &&
+                issue.CustomerName == "Itworld Blank Customer");
+
+            var itworldResult = await new DataIntegrityIssueService(db).ScanAsync(CreateItworldAdminSession());
+            var issue = Assert.Single(itworldResult.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.CustomerDuplicateCandidate &&
+                current.CustomerName == "Itworld Blank Customer");
+
+            Assert.Equal(OfficeCodeCatalog.Itworld, issue.OfficeCode);
+            Assert.Contains($"ScopeTenant {TenantScopeCatalog.Itworld}", issue.ReviewInfo, StringComparison.Ordinal);
+            Assert.Contains($"ScopeOffice {OfficeCodeCatalog.Itworld}", issue.ReviewInfo, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task ScanAsync_DoesNotLeakOutOfScopeWarehouseDuplicateWithBlankOffice()
+    {
+        PrepareAppRoot("georaeplan-integrity-warehouse-blank-office-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            db.Warehouses.Add(CreateDuplicateWarehouse(9905, string.Empty, "ITWORLD_MAIN_BLANK_A", "Itworld Blank Warehouse"));
+            db.Warehouses.Add(CreateDuplicateWarehouse(9906, string.Empty, "ITWORLD_MAIN_BLANK_B", "Itworld Blank Warehouse"));
+            await db.SaveChangesAsync();
+
+            var usenetResult = await new DataIntegrityIssueService(db).ScanAsync(CreateAdminSession());
+            Assert.DoesNotContain(usenetResult.Issues, issue =>
+                issue.Code == DataIntegrityIssueCodes.WarehouseDuplicateCandidate &&
+                issue.CurrentValue.Contains("Itworld Blank Warehouse", StringComparison.Ordinal));
+
+            var itworldResult = await new DataIntegrityIssueService(db).ScanAsync(CreateItworldAdminSession());
+            var issue = Assert.Single(itworldResult.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.WarehouseDuplicateCandidate &&
+                current.CurrentValue.Contains("Itworld Blank Warehouse", StringComparison.Ordinal));
+
+            Assert.Equal(OfficeCodeCatalog.Itworld, issue.OfficeCode);
+            Assert.Contains($"ScopeOffice {OfficeCodeCatalog.Itworld}", issue.ReviewInfo, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task ScanAsync_DoesNotLeakOutOfScopeInventoryItemWithBlankOffice()
+    {
+        PrepareAppRoot("georaeplan-integrity-item-blank-office-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var item = CreateInventoryItem(9902, OfficeCodeCatalog.Itworld);
+            item.OfficeCode = string.Empty;
+            item.TenantCode = TenantScopeCatalog.Itworld;
+            item.CurrentStock = 5m;
+            db.Items.Add(item);
+            await db.SaveChangesAsync();
+
+            var usenetResult = await new DataIntegrityIssueService(db).ScanAsync(CreateAdminSession());
+            Assert.DoesNotContain(usenetResult.Issues, issue =>
+                issue.Code == DataIntegrityIssueCodes.InventoryStockSnapshotMismatch &&
+                issue.EntityId == item.Id);
+
+            var itworldResult = await new DataIntegrityIssueService(db).ScanAsync(CreateItworldAdminSession());
+            var issue = Assert.Single(itworldResult.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.InventoryStockSnapshotMismatch &&
+                current.EntityId == item.Id);
+
+            Assert.Equal(OfficeCodeCatalog.Itworld, issue.OfficeCode);
+            Assert.Contains($"ScopeTenant {TenantScopeCatalog.Itworld}", issue.ReviewInfo, StringComparison.Ordinal);
+            Assert.Contains($"ScopeOffice {OfficeCodeCatalog.Itworld}", issue.ReviewInfo, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ScanAsync_FindsDeletedItemStockResidueOnlyInsideSessionScope()
     {
         PrepareAppRoot("georaeplan-integrity-deleted-item-stock-residue");
@@ -195,6 +312,45 @@ public sealed class DataIntegrityIssueServicePerformanceTests
 
             var issue = Assert.Single(invoiceIssues);
             Assert.Equal(OfficeCodeCatalog.Yeonsu, issue.OfficeCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task ScanAsync_DoesNotLeakOutOfScopeInvoiceMismatchWithBlankResponsibleOffice()
+    {
+        PrepareAppRoot("georaeplan-integrity-invoice-blank-office-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var invoice = CreateMismatchedInvoice(9901, OfficeCodeCatalog.Itworld);
+            invoice.InvoiceNumber = "ITW-BLANK-INVOICE";
+            invoice.ResponsibleOfficeCode = string.Empty;
+            db.Invoices.Add(invoice);
+            await db.SaveChangesAsync();
+
+            var usenetResult = await new DataIntegrityIssueService(db).ScanAsync(CreateAdminSession());
+            Assert.DoesNotContain(usenetResult.Issues, issue =>
+                issue.Code == DataIntegrityIssueCodes.InvoiceAmountMismatch &&
+                issue.EntityId == invoice.Id);
+
+            var itworldResult = await new DataIntegrityIssueService(db).ScanAsync(CreateItworldAdminSession());
+            var issue = Assert.Single(itworldResult.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.InvoiceAmountMismatch &&
+                current.EntityId == invoice.Id);
+
+            Assert.Equal(OfficeCodeCatalog.Itworld, issue.OfficeCode);
+            Assert.Contains("ITW-BLANK-INVOICE", issue.Message, StringComparison.Ordinal);
+            Assert.Contains($"ScopeTenant {TenantScopeCatalog.Itworld}", issue.ReviewInfo, StringComparison.Ordinal);
+            Assert.Contains($"ScopeOffice {OfficeCodeCatalog.Itworld}", issue.ReviewInfo, StringComparison.Ordinal);
         }
         finally
         {
@@ -298,6 +454,89 @@ public sealed class DataIntegrityIssueServicePerformanceTests
     }
 
     [Fact]
+    public async Task ScanAsync_DoesNotLeakOutOfScopeInvoiceLinesWhoseInvoiceRowIsHardMissing()
+    {
+        PrepareAppRoot("georaeplan-integrity-invoice-line-missing-invoice-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var missingInvoiceId = Guid.NewGuid();
+            var lineId = Guid.NewGuid();
+            var itemId = Guid.NewGuid();
+
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                NameOriginal = "Itworld orphan invoice line item",
+                NameMatchKey = "ITWORLDORPHANINVOICELINEITEM",
+                SpecificationOriginal = "A4",
+                SpecificationMatchKey = "A4",
+                Unit = "대",
+                IsDeleted = false,
+                IsDirty = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
+            db.InvoiceLines.Add(new LocalInvoiceLine
+            {
+                Id = lineId,
+                InvoiceId = missingInvoiceId,
+                ItemId = itemId,
+                ItemNameOriginal = "Itworld hard missing invoice line",
+                SpecificationOriginal = "A4",
+                Unit = "대",
+                Quantity = 2m,
+                UnitPrice = 15_000m,
+                LineAmount = 30_000m,
+                Remark = "missing invoice with itworld stock evidence",
+                IsDeleted = false
+            });
+            db.InventoryMovements.Add(new LocalInventoryMovement
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = missingInvoiceId,
+                InvoiceLineId = lineId,
+                ItemId = itemId,
+                WarehouseCode = OfficeCodeCatalog.ItworldMainWarehouse,
+                MovementType = "PurchaseIn",
+                QuantityDelta = 2m,
+                UnitCost = 15_000m,
+                Amount = 30_000m,
+                OccurredDate = new DateOnly(2026, 6, 18),
+                IsActive = true,
+                Note = "itworld hard missing invoice evidence"
+            });
+            await db.SaveChangesAsync();
+            await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
+
+            var yeonsuResult = await new DataIntegrityIssueService(db).ScanAsync(CreateYeonsuAdminSession());
+            Assert.DoesNotContain(yeonsuResult.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.InvoiceLineMissingInvoiceReference);
+
+            var itworldResult = await new DataIntegrityIssueService(db).ScanAsync(CreateItworldAdminSession());
+            var issue = Assert.Single(itworldResult.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.InvoiceLineMissingInvoiceReference);
+
+            Assert.Equal(lineId, issue.EntityId);
+            Assert.Equal(OfficeCodeCatalog.Itworld, issue.OfficeCode);
+            Assert.Contains("InventoryMovement", issue.ReviewInfo, StringComparison.Ordinal);
+            Assert.Contains(itemId.ToString("D"), issue.ReviewInfo, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ScanAsync_FindsPaymentRowsWhoseInvoiceRowIsHardMissing()
     {
         PrepareAppRoot("georaeplan-integrity-payment-missing-invoice");
@@ -335,6 +574,255 @@ public sealed class DataIntegrityIssueServicePerformanceTests
             Assert.Contains(missingInvoiceId.ToString("D"), issue.CurrentValue, StringComparison.Ordinal);
             Assert.Contains("삭제상태 삭제", issue.CurrentValue, StringComparison.Ordinal);
             Assert.Contains("전표 참조", issue.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+
+    [Fact]
+    public async Task ScanAsync_DoesNotLeakOutOfScopePaymentRowsWhoseInvoiceRowIsHardMissing()
+    {
+        PrepareAppRoot("georaeplan-integrity-payment-missing-invoice-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var missingInvoiceId = Guid.NewGuid();
+            var paymentId = Guid.NewGuid();
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                NameOriginal = "Itworld orphan payment customer",
+                NameMatchKey = "ITWORLDORPHANPAYMENTCUSTOMER",
+                TradeType = CustomerTradeTypes.Purchase,
+                BusinessNumber = string.Empty,
+                IsDeleted = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = paymentId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                TransactionDate = new DateOnly(2026, 6, 18),
+                TransactionKind = PaymentFlowConstants.TransactionKindPayment,
+                LinkedInvoiceId = missingInvoiceId,
+                LinkedInvoiceNumber = "MISSING-ITWORLD-001",
+                BankPayment = 23_000m,
+                PaymentTotal = 23_000m,
+                SettlementAmount = 23_000m,
+                IsDeleted = false,
+                IsDirty = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
+            db.Payments.Add(new LocalPayment
+            {
+                Id = paymentId,
+                InvoiceId = missingInvoiceId,
+                PaymentDate = new DateOnly(2026, 6, 18),
+                Amount = 23_000m,
+                Note = "itworld hard missing invoice",
+                IsDeleted = false,
+                IsDirty = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+            await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
+
+            var yeonsuResult = await new DataIntegrityIssueService(db).ScanAsync(CreateYeonsuAdminSession());
+            Assert.DoesNotContain(yeonsuResult.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.PaymentMissingInvoiceReference);
+
+            var itworldResult = await new DataIntegrityIssueService(db).ScanAsync(CreateItworldAdminSession());
+            var issue = Assert.Single(itworldResult.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.PaymentMissingInvoiceReference);
+
+            Assert.Equal(paymentId, issue.EntityId);
+            Assert.Equal(OfficeCodeCatalog.Itworld, issue.OfficeCode);
+            Assert.Contains(customerId.ToString("D"), issue.ReviewInfo, StringComparison.Ordinal);
+            Assert.Contains(paymentId.ToString("D"), issue.ReviewInfo, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+
+    [Fact]
+    public async Task ScanAsync_FindsTransactionScopeMismatchFromCustomerScope()
+    {
+        PrepareAppRoot("georaeplan-integrity-transaction-scope-mismatch-customer");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var transactionId = Guid.NewGuid();
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                NameOriginal = "Transaction customer scope mismatch customer",
+                NameMatchKey = "TRANSACTIONCUSTOMERSCOPEMISMATCHCUSTOMER",
+                TradeType = CustomerTradeTypes.Sales,
+                BusinessNumber = string.Empty,
+                IsDeleted = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = transactionId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                TransactionDate = new DateOnly(2026, 6, 22),
+                TransactionKind = PaymentFlowConstants.TransactionKindReceipt,
+                BankReceipt = 10_000m,
+                ReceiptTotal = 10_000m,
+                SettlementAmount = 0m,
+                IsDeleted = false,
+                IsDirty = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateYeonsuAdminSession());
+            var issue = Assert.Single(result.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.TransactionOperationalScopeMismatch);
+
+            Assert.Equal(transactionId, issue.EntityId);
+            Assert.Equal("Error", issue.Severity);
+            Assert.Equal(DataIntegrityDirectActionKind.OpenSyncDiagnostics, issue.DirectActionKind);
+            Assert.Contains(TenantScopeCatalog.Itworld, issue.CurrentValue, StringComparison.Ordinal);
+            Assert.Contains($"{TenantScopeCatalog.UsenetGroup} / {OfficeCodeCatalog.Usenet} / {OfficeCodeCatalog.Yeonsu}", issue.ExpectedValue, StringComparison.Ordinal);
+            Assert.Contains(transactionId.ToString("D"), issue.ReviewInfo, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+
+    [Fact]
+    public async Task ScanAsync_FindsTransactionScopeMismatchForLinkedInvoiceAndOpensPayment()
+    {
+        PrepareAppRoot("georaeplan-integrity-transaction-scope-mismatch-invoice");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var invoiceId = Guid.NewGuid();
+            var transactionId = Guid.NewGuid();
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                NameOriginal = "Transaction invoice scope mismatch customer",
+                NameMatchKey = "TRANSACTIONINVOICESCOPEMISMATCHCUSTOMER",
+                TradeType = CustomerTradeTypes.Sales,
+                BusinessNumber = string.Empty,
+                IsDeleted = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = invoiceId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                CustomerId = customerId,
+                InvoiceNumber = "LOCAL-SCOPE-MISMATCH-001",
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 21),
+                TotalAmount = 60_000m,
+                SupplyAmount = 54_545m,
+                VatAmount = 5_455m,
+                VatMode = InvoiceVatModes.Included,
+                IsLatestVersion = true,
+                IsDeleted = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = transactionId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 22),
+                TransactionKind = PaymentFlowConstants.TransactionKindReceipt,
+                LinkedInvoiceId = invoiceId,
+                LinkedInvoiceNumber = "LOCAL-SCOPE-MISMATCH-001",
+                BankReceipt = 60_000m,
+                ReceiptTotal = 60_000m,
+                SettlementAmount = 60_000m,
+                IsDeleted = false,
+                IsDirty = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            db.Payments.Add(new LocalPayment
+            {
+                Id = transactionId,
+                InvoiceId = invoiceId,
+                PaymentDate = new DateOnly(2026, 6, 22),
+                Amount = 60_000m,
+                IsDeleted = false,
+                IsDirty = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateYeonsuAdminSession());
+            var issue = Assert.Single(result.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.TransactionOperationalScopeMismatch);
+
+            Assert.Equal(invoiceId, issue.EntityId);
+            Assert.Equal(DataIntegrityDirectActionKind.OpenPaymentForInvoice, issue.DirectActionKind);
+            Assert.Contains("LOCAL-SCOPE-MISMATCH-001", issue.ExpectedValue, StringComparison.Ordinal);
+            Assert.Contains($"ExpectedResponsible {OfficeCodeCatalog.Yeonsu}", issue.ReviewInfo, StringComparison.Ordinal);
+            Assert.Contains(transactionId, issue.RelatedEntityIds);
         }
         finally
         {
@@ -840,6 +1328,129 @@ public sealed class DataIntegrityIssueServicePerformanceTests
     }
 
     [Fact]
+    public async Task ScanAsync_DoesNotLeakOutOfScopeRentalBillingLogsWhoseProfileRowIsHardMissing()
+    {
+        PrepareAppRoot("georaeplan-integrity-rental-log-missing-profile-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var missingBillingProfileId = Guid.NewGuid();
+            var rentalBillingLogId = Guid.NewGuid();
+
+            await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
+            db.RentalBillingLogs.Add(new LocalRentalBillingLog
+            {
+                Id = rentalBillingLogId,
+                BillingProfileId = missingBillingProfileId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = string.Empty,
+                BillingYearMonth = "2026-06",
+                ScheduledDate = new DateOnly(2026, 6, 25),
+                Status = "scheduled",
+                BilledAmount = 77000m,
+                IsDeleted = false,
+                IsDirty = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+            await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
+
+            var yeonsuResult = await new DataIntegrityIssueService(db).ScanAsync(CreateYeonsuAdminSession());
+            Assert.DoesNotContain(yeonsuResult.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.RentalBillingLogMissingProfileReference);
+
+            var itworldResult = await new DataIntegrityIssueService(db).ScanAsync(CreateItworldAdminSession());
+            var issue = Assert.Single(itworldResult.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.RentalBillingLogMissingProfileReference);
+
+            Assert.Equal(rentalBillingLogId, issue.EntityId);
+            Assert.Equal(OfficeCodeCatalog.Itworld, issue.OfficeCode);
+            Assert.Contains(missingBillingProfileId.ToString("D"), issue.CurrentValue, StringComparison.Ordinal);
+            Assert.Contains($"ScopeTenant {TenantScopeCatalog.Itworld}", issue.ReviewInfo, StringComparison.Ordinal);
+            Assert.Contains($"ScopeOffice {OfficeCodeCatalog.Itworld}", issue.ReviewInfo, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task ScanAsync_DoesNotLeakOutOfScopeInventoryTransferLinesWhoseParentRowIsHardMissing()
+    {
+        PrepareAppRoot("georaeplan-integrity-transfer-line-missing-transfer-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.NewGuid();
+            var missingTransferId = Guid.NewGuid();
+            var transferLineId = Guid.NewGuid();
+
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                NameOriginal = "Itworld orphan transfer item",
+                NameMatchKey = "ITWORLDORPHANTRANSFERITEM",
+                SpecificationOriginal = "A4",
+                SpecificationMatchKey = "A4",
+                Unit = "EA",
+                IsDeleted = false,
+                IsDirty = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
+            db.InventoryTransferLines.Add(new LocalInventoryTransferLine
+            {
+                Id = transferLineId,
+                TransferId = missingTransferId,
+                ItemId = itemId,
+                ItemNameOriginal = "Itworld Missing Transfer Item",
+                SpecificationOriginal = "A4",
+                Unit = "EA",
+                Quantity = 3m,
+                ReceivedQuantity = 1m,
+                QuantityDifference = -2m,
+                Remark = "missing transfer with itworld item evidence",
+                IsDeleted = false
+            });
+            await db.SaveChangesAsync();
+            await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
+
+            var yeonsuResult = await new DataIntegrityIssueService(db).ScanAsync(CreateYeonsuAdminSession());
+            Assert.DoesNotContain(yeonsuResult.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.InventoryTransferLineMissingTransferReference);
+
+            var itworldResult = await new DataIntegrityIssueService(db).ScanAsync(CreateItworldAdminSession());
+            var issue = Assert.Single(itworldResult.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.InventoryTransferLineMissingTransferReference);
+
+            Assert.Equal(transferLineId, issue.EntityId);
+            Assert.Equal(OfficeCodeCatalog.Itworld, issue.OfficeCode);
+            Assert.Contains($"ItemId {itemId:D}", issue.ReviewInfo, StringComparison.Ordinal);
+            Assert.Contains($"ScopeOffice {OfficeCodeCatalog.Itworld}", issue.ReviewInfo, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ScanAsync_FindsTransactionAttachmentsWhoseLocalFilesAreMissing()
     {
         PrepareAppRoot("georaeplan-integrity-missing-attachment-files");
@@ -1073,6 +1684,63 @@ public sealed class DataIntegrityIssueServicePerformanceTests
             Assert.Contains(missingCustomerId.ToString("D"), staleIssue.CurrentValue, StringComparison.Ordinal);
             Assert.Contains(missingProfileId.ToString("D"), staleIssue.CurrentValue, StringComparison.Ordinal);
             Assert.Equal(DataIntegrityDirectActionKind.OpenRentalAsset, staleIssue.DirectActionKind);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task ScanAsync_DoesNotLeakOutOfScopeRentalAssignmentHistoryWithBlankResponsibleOffice()
+    {
+        PrepareAppRoot("georaeplan-integrity-rental-history-blank-office-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var missingAssetId = Guid.NewGuid();
+            var historyId = Guid.NewGuid();
+            db.RentalAssetAssignmentHistories.Add(new LocalRentalAssetAssignmentHistory
+            {
+                Id = historyId,
+                AssetId = missingAssetId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                ResponsibleOfficeCode = string.Empty,
+                CustomerName = "Itworld Blank Office History Customer",
+                InstallLocation = "Itworld Blank Office Site",
+                BillingProfileDisplay = "Itworld Blank Office Profile",
+                ItemName = "Itworld Copier",
+                MachineNumber = "ITW-BLANK-SN",
+                ManagementNumber = "ITW-BLANK-HIST",
+                MonthlyFee = 100_000m,
+                IsCurrent = true,
+                LinkedAtUtc = new DateTime(2026, 6, 22, 0, 0, 0, DateTimeKind.Utc),
+                IsDeleted = false,
+                IsDirty = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+
+            var usenetResult = await new DataIntegrityIssueService(db).ScanAsync(CreateAdminSession());
+            Assert.DoesNotContain(usenetResult.Issues, issue =>
+                issue.Code == DataIntegrityIssueCodes.RentalAssignmentMissingReference &&
+                issue.EntityId == historyId);
+
+            var itworldResult = await new DataIntegrityIssueService(db).ScanAsync(CreateItworldAdminSession());
+            var issue = Assert.Single(itworldResult.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.RentalAssignmentMissingReference &&
+                current.EntityId == historyId);
+
+            Assert.Equal(OfficeCodeCatalog.Itworld, issue.OfficeCode);
+            Assert.Contains(missingAssetId.ToString("D"), issue.CurrentValue, StringComparison.Ordinal);
+            Assert.Contains($"ScopeTenant {TenantScopeCatalog.Itworld}", issue.ReviewInfo, StringComparison.Ordinal);
+            Assert.Contains($"ScopeOffice {OfficeCodeCatalog.Itworld}", issue.ReviewInfo, StringComparison.Ordinal);
         }
         finally
         {
@@ -1610,6 +2278,20 @@ public sealed class DataIntegrityIssueServicePerformanceTests
             Role = DomainConstants.RoleAdmin,
             TenantCode = TenantScopeCatalog.UsenetGroup,
             OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeAdmin
+        });
+        return session;
+    }
+
+    private static SessionState CreateItworldAdminSession()
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            Username = "itworld-admin",
+            Role = DomainConstants.RoleAdmin,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
             ScopeType = TenantScopeCatalog.ScopeAdmin
         });
         return session;

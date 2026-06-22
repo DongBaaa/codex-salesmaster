@@ -13,9 +13,11 @@ public sealed class MobileSyncState
     public DateTime? LastAttemptUtc { get; set; }
     public DateTime? LastBackgroundSyncUtc { get; set; }
     public string LastError { get; set; } = string.Empty;
+    public bool LastFailureAllowsCachedDisplay { get; set; } = true;
     public int ConsecutiveFailureCount { get; set; }
     public int LastPulledCustomerCount { get; set; }
     public int LastPulledItemCount { get; set; }
+    public int LastPulledItemWarehouseStockCount { get; set; }
     public int LastPulledPriceGradeOptionCount { get; set; }
     public int LastPulledInvoiceCount { get; set; }
     public int LastPulledPaymentCount { get; set; }
@@ -25,7 +27,11 @@ public sealed class MobileSyncState
     public int LastPulledRentalManagementCompanyCount { get; set; }
     public int LastPulledRentalBillingProfileCount { get; set; }
     public int LastPulledRentalAssetCount { get; set; }
+    public int LastPulledRentalAssetAssignmentHistoryCount { get; set; }
     public int LastPulledRentalBillingLogCount { get; set; }
+    public List<CustomerDto> SyncedCustomers { get; set; } = new();
+    public List<ItemDto> SyncedItems { get; set; } = new();
+    public List<ItemWarehouseStockDto> SyncedItemWarehouseStocks { get; set; } = new();
     public List<InvoiceDto> SyncedInvoices { get; set; } = new();
     public List<PaymentDto> SyncedPayments { get; set; } = new();
     public List<TransactionDto> SyncedTransactions { get; set; } = new();
@@ -34,6 +40,7 @@ public sealed class MobileSyncState
     public List<RentalManagementCompanyDto> SyncedRentalManagementCompanies { get; set; } = new();
     public List<RentalBillingProfileDto> SyncedRentalBillingProfiles { get; set; } = new();
     public List<RentalAssetDto> SyncedRentalAssets { get; set; } = new();
+    public List<RentalAssetAssignmentHistoryDto> SyncedRentalAssetAssignmentHistories { get; set; } = new();
     public List<RentalBillingLogDto> SyncedRentalBillingLogs { get; set; } = new();
     public List<PriceGradeOptionDto> SyncedPriceGradeOptions { get; set; } = new();
     public SyncPushRequest PendingPush { get; set; } = new();
@@ -41,6 +48,7 @@ public sealed class MobileSyncState
 
     public int PendingCustomerCount => PendingPush.Customers?.Count ?? 0;
     public int PendingItemCount => PendingPush.Items?.Count ?? 0;
+    public int PendingItemWarehouseStockCount => PendingPush.ItemWarehouseStocks?.Count ?? 0;
     public int PendingInvoiceCount => PendingPush.Invoices?.Count ?? 0;
     public int PendingPaymentCount => PendingPush.Payments?.Count ?? 0;
     public int PendingTransactionCount => PendingPush.Transactions?.Count ?? 0;
@@ -49,6 +57,7 @@ public sealed class MobileSyncState
     public int PendingRentalManagementCompanyCount => PendingPush.RentalManagementCompanies?.Count ?? 0;
     public int PendingRentalBillingProfileCount => PendingPush.RentalBillingProfiles?.Count ?? 0;
     public int PendingRentalAssetCount => PendingPush.RentalAssets?.Count ?? 0;
+    public int PendingRentalAssetAssignmentHistoryCount => PendingPush.RentalAssetAssignmentHistories?.Count ?? 0;
     public int PendingRentalBillingLogCount => PendingPush.RentalBillingLogs?.Count ?? 0;
     public int PendingPaymentAttachmentCount => PendingPaymentAttachments?.Count ?? 0;
 
@@ -76,9 +85,13 @@ public sealed class MobileSyncState
         PendingPush.RentalManagementCompanies ??= new List<RentalManagementCompanyDto>();
         PendingPush.RentalBillingProfiles ??= new List<RentalBillingProfileDto>();
         PendingPush.RentalAssets ??= new List<RentalAssetDto>();
+        PendingPush.RentalAssetAssignmentHistories ??= new List<RentalAssetAssignmentHistoryDto>();
         PendingPush.RentalBillingLogs ??= new List<RentalBillingLogDto>();
         PendingPush.Invoices ??= new List<InvoiceDto>();
         PendingPush.Payments ??= new List<PaymentDto>();
+        SyncedCustomers ??= new List<CustomerDto>();
+        SyncedItems ??= new List<ItemDto>();
+        SyncedItemWarehouseStocks ??= new List<ItemWarehouseStockDto>();
         SyncedInvoices ??= new List<InvoiceDto>();
         SyncedPayments ??= new List<PaymentDto>();
         SyncedTransactions ??= new List<TransactionDto>();
@@ -87,6 +100,7 @@ public sealed class MobileSyncState
         SyncedRentalManagementCompanies ??= new List<RentalManagementCompanyDto>();
         SyncedRentalBillingProfiles ??= new List<RentalBillingProfileDto>();
         SyncedRentalAssets ??= new List<RentalAssetDto>();
+        SyncedRentalAssetAssignmentHistories ??= new List<RentalAssetAssignmentHistoryDto>();
         SyncedRentalBillingLogs ??= new List<RentalBillingLogDto>();
         SyncedPriceGradeOptions ??= new List<PriceGradeOptionDto>();
         PendingPaymentAttachments ??= new List<PendingPaymentAttachmentRecord>();

@@ -341,7 +341,10 @@ public sealed class ErpApiClient
                 SetAuthHeader(includeBusinessDatabaseHeader: true, businessDatabaseNameOverride);
                 return await _http.GetAsync($"sync/pull?sinceRev={sinceRevision}", token);
             },
-            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<SyncPullResponse>(token),
+            readAsync: static (resp, token) => ReadRequiredJsonAsync<SyncPullResponse>(
+                resp,
+                token,
+                "동기화 다운로드(sync/pull)"),
             ct);
     }
 
@@ -360,7 +363,10 @@ public sealed class ErpApiClient
                 SetAuthHeader(includeBusinessDatabaseHeader: true, businessDatabaseNameOverride);
                 return await _http.PostAsJsonAsync("sync/push", request, token);
             },
-            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<SyncPushResult>(token),
+            readAsync: static (resp, token) => ReadRequiredJsonAsync<SyncPushResult>(
+                resp,
+                token,
+                "동기화 업로드(sync/push)"),
             ct);
     }
 
@@ -378,7 +384,10 @@ public sealed class ErpApiClient
                 SetAuthHeader(includeBusinessDatabaseHeader: true, businessDatabaseNameOverride);
                 return await _http.GetAsync("sync/status", token);
             },
-            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<SyncStatusDto>(token),
+            readAsync: static (resp, token) => ReadRequiredJsonAsync<SyncStatusDto>(
+                resp,
+                token,
+                "동기화 상태 조회(sync/status)"),
             ct);
     }
 
@@ -401,7 +410,10 @@ public sealed class ErpApiClient
                 SetAuthHeader(includeBusinessDatabaseHeader: true, businessDatabaseNameOverride);
                 return await _http.GetAsync(query, token);
             },
-            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<SyncStatusDto>(token),
+            readAsync: static (resp, token) => ReadRequiredJsonAsync<SyncStatusDto>(
+                resp,
+                token,
+                "실시간 변경 대기(sync/wait)"),
             ct);
     }
 
@@ -848,6 +860,28 @@ public sealed class ErpApiClient
         throw new HttpRequestException(
             $"{operationName} 실패 (최대 재시도 {MaxRetryCount}회): {lastException?.Message}",
             lastException);
+    }
+
+    private static async Task<T?> ReadRequiredJsonAsync<T>(
+        HttpResponseMessage response,
+        CancellationToken ct,
+        string operationName)
+        where T : class
+    {
+        try
+        {
+            var payload = await response.Content.ReadFromJsonAsync<T>(ct);
+            if (payload is not null)
+                return payload;
+        }
+        catch (JsonException ex)
+        {
+            throw new HttpRequestException(
+                $"{operationName} 실패: 서버 응답 본문을 해석할 수 없습니다.",
+                ex);
+        }
+
+        throw new HttpRequestException($"{operationName} 실패: 서버 응답 본문이 비어 있습니다.");
     }
 
     private static string WithExpectedRevision(string relativePath, long? expectedRevision)

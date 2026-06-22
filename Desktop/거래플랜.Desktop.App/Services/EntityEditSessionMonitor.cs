@@ -26,6 +26,7 @@ public sealed class EntityEditSessionMonitor : IDisposable
     private bool _started;
     private bool _disposed;
     private bool _heartbeatInProgress;
+    private bool _hasRegisteredSession;
     private string _lastWarningSignature = string.Empty;
 
     private EntityEditSessionMonitor(
@@ -94,10 +95,10 @@ public sealed class EntityEditSessionMonitor : IDisposable
         _timer.Stop();
         RestoreWindowTitle();
 
-        if (!_session.IsOfflineMode && _session.IsLoggedIn)
+        if (!_session.IsOfflineMode && _session.IsLoggedIn && _hasRegisteredSession)
         {
             UiTaskHelper.Forget(
-                ReleaseAsync(CancellationToken.None),
+                ReleaseRegisteredSessionAsync(CancellationToken.None),
                 "EDIT-SESSION",
                 $"{_screenName} 편집 세션 종료",
                 ex => AppLogger.Warn("EDIT-SESSION", $"{_screenName} 편집 세션 종료 실패: {ex.Message}"));
@@ -109,19 +110,20 @@ public sealed class EntityEditSessionMonitor : IDisposable
         if (_disposed || _heartbeatInProgress || !_session.IsLoggedIn || _session.IsOfflineMode)
             return;
 
-        var subject = _subjectAccessor();
-        if (subject is null ||
-            string.IsNullOrWhiteSpace(subject.EntityType) ||
-            string.IsNullOrWhiteSpace(subject.EntityId))
-        {
-            RestoreWindowTitle();
-            _lastWarningSignature = string.Empty;
-            return;
-        }
-
         _heartbeatInProgress = true;
         try
         {
+            var subject = _subjectAccessor();
+            if (subject is null ||
+                string.IsNullOrWhiteSpace(subject.EntityType) ||
+                string.IsNullOrWhiteSpace(subject.EntityId))
+            {
+                RestoreWindowTitle();
+                _lastWarningSignature = string.Empty;
+                await ReleaseRegisteredSessionAsync(ct);
+                return;
+            }
+
             var response = await _api.HeartbeatEditSessionAsync(new EditSessionHeartbeatRequest
             {
                 EditSessionId = _editSessionId,
@@ -133,6 +135,7 @@ public sealed class EntityEditSessionMonitor : IDisposable
                 MachineName = Environment.MachineName
             }, ct);
 
+            _hasRegisteredSession = true;
             ApplyParticipants(subject, response?.OtherEditors ?? []);
         }
         finally
@@ -148,6 +151,15 @@ public sealed class EntityEditSessionMonitor : IDisposable
             EditSessionId = _editSessionId,
             AppSessionId = _session.SessionId
         }, ct);
+    }
+
+    private async Task ReleaseRegisteredSessionAsync(CancellationToken ct)
+    {
+        if (!_hasRegisteredSession || _session.IsOfflineMode || !_session.IsLoggedIn)
+            return;
+
+        await ReleaseAsync(ct);
+        _hasRegisteredSession = false;
     }
 
     private void ApplyParticipants(EditSessionSubject subject, IReadOnlyList<EditSessionParticipantDto> others)

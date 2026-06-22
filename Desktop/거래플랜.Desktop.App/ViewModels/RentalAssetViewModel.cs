@@ -396,11 +396,13 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             _pendingFilterReload = false;
             _activeFilterReloadSignature = BuildCurrentFilterReloadSignature();
             var requestVersion = Interlocked.Increment(ref _filterReloadVersion);
+            var selectedRowBeforeReload = SelectedRow;
+            var selectedRowId = selectedRowBeforeReload?.Source.Id;
+            var preserveSelectedEditor = ShouldPreserveSelectedEditorDuringReload();
             IsBusy = true;
             try
             {
                 ct.ThrowIfCancellationRequested();
-                var selectedRowId = SelectedRow?.Source.Id;
                 var resultLimit = ResolveAssetListResultLimit(SearchText);
                 var rows = await _rental.GetAssetRowsAsync(new RentalAssetFilter
                 {
@@ -423,9 +425,22 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
                 if (selectedRowId.HasValue)
                 {
-                    SelectedRow = Rows.FirstOrDefault(row => row.Source.Id == selectedRowId.Value);
-                    if (SelectedRow is null)
+                    var reloadedSelection = Rows.FirstOrDefault(row => row.Source.Id == selectedRowId.Value);
+                    if (reloadedSelection is not null)
+                    {
+                        if (preserveSelectedEditor)
+                            PreserveEditorAfterReload(selectedRowBeforeReload);
+                        else
+                            SelectedRow = reloadedSelection;
+                    }
+                    else if (preserveSelectedEditor)
+                    {
+                        PreserveEditorAfterReload(selectedRowBeforeReload);
+                    }
+                    else
+                    {
                         ResetForNewAsset();
+                    }
                 }
 
                 StatusMessage = rows.Count == 0
@@ -433,6 +448,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                     : rows.Count >= resultLimit
                         ? $"렌탈 자산을 최대 {resultLimit:N0}건까지 표시했습니다. 결과가 많아 일부만 표시될 수 있으니 검색어 또는 필터를 좁혀주세요."
                         : $"렌탈 자산 {rows.Count:N0}건을 조회했습니다.";
+                if (preserveSelectedEditor)
+                    StatusMessage = "목록은 새로고침했지만 저장하지 않은 렌탈 자산 편집 내용은 보존했습니다. 저장하거나 취소한 뒤 다른 항목을 선택하세요.";
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -447,6 +464,17 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             }
         }
         while (_pendingFilterReload && !ct.IsCancellationRequested);
+    }
+
+    private bool ShouldPreserveSelectedEditorDuringReload()
+        => SelectedRow is not null &&
+           HasPendingChanges &&
+           HasMeaningfulDraftContentForClose;
+
+    private void PreserveEditorAfterReload(RentalAssetViewRow? selectedRowBeforeReload)
+    {
+        if (selectedRowBeforeReload is not null && !ReferenceEquals(SelectedRow, selectedRowBeforeReload))
+            SelectedRow = selectedRowBeforeReload;
     }
 
     private static int ResolveAssetListResultLimit(string? searchText)

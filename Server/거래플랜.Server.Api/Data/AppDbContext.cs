@@ -355,11 +355,37 @@ public sealed class AppDbContext : DbContext
             UserId = _currentUserContext.UserId,
             Username = _currentUserContext.Username,
             EntityName = entry.Metadata.ClrType.Name,
-            EntityId = entry.Properties.FirstOrDefault(x => x.Metadata.IsPrimaryKey())?.CurrentValue?.ToString() ?? string.Empty,
+            EntityId = ResolveAuditEntityId(entry),
             Action = entry.State.ToString(),
             BeforeJson = JsonSerializer.Serialize(before, AuditJsonOptions),
             AfterJson = JsonSerializer.Serialize(after, AuditJsonOptions),
             CreatedAtUtc = now
         };
+    }
+
+    private static string ResolveAuditEntityId(EntityEntry entry)
+    {
+        if (entry.Entity is ItemWarehouseStock)
+        {
+            var itemId = ResolveEntryPropertyValue(entry, nameof(ItemWarehouseStock.ItemId));
+            var warehouseCode = ResolveEntryPropertyValue(entry, nameof(ItemWarehouseStock.WarehouseCode))?.ToString()?.Trim() ?? string.Empty;
+            var itemIdText = itemId is Guid guid ? guid.ToString("D") : itemId?.ToString() ?? string.Empty;
+            return string.IsNullOrWhiteSpace(itemIdText)
+                ? string.Empty
+                : $"{itemIdText}|{warehouseCode}";
+        }
+
+        return entry.Properties.FirstOrDefault(x => x.Metadata.IsPrimaryKey())?.CurrentValue?.ToString() ?? string.Empty;
+    }
+
+    private static object? ResolveEntryPropertyValue(EntityEntry entry, string propertyName)
+    {
+        var property = entry.Properties.FirstOrDefault(current => current.Metadata.Name == propertyName);
+        if (property is null)
+            return null;
+
+        return entry.State == EntityState.Deleted && property.OriginalValue is not null
+            ? property.OriginalValue
+            : property.CurrentValue ?? property.OriginalValue;
     }
 }

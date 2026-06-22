@@ -36,10 +36,12 @@ public partial class CustomerEditWindow : Window
         _editSessionMonitor = EntityEditSessionMonitor.TryCreate(
             this,
             "거래처 등록/수정",
-            () => new EditSessionSubject(
-                "Customer",
-                vm.CustomerId.ToString("D"),
-                string.IsNullOrWhiteSpace(vm.Name) ? "신규 거래처" : vm.Name));
+            () => vm.CustomerId == Guid.Empty
+                ? null
+                : new EditSessionSubject(
+                    "Customer",
+                    vm.CustomerId.ToString("D"),
+                    string.IsNullOrWhiteSpace(vm.Name) ? "거래처 편집" : vm.Name));
     }
 
     private void Window_KeyDown(object sender, KeyEventArgs e)

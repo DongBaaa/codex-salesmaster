@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using GeoraePlan.Mobile.App.Models;
 using GeoraePlan.Mobile.App.Services;
 using 거래플랜.Shared.Contracts;
 
@@ -119,7 +120,13 @@ public sealed class InventoryTransfersViewModel : ObservableObject
         {
             IsBusy = true;
             StatusMessage = "재고이동 서버 동기화 데이터를 확인하고 있습니다.";
-            await _syncCoordinator.RefreshIfServerChangedAsync("inventory-transfers-page", TimeSpan.FromSeconds(5));
+            var state = await _syncCoordinator.RefreshIfServerChangedAsync("inventory-transfers-page", TimeSpan.FromSeconds(5));
+            if (ShouldHideCachedDataAfterSyncFailure(state))
+            {
+                ClearTransferDisplay($"재고이동 데이터를 표시할 수 없습니다. {state.LastError}");
+                return;
+            }
+
             await LoadFromStateAsync(preserveSelection: true);
         }
         catch (Exception ex)
@@ -143,7 +150,14 @@ public sealed class InventoryTransfersViewModel : ObservableObject
             StatusMessage = "재고이동 데이터를 서버와 동기화하는 중입니다.";
             var state = await _syncCoordinator.SynchronizeNowAsync();
             if (!string.IsNullOrWhiteSpace(state.LastError))
+            {
                 StatusMessage = $"동기화 주의: {state.LastError}";
+                if (ShouldHideCachedDataAfterSyncFailure(state))
+                {
+                    ClearTransferDisplay($"재고이동 데이터를 표시할 수 없습니다. {state.LastError}");
+                    return;
+                }
+            }
 
             await LoadFromStateAsync(preserveSelection: true);
         }
@@ -247,6 +261,21 @@ public sealed class InventoryTransfersViewModel : ObservableObject
     {
         ClearSelectedTransfer();
     }
+
+    private void ClearTransferDisplay(string message)
+    {
+        Transfers.Clear();
+        SelectedTransfer = null;
+        SelectedTransferLines.Clear();
+        _lastRefreshUtc = DateTime.UtcNow;
+        StatusMessage = message;
+        OnPropertyChanged(nameof(TransferListHeight));
+        OnPropertyChanged(nameof(SelectedTransferLinesHeight));
+        OnPropertyChanged(nameof(SummaryText));
+    }
+
+    private static bool ShouldHideCachedDataAfterSyncFailure(MobileSyncState state)
+        => !string.IsNullOrWhiteSpace(state.LastError) && !state.LastFailureAllowsCachedDisplay;
 
     private static bool Contains(string? source, string query)
         => !string.IsNullOrWhiteSpace(source) &&

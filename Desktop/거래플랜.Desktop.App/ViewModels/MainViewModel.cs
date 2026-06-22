@@ -885,8 +885,14 @@ public sealed partial class MainViewModel : ObservableObject
             Guid? customerId = SelectedCustomerFilter?.Id;
             var queryDateRange = ResolveMainInvoiceQueryDateRange(FilterFrom, FilterTo);
             var invoiceList = await _local.GetInvoiceListSummariesAsync(queryDateRange.From, queryDateRange.To, customerId, _session, ct);
+            if (!IsCurrentInvoiceListLoad(loadCts))
+                return;
+
             var canReuseAsAllInvoiceSet = customerId is null && queryDateRange.From is null && queryDateRange.To is null;
             var customerMap = await BuildInvoiceCustomerNameMapAsync(invoiceList, ct);
+            if (!IsCurrentInvoiceListLoad(loadCts))
+                return;
+
             var showCustomerName = customerId is null;
             IEnumerable<LocalInvoiceListSummary> filteredInvoices = invoiceList;
             var hiddenTextFilters = NormalizeHiddenInvoiceTextFilters(
@@ -939,12 +945,21 @@ public sealed partial class MainViewModel : ObservableObject
                 var custName = customerMap.TryGetValue(inv.CustomerId, out var n) ? n : "(미지정)";
                 return InvoiceListRow.From(inv, custName, showCustomerName);
             }).ToList();
+            if (!IsCurrentInvoiceListLoad(loadCts))
+                return;
+
             InvoiceRows.ReplaceWith(rows);
             RestoreSelectedInvoiceAfterListReload(previouslySelectedInvoiceId, previouslySelectedVersionGroupId);
 
             await RefreshDashboardMetricsAsync(canReuseAsAllInvoiceSet ? invoiceList : null, ct);
+            if (!IsCurrentInvoiceListLoad(loadCts))
+                return;
+
             await LoadInvoiceFavoritesAsync(canReuseAsAllInvoiceSet ? invoiceList : null, ct);
             ct.ThrowIfCancellationRequested();
+            if (!IsCurrentInvoiceListLoad(loadCts))
+                return;
+
             await RefreshSelectedCustomerFinancialPreviewAsync();
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -959,6 +974,9 @@ public sealed partial class MainViewModel : ObservableObject
             loadCts.Dispose();
         }
     }
+
+    private bool IsCurrentInvoiceListLoad(CancellationTokenSource loadCts)
+        => ReferenceEquals(_invoiceListLoadCts, loadCts) && !loadCts.IsCancellationRequested;
 
     private void RestoreSelectedInvoiceAfterListReload(Guid? previouslySelectedInvoiceId, Guid? previouslySelectedVersionGroupId)
     {

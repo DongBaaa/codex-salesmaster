@@ -12,6 +12,7 @@ public sealed class PaymentDraftViewModel : ObservableObject
     private readonly SyncCoordinator _syncCoordinator;
     private readonly MobileRefreshCoordinator _refreshCoordinator;
     private readonly PaymentAttachmentDraftStore _attachmentStore;
+    private readonly SessionStore _sessionStore;
 
     private InvoiceDto? _selectedInvoice;
     private MobilePaymentMethodOption? _selectedPaymentMethod;
@@ -26,12 +27,14 @@ public sealed class PaymentDraftViewModel : ObservableObject
         GeoraePlanApiClient api,
         SyncCoordinator syncCoordinator,
         MobileRefreshCoordinator refreshCoordinator,
-        PaymentAttachmentDraftStore attachmentStore)
+        PaymentAttachmentDraftStore attachmentStore,
+        SessionStore sessionStore)
     {
         _api = api;
         _syncCoordinator = syncCoordinator;
         _refreshCoordinator = refreshCoordinator;
         _attachmentStore = attachmentStore;
+        _sessionStore = sessionStore;
         LoadCommand = new AsyncCommand(LoadAsync);
         SaveDraftCommand = new AsyncCommand(SaveDraftAsync);
         RefreshPaymentMethodOptions();
@@ -118,6 +121,7 @@ public sealed class PaymentDraftViewModel : ObservableObject
         : "PC 판매 전표와 동일하게 수금 금액 칸에 반영됩니다.";
     public string SaveButtonText => SelectedInvoice is null ? "마지막 단계 · 수금/지급 저장" : $"마지막 단계 · {PaymentActionText} 저장";
     public string AttachmentSectionTitle => SelectedInvoice is null ? "증빙 첨부" : $"{PaymentActionText} 증빙 첨부";
+    public bool CanCreatePayments => _sessionStore.GetSnapshot().CanCreatePayments;
     public string SelectedInvoiceSummary
     {
         get
@@ -147,6 +151,12 @@ public sealed class PaymentDraftViewModel : ObservableObject
         if (IsBusy)
             return;
 
+        if (!CanCreatePayments)
+        {
+            StatusMessage = "권한이 없어 수금/지급을 입력할 수 없습니다.";
+            return;
+        }
+
         if (Invoices.Count > 0)
         {
             ApplyInitialInvoice();
@@ -170,6 +180,14 @@ public sealed class PaymentDraftViewModel : ObservableObject
         }
         catch (Exception ex)
         {
+            if (MobileRetryableNetworkFailure.IsRetryable(ex) &&
+                await TryLoadInvoicesFromSyncedStateAsync($"전표 목록 불러오기 실패: {ex.Message}"))
+            {
+                return;
+            }
+
+            Invoices.Clear();
+            SelectedInvoice = null;
             StatusMessage = $"전표 목록 불러오기 실패: {ex.Message}";
         }
         finally
@@ -204,6 +222,33 @@ public sealed class PaymentDraftViewModel : ObservableObject
 
         SelectedInvoice = matched;
         StatusMessage = $"{PaymentActionText}할 전표가 선택되었습니다. 방식과 금액을 확인한 뒤 마지막 저장 버튼을 누르세요.";
+    }
+
+    private async Task<bool> TryLoadInvoicesFromSyncedStateAsync(string reason)
+    {
+        var state = await _syncCoordinator.LoadAsync();
+        state.Normalize();
+
+        var invoices = BuildSyncedInvoiceSnapshots(state)
+            .OrderByDescending(invoice => invoice.InvoiceDate)
+            .ThenByDescending(invoice => invoice.UpdatedAtUtc)
+            .Take(100)
+            .ToList();
+
+        if (invoices.Count == 0 && _initialInvoice is null)
+            return false;
+
+        Invoices.Clear();
+        foreach (var invoice in invoices)
+            Invoices.Add(invoice);
+
+        ApplyInitialInvoice();
+
+        if (Invoices.Count == 0)
+            return false;
+
+        StatusMessage = $"{reason} / 동기화 캐시 전표 {Invoices.Count:N0}건을 표시합니다. 수금/지급할 전표를 먼저 선택하세요.";
+        return true;
     }
 
     public async Task AddPdfAttachmentAsync()
@@ -297,6 +342,12 @@ public sealed class PaymentDraftViewModel : ObservableObject
         if (IsBusy)
             return;
 
+        if (!CanCreatePayments)
+        {
+            StatusMessage = "권한이 없어 수금/지급을 저장할 수 없습니다.";
+            return;
+        }
+
         if (SelectedInvoice is null)
         {
             StatusMessage = "전표를 선택하세요.";
@@ -360,6 +411,9 @@ public sealed class PaymentDraftViewModel : ObservableObject
                 CreatedAtUtc = now,
                 UpdatedAtUtc = now,
                 Revision = 0,
+                ExpectedRevision = latestInvoice.Revision,
+                MutationId = BuildMutationId("payment", paymentId),
+                MutationCreatedAtUtc = now,
                 IsDeleted = false
             };
             var linkedTransaction = BuildLinkedTransaction(
@@ -440,6 +494,136 @@ public sealed class PaymentDraftViewModel : ObservableObject
         SelectedInvoice = latest;
     }
 
+    private static IReadOnlyList<InvoiceDto> BuildSyncedInvoiceSnapshots(Models.MobileSyncState state)
+    {
+        var paymentsByInvoiceId = state.SyncedPayments
+            .Where(payment => !payment.IsDeleted)
+            .GroupBy(payment => payment.InvoiceId)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderBy(payment => payment.PaymentDate)
+                    .ThenBy(payment => payment.CreatedAtUtc)
+                    .Select(ClonePayment)
+                    .ToList());
+
+        return state.SyncedInvoices
+            .Where(invoice => !invoice.IsDeleted)
+            .Select(invoice =>
+            {
+                paymentsByInvoiceId.TryGetValue(invoice.Id, out var payments);
+                return CloneInvoiceForPaymentDraft(invoice, payments ?? []);
+            })
+            .ToList();
+    }
+
+    private static InvoiceDto CloneInvoiceForPaymentDraft(InvoiceDto invoice, IReadOnlyList<PaymentDto> payments)
+        => new()
+        {
+            Id = invoice.Id,
+            IsDeleted = invoice.IsDeleted,
+            CreatedAtUtc = invoice.CreatedAtUtc,
+            UpdatedAtUtc = invoice.UpdatedAtUtc,
+            Revision = invoice.Revision,
+            ExpectedRevision = invoice.ExpectedRevision,
+            MutationId = invoice.MutationId,
+            MutationCreatedAtUtc = invoice.MutationCreatedAtUtc,
+            CustomerId = invoice.CustomerId,
+            CustomerName = invoice.CustomerName,
+            TenantCode = invoice.TenantCode,
+            OfficeCode = invoice.OfficeCode,
+            ResponsibleOfficeCode = invoice.ResponsibleOfficeCode,
+            InvoiceNumber = invoice.InvoiceNumber,
+            LocalTempNumber = invoice.LocalTempNumber,
+            LinkedRentalBillingProfileId = invoice.LinkedRentalBillingProfileId,
+            LinkedRentalBillingRunId = invoice.LinkedRentalBillingRunId,
+            VersionGroupId = invoice.VersionGroupId,
+            VersionNumber = invoice.VersionNumber,
+            PreviousVersionId = invoice.PreviousVersionId,
+            IsLatestVersion = invoice.IsLatestVersion,
+            VoucherType = invoice.VoucherType,
+            SourceWarehouseCode = invoice.SourceWarehouseCode,
+            InvoiceDate = invoice.InvoiceDate,
+            TotalAmount = invoice.TotalAmount,
+            SupplyAmount = invoice.SupplyAmount,
+            VatAmount = invoice.VatAmount,
+            VatMode = invoice.VatMode,
+            TaxInvoiceIssued = invoice.TaxInvoiceIssued,
+            PurchaseReceivingRequired = invoice.PurchaseReceivingRequired,
+            PurchaseReceivingStatus = invoice.PurchaseReceivingStatus,
+            PurchaseReceivedAtUtc = invoice.PurchaseReceivedAtUtc,
+            PurchaseReceivedByUsername = invoice.PurchaseReceivedByUsername,
+            PurchaseReceivingOfficeCode = invoice.PurchaseReceivingOfficeCode,
+            PurchaseReceivingWarehouseCode = invoice.PurchaseReceivingWarehouseCode,
+            PurchaseReceivingMemo = invoice.PurchaseReceivingMemo,
+            Memo = invoice.Memo,
+            Lines = invoice.Lines?.Select(CloneInvoiceLine).ToList() ?? [],
+            Payments = payments.ToList()
+        };
+
+    private static InvoiceLineDto CloneInvoiceLine(InvoiceLineDto line)
+        => new()
+        {
+            Id = line.Id,
+            InvoiceId = line.InvoiceId,
+            ItemId = line.ItemId,
+            ItemNameOriginal = line.ItemNameOriginal,
+            SpecificationOriginal = line.SpecificationOriginal,
+            Unit = line.Unit,
+            Quantity = line.Quantity,
+            UnitPrice = line.UnitPrice,
+            LineAmount = line.LineAmount,
+            Remark = line.Remark,
+            SerialNumber = line.SerialNumber,
+            MaterialNumber = line.MaterialNumber,
+            InstallLocation = line.InstallLocation,
+            RentalStartDate = line.RentalStartDate,
+            RentalEndDate = line.RentalEndDate,
+            OrderIndex = line.OrderIndex,
+            ItemTrackingType = line.ItemTrackingType,
+            IsDeleted = line.IsDeleted
+        };
+
+    private static PaymentDto ClonePayment(PaymentDto payment)
+        => new()
+        {
+            Id = payment.Id,
+            IsDeleted = payment.IsDeleted,
+            CreatedAtUtc = payment.CreatedAtUtc,
+            UpdatedAtUtc = payment.UpdatedAtUtc,
+            Revision = payment.Revision,
+            ExpectedRevision = payment.ExpectedRevision,
+            MutationId = payment.MutationId,
+            MutationCreatedAtUtc = payment.MutationCreatedAtUtc,
+            InvoiceId = payment.InvoiceId,
+            PaymentDate = payment.PaymentDate,
+            Amount = payment.Amount,
+            Note = payment.Note,
+            Attachments = payment.Attachments?.Select(ClonePaymentAttachment).ToList() ?? []
+        };
+
+    private static PaymentAttachmentDto ClonePaymentAttachment(PaymentAttachmentDto attachment)
+        => new()
+        {
+            Id = attachment.Id,
+            IsDeleted = attachment.IsDeleted,
+            CreatedAtUtc = attachment.CreatedAtUtc,
+            UpdatedAtUtc = attachment.UpdatedAtUtc,
+            Revision = attachment.Revision,
+            ExpectedRevision = attachment.ExpectedRevision,
+            MutationId = attachment.MutationId,
+            MutationCreatedAtUtc = attachment.MutationCreatedAtUtc,
+            PaymentId = attachment.PaymentId,
+            AttachmentType = attachment.AttachmentType,
+            FileName = attachment.FileName,
+            MimeType = attachment.MimeType,
+            FileSize = attachment.FileSize,
+            FileHash = attachment.FileHash,
+            Description = attachment.Description,
+            UploadedAtUtc = attachment.UploadedAtUtc,
+            FileContent = attachment.FileContent
+        };
+
     private static decimal CalculateOutstandingAmount(InvoiceDto? invoice)
     {
         if (invoice is null)
@@ -497,6 +681,9 @@ public sealed class PaymentDraftViewModel : ObservableObject
             CreatedAtUtc = now,
             UpdatedAtUtc = now,
             Revision = 0,
+            ExpectedRevision = invoice.Revision,
+            MutationId = BuildMutationId("transaction", paymentId),
+            MutationCreatedAtUtc = now,
             IsDeleted = false
         };
 
@@ -528,4 +715,7 @@ public sealed class PaymentDraftViewModel : ObservableObject
         => !string.IsNullOrWhiteSpace(invoice.InvoiceNumber)
             ? invoice.InvoiceNumber
             : invoice.LocalTempNumber;
+
+    private static string BuildMutationId(string entityName, Guid entityId)
+        => $"mobile:{entityName}:{entityId:N}:{Guid.NewGuid():N}";
 }

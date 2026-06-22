@@ -1176,29 +1176,29 @@ public sealed class SyncService : IDisposable
 
             if (await _db.SyncOutboxEntries.AsNoTracking().AnyAsync(entry => entry.Status != "Acknowledged", ct))
             {
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomerMaster>(ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomer>(ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomerContract>(ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalItem>(ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalTransaction>(ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalTransactionAttachment>(ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalInventoryTransfer>(ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalBillingProfile>(ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalAsset>(ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalAssetAssignmentHistory>(ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalBillingLog>(ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalInvoice>(ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalPayment>(ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomerMaster, CustomerMasterDto>(pull.CustomerMasters, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomer, CustomerDto>(pull.Customers, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomerContract, CustomerContractDto>(pull.CustomerContracts, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalItem, ItemDto>(pull.Items, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalTransaction, TransactionDto>(pull.Transactions, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalTransactionAttachment, TransactionAttachmentDto>(pull.TransactionAttachments, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalInventoryTransfer, InventoryTransferDto>(pull.InventoryTransfers, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalBillingProfile, RentalBillingProfileDto>(pull.RentalBillingProfiles, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalAsset, RentalAssetDto>(pull.RentalAssets, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalAssetAssignmentHistory, RentalAssetAssignmentHistoryDto>(pull.RentalAssetAssignmentHistories, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalBillingLog, RentalBillingLogDto>(pull.RentalBillingLogs, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalInvoice, InvoiceDto>(pull.Invoices, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalPayment, PaymentDto>(pull.Payments, ct);
 
                 if (includeSharedDirty && session.HasAdministrativePrivileges)
                 {
-                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCompanyProfile>(ct);
-                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalUnit>(ct);
-                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomerCategory>(ct);
-                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalPriceGradeOption>(ct);
-                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalTradeTypeOption>(ct);
-                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalItemCategoryOption>(ct);
-                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalManagementCompany>(ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCompanyProfile, CompanyProfileDto>(pull.CompanyProfiles, ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalUnit, UnitDto>(pull.Units, ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomerCategory, CustomerCategoryDto>(pull.CustomerCategories, ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalPriceGradeOption, PriceGradeOptionDto>(pull.PriceGradeOptions, ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalTradeTypeOption, TradeTypeOptionDto>(pull.TradeTypeOptions, ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalItemCategoryOption, ItemCategoryOptionDto>(pull.ItemCategoryOptions, ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalManagementCompany, RentalManagementCompanyDto>(pull.RentalManagementCompanies, ct);
                 }
             }
 
@@ -1263,9 +1263,27 @@ public sealed class SyncService : IDisposable
         return changed;
     }
 
-    private async Task<int> MarkOutboxAcknowledgedForCleanEntitiesAsync<TLocal>(CancellationToken ct)
+    private async Task<int> MarkOutboxAcknowledgedForCleanEntitiesAsync<TLocal, TDto>(
+        IReadOnlyCollection<TDto> serverEntities,
+        CancellationToken ct)
         where TLocal : class, ILocalSyncEntity
+        where TDto : SyncEntityDto
     {
+        if (serverEntities.Count == 0)
+            return 0;
+
+        var serverMap = serverEntities
+            .Where(entity => entity.Id != Guid.Empty)
+            .GroupBy(entity => entity.Id)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderByDescending(entity => entity.Revision)
+                    .ThenByDescending(entity => entity.UpdatedAtUtc)
+                    .First());
+        if (serverMap.Count == 0)
+            return 0;
+
         var entityName = typeof(TLocal).Name;
         var rows = await _db.SyncOutboxEntries
             .Where(entry => entry.EntityName == entityName && entry.Status != "Acknowledged")
@@ -1275,26 +1293,39 @@ public sealed class SyncService : IDisposable
 
         var entityIds = rows
             .Select(entry => entry.EntityId)
-            .Where(id => id != Guid.Empty)
+            .Where(id => id != Guid.Empty && serverMap.ContainsKey(id))
             .Distinct()
             .ToList();
         if (entityIds.Count == 0)
             return 0;
 
-        var cleanEntityIds = await _db.Set<TLocal>()
+        var cleanEntities = await _db.Set<TLocal>()
             .IgnoreQueryFilters()
             .Where(entity => entityIds.Contains(entity.Id) && !entity.IsDirty)
-            .Select(entity => entity.Id)
             .ToListAsync(ct);
-        if (cleanEntityIds.Count == 0)
+        if (cleanEntities.Count == 0)
             return 0;
 
-        var cleanEntityIdSet = cleanEntityIds.ToHashSet();
+        var reconciledEntityIds = new HashSet<Guid>();
+        foreach (var entity in cleanEntities)
+        {
+            if (!serverMap.TryGetValue(entity.Id, out var serverEntity))
+                continue;
+
+            if (IsStaleDirtyPayloadMatch(entity, serverEntity))
+            {
+                reconciledEntityIds.Add(entity.Id);
+            }
+        }
+
+        if (reconciledEntityIds.Count == 0)
+            return 0;
+
         var now = DateTime.UtcNow;
         var changed = 0;
         foreach (var row in rows)
         {
-            if (!cleanEntityIdSet.Contains(row.EntityId))
+            if (!reconciledEntityIds.Contains(row.EntityId))
                 continue;
 
             row.Status = "Acknowledged";
@@ -1847,8 +1878,9 @@ public sealed class SyncService : IDisposable
             var result = await apiClient.PushAsync(req, businessDatabaseNameOverride, ct);
             if (result is null)
             {
-                await TryMarkOutboxFailedAsync(req, "서버 응답이 비어 있어 동기화를 완료하지 못했습니다.", ct);
-                return;
+                var message = "서버 응답이 비어 있어 동기화를 완료하지 못했습니다.";
+                await TryMarkOutboxFailedAsync(req, message, ct);
+                throw new HttpRequestException(message);
             }
 
             await MarkOutboxSentAsync(req, ct);
@@ -2548,6 +2580,9 @@ public sealed class SyncService : IDisposable
         if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
             return false;
 
+        if (!IsServerConflictActorCurrentSessionOrUnknown(conflict, session))
+            return false;
+
         if (!Guid.TryParse(conflict.EntityId, out var profileId) || profileId == Guid.Empty)
             return false;
 
@@ -2629,6 +2664,9 @@ public sealed class SyncService : IDisposable
 
         var reason = (conflict.Reason ?? string.Empty).Trim();
         if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!IsServerConflictActorCurrentSessionOrUnknown(conflict, session))
             return false;
 
         if (!Guid.TryParse(conflict.EntityId, out var customerId) || customerId == Guid.Empty)
@@ -2729,6 +2767,9 @@ public sealed class SyncService : IDisposable
 
         var reason = (conflict.Reason ?? string.Empty).Trim();
         if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!IsServerConflictActorCurrentSessionOrUnknown(conflict, session))
             return false;
 
         if (!Guid.TryParse(conflict.EntityId, out var invoiceId) || invoiceId == Guid.Empty)
@@ -2846,6 +2887,9 @@ public sealed class SyncService : IDisposable
         if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
             return false;
 
+        if (!IsServerConflictActorCurrentSessionOrUnknown(conflict, session))
+            return false;
+
         if (!Guid.TryParse(conflict.EntityId, out var paymentId) || paymentId == Guid.Empty)
             return false;
 
@@ -2941,6 +2985,9 @@ public sealed class SyncService : IDisposable
 
         var reason = (conflict.Reason ?? string.Empty).Trim();
         if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!IsServerConflictActorCurrentSessionOrUnknown(conflict, session))
             return false;
 
         if (!Guid.TryParse(conflict.EntityId, out var transactionId) || transactionId == Guid.Empty)
@@ -3070,6 +3117,9 @@ public sealed class SyncService : IDisposable
         if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
             return false;
 
+        if (!IsServerConflictActorCurrentSessionOrUnknown(conflict, session))
+            return false;
+
         if (!Guid.TryParse(conflict.EntityId, out var attachmentId) || attachmentId == Guid.Empty)
             return false;
 
@@ -3174,6 +3224,9 @@ public sealed class SyncService : IDisposable
 
         var reason = (conflict.Reason ?? string.Empty).Trim();
         if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!IsServerConflictActorCurrentSessionOrUnknown(conflict, session))
             return false;
 
         if (!Guid.TryParse(conflict.EntityId, out var transferId) || transferId == Guid.Empty)
@@ -3303,6 +3356,9 @@ public sealed class SyncService : IDisposable
         if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
             return false;
 
+        if (!IsServerConflictActorCurrentSessionOrUnknown(conflict, session))
+            return false;
+
         if (!Guid.TryParse(conflict.EntityId, out var itemId) || itemId == Guid.Empty)
             return false;
 
@@ -3377,6 +3433,29 @@ public sealed class SyncService : IDisposable
             return true;
 
         return string.Equals(left.Trim(), right.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsServerConflictActorCurrentSessionOrUnknown(ConflictLogDto conflict, SessionState session)
+    {
+        var serverUserId = conflict.ServerUserId.GetValueOrDefault();
+        var hasServerUserId = conflict.ServerUserId.HasValue && serverUserId != Guid.Empty;
+        var serverUsername = (conflict.ServerUsername ?? string.Empty).Trim();
+        if (!hasServerUserId && string.IsNullOrWhiteSpace(serverUsername))
+            return true;
+
+        var currentUser = session.User;
+        if (currentUser is null)
+            return false;
+
+        if (hasServerUserId &&
+            currentUser.UserId != Guid.Empty &&
+            currentUser.UserId == serverUserId)
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(serverUsername) &&
+               string.Equals(serverUsername, currentUser.Username?.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<List<ConflictLogDto>> PrepareGenericRevisionRetriesAsync(
@@ -3575,6 +3654,9 @@ public sealed class SyncService : IDisposable
     {
         var reason = (conflict.Reason ?? string.Empty).Trim();
         if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!IsServerConflictActorCurrentSessionOrUnknown(conflict, session))
             return false;
 
         if (!Guid.TryParse(conflict.EntityId, out var entityId) || entityId == Guid.Empty)
@@ -3799,6 +3881,9 @@ public sealed class SyncService : IDisposable
         if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
             return null;
 
+        if (!IsServerConflictActorCurrentSessionOrUnknown(conflict, session))
+            return null;
+
         if (!Guid.TryParse(conflict.EntityId, out var assetId) || assetId == Guid.Empty)
             return null;
 
@@ -3937,6 +4022,9 @@ public sealed class SyncService : IDisposable
 
         var reason = (conflict.Reason ?? string.Empty).Trim();
         if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!IsServerConflictActorCurrentSessionOrUnknown(conflict, session))
             return false;
 
         if (!Guid.TryParse(conflict.EntityId, out var profileId) || profileId == Guid.Empty)
@@ -5547,7 +5635,7 @@ public sealed class SyncService : IDisposable
 
         var pull = await _api.PullAsync(sinceRev, ct);
         if (pull is null)
-            return;
+            throw new HttpRequestException("서버 응답이 비어 있어 동기화 다운로드를 완료하지 못했습니다.");
 
         try
         {
@@ -5825,9 +5913,29 @@ public sealed class SyncService : IDisposable
         if (dtos.Count == 0)
             return;
 
+        var invoiceIdsToRecalculate = dtos
+            .Select(dto => dto.InvoiceId)
+            .Where(id => id != Guid.Empty)
+            .ToList();
+        var paymentIds = dtos
+            .Select(dto => dto.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (paymentIds.Count > 0)
+        {
+            var previousInvoiceIds = await _db.Payments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(payment => paymentIds.Contains(payment.Id) && payment.InvoiceId != Guid.Empty)
+                .Select(payment => payment.InvoiceId)
+                .ToListAsync(ct);
+            invoiceIdsToRecalculate.AddRange(previousInvoiceIds);
+        }
+
         await UpsertPulledAsync(dtos, _db.Payments, LocalMappings.ToLocal, ct);
         await _local.RecalculateRentalSettlementForInvoicePaymentsAsync(
-            dtos.Select((PaymentDto dto) => dto.InvoiceId),
+            invoiceIdsToRecalculate,
             ct);
     }
 
@@ -7468,6 +7576,10 @@ public sealed class SyncService : IDisposable
 
     private async Task UpsertPulledItemWarehouseStocksAsync(IReadOnlyList<ItemWarehouseStockDto> dtos, CancellationToken ct)
     {
+        var pulledKeys = dtos
+            .Select(dto => BuildItemWarehouseStockKey(dto.ItemId, dto.WarehouseCode))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
         foreach (var dto in dtos)
         {
             var local = LocalMappings.ToLocal(dto);
@@ -7482,7 +7594,70 @@ public sealed class SyncService : IDisposable
             }
         }
 
+        await RemovePulledItemWarehouseStocksMissingFromServerAsync(pulledKeys, ct);
         await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task RemovePulledItemWarehouseStocksMissingFromServerAsync(
+        IReadOnlySet<string> pulledKeys,
+        CancellationToken ct)
+    {
+        if (!_session.IsLoggedIn)
+            return;
+
+        var candidates = await (from stock in _db.ItemWarehouseStocks
+                                join item in _db.Items.IgnoreQueryFilters() on stock.ItemId equals item.Id
+                                select new
+                                {
+                                    Stock = stock,
+                                    Item = item
+                                })
+            .ToListAsync(ct);
+        if (candidates.Count == 0)
+            return;
+
+        var sessionTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            _session.TenantCode,
+            _session.OfficeCode);
+        var readableOfficeCodes = _local
+            .GetReadableOfficeCodesForSession(_session)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var candidate in candidates)
+        {
+            var key = BuildItemWarehouseStockKey(candidate.Stock.ItemId, candidate.Stock.WarehouseCode);
+            if (pulledKeys.Contains(key))
+                continue;
+
+            if (candidate.Item.IsDirty)
+                continue;
+
+            if (!IsItemWarehouseStockInCurrentPullScope(candidate.Item, sessionTenantCode, readableOfficeCodes))
+                continue;
+
+            _db.ItemWarehouseStocks.Remove(candidate.Stock);
+        }
+    }
+
+    private bool IsItemWarehouseStockInCurrentPullScope(
+        LocalItem item,
+        string sessionTenantCode,
+        IReadOnlySet<string> readableOfficeCodes)
+    {
+        if (_session.HasGlobalDataScope)
+            return true;
+
+        var itemTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            item.TenantCode,
+            item.OfficeCode,
+            sessionTenantCode,
+            _session.OfficeCode);
+        if (!string.Equals(itemTenantCode, sessionTenantCode, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var itemOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(item.OfficeCode, OfficeCodeCatalog.Shared);
+        return string.Equals(itemOfficeCode, OfficeCodeCatalog.Shared, StringComparison.OrdinalIgnoreCase) ||
+               readableOfficeCodes.Contains(itemOfficeCode);
     }
 
     private async Task UpsertPulledTransactionAttachmentsAsync(

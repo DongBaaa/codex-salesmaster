@@ -1,12 +1,12 @@
 ﻿using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Mappings;
 using 거래플랜.Server.Api.Security;
+using 거래플랜.Server.Api.Services;
 using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using System.Security.Claims;
 
 namespace 거래플랜.Server.Api.Controllers;
 
@@ -16,22 +16,26 @@ namespace 거래플랜.Server.Api.Controllers;
 public sealed class CompanyProfileController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
+    private readonly OfficeScopeService _officeScopeService;
 
-    public CompanyProfileController(AppDbContext dbContext) => _dbContext = dbContext;
+    public CompanyProfileController(AppDbContext dbContext, OfficeScopeService officeScopeService)
+    {
+        _dbContext = dbContext;
+        _officeScopeService = officeScopeService;
+    }
 
     [HttpGet]
     public async Task<ActionResult<CompanyProfileDto>> Get([FromQuery] string? officeCode, CancellationToken cancellationToken)
     {
-        var normalizedOfficeCode = ResolveRequestedOfficeCode(officeCode, null);
-        var profile = await _dbContext.CompanyProfiles.AsNoTracking()
+        var normalizedOfficeCode = ResolveRequestedOfficeCode(officeCode);
+        if (!_officeScopeService.CanReadOfficeForCompanyProfiles(normalizedOfficeCode))
+            return Forbid();
+
+        var scopedProfiles = _officeScopeService.ApplyCompanyProfileScope(_dbContext.CompanyProfiles.AsNoTracking());
+        var profile = await scopedProfiles
             .Where(x => x.OfficeCode == normalizedOfficeCode && x.IsActive)
             .OrderByDescending(x => x.IsDefaultForOffice)
             .ThenByDescending(x => x.UpdatedAtUtc)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        profile ??= await _dbContext.CompanyProfiles.AsNoTracking()
-            .Where(x => x.IsActive)
-            .OrderByDescending(x => x.UpdatedAtUtc)
             .FirstOrDefaultAsync(cancellationToken);
 
         return profile is null ? NotFound() : Ok(profile.ToDto());
@@ -41,7 +45,16 @@ public sealed class CompanyProfileController : ControllerBase
     [Authorize(Policy = PermissionNames.CompanyProfileEdit)]
     public async Task<ActionResult<CompanyProfileDto>> Upsert([FromBody] CompanyProfileDto dto, CancellationToken cancellationToken)
     {
-        var normalizedOfficeCode = ResolveRequestedOfficeCode(dto.OfficeCode, null);
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(dto.OfficeCode, out var requestedOfficeCode) &&
+            !_officeScopeService.CanWriteOfficeForCompanyProfiles(requestedOfficeCode))
+        {
+            return Forbid();
+        }
+
+        var normalizedOfficeCode = ResolveWritableOfficeCode(dto.OfficeCode, null);
+        if (!_officeScopeService.CanWriteOfficeForCompanyProfiles(normalizedOfficeCode))
+            return Forbid();
+
         dto.OfficeCode = normalizedOfficeCode;
 
         var profile = dto.Id == Guid.Empty
@@ -67,8 +80,16 @@ public sealed class CompanyProfileController : ControllerBase
         }
         else
         {
+            if (!_officeScopeService.CanWriteOfficeForCompanyProfiles(profile.OfficeCode))
+                return Forbid();
+
             if (OptimisticConcurrencyGuard.Check(this, profile, dto, nameof(Domain.CompanyProfile)) is { } conflict)
                 return conflict;
+
+            dto.OfficeCode = ResolveWritableOfficeCode(dto.OfficeCode, profile.OfficeCode);
+            if (!_officeScopeService.CanWriteOfficeForCompanyProfiles(dto.OfficeCode))
+                return Forbid();
+
             profile.Apply(dto);
         }
 
@@ -91,15 +112,28 @@ public sealed class CompanyProfileController : ControllerBase
         return Ok(profile.ToDto());
     }
 
-    private string ResolveRequestedOfficeCode(string? requestedOfficeCode, string? fallbackOfficeCode)
+    private string ResolveRequestedOfficeCode(string? requestedOfficeCode)
     {
         if (OfficeCodeCatalog.TryNormalizeOfficeCode(requestedOfficeCode, out var normalizedRequested))
             return normalizedRequested;
 
-        var claimOfficeCode = User.FindFirstValue("office");
-        if (OfficeCodeCatalog.TryNormalizeOfficeCode(claimOfficeCode, out var normalizedClaim))
-            return normalizedClaim;
+        return _officeScopeService.CurrentOfficeCode;
+    }
 
-        return OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(fallbackOfficeCode, OfficeCodeCatalog.Usenet);
+    private string ResolveWritableOfficeCode(string? requestedOfficeCode, string? fallbackOfficeCode)
+    {
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(requestedOfficeCode, out var normalizedRequested) &&
+            _officeScopeService.CanWriteOfficeForCompanyProfiles(normalizedRequested))
+        {
+            return normalizedRequested;
+        }
+
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(fallbackOfficeCode, out var normalizedFallback) &&
+            _officeScopeService.CanWriteOfficeForCompanyProfiles(normalizedFallback))
+        {
+            return normalizedFallback;
+        }
+
+        return _officeScopeService.CurrentOfficeCode;
     }
 }

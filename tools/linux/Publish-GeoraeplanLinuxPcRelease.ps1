@@ -18,6 +18,7 @@ param(
     [switch]$SkipPreDeployOperationalGate,
     [switch]$SkipPostDeployOperationalGate,
     [switch]$SkipPlatformHealthChecks,
+    [switch]$AcceptRentalTemplateItemReferenceRisk,
     [string]$PreDeployBaseUrl = '',
     [string]$PreDeploySecretPath = '',
     [string]$PreDeployOutputDirectory = '',
@@ -430,7 +431,55 @@ function Invoke-ReleaseOperationalGate {
     if ($LASTEXITCODE -ne 0) {
         throw "$Phase operational gate failed with exit code $LASTEXITCODE. Report directory: $OutputDirectory"
     }
+
     Write-Host "$($Phase)_operational_gate_done output=$OutputDirectory"
+}
+
+
+function Invoke-RentalTemplateItemReferenceGate {
+    param(
+        [Parameter(Mandatory = $true)][string]$Phase,
+        [Parameter(Mandatory = $true)][string]$Root,
+        [string]$OutputDirectory = '',
+        [string]$ReleaseId = ''
+    )
+
+    $rentalTemplateItemReferenceGateScript = Join-Path $Root 'tools\linux\Test-GeoraePlanRentalTemplateItemReferenceGate.ps1'
+    if (-not (Test-Path -LiteralPath $rentalTemplateItemReferenceGateScript)) {
+        throw "$Phase rental template item reference gate script not found: $rentalTemplateItemReferenceGateScript"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+        $safePhase = ($Phase -replace '[^A-Za-z0-9_-]', '-').Trim('-').ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($safePhase)) {
+            $safePhase = 'rental-template-item-reference'
+        }
+        $safeReleaseId = if ([string]::IsNullOrWhiteSpace($ReleaseId)) { Get-Date -Format 'yyyyMMdd-HHmmss' } else { $ReleaseId }
+        $OutputDirectory = Join-Path $Root ("audit-output\$safePhase-rental-template-item-reference-gate-$safeReleaseId")
+    }
+    else {
+        $OutputDirectory = Join-Path $OutputDirectory 'rental-template-item-reference-gate'
+    }
+
+    $rentalTemplateItemReferenceGateArgs = @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $rentalTemplateItemReferenceGateScript,
+        '-ProjectRoot', $Root,
+        '-OutputDirectory', $OutputDirectory,
+        '-LinuxSshHost', $script:LinuxSshHost,
+        '-LinuxSshPort', $script:LinuxSshPort,
+        '-LinuxSshUser', $script:LinuxSshUser,
+        '-LinuxSshKeyPath', $script:LinuxSshKeyPath,
+        '-RemoteOpsDirectory', $script:LinuxRemoteOpsPath
+    )
+
+    Write-Host "$($Phase)_rental_template_item_reference_gate_start output=$OutputDirectory"
+    & powershell @rentalTemplateItemReferenceGateArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Phase rental template item reference gate failed with exit code $LASTEXITCODE. Report directory: $OutputDirectory"
+    }
+    Write-Host "$($Phase)_rental_template_item_reference_gate_done output=$OutputDirectory"
 }
 
 function Update-PublishedAppSettings {
@@ -517,6 +566,18 @@ $publicBaseUrl = if ($remoteEnv.ContainsKey('PUBLIC_BASE_URL')) { "$($remoteEnv[
 $resolvedPreDeployBaseUrl = if (-not [string]::IsNullOrWhiteSpace($PreDeployBaseUrl)) { $PreDeployBaseUrl } elseif (-not [string]::IsNullOrWhiteSpace($PostDeployBaseUrl)) { $PostDeployBaseUrl } else { $publicBaseUrl }
 $resolvedPostDeployBaseUrl = if (-not [string]::IsNullOrWhiteSpace($PostDeployBaseUrl)) { $PostDeployBaseUrl } elseif (-not [string]::IsNullOrWhiteSpace($PreDeployBaseUrl)) { $PreDeployBaseUrl } else { $publicBaseUrl }
 $resolvedPreDeploySecretPath = if (-not [string]::IsNullOrWhiteSpace($PreDeploySecretPath)) { $PreDeploySecretPath } else { $PostDeploySecretPath }
+
+if ($MirrorToLive -and -not $AcceptRentalTemplateItemReferenceRisk.IsPresent) {
+    Invoke-RentalTemplateItemReferenceGate `
+        -Phase 'pre-deploy-required-data' `
+        -Root $ProjectRoot `
+        -OutputDirectory $PreDeployOutputDirectory `
+        -ReleaseId $ReleaseId
+}
+elseif ($MirrorToLive -and $AcceptRentalTemplateItemReferenceRisk.IsPresent) {
+    Write-Warning 'Rental template item reference gate was skipped by explicit risk acceptance. Use only when known operating data candidates are intentionally excluded from the release decision.'
+    Write-Host 'pre-deploy-required-data_rental_template_item_reference_gate=skipped risk=accepted'
+}
 
 if ($MirrorToLive -and -not $SkipPreDeployOperationalGate.IsPresent) {
     Invoke-ReleaseOperationalGate `

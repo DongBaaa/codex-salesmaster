@@ -13,6 +13,7 @@ public sealed class CustomersPage : ContentPage
     private readonly CustomersViewModel _viewModel;
     private readonly MobileRefreshCoordinator _refreshCoordinator;
     private readonly SyncCoordinator _syncCoordinator;
+    private readonly SessionStore _sessionStore;
     private int _seenCustomersVersion;
 
     public CustomersPage()
@@ -22,8 +23,13 @@ public sealed class CustomersPage : ContentPage
         _viewModel = ServiceHelper.GetRequiredService<CustomersViewModel>();
         _refreshCoordinator = ServiceHelper.GetRequiredService<MobileRefreshCoordinator>();
         _syncCoordinator = ServiceHelper.GetRequiredService<SyncCoordinator>();
+        _sessionStore = ServiceHelper.GetRequiredService<SessionStore>();
         _refreshCoordinator.AllChanged += HandleRealtimeRefreshRequested;
         BindingContext = _viewModel;
+
+        var session = _sessionStore.GetSnapshot();
+        var canEditCustomers = session.CanEditCustomers;
+        var canCreateInvoices = session.CanCreateInvoices;
 
         var searchEntry = GeoraePlanTheme.CreateCompactEntry("거래처명 / 전화 / 사업자번호");
         searchEntry.HeightRequest = 42;
@@ -60,6 +66,8 @@ public sealed class CustomersPage : ContentPage
 
         var newCustomerButton = GeoraePlanTheme.CreateCompactButton("신규", GeoraePlanTheme.Success);
         newCustomerButton.WidthRequest = 76;
+        newCustomerButton.IsVisible = canEditCustomers;
+        newCustomerButton.IsEnabled = canEditCustomers;
         newCustomerButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(OpenNewCustomerAsync, "거래처 신규등록");
 
@@ -109,10 +117,14 @@ public sealed class CustomersPage : ContentPage
 
         var detailHeaderTitle = GeoraePlanTheme.CreateSectionTitle("선택 거래처 상세", 15);
         var editCustomerButton = GeoraePlanTheme.CreateCompactButton("수정", GeoraePlanTheme.Purple);
+        editCustomerButton.IsVisible = canEditCustomers;
+        editCustomerButton.IsEnabled = canEditCustomers;
         editCustomerButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(OpenEditCustomerAsync, "거래처 수정");
 
         var deleteCustomerButton = GeoraePlanTheme.CreateCompactButton("삭제", GeoraePlanTheme.Danger);
+        deleteCustomerButton.IsVisible = canEditCustomers;
+        deleteCustomerButton.IsEnabled = canEditCustomers;
         deleteCustomerButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(OpenDeleteCustomerAsync, "거래처 삭제");
 
@@ -279,7 +291,10 @@ public sealed class CustomersPage : ContentPage
                     if (sender is not Button button || button.BindingContext is not CustomerPaymentHistoryRow row)
                         return;
 
-                    await Shell.Current.Navigation.PushAsync(new PaymentAttachmentsPage(row.PaymentId, $"{row.InvoiceDisplay} {row.ActionDisplay} 첨부"));
+                    await Shell.Current.Navigation.PushAsync(new PaymentAttachmentsPage(
+                        row.PaymentId,
+                        $"{row.InvoiceDisplay} {row.ActionDisplay} 첨부",
+                        row.Attachments));
                 },
                         "거래처 작업");
 
@@ -304,10 +319,15 @@ public sealed class CustomersPage : ContentPage
         var paymentsSection = new VerticalStackLayout { Spacing = 4, Children = { paymentsView } };
         paymentsSection.SetBinding(VisualElement.IsVisibleProperty, nameof(CustomersViewModel.ShowPaymentsSection));
 
+        var rentalsView = CreateCustomerRentalsView();
+        var rentalsSection = new VerticalStackLayout { Spacing = 4, Children = { rentalsView } };
+        rentalsSection.SetBinding(VisualElement.IsVisibleProperty, nameof(CustomersViewModel.ShowRentalsSection));
+
         var summaryTabButton = CreateDetailTabButton("기본");
         var contractsTabButton = CreateDetailTabButton("계약");
         var invoicesTabButton = CreateDetailTabButton("거래내역");
         var paymentsTabButton = CreateDetailTabButton("수금/지급");
+        var rentalsTabButton = CreateDetailTabButton("렌탈");
 
         void RefreshDetailTabButtons()
         {
@@ -315,12 +335,14 @@ public sealed class CustomersPage : ContentPage
             contractsTabButton.BackgroundColor = _viewModel.ShowContractsSection ? GeoraePlanTheme.Accent : GeoraePlanTheme.SecondaryButton;
             invoicesTabButton.BackgroundColor = _viewModel.ShowInvoicesSection ? GeoraePlanTheme.Accent : GeoraePlanTheme.SecondaryButton;
             paymentsTabButton.BackgroundColor = _viewModel.ShowPaymentsSection ? GeoraePlanTheme.Accent : GeoraePlanTheme.SecondaryButton;
+            rentalsTabButton.BackgroundColor = _viewModel.ShowRentalsSection ? GeoraePlanTheme.Accent : GeoraePlanTheme.SecondaryButton;
         }
 
         summaryTabButton.Clicked += (_, _) => { _viewModel.ShowSummaryTab(); RefreshDetailTabButtons(); };
         contractsTabButton.Clicked += (_, _) => { _viewModel.ShowContractsTab(); RefreshDetailTabButtons(); };
         invoicesTabButton.Clicked += (_, _) => { _viewModel.ShowInvoicesTab(); RefreshDetailTabButtons(); };
         paymentsTabButton.Clicked += (_, _) => { _viewModel.ShowPaymentsTab(); RefreshDetailTabButtons(); };
+        rentalsTabButton.Clicked += (_, _) => { _viewModel.ShowRentalsTab(); RefreshDetailTabButtons(); };
         _viewModel.PropertyChanged += (_, args) =>
         {
             if (args.PropertyName is nameof(CustomersViewModel.SelectedDetailSection) or nameof(CustomersViewModel.HasSelectedCustomer))
@@ -336,6 +358,7 @@ public sealed class CustomersPage : ContentPage
                 new ColumnDefinition(GridLength.Star),
                 new ColumnDefinition(GridLength.Star),
                 new ColumnDefinition(GridLength.Star),
+                new ColumnDefinition(GridLength.Star),
                 new ColumnDefinition(GridLength.Star)
             }
         };
@@ -343,6 +366,7 @@ public sealed class CustomersPage : ContentPage
         tabGrid.Add(contractsTabButton, 1, 0);
         tabGrid.Add(invoicesTabButton, 2, 0);
         tabGrid.Add(paymentsTabButton, 3, 0);
+        tabGrid.Add(rentalsTabButton, 4, 0);
 
         var detailCard = GeoraePlanTheme.CreateCompactCard(
             detailHeader,
@@ -353,6 +377,7 @@ public sealed class CustomersPage : ContentPage
             contractsSection,
             invoicesSection,
             paymentsSection,
+            rentalsSection,
             detailActivity,
             detailStatus);
         detailCard.SetBinding(VisualElement.IsVisibleProperty, nameof(CustomersViewModel.HasSelectedCustomer));
@@ -380,6 +405,8 @@ public sealed class CustomersPage : ContentPage
 
                 var salesInvoiceButton = GeoraePlanTheme.CreateCompactButton("판매작성", GeoraePlanTheme.Success);
                 salesInvoiceButton.HorizontalOptions = LayoutOptions.Fill;
+                salesInvoiceButton.IsVisible = canCreateInvoices;
+                salesInvoiceButton.IsEnabled = canCreateInvoices;
                 salesInvoiceButton.Clicked += (sender, _) =>
                     MobileErrorHandler.FireAndForget(
                         async () =>
@@ -400,6 +427,8 @@ public sealed class CustomersPage : ContentPage
 
                 var purchaseInvoiceButton = GeoraePlanTheme.CreateCompactButton("구매작성", GeoraePlanTheme.Brown);
                 purchaseInvoiceButton.HorizontalOptions = LayoutOptions.Fill;
+                purchaseInvoiceButton.IsVisible = canCreateInvoices;
+                purchaseInvoiceButton.IsEnabled = canCreateInvoices;
                 purchaseInvoiceButton.Clicked += (sender, _) =>
                     MobileErrorHandler.FireAndForget(
                         async () =>
@@ -577,6 +606,69 @@ try
         return button;
     }
 
+    private CollectionView CreateCustomerRentalsView(bool useExplicitSource = false)
+    {
+        var rentalsView = new CollectionView
+        {
+            SelectionMode = SelectionMode.None,
+            BackgroundColor = Colors.Transparent,
+            EmptyView = GeoraePlanTheme.CreateBodyText("연결된 렌탈 프로필/자산/설치이력이 없습니다.", true, 11),
+            ItemTemplate = new DataTemplate(() =>
+            {
+                var sourceLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 11);
+                sourceLabel.FontAttributes = FontAttributes.Bold;
+                sourceLabel.LineHeight = 1.0;
+                sourceLabel.SetBinding(Label.TextProperty, nameof(CustomerRentalLinkRow.SourceLabel));
+
+                var titleLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 12);
+                titleLabel.FontAttributes = FontAttributes.Bold;
+                titleLabel.LineHeight = 1.0;
+                titleLabel.SetBinding(Label.TextProperty, nameof(CustomerRentalLinkRow.Title));
+
+                var subtitleLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
+                subtitleLabel.LineHeight = 1.0;
+                subtitleLabel.SetBinding(Label.TextProperty, nameof(CustomerRentalLinkRow.Subtitle));
+
+                var metaLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
+                metaLabel.LineHeight = 1.0;
+                metaLabel.SetBinding(Label.TextProperty, nameof(CustomerRentalLinkRow.Meta));
+
+                var noteLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
+                noteLabel.LineHeight = 1.0;
+                noteLabel.LineBreakMode = LineBreakMode.TailTruncation;
+                noteLabel.MaxLines = 2;
+                noteLabel.SetBinding(Label.TextProperty, nameof(CustomerRentalLinkRow.Note));
+
+                return new Border
+                {
+                    BackgroundColor = GeoraePlanTheme.Surface,
+                    Stroke = GeoraePlanTheme.Border,
+                    StrokeShape = new RoundRectangle { CornerRadius = 10 },
+                    Padding = new Thickness(10, 8),
+                    Margin = new Thickness(0, 0, 0, 6),
+                    Content = new VerticalStackLayout
+                    {
+                        Spacing = 3,
+                        Children = { sourceLabel, titleLabel, subtitleLabel, metaLabel, noteLabel }
+                    }
+                };
+            })
+        };
+
+        if (useExplicitSource)
+        {
+            rentalsView.SetBinding(ItemsView.ItemsSourceProperty, new Binding(nameof(CustomersViewModel.SelectedCustomerRentals)) { Source = _viewModel });
+            rentalsView.SetBinding(VisualElement.HeightRequestProperty, new Binding(nameof(CustomersViewModel.RentalsSectionHeight)) { Source = _viewModel });
+        }
+        else
+        {
+            rentalsView.SetBinding(ItemsView.ItemsSourceProperty, nameof(CustomersViewModel.SelectedCustomerRentals));
+            rentalsView.SetBinding(VisualElement.HeightRequestProperty, nameof(CustomersViewModel.RentalsSectionHeight));
+        }
+
+        return rentalsView;
+    }
+
     private View CreateInlineCustomerDetailView()
     {
         var menuTitle = GeoraePlanTheme.CreateSectionTitle("거래처 메뉴", 13);
@@ -589,10 +681,14 @@ try
         detailActivity.SetBinding(ActivityIndicator.IsVisibleProperty, new Binding(nameof(CustomersViewModel.IsDetailBusy)) { Source = _viewModel });
 
         var editCustomerButton = GeoraePlanTheme.CreateCompactButton("수정", GeoraePlanTheme.Purple);
+        editCustomerButton.IsVisible = _sessionStore.GetSnapshot().CanEditCustomers;
+        editCustomerButton.IsEnabled = editCustomerButton.IsVisible;
         editCustomerButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(OpenEditCustomerAsync, "거래처 작업");
 
         var deleteCustomerButton = GeoraePlanTheme.CreateCompactButton("삭제", GeoraePlanTheme.Danger);
+        deleteCustomerButton.IsVisible = editCustomerButton.IsVisible;
+        deleteCustomerButton.IsEnabled = deleteCustomerButton.IsVisible;
         deleteCustomerButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(OpenDeleteCustomerAsync, "거래처 작업");
 
@@ -626,12 +722,15 @@ try
         invoicesTabButton.Clicked += (_, _) => _viewModel.ShowInvoicesTab();
         var paymentsTabButton = CreateInlineDetailTabButton("수금/지급", CustomerDetailSection.Payments);
         paymentsTabButton.Clicked += (_, _) => _viewModel.ShowPaymentsTab();
+        var rentalsTabButton = CreateInlineDetailTabButton("렌탈", CustomerDetailSection.Rentals);
+        rentalsTabButton.Clicked += (_, _) => _viewModel.ShowRentalsTab();
 
         var tabGrid = new Grid
         {
             ColumnSpacing = 6,
             ColumnDefinitions =
             {
+                new ColumnDefinition(GridLength.Star),
                 new ColumnDefinition(GridLength.Star),
                 new ColumnDefinition(GridLength.Star),
                 new ColumnDefinition(GridLength.Star),
@@ -642,6 +741,7 @@ try
         tabGrid.Add(contractsTabButton, 1, 0);
         tabGrid.Add(invoicesTabButton, 2, 0);
         tabGrid.Add(paymentsTabButton, 3, 0);
+        tabGrid.Add(rentalsTabButton, 4, 0);
 
         var summaryPhoneLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 12);
         summaryPhoneLabel.LineHeight = 1.0;
@@ -780,7 +880,10 @@ try
                             if (sender is not Button button || button.BindingContext is not CustomerPaymentHistoryRow row)
                                 return;
 
-                            await Shell.Current.Navigation.PushAsync(new PaymentAttachmentsPage(row.PaymentId, $"{row.InvoiceDisplay} {row.ActionDisplay} 첨부"));
+                            await Shell.Current.Navigation.PushAsync(new PaymentAttachmentsPage(
+                                row.PaymentId,
+                                $"{row.InvoiceDisplay} {row.ActionDisplay} 첨부",
+                                row.Attachments));
                         },
                         "거래처 작업");
 
@@ -805,6 +908,10 @@ try
         var paymentsSection = new VerticalStackLayout { Spacing = 4, Children = { paymentsView } };
         paymentsSection.SetBinding(VisualElement.IsVisibleProperty, new Binding(nameof(CustomersViewModel.ShowPaymentsSection)) { Source = _viewModel });
 
+        var rentalsView = CreateCustomerRentalsView(useExplicitSource: true);
+        var rentalsSection = new VerticalStackLayout { Spacing = 4, Children = { rentalsView } };
+        rentalsSection.SetBinding(VisualElement.IsVisibleProperty, new Binding(nameof(CustomersViewModel.ShowRentalsSection)) { Source = _viewModel });
+
         var statusLabel = GeoraePlanTheme.CreateStatusLabel();
         statusLabel.SetBinding(Label.TextProperty, new Binding(nameof(CustomersViewModel.DetailStatusMessage)) { Source = _viewModel });
 
@@ -827,6 +934,7 @@ try
                     contractsSection,
                     invoicesSection,
                     paymentsSection,
+                    rentalsSection,
                     detailActivity,
                     statusLabel
                 }
@@ -849,6 +957,9 @@ try
 
     private async Task OpenNewCustomerAsync()
     {
+        if (!await EnsureCanEditCustomersAsync("신규등록"))
+            return;
+
         await Navigation.PushModalAsync(new CustomerEditPage(
             null,
             async saved =>
@@ -862,6 +973,9 @@ try
     private async Task OpenEditCustomerAsync()
     {
         if (_viewModel.SelectedCustomer is null)
+            return;
+
+        if (!await EnsureCanEditCustomersAsync("수정"))
             return;
 
         await Navigation.PushModalAsync(new CustomerEditPage(
@@ -879,6 +993,9 @@ try
         if (_viewModel.SelectedCustomer is null)
             return;
 
+        if (!await EnsureCanEditCustomersAsync("삭제"))
+            return;
+
         var deletedCustomerId = _viewModel.SelectedCustomer.Id;
         await Navigation.PushModalAsync(new CustomerEditPage(
             _viewModel.SelectedCustomer,
@@ -893,6 +1010,18 @@ try
                 _viewModel.ClearSelectedCustomer();
                 await _viewModel.RefreshAsync();
             }));
+    }
+
+    private async Task<bool> EnsureCanEditCustomersAsync(string actionText)
+    {
+        if (_sessionStore.GetSnapshot().CanEditCustomers)
+            return true;
+
+        var message = $"권한이 없어 거래처를 {actionText}할 수 없습니다.";
+        _viewModel.StatusMessage = message;
+        _viewModel.DetailStatusMessage = message;
+        await DisplayAlert("권한 확인", message, "확인");
+        return false;
     }
 
     private sealed class ContractDateSummaryConverter : IValueConverter

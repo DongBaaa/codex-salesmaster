@@ -793,7 +793,7 @@ $currentHomeContent = Open-HomeActionAndAssert `
     -HomeContent $homeDump.Content `
     -ButtonText '렌탈 조회' `
     -StepName 'rentals-readonly' `
-    -Needles @('렌탈 조회', '청구프로필', '렌탈자산', '청구 이력', '조회 전용') `
+    -Needles @('렌탈 조회', '청구프로필', '렌탈자산', '청구 이력', '설치이력', '조회 전용') `
     -Steps $steps
 
 if ($IncludeDraftScreens) {

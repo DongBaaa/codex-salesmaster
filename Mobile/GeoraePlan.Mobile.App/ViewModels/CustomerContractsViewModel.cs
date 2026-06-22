@@ -70,12 +70,19 @@ public sealed class CustomerContractsViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            var cachedContracts = await _cacheStore.LoadContractsAsync(_customerId);
-            ReplaceContracts(cachedContracts);
+            if (MobileRetryableNetworkFailure.IsRetryable(ex))
+            {
+                var cachedContracts = await _cacheStore.LoadContractsAsync(_customerId);
+                ReplaceContracts(cachedContracts);
 
-            StatusMessage = cachedContracts.Count == 0
-                ? $"계약서 조회 실패: {ex.Message}"
-                : $"서버 연결에 실패해 캐시 계약서 {cachedContracts.Count:N0}건을 표시합니다. ({ex.Message})";
+                StatusMessage = cachedContracts.Count == 0
+                    ? $"계약서 조회 실패: {ex.Message}"
+                    : $"서버 연결에 실패해 캐시 계약서 {cachedContracts.Count:N0}건을 표시합니다. ({ex.Message})";
+                return;
+            }
+
+            ReplaceContracts(Array.Empty<CustomerContractDto>());
+            StatusMessage = $"계약서 조회 실패: {ex.Message}";
         }
         finally
         {

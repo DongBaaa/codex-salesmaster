@@ -144,6 +144,21 @@ public sealed class IntegrityController : ControllerBase
             : 0;
         AddIssue(issues, "inventory_transfer_line_missing_transfer_rows", inventoryTransferLineMissingTransferRowCount, "Error", "부모 재고이동 문서가 없는 재고이동 세부내역이 존재합니다.");
 
+        var activeInventoryTransferLineMissingItemCount = await (
+                from line in _dbContext.InventoryTransferLines.IgnoreQueryFilters().AsNoTracking()
+                where !line.IsDeleted && line.ItemId.HasValue && line.ItemId.Value != Guid.Empty
+                join transfer in _officeScopeService.ApplyInventoryTransferScope(
+                        _dbContext.InventoryTransfers.IgnoreQueryFilters().AsNoTracking())
+                        .Where(transfer => !transfer.IsDeleted)
+                    on line.TransferId equals transfer.Id
+                join item in _dbContext.Items.IgnoreQueryFilters().AsNoTracking().Where(item => !item.IsDeleted)
+                    on line.ItemId!.Value equals item.Id into itemGroup
+                from item in itemGroup.DefaultIfEmpty()
+                where item == null
+                select line.Id)
+            .CountAsync(cancellationToken);
+        AddIssue(issues, "active_inventory_transfer_line_missing_item_refs", activeInventoryTransferLineMissingItemCount, "Error", "활성 재고이동 라인이 삭제되었거나 없는 품목을 참조합니다.");
+
         var orphanWarehouseStockCount = await _officeScopeService.ApplyWarehouseScope(
                 _dbContext.ItemWarehouseStocks.IgnoreQueryFilters().AsNoTracking())
             .CountAsync(stock => !_dbContext.Items.IgnoreQueryFilters().Any(item => !item.IsDeleted && item.Id == stock.ItemId), cancellationToken);
@@ -184,6 +199,21 @@ public sealed class IntegrityController : ControllerBase
             .CountAsync(cancellationToken);
         AddIssue(issues, "active_invoice_lines_deleted_invoice", activeInvoiceLinesDeletedInvoiceCount, "Error", "삭제된 전표에 활성 세부내역 행이 남아 있습니다.");
 
+        var activeInvoiceLineMissingItemCount = await (
+                from line in _dbContext.InvoiceLines.IgnoreQueryFilters().AsNoTracking()
+                where !line.IsDeleted && line.ItemId.HasValue && line.ItemId.Value != Guid.Empty
+                join invoice in _officeScopeService.ApplyInvoiceScope(
+                        _dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
+                        .Where(invoice => !invoice.IsDeleted)
+                    on line.InvoiceId equals invoice.Id
+                join item in _dbContext.Items.IgnoreQueryFilters().AsNoTracking().Where(item => !item.IsDeleted)
+                    on line.ItemId!.Value equals item.Id into itemGroup
+                from item in itemGroup.DefaultIfEmpty()
+                where item == null
+                select line.Id)
+            .CountAsync(cancellationToken);
+        AddIssue(issues, "active_invoice_line_missing_item_refs", activeInvoiceLineMissingItemCount, "Error", "활성 전표 라인이 삭제되었거나 없는 품목을 참조합니다.");
+
         var activeInvoiceDeletedLineOnlyCount = await _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
             .Where(invoice => !invoice.IsDeleted && invoice.TotalAmount != 0m)
             .CountAsync(
@@ -208,6 +238,14 @@ public sealed class IntegrityController : ControllerBase
             .CountAsync(transaction => !_dbContext.Customers.IgnoreQueryFilters().Any(customer => !customer.IsDeleted && customer.Id == transaction.CustomerId), cancellationToken);
         AddIssue(issues, "orphan_transaction_customer_refs", orphanTransactionCustomerCount, "Error", "거래처가 없는 수금/지불 참조가 존재합니다.");
 
+        var readOnlySharedCustomerBusinessRefCount = (await LoadReadOnlySharedCustomerBusinessReferenceDetailsAsync(cancellationToken)).Count;
+        AddIssue(
+            issues,
+            "read_only_shared_customer_business_refs",
+            readOnlySharedCustomerBusinessRefCount,
+            "Warning",
+            "읽기 전용 공유 거래처에 전표 또는 거래내역이 연결된 과거 저장 후보가 있습니다.");
+
         var orphanRentalProfileCustomerCount = await _officeScopeService.ApplyRentalBillingProfileScope(_dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking())
             .Where(profile => !profile.IsDeleted && profile.CustomerId.HasValue)
             .CountAsync(profile => !_dbContext.Customers.IgnoreQueryFilters().Any(customer => !customer.IsDeleted && customer.Id == profile.CustomerId), cancellationToken);
@@ -230,6 +268,12 @@ public sealed class IntegrityController : ControllerBase
         AddIssue(issues, "rental_profile_customer_unlinked", rentalProfileCustomerUnlinkedCount, "Warning", "거래처 ID 없이 거래처명만 저장된 렌탈 청구 프로필이 있습니다.");
 
         var rentalTemplateScanRows = await LoadRentalTemplateScanRowsAsync(cancellationToken);
+        var rentalBillingTemplateInvalidJsonCount = rentalTemplateScanRows.Count(row => !row.TemplateParseSucceeded);
+        AddIssue(issues, "rental_billing_template_invalid_json", rentalBillingTemplateInvalidJsonCount, "Error", "렌탈 청구 프로필의 청구품목 JSON을 읽을 수 없습니다.");
+
+        var rentalBillingTemplateMissingItemReferenceCount = (await LoadRentalBillingTemplateMissingItemReferenceRowsAsync(cancellationToken)).Count;
+        AddIssue(issues, "rental_billing_template_missing_item_refs", rentalBillingTemplateMissingItemReferenceCount, "Error", "렌탈 청구 프로필의 청구품목이 누락 또는 삭제된 품목을 참조합니다.");
+
         var rentalProfileMonthlyAmountMismatchCount = rentalTemplateScanRows.Count(row =>
             row.TemplateParseSucceeded &&
             row.TemplateItems.Count > 0 &&
@@ -462,6 +506,14 @@ public sealed class IntegrityController : ControllerBase
             : 0;
         AddIssue(issues, "customer_contract_missing_customer_rows", customerContractMissingCustomerRowCount, "Error", "부모 거래처 행이 없는 계약/첨부가 존재합니다.");
 
+        var activeCustomerDeletedContractRestoreCandidateCount = await LoadActiveCustomerDeletedContractRestoreCandidateDetailsAsync(cancellationToken);
+        AddIssue(
+            issues,
+            "active_customer_deleted_contract_restore_candidate",
+            activeCustomerDeletedContractRestoreCandidateCount.Count,
+            "Warning",
+            "활성 거래처에 과거 삭제 상태 계약서가 남아 있어 거래처 복구 누락 또는 개별 삭제 후보가 있습니다.");
+
         var rentalBillingLogMissingProfileRowCount = await _officeScopeService.ApplyRentalBillingLogScope(
                 _dbContext.RentalBillingLogs.IgnoreQueryFilters().AsNoTracking())
             .CountAsync(log => !_dbContext.RentalBillingProfiles.IgnoreQueryFilters().Any(profile => profile.Id == log.BillingProfileId), cancellationToken);
@@ -549,17 +601,22 @@ public sealed class IntegrityController : ControllerBase
             "deleted_item_stock_residue" => await LoadDeletedItemStockResidueDetailsAsync(cancellationToken),
             "cross_tenant_inventory_transfers" => await LoadCrossTenantInventoryTransferDetailsAsync(cancellationToken),
             "inventory_transfer_line_missing_transfer_rows" => await LoadInventoryTransferLineMissingTransferRowDetailsAsync(cancellationToken),
+            "active_inventory_transfer_line_missing_item_refs" => await LoadActiveInventoryTransferLineMissingItemDetailsAsync(cancellationToken),
             "orphan_item_warehouse_stock_refs" => await LoadOrphanItemWarehouseStockDetailsAsync(cancellationToken),
             "item_stock_snapshot_mismatch" => await LoadItemStockSnapshotMismatchDetailsAsync(cancellationToken),
             "orphan_invoice_customer_refs" => await LoadOrphanInvoiceCustomerDetailsAsync(cancellationToken),
             "active_invoice_lines_deleted_invoice" => await LoadActiveInvoiceLinesDeletedInvoiceDetailsAsync(cancellationToken),
+            "active_invoice_line_missing_item_refs" => await LoadActiveInvoiceLineMissingItemDetailsAsync(cancellationToken),
             "active_invoice_deleted_line_only" => await LoadActiveInvoiceDeletedLineOnlyDetailsAsync(cancellationToken),
             "invoice_total_active_line_mismatch" => await LoadInvoiceTotalActiveLineMismatchDetailsAsync(cancellationToken),
             "invoice_line_missing_invoice_rows" => await LoadInvoiceLineMissingInvoiceRowDetailsAsync(cancellationToken),
             "orphan_transaction_customer_refs" => await LoadOrphanTransactionCustomerDetailsAsync(cancellationToken),
+            "read_only_shared_customer_business_refs" => await LoadReadOnlySharedCustomerBusinessReferenceDetailsAsync(cancellationToken),
             "orphan_rental_profile_customer_refs" => await LoadOrphanRentalProfileCustomerDetailsAsync(cancellationToken),
             "rental_profile_customer_scope_mismatch" => await LoadRentalProfileCustomerScopeMismatchDetailsAsync(cancellationToken),
             "rental_profile_customer_unlinked" => await LoadRentalProfileCustomerUnlinkedDetailsAsync(cancellationToken),
+            "rental_billing_template_invalid_json" => await LoadRentalBillingTemplateInvalidJsonDetailsAsync(cancellationToken),
+            "rental_billing_template_missing_item_refs" => await LoadRentalBillingTemplateMissingItemReferenceDetailsAsync(cancellationToken),
             "rental_profile_monthly_amount_mismatch" => await LoadRentalProfileMonthlyAmountMismatchDetailsAsync(cancellationToken),
             "rental_profile_asset_monthly_amount_mismatch" => await LoadRentalProfileAssetMonthlyAmountMismatchDetailsAsync(cancellationToken),
             "rental_asset_template_monthly_mismatch" => await LoadRentalAssetTemplateMonthlyMismatchDetailsAsync(cancellationToken),
@@ -588,6 +645,7 @@ public sealed class IntegrityController : ControllerBase
             "unsupported_attachment_file_type" => await LoadUnsupportedAttachmentFileTypeDetailsAsync(cancellationToken),
             "attachment_content_signature_mismatch" => await LoadAttachmentContentSignatureMismatchDetailsAsync(cancellationToken),
             "customer_contract_missing_customer_rows" => await LoadCustomerContractMissingCustomerRowDetailsAsync(cancellationToken),
+            "active_customer_deleted_contract_restore_candidate" => await LoadActiveCustomerDeletedContractRestoreCandidateDetailsAsync(cancellationToken),
             "rental_billing_log_missing_profile_rows" => await LoadRentalBillingLogMissingProfileRowDetailsAsync(cancellationToken),
             "file_content_unavailable" => await LoadFileContentUnavailableDetailsAsync(cancellationToken),
             "file_content_db_residue" => await LoadFileContentDbResidueDetailsAsync(cancellationToken),
@@ -869,6 +927,43 @@ public sealed class IntegrityController : ControllerBase
                     line.QuantityDifference.HasValue ? $"차이 {FormatNumber(line.QuantityDifference.Value)}" : null,
                     string.IsNullOrWhiteSpace(line.Remark) ? null : $"비고 {line.Remark}",
                     string.IsNullOrWhiteSpace(line.ReceiptRemark) ? null : $"수령비고 {line.ReceiptRemark}")))
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadActiveInventoryTransferLineMissingItemDetailsAsync(CancellationToken cancellationToken)
+    {
+        var lines = await (
+                from line in _dbContext.InventoryTransferLines.IgnoreQueryFilters().AsNoTracking()
+                where !line.IsDeleted && line.ItemId.HasValue && line.ItemId.Value != Guid.Empty
+                join transfer in _officeScopeService.ApplyInventoryTransferScope(
+                        _dbContext.InventoryTransfers.IgnoreQueryFilters().AsNoTracking())
+                        .Where(transfer => !transfer.IsDeleted)
+                    on line.TransferId equals transfer.Id
+                join item in _dbContext.Items.IgnoreQueryFilters().AsNoTracking().Where(item => !item.IsDeleted)
+                    on line.ItemId!.Value equals item.Id into itemGroup
+                from item in itemGroup.DefaultIfEmpty()
+                where item == null
+                orderby transfer.TransferDate, transfer.TransferNumber, line.ItemNameOriginal, line.Id
+                select new
+                {
+                    Line = line,
+                    Transfer = transfer
+                })
+            .ToListAsync(cancellationToken);
+
+        return lines
+            .Select(row => CreateDetailRow(
+                entityType: "재고이동 라인",
+                entityIdText: FormatGuid(row.Line.Id),
+                primaryText: FirstNonEmpty(row.Line.ItemNameOriginal, FormatGuid(row.Line.Id)),
+                secondaryText: CombineParts(row.Line.SpecificationOriginal, row.Line.Unit, $"수량 {FormatNumber(row.Line.Quantity)}"),
+                referenceText: row.Line.ItemId.HasValue ? $"누락/삭제 품목 {FormatGuid(row.Line.ItemId.Value)}" : "품목 미연결",
+                scopeText: FormatScope(row.Transfer.TenantCode, row.Transfer.SourceOfficeCode, row.Transfer.TargetOfficeCode),
+                detailText: CombineParts(
+                    $"재고이동 {FirstNonEmpty(row.Transfer.TransferNumber, FormatGuid(row.Transfer.Id))}",
+                    $"이동일 {FormatDate(row.Transfer.TransferDate)}",
+                    $"창고 {NormalizeCellText(row.Transfer.FromWarehouseCode)} → {NormalizeCellText(row.Transfer.ToWarehouseCode)}",
+                    string.IsNullOrWhiteSpace(row.Transfer.TransferStatus) ? null : $"상태 {row.Transfer.TransferStatus}")))
             .ToList();
     }
 
@@ -1178,6 +1273,43 @@ public sealed class IntegrityController : ControllerBase
             .ToList();
     }
 
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadActiveInvoiceLineMissingItemDetailsAsync(CancellationToken cancellationToken)
+    {
+        var lines = await (
+                from line in _dbContext.InvoiceLines.IgnoreQueryFilters().AsNoTracking()
+                where !line.IsDeleted && line.ItemId.HasValue && line.ItemId.Value != Guid.Empty
+                join invoice in _officeScopeService.ApplyInvoiceScope(
+                        _dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
+                        .Where(invoice => !invoice.IsDeleted)
+                    on line.InvoiceId equals invoice.Id
+                join item in _dbContext.Items.IgnoreQueryFilters().AsNoTracking().Where(item => !item.IsDeleted)
+                    on line.ItemId!.Value equals item.Id into itemGroup
+                from item in itemGroup.DefaultIfEmpty()
+                where item == null
+                orderby invoice.InvoiceDate, invoice.InvoiceNumber, line.OrderIndex, line.ItemNameOriginal
+                select new
+                {
+                    Line = line,
+                    Invoice = invoice
+                })
+            .ToListAsync(cancellationToken);
+
+        return lines
+            .Select(row => CreateDetailRow(
+                entityType: "전표 라인",
+                entityIdText: FormatGuid(row.Line.Id),
+                primaryText: FirstNonEmpty(row.Line.ItemNameOriginal, FormatGuid(row.Line.Id)),
+                secondaryText: CombineParts(row.Line.SpecificationOriginal, row.Line.Unit, $"수량 {FormatNumber(row.Line.Quantity)}", $"금액 {FormatMoney(row.Line.LineAmount)}"),
+                referenceText: row.Line.ItemId.HasValue ? $"누락/삭제 품목 {FormatGuid(row.Line.ItemId.Value)}" : "품목 미연결",
+                scopeText: FormatScope(row.Invoice.TenantCode, row.Invoice.OfficeCode, row.Invoice.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    $"전표 {FirstNonEmpty(row.Invoice.InvoiceNumber, row.Invoice.LocalTempNumber, FormatGuid(row.Invoice.Id))}",
+                    $"전표일 {FormatDate(row.Invoice.InvoiceDate)}",
+                    $"전표유형 {row.Invoice.VoucherType}",
+                    row.Line.OrderIndex > 0 ? $"순번 {row.Line.OrderIndex:N0}" : null)))
+            .ToList();
+    }
+
     private async Task<List<IntegrityIssueDetailRowDto>> LoadActiveInvoiceDeletedLineOnlyDetailsAsync(CancellationToken cancellationToken)
     {
         var invoices = await (
@@ -1401,6 +1533,122 @@ public sealed class IntegrityController : ControllerBase
             .ToList();
     }
 
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadReadOnlySharedCustomerBusinessReferenceDetailsAsync(CancellationToken cancellationToken)
+    {
+        var readOnlyCustomerPolicies = _dbContext.DataSharingPolicies
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(policy =>
+                !policy.IsDeleted &&
+                policy.IsActive &&
+                policy.ShareCustomers &&
+                !policy.AllowTargetWrite);
+
+        var invoiceRows = await (
+                from invoice in _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
+                    .Where(current => !current.IsDeleted)
+                join customer in _dbContext.Customers.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
+                    on invoice.CustomerId equals customer.Id
+                join policy in readOnlyCustomerPolicies
+                    on new
+                    {
+                        SourceTenantCode = customer.TenantCode,
+                        SourceOfficeCode = customer.ResponsibleOfficeCode,
+                        TargetTenantCode = invoice.TenantCode,
+                        TargetOfficeCode = invoice.ResponsibleOfficeCode
+                    }
+                    equals new
+                    {
+                        policy.SourceTenantCode,
+                        policy.SourceOfficeCode,
+                        policy.TargetTenantCode,
+                        policy.TargetOfficeCode
+                    }
+                orderby invoice.InvoiceDate, invoice.InvoiceNumber, invoice.Id
+                select new ReadOnlySharedCustomerBusinessReferenceRow(
+                    "전표",
+                    invoice.Id,
+                    FirstNonEmpty(invoice.InvoiceNumber, invoice.LocalTempNumber, FormatGuid(invoice.Id)),
+                    CombineParts(FormatDate(invoice.InvoiceDate), $"전표유형 {invoice.VoucherType}", $"합계 {FormatMoney(invoice.TotalAmount)}"),
+                    invoice.TenantCode,
+                    invoice.OfficeCode,
+                    invoice.ResponsibleOfficeCode,
+                    customer.Id,
+                    customer.NameOriginal,
+                    customer.TenantCode,
+                    customer.OfficeCode,
+                    customer.ResponsibleOfficeCode,
+                    policy.Id,
+                    policy.SourceOfficeCode,
+                    policy.TargetOfficeCode))
+            .ToListAsync(cancellationToken);
+
+        var transactionRows = await (
+                from transaction in _officeScopeService.ApplyTransactionScope(_dbContext.Transactions.IgnoreQueryFilters().AsNoTracking())
+                    .Where(current => !current.IsDeleted)
+                join customer in _dbContext.Customers.IgnoreQueryFilters().AsNoTracking().Where(current => !current.IsDeleted)
+                    on transaction.CustomerId equals customer.Id
+                join policy in readOnlyCustomerPolicies
+                    on new
+                    {
+                        SourceTenantCode = customer.TenantCode,
+                        SourceOfficeCode = customer.ResponsibleOfficeCode,
+                        TargetTenantCode = transaction.TenantCode,
+                        TargetOfficeCode = transaction.ResponsibleOfficeCode
+                    }
+                    equals new
+                    {
+                        policy.SourceTenantCode,
+                        policy.SourceOfficeCode,
+                        policy.TargetTenantCode,
+                        policy.TargetOfficeCode
+                    }
+                orderby transaction.TransactionDate, transaction.Id
+                select new ReadOnlySharedCustomerBusinessReferenceRow(
+                    "거래내역",
+                    transaction.Id,
+                    CombineParts(transaction.TransactionKind, FormatDate(transaction.TransactionDate)),
+                    CombineParts(
+                        FirstNonEmpty(transaction.LinkedInvoiceNumber, transaction.Note, transaction.Memo),
+                        $"정산 {FormatMoney(transaction.SettlementAmount)}",
+                        $"수금 {FormatMoney(transaction.ReceiptTotal)}",
+                        $"지급 {FormatMoney(transaction.PaymentTotal)}"),
+                    transaction.TenantCode,
+                    transaction.OfficeCode,
+                    transaction.ResponsibleOfficeCode,
+                    customer.Id,
+                    customer.NameOriginal,
+                    customer.TenantCode,
+                    customer.OfficeCode,
+                    customer.ResponsibleOfficeCode,
+                    policy.Id,
+                    policy.SourceOfficeCode,
+                    policy.TargetOfficeCode))
+            .ToListAsync(cancellationToken);
+
+        return invoiceRows
+            .Concat(transactionRows)
+            .GroupBy(row => (row.EntityType, row.EntityId))
+            .Select(group => group.First())
+            .OrderBy(row => row.EntityType, StringComparer.Ordinal)
+            .ThenBy(row => row.PrimaryText, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.EntityId)
+            .Select(row => CreateDetailRow(
+                entityType: row.EntityType,
+                entityIdText: FormatGuid(row.EntityId),
+                primaryText: row.PrimaryText,
+                secondaryText: row.SecondaryText,
+                referenceText: $"읽기 전용 공유 거래처 {FirstNonEmpty(row.CustomerName, FormatGuid(row.CustomerId))}",
+                scopeText: CombineParts(
+                    $"문서 범위 {FormatScope(row.TenantCode, row.OfficeCode, row.ResponsibleOfficeCode)}",
+                    $"거래처 범위 {FormatScope(row.CustomerTenantCode, row.CustomerOfficeCode, row.CustomerResponsibleOfficeCode)}",
+                    $"공유정책 {row.SourceOfficeCode}->{row.TargetOfficeCode}"),
+                detailText: CombineParts(
+                    "읽기 전용 공유정책 기준 과거 저장 후보",
+                    $"정책ID {FormatGuid(row.PolicyId)}")))
+            .ToList();
+    }
+
     private async Task<List<IntegrityIssueDetailRowDto>> LoadOrphanRentalProfileCustomerDetailsAsync(CancellationToken cancellationToken)
     {
         var profiles = await (
@@ -1571,6 +1819,88 @@ public sealed class IntegrityController : ControllerBase
                     $"품목합계 {FormatMoney(row.TemplateMonthlyAmount)}",
                     $"차이 {FormatMoney(row.Profile.MonthlyAmount - row.TemplateMonthlyAmount)}")))
             .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalBillingTemplateInvalidJsonDetailsAsync(CancellationToken cancellationToken)
+    {
+        var profiles = await _officeScopeService.ApplyRentalBillingProfileScope(_dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking())
+            .Where(profile => !profile.IsDeleted && profile.IsActive && !string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
+            .OrderBy(profile => profile.CustomerName)
+            .ThenBy(profile => profile.ProfileKey)
+            .ThenBy(profile => profile.Id)
+            .ToListAsync(cancellationToken);
+
+        return profiles
+            .Where(profile => !ParseRawRentalBillingTemplateItems(profile).Success)
+            .Select(profile => CreateDetailRow(
+                entityType: "렌탈청구프로필",
+                entityIdText: FormatGuid(profile.Id),
+                primaryText: FirstNonEmpty(profile.CustomerName, profile.ProfileKey, FormatGuid(profile.Id)),
+                secondaryText: CombineParts(profile.ItemName, profile.InstallSiteName),
+                referenceText: "청구품목 JSON 파싱 실패",
+                scopeText: FormatScope(profile.TenantCode, profile.OfficeCode, profile.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    string.IsNullOrWhiteSpace(profile.ProfileKey) ? null : $"프로필키 {profile.ProfileKey}",
+                    $"JSON 길이 {profile.BillingTemplateJson.Length:N0}",
+                    "조치: 렌탈 청구 프로필을 열어 청구품목을 다시 저장하세요.")))
+            .ToList();
+    }
+
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalBillingTemplateMissingItemReferenceDetailsAsync(CancellationToken cancellationToken)
+    {
+        var rows = await LoadRentalBillingTemplateMissingItemReferenceRowsAsync(cancellationToken);
+        return rows
+            .OrderBy(row => row.Profile.CustomerName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.Profile.ProfileKey, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.TemplateItem.DisplayItemName, StringComparer.OrdinalIgnoreCase)
+            .Select(row => CreateDetailRow(
+                entityType: "렌탈청구품목",
+                entityIdText: FormatGuid(row.Profile.Id),
+                primaryText: FirstNonEmpty(row.Profile.CustomerName, row.Profile.ProfileKey, FormatGuid(row.Profile.Id)),
+                secondaryText: FirstNonEmpty(row.TemplateItem.DisplayItemName, row.Profile.ItemName, "청구 품목"),
+                referenceText: row.Reason,
+                scopeText: FormatScope(row.Profile.TenantCode, row.Profile.OfficeCode, row.Profile.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    row.TemplateItem.ItemId == Guid.Empty ? "ItemId 없음" : $"ItemId {FormatGuid(row.TemplateItem.ItemId)}",
+                    string.IsNullOrWhiteSpace(row.Profile.ProfileKey) ? null : $"프로필키 {row.Profile.ProfileKey}",
+                    "조치: 렌탈 청구 프로필의 표시품목을 활성 품목으로 다시 선택한 뒤 저장하십시오.")))
+            .ToList();
+    }
+
+    private async Task<List<RentalBillingTemplateMissingItemReferenceRow>> LoadRentalBillingTemplateMissingItemReferenceRowsAsync(CancellationToken cancellationToken)
+    {
+        var profiles = await _officeScopeService.ApplyRentalBillingProfileScope(_dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking())
+            .Where(profile => !profile.IsDeleted && profile.IsActive && !string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
+            .ToListAsync(cancellationToken);
+
+        var activeItemIds = (await _officeScopeService.ApplyItemScope(_dbContext.Items.IgnoreQueryFilters().AsNoTracking())
+                .Where(item => !item.IsDeleted)
+                .Select(item => item.Id)
+                .ToListAsync(cancellationToken))
+            .ToHashSet();
+
+        var rows = new List<RentalBillingTemplateMissingItemReferenceRow>();
+        foreach (var profile in profiles)
+        {
+            var parsed = ParseRawRentalBillingTemplateItems(profile);
+            if (!parsed.Success)
+                continue;
+
+            foreach (var item in parsed.Items)
+            {
+                if (item.ItemId == Guid.Empty)
+                {
+                    rows.Add(new RentalBillingTemplateMissingItemReferenceRow(profile, item, "청구품목 ItemId가 비어 있습니다."));
+                }
+                else if (!activeItemIds.Contains(item.ItemId))
+                {
+                    rows.Add(new RentalBillingTemplateMissingItemReferenceRow(profile, item, "청구품목이 누락 또는 삭제된 품목을 참조합니다."));
+                }
+            }
+        }
+
+        return rows;
     }
 
     private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalProfileAssetMonthlyAmountMismatchDetailsAsync(CancellationToken cancellationToken)
@@ -2998,6 +3328,57 @@ public sealed class IntegrityController : ControllerBase
             .ToList();
     }
 
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadActiveCustomerDeletedContractRestoreCandidateDetailsAsync(CancellationToken cancellationToken)
+    {
+        var contracts = await _officeScopeService
+            .ApplyCustomerContractScope(_dbContext.CustomerContracts
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Include(contract => contract.Customer))
+            .Where(contract =>
+                contract.IsDeleted &&
+                contract.Customer != null &&
+                !contract.Customer.IsDeleted &&
+                contract.UpdatedAtUtc < contract.Customer.UpdatedAtUtc)
+            .OrderBy(contract => contract.Customer!.NameOriginal)
+            .ThenBy(contract => contract.UpdatedAtUtc)
+            .ThenBy(contract => contract.Id)
+            .Select(contract => new
+            {
+                contract.Id,
+                contract.CustomerId,
+                contract.ContractType,
+                contract.FileName,
+                contract.Description,
+                contract.IsPrimary,
+                contract.UpdatedAtUtc,
+                contract.UploadedAtUtc,
+                CustomerName = contract.Customer == null ? string.Empty : contract.Customer.NameOriginal,
+                CustomerUpdatedAtUtc = contract.Customer == null ? DateTime.MinValue : contract.Customer.UpdatedAtUtc,
+                TenantCode = contract.Customer == null ? string.Empty : contract.Customer.TenantCode,
+                OfficeCode = contract.Customer == null ? string.Empty : contract.Customer.OfficeCode,
+                ResponsibleOfficeCode = contract.Customer == null ? string.Empty : contract.Customer.ResponsibleOfficeCode
+            })
+            .ToListAsync(cancellationToken);
+
+        return contracts
+            .Select(contract => CreateDetailRow(
+                entityType: "거래처계약서",
+                entityIdText: FormatGuid(contract.Id),
+                primaryText: FirstNonEmpty(contract.FileName, FormatGuid(contract.Id)),
+                secondaryText: CombineParts(contract.ContractType, contract.Description),
+                referenceText: $"활성 거래처 {FirstNonEmpty(contract.CustomerName, FormatGuid(contract.CustomerId))}",
+                scopeText: CombineParts(
+                    FormatScope(contract.TenantCode, contract.OfficeCode, contract.ResponsibleOfficeCode),
+                    $"계약서 삭제 {FormatUtcDateTime(contract.UpdatedAtUtc)}",
+                    $"거래처 갱신 {FormatUtcDateTime(contract.CustomerUpdatedAtUtc)}"),
+                detailText: CombineParts(
+                    "거래처 복구 누락 또는 개별 삭제 후보",
+                    contract.IsPrimary ? "대표 계약" : null,
+                    $"업로드 {FormatUtcDateTime(contract.UploadedAtUtc)}")))
+            .ToList();
+    }
+
     private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalBillingLogMissingProfileRowDetailsAsync(CancellationToken cancellationToken)
     {
         var logs = await (
@@ -3440,6 +3821,41 @@ public sealed class IntegrityController : ControllerBase
         }
     }
 
+    private static ParsedRentalBillingTemplateItems ParseRawRentalBillingTemplateItems(RentalBillingProfile profile)
+    {
+        if (string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
+            return new ParsedRentalBillingTemplateItems(true, []);
+
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<List<RentalBillingTemplateItemSnapshot>>(profile.BillingTemplateJson, RentalTemplateJsonOptions) ?? [];
+            return new ParsedRentalBillingTemplateItems(
+                true,
+                parsed
+                    .Where(item => item is not null)
+                    .Select(item => new RentalBillingTemplateItemSnapshot
+                    {
+                        ItemId = item.ItemId,
+                        DisplayItemName = item.DisplayItemName ?? string.Empty,
+                        BillingLineMode = item.BillingLineMode ?? string.Empty,
+                        Specification = item.Specification ?? string.Empty,
+                        Unit = item.Unit ?? string.Empty,
+                        MaterialNumber = item.MaterialNumber ?? string.Empty,
+                        RepresentativeAssetId = item.RepresentativeAssetId,
+                        Quantity = item.Quantity,
+                        UnitPrice = item.UnitPrice,
+                        Amount = item.Amount,
+                        Note = item.Note ?? string.Empty,
+                        IncludedAssetIds = item.IncludedAssetIds?.Where(id => id != Guid.Empty).Distinct().ToList() ?? []
+                    })
+                    .ToList());
+        }
+        catch
+        {
+            return new ParsedRentalBillingTemplateItems(false, []);
+        }
+    }
+
     private static ParsedRentalBillingTemplateItems ParseRentalBillingTemplateItems(RentalBillingProfile profile)
     {
         if (string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
@@ -3772,17 +4188,22 @@ public sealed class IntegrityController : ControllerBase
             "deleted_item_stock_residue" => new IntegrityIssueDefinition("deleted_item_stock_residue", "Error", "삭제된 품목에 현재재고 또는 창고 재고 행이 남아 있습니다."),
             "cross_tenant_inventory_transfers" => new IntegrityIssueDefinition("cross_tenant_inventory_transfers", "Error", "업체 간 직접 재고이동 문서가 존재합니다."),
             "inventory_transfer_line_missing_transfer_rows" => new IntegrityIssueDefinition("inventory_transfer_line_missing_transfer_rows", "Error", "부모 재고이동 문서가 없는 재고이동 세부내역이 존재합니다."),
+            "active_inventory_transfer_line_missing_item_refs" => new IntegrityIssueDefinition("active_inventory_transfer_line_missing_item_refs", "Error", "활성 재고이동 라인이 삭제되었거나 없는 품목을 참조합니다."),
             "orphan_item_warehouse_stock_refs" => new IntegrityIssueDefinition("orphan_item_warehouse_stock_refs", "Error", "품목이 없는 창고 재고 행이 존재합니다."),
             "item_stock_snapshot_mismatch" => new IntegrityIssueDefinition("item_stock_snapshot_mismatch", "Warning", "품목 현재재고와 창고 합계가 일치하지 않는 항목이 있습니다."),
             "orphan_invoice_customer_refs" => new IntegrityIssueDefinition("orphan_invoice_customer_refs", "Error", "거래처가 없는 전표 참조가 존재합니다."),
             "active_invoice_lines_deleted_invoice" => new IntegrityIssueDefinition("active_invoice_lines_deleted_invoice", "Error", "삭제된 전표에 활성 세부내역 행이 남아 있습니다."),
+            "active_invoice_line_missing_item_refs" => new IntegrityIssueDefinition("active_invoice_line_missing_item_refs", "Error", "활성 전표 라인이 삭제되었거나 없는 품목을 참조합니다."),
             "active_invoice_deleted_line_only" => new IntegrityIssueDefinition("active_invoice_deleted_line_only", "Warning", "활성 전표에 활성 세부내역이 없고 삭제된 세부내역만 남아 있습니다."),
             "invoice_total_active_line_mismatch" => new IntegrityIssueDefinition("invoice_total_active_line_mismatch", "Error", "활성 전표 금액 합계와 활성 세부내역 기준 계산값이 다릅니다."),
             "invoice_line_missing_invoice_rows" => new IntegrityIssueDefinition("invoice_line_missing_invoice_rows", "Error", "부모 전표 행이 없는 전표 세부내역이 존재합니다."),
             "orphan_transaction_customer_refs" => new IntegrityIssueDefinition("orphan_transaction_customer_refs", "Error", "거래처가 없는 수금/지불 참조가 존재합니다."),
+            "read_only_shared_customer_business_refs" => new IntegrityIssueDefinition("read_only_shared_customer_business_refs", "Warning", "읽기 전용 공유 거래처에 전표 또는 거래내역이 연결된 과거 저장 후보가 있습니다."),
             "orphan_rental_profile_customer_refs" => new IntegrityIssueDefinition("orphan_rental_profile_customer_refs", "Error", "거래처가 없는 렌탈 청구 프로필 참조가 존재합니다."),
             "rental_profile_customer_scope_mismatch" => new IntegrityIssueDefinition("rental_profile_customer_scope_mismatch", "Error", "렌탈 청구 프로필이 다른 업체/담당지점 거래처를 참조합니다."),
             "rental_profile_customer_unlinked" => new IntegrityIssueDefinition("rental_profile_customer_unlinked", "Warning", "거래처 ID 없이 거래처명만 저장된 렌탈 청구 프로필이 있습니다."),
+            "rental_billing_template_invalid_json" => new IntegrityIssueDefinition("rental_billing_template_invalid_json", "Error", "렌탈 청구 프로필의 청구품목 JSON을 읽을 수 없습니다."),
+            "rental_billing_template_missing_item_refs" => new IntegrityIssueDefinition("rental_billing_template_missing_item_refs", "Error", "렌탈 청구 프로필의 청구품목이 누락 또는 삭제된 품목을 참조합니다."),
             "rental_profile_monthly_amount_mismatch" => new IntegrityIssueDefinition("rental_profile_monthly_amount_mismatch", "Warning", "렌탈 청구 프로필 월 기준금액과 청구 품목 합계가 다릅니다."),
             "rental_profile_asset_monthly_amount_mismatch" => new IntegrityIssueDefinition("rental_profile_asset_monthly_amount_mismatch", "Warning", "렌탈 청구 프로필 월 기준금액과 연결 자산 월요금 합계가 다릅니다."),
             "rental_asset_template_monthly_mismatch" => new IntegrityIssueDefinition("rental_asset_template_monthly_mismatch", "Warning", "렌탈 자산 월요금 합계와 청구 품목 금액이 다릅니다."),
@@ -3811,6 +4232,7 @@ public sealed class IntegrityController : ControllerBase
             "unsupported_attachment_file_type" => new IntegrityIssueDefinition("unsupported_attachment_file_type", "Warning", "PDF/이미지 정책과 맞지 않는 거래/결제 증빙 첨부가 있습니다."),
             "attachment_content_signature_mismatch" => new IntegrityIssueDefinition("attachment_content_signature_mismatch", "Warning", "파일명/MIME과 실제 저장 파일 내용이 일치하지 않는 거래/결제 증빙 첨부가 있습니다."),
             "customer_contract_missing_customer_rows" => new IntegrityIssueDefinition("customer_contract_missing_customer_rows", "Error", "부모 거래처 행이 없는 계약/첨부가 존재합니다."),
+            "active_customer_deleted_contract_restore_candidate" => new IntegrityIssueDefinition("active_customer_deleted_contract_restore_candidate", "Warning", "활성 거래처에 과거 삭제 상태 계약서가 남아 있어 거래처 복구 누락 또는 개별 삭제 후보가 있습니다."),
             "rental_billing_log_missing_profile_rows" => new IntegrityIssueDefinition("rental_billing_log_missing_profile_rows", "Error", "부모 청구 프로필 행이 없는 렌탈 청구 로그가 존재합니다."),
             "file_content_unavailable" => new IntegrityIssueDefinition("file_content_unavailable", "Error", "파일 크기는 있으나 저장소 경로와 DB 파일 본문이 모두 비어 있는 첨부/계약서가 있습니다."),
             "file_content_db_residue" => new IntegrityIssueDefinition("file_content_db_residue", "Warning", "파일 본문이 DB에 남아 저장소 이동이 완료되지 않은 첨부/계약서가 있습니다."),
@@ -4392,6 +4814,11 @@ public sealed class IntegrityController : ControllerBase
         decimal TemplateMonthlyAmount,
         decimal AssetMonthlyAmount);
 
+    private sealed record RentalBillingTemplateMissingItemReferenceRow(
+        RentalBillingProfile Profile,
+        RentalBillingTemplateItemSnapshot TemplateItem,
+        string Reason);
+
     private sealed record InvoiceLinkedTransactionPaymentMismatchRow(
         Guid TransactionId,
         Guid InvoiceId,
@@ -4410,6 +4837,23 @@ public sealed class IntegrityController : ControllerBase
         Guid? PaymentInvoiceId,
         decimal? PaymentAmount,
         bool? PaymentIsDeleted);
+
+    private sealed record ReadOnlySharedCustomerBusinessReferenceRow(
+        string EntityType,
+        Guid EntityId,
+        string PrimaryText,
+        string SecondaryText,
+        string TenantCode,
+        string OfficeCode,
+        string ResponsibleOfficeCode,
+        Guid CustomerId,
+        string CustomerName,
+        string CustomerTenantCode,
+        string CustomerOfficeCode,
+        string CustomerResponsibleOfficeCode,
+        Guid PolicyId,
+        string SourceOfficeCode,
+        string TargetOfficeCode);
 
     private sealed record RentalBillingRunSettlementMismatchRow(
         Guid ProfileId,
@@ -4497,7 +4941,7 @@ public sealed class IntegrityController : ControllerBase
 
     private sealed class RentalBillingTemplateItemSnapshot
     {
-        public Guid ItemId { get; set; } = Guid.NewGuid();
+        public Guid ItemId { get; set; }
         public string DisplayItemName { get; set; } = string.Empty;
         public string BillingLineMode { get; set; } = string.Empty;
         public string Specification { get; set; } = string.Empty;

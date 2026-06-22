@@ -144,6 +144,83 @@ public sealed class CompanyProfileRevisionRegressionTests
         }
     }
 
+    [Fact]
+    public async Task LocalStateService_GetCompanyProfile_IgnoresAssignedProfileFromDifferentOffice()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-company-profile-office-scope-{Guid.NewGuid():N}");
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var usenetProfileId = Guid.NewGuid();
+            var yeonsuProfileId = Guid.NewGuid();
+            db.CompanyProfiles.AddRange(
+                new LocalCompanyProfile
+                {
+                    Id = usenetProfileId,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileName = "USENET 기본",
+                    TradeName = "유즈넷",
+                    BankAccountText = "USENET-ACCOUNT",
+                    IsActive = true,
+                    IsDefaultForOffice = true,
+                    IsDeleted = false
+                },
+                new LocalCompanyProfile
+                {
+                    Id = yeonsuProfileId,
+                    OfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ProfileName = "YEONSU 기본",
+                    TradeName = "연수",
+                    BankAccountText = "YEONSU-ACCOUNT",
+                    IsActive = true,
+                    IsDefaultForOffice = true,
+                    IsDeleted = false
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeUserSession(
+                username: "yeonsu-user",
+                officeCode: OfficeCodeCatalog.Yeonsu);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            await service.SetAssignedCompanyProfileAsync("yeonsu-user", usenetProfileId);
+
+            var profileFromSession = await service.GetCompanyProfileAsync(session);
+            var profileFromExplicitOffice = await service.GetCompanyProfileAsync("yeonsu-user", OfficeCodeCatalog.Yeonsu);
+
+            Assert.NotNull(profileFromSession);
+            Assert.NotNull(profileFromExplicitOffice);
+            Assert.Equal(yeonsuProfileId, profileFromSession!.Id);
+            Assert.Equal(yeonsuProfileId, profileFromExplicitOffice!.Id);
+            Assert.Equal("YEONSU-ACCOUNT", profileFromSession.BankAccountText);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public void EnvironmentSettingsViewModel_FiltersAndValidatesCompanyProfilesByOffice()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "ViewModels",
+            "EnvironmentSettingsViewModel.cs"));
+
+        Assert.Contains("IsCompanyProfileVisibleToCurrentSession(profile)", source, StringComparison.Ordinal);
+        Assert.Contains("TryResolveCompanyProfileForOffice(CurrentUserCompanyProfileId, _session.OfficeCode", source, StringComparison.Ordinal);
+        Assert.Contains("TryResolveCompanyProfileForOffice(EditingUserCompanyProfileId, EditingUserOfficeCode", source, StringComparison.Ordinal);
+        Assert.Contains("TryResolveCompanyProfileForOffice(assignedIdText, officeCode", source, StringComparison.Ordinal);
+    }
+
     private static SessionState CreateAdminSession()
     {
         var session = new SessionState();
@@ -156,6 +233,34 @@ public sealed class CompanyProfileRevisionRegressionTests
             ScopeType = TenantScopeCatalog.ScopeAdmin
         });
         return session;
+    }
+
+    private static SessionState CreateOfficeUserSession(string username, string officeCode)
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            Username = username,
+            Role = DomainConstants.RoleUser,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, officeCode),
+            OfficeCode = officeCode,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        });
+        return session;
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "거래플랜.sln")))
+                return directory.FullName;
+
+            directory = directory.Parent;
+        }
+
+        throw new DirectoryNotFoundException("거래플랜.sln을 찾을 수 없습니다.");
     }
 
     private static async Task InvokePrivateInstanceTaskAsync(object target, string methodName, params object?[]? args)
