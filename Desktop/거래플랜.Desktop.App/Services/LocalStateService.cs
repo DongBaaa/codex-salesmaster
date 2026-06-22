@@ -6398,13 +6398,15 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return query;
 		}
 		HashSet<string> readableOfficeCodes = GetReadableOfficeCodes(session);
+		string currentTenantCode = ResolveCurrentTenantCode(session);
 		List<Guid> temporaryCustomerIds = _officeAccess.GetTemporaryCustomerAccessIds(session).ToList();
 		return query.Where((LocalInvoice invoice) =>
-			invoice.ResponsibleOfficeCode == "ALL" ||
-			readableOfficeCodes.Contains(invoice.ResponsibleOfficeCode) ||
-			((invoice.ResponsibleOfficeCode == null || invoice.ResponsibleOfficeCode == string.Empty) &&
-			 readableOfficeCodes.Contains(invoice.OfficeCode)) ||
-			temporaryCustomerIds.Contains(invoice.CustomerId));
+			invoice.TenantCode == currentTenantCode &&
+			(invoice.ResponsibleOfficeCode == "ALL" ||
+			 readableOfficeCodes.Contains(invoice.ResponsibleOfficeCode) ||
+			 ((invoice.ResponsibleOfficeCode == null || invoice.ResponsibleOfficeCode == string.Empty) &&
+			  readableOfficeCodes.Contains(invoice.OfficeCode)) ||
+			 temporaryCustomerIds.Contains(invoice.CustomerId)));
 	}
 
 	private IQueryable<LocalTransaction> ApplyTransactionScope(IQueryable<LocalTransaction> query, SessionState session)
@@ -6414,13 +6416,15 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return query;
 		}
 		HashSet<string> readableOfficeCodes = GetReadableOfficeCodes(session);
+		string currentTenantCode = ResolveCurrentTenantCode(session);
 		List<Guid> temporaryCustomerIds = _officeAccess.GetTemporaryCustomerAccessIds(session).ToList();
 		return query.Where((LocalTransaction transaction) =>
-			transaction.ResponsibleOfficeCode == "ALL" ||
-			readableOfficeCodes.Contains(transaction.ResponsibleOfficeCode) ||
-			((transaction.ResponsibleOfficeCode == null || transaction.ResponsibleOfficeCode == string.Empty) &&
-			 readableOfficeCodes.Contains(transaction.OfficeCode)) ||
-			temporaryCustomerIds.Contains(transaction.CustomerId));
+			transaction.TenantCode == currentTenantCode &&
+			(transaction.ResponsibleOfficeCode == "ALL" ||
+			 readableOfficeCodes.Contains(transaction.ResponsibleOfficeCode) ||
+			 ((transaction.ResponsibleOfficeCode == null || transaction.ResponsibleOfficeCode == string.Empty) &&
+			  readableOfficeCodes.Contains(transaction.OfficeCode)) ||
+			 temporaryCustomerIds.Contains(transaction.CustomerId)));
 	}
 
 	public bool CanWriteItemScope(LocalItem item, SessionState? session)
