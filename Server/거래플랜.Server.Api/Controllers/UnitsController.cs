@@ -26,7 +26,19 @@ public sealed class UnitsController : ControllerBase
     [Authorize(Policy = PermissionNames.SettingsEdit)]
     public async Task<ActionResult<UnitDto>> Create([FromBody] UnitDto dto, CancellationToken cancellationToken)
     {
+        var normalizedName = UnitCatalogNormalizer.Normalize(dto.Name);
+        if (string.IsNullOrWhiteSpace(normalizedName))
+            return BadRequest(new { error = "unit_name_required", message = "단위명은 필수입니다." });
+
         var entity = new Unit { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
+        if (!dto.IsDeleted &&
+            dto.IsActive &&
+            await HasActiveDuplicateNameAsync(normalizedName, entity.Id, cancellationToken))
+        {
+            return Conflict(new { error = "unit_name_duplicate", message = "같은 단위명이 이미 존재합니다." });
+        }
+
+        dto.Name = normalizedName;
         entity.Apply(dto);
         _dbContext.Units.Add(entity);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -41,6 +53,17 @@ public sealed class UnitsController : ControllerBase
         if (entity is null) return NotFound();
         if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Unit)) is { } conflict)
             return conflict;
+        var normalizedName = UnitCatalogNormalizer.Normalize(dto.Name);
+        if (string.IsNullOrWhiteSpace(normalizedName))
+            return BadRequest(new { error = "unit_name_required", message = "단위명은 필수입니다." });
+        if (!dto.IsDeleted &&
+            dto.IsActive &&
+            await HasActiveDuplicateNameAsync(normalizedName, id, cancellationToken))
+        {
+            return Conflict(new { error = "unit_name_duplicate", message = "같은 단위명이 이미 존재합니다." });
+        }
+
+        dto.Name = normalizedName;
         entity.Apply(dto);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(entity.ToDto());
@@ -57,5 +80,24 @@ public sealed class UnitsController : ControllerBase
         entity.IsDeleted = true;
         await _dbContext.SaveChangesAsync(cancellationToken);
         return NoContent();
+    }
+
+    private async Task<bool> HasActiveDuplicateNameAsync(
+        string normalizedName,
+        Guid excludeId,
+        CancellationToken cancellationToken)
+    {
+        var candidates = await _dbContext.Units
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(unit => unit.Id != excludeId && !unit.IsDeleted && unit.IsActive)
+            .Select(unit => unit.Name)
+            .ToListAsync(cancellationToken);
+
+        return candidates.Any(name =>
+            string.Equals(
+                UnitCatalogNormalizer.Normalize(name),
+                normalizedName,
+                StringComparison.Ordinal));
     }
 }
