@@ -102,21 +102,96 @@ public sealed class SyncOutboxPendingStateTests
         }
     }
 
+    [Fact]
+    public async Task SyncOutboxDiagnosticsOperations_AreLimitedToCurrentSessionScope()
+    {
+        PrepareAppRoot("georaeplan-outbox-session-scope-guard");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var usenetSession = CreateOfficeSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), usenetSession);
+            var usenetFailedId = Guid.NewGuid();
+            var itworldFailedId = Guid.NewGuid();
+            var usenetAcknowledgedId = Guid.NewGuid();
+            var itworldAcknowledgedId = Guid.NewGuid();
+            db.SyncOutboxEntries.AddRange(
+                CreateOutboxEntry(
+                    "Failed",
+                    entryId: usenetFailedId,
+                    tenantCode: TenantScopeCatalog.UsenetGroup,
+                    officeCode: OfficeCodeCatalog.Usenet,
+                    responsibleOfficeCode: OfficeCodeCatalog.Usenet),
+                CreateOutboxEntry(
+                    "Failed",
+                    entryId: itworldFailedId,
+                    tenantCode: TenantScopeCatalog.Itworld,
+                    officeCode: OfficeCodeCatalog.Itworld,
+                    responsibleOfficeCode: OfficeCodeCatalog.Itworld),
+                CreateOutboxEntry(
+                    "Acknowledged",
+                    entryId: usenetAcknowledgedId,
+                    tenantCode: TenantScopeCatalog.UsenetGroup,
+                    officeCode: OfficeCodeCatalog.Usenet,
+                    responsibleOfficeCode: OfficeCodeCatalog.Usenet),
+                CreateOutboxEntry(
+                    "Acknowledged",
+                    entryId: itworldAcknowledgedId,
+                    tenantCode: TenantScopeCatalog.Itworld,
+                    officeCode: OfficeCodeCatalog.Itworld,
+                    responsibleOfficeCode: OfficeCodeCatalog.Itworld));
+            await db.SaveChangesAsync();
+
+            var scopedEntries = await local.GetSyncOutboxEntriesAsync(usenetSession, 20);
+            Assert.Equal(2, scopedEntries.Count);
+            Assert.All(scopedEntries, entry => Assert.Equal(OfficeCodeCatalog.Usenet, entry.ResponsibleOfficeCode));
+
+            var scopedSummary = await local.GetSyncOutboxSummaryAsync(usenetSession);
+            Assert.Equal(2, scopedSummary.TotalCount);
+            Assert.Equal(1, scopedSummary.FailedCount);
+            Assert.Equal(1, scopedSummary.AcknowledgedCount);
+
+            Assert.Equal(0, await local.ResetSyncOutboxEntriesForRetryAsync([itworldFailedId], usenetSession));
+            Assert.Equal("Failed", await ReadOutboxStatusAsync(db, itworldFailedId));
+
+            Assert.Equal(1, await local.ResetAllPendingSyncOutboxEntriesForRetryAsync(usenetSession));
+            Assert.Equal("Prepared", await ReadOutboxStatusAsync(db, usenetFailedId));
+            Assert.Equal("Failed", await ReadOutboxStatusAsync(db, itworldFailedId));
+
+            Assert.Equal(1, await local.ClearAcknowledgedSyncOutboxEntriesAsync(usenetSession));
+            Assert.False(await db.SyncOutboxEntries.AsNoTracking().AnyAsync(entry => entry.Id == usenetAcknowledgedId));
+            Assert.True(await db.SyncOutboxEntries.AsNoTracking().AnyAsync(entry => entry.Id == itworldAcknowledgedId));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static LocalSyncOutboxEntry CreateOutboxEntry(
         string status,
         string entityName = nameof(LocalCustomer),
-        Guid? entityId = null)
+        Guid? entityId = null,
+        Guid? entryId = null,
+        string tenantCode = TenantScopeCatalog.UsenetGroup,
+        string officeCode = OfficeCodeCatalog.Usenet,
+        string responsibleOfficeCode = OfficeCodeCatalog.Usenet)
         => new()
         {
-            Id = Guid.NewGuid(),
+            Id = entryId ?? Guid.NewGuid(),
             MutationId = $"test-device:{entityName}:{(entityId ?? Guid.NewGuid()):N}:1:{DateTime.UtcNow.Ticks}:0",
             DeviceId = "test-device",
             EntityName = entityName,
             EntityId = entityId ?? Guid.NewGuid(),
             ExpectedRevision = 1,
-            TenantCode = TenantScopeCatalog.UsenetGroup,
-            OfficeCode = OfficeCodeCatalog.Usenet,
-            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TenantCode = tenantCode,
+            OfficeCode = officeCode,
+            ResponsibleOfficeCode = responsibleOfficeCode,
             Status = status,
             PreparedAtUtc = DateTime.UtcNow.AddMinutes(-1),
             SentAtUtc = DateTime.UtcNow
@@ -125,6 +200,13 @@ public sealed class SyncOutboxPendingStateTests
     private static Task<string> ReadOutboxStatusAsync(LocalDbContext db)
         => db.SyncOutboxEntries
             .AsNoTracking()
+            .Select(entry => entry.Status)
+            .SingleAsync();
+
+    private static Task<string> ReadOutboxStatusAsync(LocalDbContext db, Guid entryId)
+        => db.SyncOutboxEntries
+            .AsNoTracking()
+            .Where(entry => entry.Id == entryId)
             .Select(entry => entry.Status)
             .SingleAsync();
 
@@ -160,6 +242,21 @@ public sealed class SyncOutboxPendingStateTests
                 ScopeType = TenantScopeCatalog.ScopeAdmin
             },
             DateTime.UtcNow.AddDays(1));
+        return session;
+    }
+
+    private static SessionState CreateOfficeSession(string tenantCode, string officeCode)
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            UserId = Guid.NewGuid(),
+            Username = $"{officeCode.ToLowerInvariant()}-user",
+            Role = DomainConstants.RoleUser,
+            TenantCode = tenantCode,
+            OfficeCode = officeCode,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        });
         return session;
     }
 

@@ -50,8 +50,8 @@ public sealed partial class SyncDiagnosticsViewModel
     {
         try
         {
-            var entriesTask = _local.GetSyncOutboxEntriesAsync(160, ct);
-            var summaryTask = _local.GetSyncOutboxSummaryAsync(ct);
+            var entriesTask = _local.GetSyncOutboxEntriesAsync(_session, 160, ct);
+            var summaryTask = _local.GetSyncOutboxSummaryAsync(_session, ct);
             await Task.WhenAll(entriesTask, summaryTask);
 
             var entries = await entriesTask;
@@ -345,7 +345,7 @@ public sealed partial class SyncDiagnosticsViewModel
         IsBusy = true;
         try
         {
-            var resetCount = await _local.ResetSyncOutboxEntriesForRetryAsync([SelectedOutboxEntry.Id]);
+            var resetCount = await _local.ResetSyncOutboxEntriesForRetryAsync([SelectedOutboxEntry.Id], _session);
             if (resetCount == 0)
             {
                 SummaryStatusText = "재시도할 sync outbox 항목이 없습니다.";
@@ -374,7 +374,7 @@ public sealed partial class SyncDiagnosticsViewModel
         IsBusy = true;
         try
         {
-            var resetCount = await _local.ResetAllPendingSyncOutboxEntriesForRetryAsync();
+            var resetCount = await _local.ResetAllPendingSyncOutboxEntriesForRetryAsync(_session);
             if (resetCount == 0)
             {
                 SummaryStatusText = "재시도할 sync outbox 항목이 없습니다.";
@@ -412,7 +412,7 @@ public sealed partial class SyncDiagnosticsViewModel
         IsBusy = true;
         try
         {
-            var clearedCount = await _local.ClearAcknowledgedSyncOutboxEntriesAsync();
+            var clearedCount = await _local.ClearAcknowledgedSyncOutboxEntriesAsync(_session);
             await RefreshOutboxAsync();
             SummaryStatusText = clearedCount == 0
                 ? "정리할 완료 outbox 기록이 없습니다."

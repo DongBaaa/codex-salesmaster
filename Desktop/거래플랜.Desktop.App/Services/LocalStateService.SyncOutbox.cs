@@ -21,6 +21,29 @@ public sealed partial class LocalStateService
             .ToList();
     }
 
+    public async Task<IReadOnlyList<SyncOutboxListItem>> GetSyncOutboxEntriesAsync(
+        SessionState session,
+        int take = 200,
+        CancellationToken ct = default)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return await GetSyncOutboxEntriesAsync(take, ct);
+
+        var normalizedTake = Math.Clamp(take, 20, 500);
+        var rows = await _db.SyncOutboxEntries
+            .AsNoTracking()
+            .OrderByDescending(entry => entry.PreparedAtUtc)
+            .ToListAsync(ct);
+
+        return rows
+            .Where(entry => CanCurrentSessionAccessOutboxEntry(entry, session))
+            .OrderBy(entry => GetOutboxStatusWeight(entry.Status))
+            .ThenByDescending(entry => entry.PreparedAtUtc)
+            .Take(normalizedTake)
+            .Select(ToSyncOutboxListItem)
+            .ToList();
+    }
+
     public async Task<SyncOutboxSummary> GetSyncOutboxSummaryAsync(CancellationToken ct = default)
     {
         var totalCount = await _db.SyncOutboxEntries.AsNoTracking().CountAsync(ct);
@@ -36,6 +59,24 @@ public sealed partial class LocalStateService
         return new SyncOutboxSummary(totalCount, pendingCount, failedCount, acknowledgedCount);
     }
 
+    public async Task<SyncOutboxSummary> GetSyncOutboxSummaryAsync(SessionState session, CancellationToken ct = default)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return await GetSyncOutboxSummaryAsync(ct);
+
+        var rows = (await _db.SyncOutboxEntries
+                .AsNoTracking()
+                .ToListAsync(ct))
+            .Where(entry => CanCurrentSessionAccessOutboxEntry(entry, session))
+            .ToList();
+
+        return new SyncOutboxSummary(
+            rows.Count,
+            rows.Count(entry => entry.Status != "Acknowledged" && entry.Status != "Failed"),
+            rows.Count(entry => entry.Status == "Failed"),
+            rows.Count(entry => entry.Status == "Acknowledged"));
+    }
+
     public async Task<int> ResetSyncOutboxEntriesForRetryAsync(IEnumerable<Guid> entryIds, CancellationToken ct = default)
     {
         var ids = entryIds
@@ -48,6 +89,41 @@ public sealed partial class LocalStateService
         var rows = await _db.SyncOutboxEntries
             .Where(entry => ids.Contains(entry.Id) && entry.Status != "Acknowledged")
             .ToListAsync(ct);
+        foreach (var row in rows)
+        {
+            row.Status = "Prepared";
+            row.ErrorMessage = string.Empty;
+            row.SentAtUtc = null;
+            row.AcknowledgedAtUtc = null;
+        }
+
+        if (rows.Count == 0)
+            return 0;
+
+        await _db.SaveChangesAsync(ct);
+        return rows.Count;
+    }
+
+    public async Task<int> ResetSyncOutboxEntriesForRetryAsync(
+        IEnumerable<Guid> entryIds,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return await ResetSyncOutboxEntriesForRetryAsync(entryIds, ct);
+
+        var ids = entryIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return 0;
+
+        var rows = (await _db.SyncOutboxEntries
+                .Where(entry => ids.Contains(entry.Id) && entry.Status != "Acknowledged")
+                .ToListAsync(ct))
+            .Where(entry => CanCurrentSessionAccessOutboxEntry(entry, session))
+            .ToList();
         foreach (var row in rows)
         {
             row.Status = "Prepared";
@@ -83,11 +159,58 @@ public sealed partial class LocalStateService
         return rows.Count;
     }
 
+    public async Task<int> ResetAllPendingSyncOutboxEntriesForRetryAsync(
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return await ResetAllPendingSyncOutboxEntriesForRetryAsync(ct);
+
+        var rows = (await _db.SyncOutboxEntries
+                .Where(entry => entry.Status != "Acknowledged")
+                .ToListAsync(ct))
+            .Where(entry => CanCurrentSessionAccessOutboxEntry(entry, session))
+            .ToList();
+        foreach (var row in rows)
+        {
+            row.Status = "Prepared";
+            row.ErrorMessage = string.Empty;
+            row.SentAtUtc = null;
+            row.AcknowledgedAtUtc = null;
+        }
+
+        if (rows.Count == 0)
+            return 0;
+
+        await _db.SaveChangesAsync(ct);
+        return rows.Count;
+    }
+
     public async Task<int> ClearAcknowledgedSyncOutboxEntriesAsync(CancellationToken ct = default)
     {
         var rows = await _db.SyncOutboxEntries
             .Where(entry => entry.Status == "Acknowledged")
             .ToListAsync(ct);
+        if (rows.Count == 0)
+            return 0;
+
+        _db.SyncOutboxEntries.RemoveRange(rows);
+        await _db.SaveChangesAsync(ct);
+        return rows.Count;
+    }
+
+    public async Task<int> ClearAcknowledgedSyncOutboxEntriesAsync(
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return await ClearAcknowledgedSyncOutboxEntriesAsync(ct);
+
+        var rows = (await _db.SyncOutboxEntries
+                .Where(entry => entry.Status == "Acknowledged")
+                .ToListAsync(ct))
+            .Where(entry => CanCurrentSessionAccessOutboxEntry(entry, session))
+            .ToList();
         if (rows.Count == 0)
             return 0;
 
@@ -149,6 +272,21 @@ public sealed partial class LocalStateService
             : string.Equals(status, "Sent", StringComparison.OrdinalIgnoreCase) ? 2
             : string.Equals(status, "Acknowledged", StringComparison.OrdinalIgnoreCase) ? 3
             : 4;
+
+    private static bool CanCurrentSessionAccessOutboxEntry(LocalSyncOutboxEntry entry, SessionState session)
+    {
+        var scope = ResolveScope(
+            string.IsNullOrWhiteSpace(entry.ResponsibleOfficeCode)
+                ? entry.OfficeCode
+                : entry.ResponsibleOfficeCode,
+            entry.TenantCode);
+        var bucket = new PendingSyncBucket(
+            scope.ScopeKey,
+            scope.ScopeDisplayName,
+            "동기화 전송 확인",
+            1);
+        return IsCurrentSessionPendingBucket(bucket, session);
+    }
 
     private static string NormalizeOutboxErrorMessage(string? value)
     {
