@@ -289,12 +289,58 @@ public sealed class SyncController : ControllerBase
     private bool HasPermission(string permission)
         => _currentUserContext.HasPermission(permission);
 
+    private static void NormalizePushRequest(SyncPushRequest request)
+    {
+        request.CompanyProfiles = RemoveNullEntries(request.CompanyProfiles);
+        request.Units = RemoveNullEntries(request.Units);
+        request.CustomerCategories = RemoveNullEntries(request.CustomerCategories);
+        request.PriceGradeOptions = RemoveNullEntries(request.PriceGradeOptions);
+        request.TradeTypeOptions = RemoveNullEntries(request.TradeTypeOptions);
+        request.ItemCategoryOptions = RemoveNullEntries(request.ItemCategoryOptions);
+        request.CustomerMasters = RemoveNullEntries(request.CustomerMasters);
+        request.Customers = RemoveNullEntries(request.Customers);
+        request.CustomerContracts = RemoveNullEntries(request.CustomerContracts);
+        request.Items = RemoveNullEntries(request.Items);
+        request.ItemWarehouseStocks = RemoveNullEntries(request.ItemWarehouseStocks);
+        request.Transactions = RemoveNullEntries(request.Transactions);
+        request.TransactionAttachments = RemoveNullEntries(request.TransactionAttachments);
+        request.InventoryTransfers = RemoveNullEntries(request.InventoryTransfers);
+        request.RentalManagementCompanies = RemoveNullEntries(request.RentalManagementCompanies);
+        request.RentalBillingProfiles = RemoveNullEntries(request.RentalBillingProfiles);
+        request.RentalAssets = RemoveNullEntries(request.RentalAssets);
+        request.RentalAssetAssignmentHistories = RemoveNullEntries(request.RentalAssetAssignmentHistories);
+        request.RentalBillingLogs = RemoveNullEntries(request.RentalBillingLogs);
+        request.Invoices = RemoveNullEntries(request.Invoices);
+        request.Payments = RemoveNullEntries(request.Payments);
+
+        foreach (var invoice in request.Invoices)
+        {
+            invoice.Lines = RemoveNullEntries(invoice.Lines);
+            invoice.Payments = RemoveNullEntries(invoice.Payments);
+        }
+
+        foreach (var transfer in request.InventoryTransfers)
+            transfer.Lines = RemoveNullEntries(transfer.Lines);
+    }
+
+    private static List<T> RemoveNullEntries<T>(List<T>? payload)
+        where T : class
+    {
+        if (payload is null)
+            return [];
+
+        payload.RemoveAll(static dto => dto is null);
+        return payload;
+    }
+
     [HttpPost("push")]
     [ProducesResponseType(typeof(SyncPushResult), StatusCodes.Status200OK)]
     public async Task<ActionResult<SyncPushResult>> Push([FromBody] SyncPushRequest request, CancellationToken cancellationToken)
     {
         if (request is null)
             return BadRequest("동기화 요청 본문이 비어 있습니다.");
+
+        NormalizePushRequest(request);
 
         var result = new SyncPushResult();
         var deviceId = NormalizeDeviceId(request.DeviceId);

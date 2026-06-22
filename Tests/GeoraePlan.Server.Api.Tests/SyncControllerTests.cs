@@ -81,6 +81,81 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_IgnoresNullPayloadEntries_WithoutFailingOrBlockingValidRows()
+    {
+        var customerId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-NULL-PAYLOAD-CUSTOMER",
+            NameMatchKey = "SYNCNULLPAYLOADCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var invoiceId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-null-payload-entries",
+            CompanyProfiles = [null!],
+            Units = [null!],
+            CustomerCategories = [null!],
+            PriceGradeOptions = [null!],
+            TradeTypeOptions = [null!],
+            ItemCategoryOptions = [null!],
+            CustomerMasters = [null!],
+            Customers = [null!],
+            CustomerContracts = [null!],
+            Items = [null!],
+            ItemWarehouseStocks = [null!],
+            Transactions = [null!],
+            TransactionAttachments = [null!],
+            InventoryTransfers = [null!],
+            RentalManagementCompanies = [null!],
+            RentalBillingProfiles = [null!],
+            RentalAssets = [null!],
+            RentalAssetAssignmentHistories = [null!],
+            RentalBillingLogs = [null!],
+            Invoices =
+            [
+                null!,
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customerId,
+                    CustomerName = "SYNC-NULL-PAYLOAD-CUSTOMER",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Shared,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = new DateOnly(2026, 6, 22),
+                    TotalAmount = 0m,
+                    SupplyAmount = 0m,
+                    VatAmount = 0m,
+                    UpdatedAtUtc = DateTime.UtcNow,
+                    Lines = [null!],
+                    Payments = [null!]
+                }
+            ],
+            Payments = [null!]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(0, result.ConflictCount);
+
+        var storedInvoice = await _dbContext.Invoices
+            .Include(invoice => invoice.Lines)
+            .IgnoreQueryFilters()
+            .SingleAsync(invoice => invoice.Id == invoiceId);
+        Assert.Empty(storedInvoice.Lines);
+    }
+
+    [Fact]
     public async Task Pull_CompanyProfiles_ReturnsOnlyReadableOfficeProfiles()
     {
         var currentUser = new TestCurrentUserContext
