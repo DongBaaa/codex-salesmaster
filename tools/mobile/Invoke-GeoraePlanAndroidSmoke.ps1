@@ -646,7 +646,7 @@ function Invoke-SyncNowAndAssert {
         -DeviceId $DeviceId `
         -EvidenceDirectory $EvidenceDirectory `
         -Name "mobile-smoke-$Timestamp-sync-now" `
-        -Needles @('권장 동기화 완료', '저장 대기: 거래처 0건', '품목 0건', '전표 0건', '서버에서 받기', '서버에 올리기') `
+        -Needles @('권장 동기화 완료', '저장 대기: 설정 0건', '거래처기준 0건', '거래처 0건', '품목 0건', '전표 0건', '서버에서 받기', '서버에 올리기') `
         -StepName 'sync-now' `
         -TimeoutSeconds 120
 

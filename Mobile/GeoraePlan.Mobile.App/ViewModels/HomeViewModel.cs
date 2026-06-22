@@ -84,15 +84,19 @@ public sealed class HomeViewModel : ObservableObject
             ? $"마지막 성공 동기화: {sync.LastSuccessUtc.Value.ToLocalTime():yyyy-MM-dd HH:mm:ss}"
             : "아직 동기화 기록이 없습니다.";
 
-        if (sync.PendingPaymentAttachmentCount > 0)
+        if (sync.PendingServerMutationCount == 0 && sync.PendingPaymentAttachmentCount > 0)
         {
             HasPendingNotice = true;
             PendingNoticeText = $"첨부 {sync.PendingPaymentAttachmentCount:N0}건 업로드 대기 중입니다. 네트워크 복구 후 자동 재시도됩니다.";
         }
-        else if (sync.PendingCustomerCount > 0 || sync.PendingItemCount > 0 || sync.PendingItemWarehouseStockCount > 0 || sync.PendingInvoiceCount > 0 || sync.PendingPaymentCount > 0 || sync.PendingRentalBillingProfileCount > 0 || sync.PendingRentalAssetCount > 0 || sync.PendingRentalAssetAssignmentHistoryCount > 0 || sync.PendingRentalBillingLogCount > 0)
+        else if (sync.PendingTotalCount > 0)
         {
             HasPendingNotice = true;
-            PendingNoticeText = $"거래처 {sync.PendingCustomerCount:N0}건 / 품목 {sync.PendingItemCount:N0}건 / 재고 {sync.PendingItemWarehouseStockCount:N0}건 / 전표 {sync.PendingInvoiceCount:N0}건 / 수금·지급 {sync.PendingPaymentCount:N0}건 / 렌탈 {sync.PendingRentalBillingProfileCount + sync.PendingRentalAssetCount + sync.PendingRentalAssetAssignmentHistoryCount + sync.PendingRentalBillingLogCount:N0}건 업로드 대기 중입니다.";
+            PendingNoticeText =
+                $"설정 {sync.PendingSettingCount:N0}건 / 거래처기준 {sync.PendingCustomerMasterCount:N0}건 / 거래처 {sync.PendingCustomerCount:N0}건 / 계약 {sync.PendingCustomerContractCount:N0}건"
+                + $" / 품목 {sync.PendingItemCount:N0}건 / 재고 {sync.PendingItemWarehouseStockCount:N0}건 / 전표 {sync.PendingInvoiceCount:N0}건 / 수금·지급 {sync.PendingPaymentCount:N0}건 / 첨부 {sync.PendingPaymentAttachmentCount:N0}건"
+                + $" / 거래 {sync.PendingTransactionCount:N0}건 / 거래첨부 {sync.PendingTransactionAttachmentCount:N0}건 / 재고이동 {sync.PendingInventoryTransferCount:N0}건"
+                + $" / 렌탈관리 {sync.PendingRentalManagementCompanyCount:N0}건 / 렌탈 {sync.PendingRentalBillingProfileCount + sync.PendingRentalAssetCount + sync.PendingRentalAssetAssignmentHistoryCount + sync.PendingRentalBillingLogCount:N0}건 업로드 대기 중입니다.";
         }
         else
         {

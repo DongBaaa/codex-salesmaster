@@ -46,7 +46,15 @@ public sealed class MobileSyncState
     public SyncPushRequest PendingPush { get; set; } = new();
     public List<PendingPaymentAttachmentRecord> PendingPaymentAttachments { get; set; } = new();
 
+    public int PendingCompanyProfileCount => PendingPush.CompanyProfiles?.Count ?? 0;
+    public int PendingUnitCount => PendingPush.Units?.Count ?? 0;
+    public int PendingCustomerCategoryCount => PendingPush.CustomerCategories?.Count ?? 0;
+    public int PendingPriceGradeOptionCount => PendingPush.PriceGradeOptions?.Count ?? 0;
+    public int PendingTradeTypeOptionCount => PendingPush.TradeTypeOptions?.Count ?? 0;
+    public int PendingItemCategoryOptionCount => PendingPush.ItemCategoryOptions?.Count ?? 0;
+    public int PendingCustomerMasterCount => PendingPush.CustomerMasters?.Count ?? 0;
     public int PendingCustomerCount => PendingPush.Customers?.Count ?? 0;
+    public int PendingCustomerContractCount => PendingPush.CustomerContracts?.Count ?? 0;
     public int PendingItemCount => PendingPush.Items?.Count ?? 0;
     public int PendingItemWarehouseStockCount => PendingPush.ItemWarehouseStocks?.Count ?? 0;
     public int PendingInvoiceCount => PendingPush.Invoices?.Count ?? 0;
@@ -60,6 +68,33 @@ public sealed class MobileSyncState
     public int PendingRentalAssetAssignmentHistoryCount => PendingPush.RentalAssetAssignmentHistories?.Count ?? 0;
     public int PendingRentalBillingLogCount => PendingPush.RentalBillingLogs?.Count ?? 0;
     public int PendingPaymentAttachmentCount => PendingPaymentAttachments?.Count ?? 0;
+    public int PendingSettingCount =>
+        PendingCompanyProfileCount +
+        PendingUnitCount +
+        PendingCustomerCategoryCount +
+        PendingPriceGradeOptionCount +
+        PendingTradeTypeOptionCount +
+        PendingItemCategoryOptionCount;
+    public int PendingRentalCount =>
+        PendingRentalManagementCompanyCount +
+        PendingRentalBillingProfileCount +
+        PendingRentalAssetCount +
+        PendingRentalAssetAssignmentHistoryCount +
+        PendingRentalBillingLogCount;
+    public int PendingServerMutationCount =>
+        PendingSettingCount +
+        PendingCustomerMasterCount +
+        PendingCustomerCount +
+        PendingCustomerContractCount +
+        PendingItemCount +
+        PendingItemWarehouseStockCount +
+        PendingInvoiceCount +
+        PendingPaymentCount +
+        PendingTransactionCount +
+        PendingTransactionAttachmentCount +
+        PendingInventoryTransferCount +
+        PendingRentalCount;
+    public int PendingTotalCount => PendingServerMutationCount + PendingPaymentAttachmentCount;
 
     public void Normalize()
     {

@@ -700,6 +700,71 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void AndroidPendingStatus_SummarizesEveryPendingPushCollection()
+    {
+        var root = FindRepositoryRoot();
+        var stateSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Models",
+            "MobileSyncState.cs"));
+        var syncViewSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "SyncViewModel.cs"));
+        var homeViewSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "HomeViewModel.cs"));
+
+        var missingPreviouslyHiddenCollections = new[]
+        {
+            "PendingCompanyProfileCount",
+            "PendingUnitCount",
+            "PendingCustomerCategoryCount",
+            "PendingPriceGradeOptionCount",
+            "PendingTradeTypeOptionCount",
+            "PendingItemCategoryOptionCount",
+            "PendingCustomerMasterCount",
+            "PendingCustomerContractCount"
+        };
+
+        foreach (var property in missingPreviouslyHiddenCollections)
+            Assert.Contains($"public int {property} =>", stateSource, StringComparison.Ordinal);
+
+        Assert.Contains("public int PendingSettingCount =>", stateSource, StringComparison.Ordinal);
+        Assert.Contains("public int PendingServerMutationCount =>", stateSource, StringComparison.Ordinal);
+        Assert.Contains("public int PendingTotalCount =>", stateSource, StringComparison.Ordinal);
+
+        foreach (var source in new[] { syncViewSource, homeViewSource })
+        {
+            Assert.Contains("PendingSettingCount", source, StringComparison.Ordinal);
+            Assert.Contains("PendingCustomerMasterCount", source, StringComparison.Ordinal);
+            Assert.Contains("PendingCustomerContractCount", source, StringComparison.Ordinal);
+            Assert.Contains("PendingTransactionAttachmentCount", source, StringComparison.Ordinal);
+            Assert.Contains("PendingInventoryTransferCount", source, StringComparison.Ordinal);
+            Assert.Contains("PendingRentalManagementCompanyCount", source, StringComparison.Ordinal);
+            Assert.Contains("PendingTotalCount", source, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("설정 {state.PendingSettingCount", syncViewSource, StringComparison.Ordinal);
+        Assert.Contains("거래처기준", syncViewSource, StringComparison.Ordinal);
+        Assert.Contains("계약", syncViewSource, StringComparison.Ordinal);
+        Assert.Contains("거래첨부", syncViewSource, StringComparison.Ordinal);
+        Assert.Contains("재고이동", syncViewSource, StringComparison.Ordinal);
+        Assert.Contains("설정 {sync.PendingSettingCount", homeViewSource, StringComparison.Ordinal);
+        Assert.Contains("거래처기준", homeViewSource, StringComparison.Ordinal);
+        Assert.Contains("계약", homeViewSource, StringComparison.Ordinal);
+        Assert.Contains("거래첨부", homeViewSource, StringComparison.Ordinal);
+        Assert.Contains("재고이동", homeViewSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MobileSyncPush_DoesNotClearPendingOnEmptyPushResponse()
     {
         var source = File.ReadAllText(Path.Combine(
@@ -1453,7 +1518,8 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("mobile-stopped-server-offline-pending", source, StringComparison.Ordinal);
         Assert.Contains("local-api-restart-before-sync", source, StringComparison.Ordinal);
         Assert.Contains("mobile-$voucherSlug-invoice-auto-push-after-restart", source, StringComparison.Ordinal);
-        Assert.Contains("저장 대기: 거래처 0건", source, StringComparison.Ordinal);
+        Assert.Contains("저장 대기: 설정 0건", source, StringComparison.Ordinal);
+        Assert.Contains("거래처기준 0건", source, StringComparison.Ordinal);
         Assert.Contains("전표 0건", source, StringComparison.Ordinal);
         Assert.Contains("ExerciseStoppedServerDirtySync = [bool]$ExerciseStoppedServerDirtySync", source, StringComparison.Ordinal);
         Assert.Contains("ExerciseStoppedServerDirtySync", source, StringComparison.Ordinal);
@@ -1741,8 +1807,10 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("state.PendingPush.Items.RemoveAll(x => x.Id == item.Id)", syncCoordinatorSource, StringComparison.Ordinal);
         Assert.Contains("public int PendingCustomerCount => PendingPush.Customers?.Count ?? 0;", stateSource, StringComparison.Ordinal);
         Assert.Contains("public int PendingItemCount => PendingPush.Items?.Count ?? 0;", stateSource, StringComparison.Ordinal);
-        Assert.Contains("거래처 {state.PendingCustomerCount}건 / 품목 {state.PendingItemCount}건 / 재고 {state.PendingItemWarehouseStockCount}건", syncViewSource, StringComparison.Ordinal);
-        Assert.Contains("거래처 {sync.PendingCustomerCount:N0}건 / 품목 {sync.PendingItemCount:N0}건 / 재고 {sync.PendingItemWarehouseStockCount:N0}건", homeViewSource, StringComparison.Ordinal);
+        Assert.Contains("거래처기준 {state.PendingCustomerMasterCount}건 / 거래처 {state.PendingCustomerCount}건 / 계약 {state.PendingCustomerContractCount}건", syncViewSource, StringComparison.Ordinal);
+        Assert.Contains("품목 {state.PendingItemCount}건 / 재고 {state.PendingItemWarehouseStockCount}건", syncViewSource, StringComparison.Ordinal);
+        Assert.Contains("거래처기준 {sync.PendingCustomerMasterCount:N0}건 / 거래처 {sync.PendingCustomerCount:N0}건 / 계약 {sync.PendingCustomerContractCount:N0}건", homeViewSource, StringComparison.Ordinal);
+        Assert.Contains("품목 {sync.PendingItemCount:N0}건 / 재고 {sync.PendingItemWarehouseStockCount:N0}건", homeViewSource, StringComparison.Ordinal);
     }
 
     [Fact]
