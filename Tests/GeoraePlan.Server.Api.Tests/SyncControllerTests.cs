@@ -497,6 +497,155 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_ReturnsForbidden_ForEveryUnauthorizedCollection()
+    {
+        foreach (var testCase in CreateUnauthorizedPushCases())
+        {
+            var currentUser = new TestCurrentUserContext
+            {
+                Username = $"limited-{testCase.Name}",
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+                Permissions = []
+            };
+
+            await using var scopedDb = CreateDbContext(currentUser);
+            var controller = CreateController(scopedDb, currentUser);
+            var request = testCase.CreateRequest();
+            request.DeviceId = $"device-permission-denied-{testCase.Name}";
+
+            var response = await controller.Push(request, CancellationToken.None);
+            var forbidden = Assert.IsType<ObjectResult>(response.Result);
+            var message = forbidden.Value?.GetType().GetProperty("message")?.GetValue(forbidden.Value) as string;
+
+            Assert.Equal(StatusCodes.Status403Forbidden, forbidden.StatusCode);
+            Assert.False(string.IsNullOrWhiteSpace(message));
+            Assert.Contains(testCase.ExpectedLabel, message);
+            Assert.DoesNotContain(scopedDb.ChangeTracker.Entries(),
+                entry => entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted);
+        }
+    }
+
+    private static IReadOnlyList<UnauthorizedPushCase> CreateUnauthorizedPushCases()
+    {
+        return
+        [
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.CompanyProfiles),
+                () => new SyncPushRequest { CompanyProfiles = [CreateSyncDto<CompanyProfileDto>()] },
+                "회사설정"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.Units),
+                () => new SyncPushRequest { Units = [CreateSyncDto<UnitDto>()] },
+                "환경설정/분류"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.CustomerCategories),
+                () => new SyncPushRequest { CustomerCategories = [CreateSyncDto<CustomerCategoryDto>()] },
+                "환경설정/분류"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.PriceGradeOptions),
+                () => new SyncPushRequest { PriceGradeOptions = [CreateSyncDto<PriceGradeOptionDto>()] },
+                "환경설정/분류"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.TradeTypeOptions),
+                () => new SyncPushRequest { TradeTypeOptions = [CreateSyncDto<TradeTypeOptionDto>()] },
+                "환경설정/분류"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.ItemCategoryOptions),
+                () => new SyncPushRequest { ItemCategoryOptions = [CreateSyncDto<ItemCategoryOptionDto>()] },
+                "환경설정/분류"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.CustomerMasters),
+                () => new SyncPushRequest { CustomerMasters = [CreateSyncDto<CustomerMasterDto>()] },
+                "거래처"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.Customers),
+                () => new SyncPushRequest { Customers = [CreateSyncDto<CustomerDto>()] },
+                "거래처"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.CustomerContracts),
+                () => new SyncPushRequest { CustomerContracts = [CreateSyncDto<CustomerContractDto>()] },
+                "거래처"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.Items),
+                () => new SyncPushRequest { Items = [CreateSyncDto<ItemDto>()] },
+                "품목/재고"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.ItemWarehouseStocks),
+                () => new SyncPushRequest { ItemWarehouseStocks = [CreateWarehouseStockDto()] },
+                "품목/재고"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.Invoices),
+                () => new SyncPushRequest { Invoices = [CreateSyncDto<InvoiceDto>()] },
+                "전표"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.Transactions),
+                () => new SyncPushRequest { Transactions = [CreateSyncDto<TransactionDto>()] },
+                "수금/지급"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.TransactionAttachments),
+                () => new SyncPushRequest { TransactionAttachments = [CreateSyncDto<TransactionAttachmentDto>()] },
+                "수금/지급"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.Payments),
+                () => new SyncPushRequest { Payments = [CreateSyncDto<PaymentDto>()] },
+                "수금/지급"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.InventoryTransfers),
+                () => new SyncPushRequest { InventoryTransfers = [CreateSyncDto<InventoryTransferDto>()] },
+                "납품/재고이동"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.RentalManagementCompanies),
+                () => new SyncPushRequest { RentalManagementCompanies = [CreateSyncDto<RentalManagementCompanyDto>()] },
+                "렌탈 관리업체"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.RentalBillingProfiles),
+                () => new SyncPushRequest { RentalBillingProfiles = [CreateSyncDto<RentalBillingProfileDto>()] },
+                "렌탈 청구"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.RentalBillingLogs),
+                () => new SyncPushRequest { RentalBillingLogs = [CreateSyncDto<RentalBillingLogDto>()] },
+                "렌탈 청구"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.RentalAssets),
+                () => new SyncPushRequest { RentalAssets = [CreateSyncDto<RentalAssetDto>()] },
+                "렌탈 자산"),
+            new UnauthorizedPushCase(
+                nameof(SyncPushRequest.RentalAssetAssignmentHistories),
+                () => new SyncPushRequest { RentalAssetAssignmentHistories = [CreateSyncDto<RentalAssetAssignmentHistoryDto>()] },
+                "렌탈 자산")
+        ];
+    }
+
+    private static T CreateSyncDto<T>() where T : SyncEntityDto, new()
+    {
+        var now = DateTime.UtcNow;
+        return new T
+        {
+            Id = Guid.NewGuid(),
+            CreatedAtUtc = now.AddMinutes(-1),
+            UpdatedAtUtc = now
+        };
+    }
+
+    private static ItemWarehouseStockDto CreateWarehouseStockDto()
+    {
+        return new ItemWarehouseStockDto
+        {
+            ItemId = Guid.NewGuid(),
+            WarehouseCode = OfficeCodeCatalog.Usenet,
+            Quantity = 1,
+            UpdatedAtUtc = DateTime.UtcNow
+        };
+    }
+
+    private sealed record UnauthorizedPushCase(
+        string Name,
+        Func<SyncPushRequest> CreateRequest,
+        string ExpectedLabel);
+
+    [Fact]
     public async Task Push_AllowsDomainChanges_WhenRequiredPermissionExists()
     {
         var currentUser = new TestCurrentUserContext
