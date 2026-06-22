@@ -197,7 +197,14 @@ public sealed class JsonSyncStateStore
     private static bool HasPendingPayload(MobileSyncState state)
     {
         state.Normalize();
-        return state.PendingInvoiceCount > 0 ||
+        return (state.PendingPush.CompanyProfiles?.Count ?? 0) > 0 ||
+               (state.PendingPush.Units?.Count ?? 0) > 0 ||
+               (state.PendingPush.CustomerCategories?.Count ?? 0) > 0 ||
+               (state.PendingPush.PriceGradeOptions?.Count ?? 0) > 0 ||
+               (state.PendingPush.TradeTypeOptions?.Count ?? 0) > 0 ||
+               (state.PendingPush.ItemCategoryOptions?.Count ?? 0) > 0 ||
+               (state.PendingPush.CustomerMasters?.Count ?? 0) > 0 ||
+               state.PendingInvoiceCount > 0 ||
                state.PendingPaymentCount > 0 ||
                state.PendingTransactionCount > 0 ||
                state.PendingTransactionAttachmentCount > 0 ||

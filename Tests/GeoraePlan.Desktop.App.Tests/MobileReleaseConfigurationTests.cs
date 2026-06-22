@@ -662,6 +662,44 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void AndroidSyncStateStore_TreatsSettingPendingMutationsAsLegacyPayload()
+    {
+        var root = FindRepositoryRoot();
+        var storeSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "JsonSyncStateStore.cs"));
+        var coordinatorSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "SyncCoordinator.cs"));
+
+        Assert.Contains("if (!HasPendingPayload(legacyState))", storeSource, StringComparison.Ordinal);
+        Assert.Contains("Directory.CreateDirectory(LegacyQuarantineDirectory);", storeSource, StringComparison.Ordinal);
+
+        var settingPendingCollections = new[]
+        {
+            "CompanyProfiles",
+            "Units",
+            "CustomerCategories",
+            "PriceGradeOptions",
+            "TradeTypeOptions",
+            "ItemCategoryOptions",
+            "CustomerMasters"
+        };
+
+        foreach (var collection in settingPendingCollections)
+        {
+            Assert.Contains($"(state.PendingPush.{collection}?.Count ?? 0) > 0", coordinatorSource, StringComparison.Ordinal);
+            Assert.Contains($"(state.PendingPush.{collection}?.Count ?? 0) > 0", storeSource, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void MobileSyncPush_DoesNotClearPendingOnEmptyPushResponse()
     {
         var source = File.ReadAllText(Path.Combine(
