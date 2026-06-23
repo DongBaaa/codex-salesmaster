@@ -1254,8 +1254,11 @@ public sealed class SyncCoordinator
     {
         foreach (var value in values)
         {
-            if (value.BillingProfileId == profileId)
-                value.BillingProfileId = null;
+            if (IsEntityNewerThanPurge(value, purgeRevision) || value.BillingProfileId != profileId)
+                continue;
+
+            value.BillingProfileId = null;
+            value.UpdatedAtUtc = DateTime.UtcNow;
         }
     }
 
@@ -1266,8 +1269,11 @@ public sealed class SyncCoordinator
     {
         foreach (var value in values)
         {
-            if (value.BillingProfileId == profileId)
-                value.BillingProfileId = null;
+            if (IsEntityNewerThanPurge(value, purgeRevision) || value.BillingProfileId != profileId)
+                continue;
+
+            value.BillingProfileId = null;
+            value.UpdatedAtUtc = DateTime.UtcNow;
         }
     }
 
@@ -1278,8 +1284,11 @@ public sealed class SyncCoordinator
     {
         foreach (var value in values)
         {
-            if (value.CustomerId == customerId)
-                value.CustomerId = null;
+            if (IsEntityNewerThanPurge(value, purgeRevision) || value.CustomerId != customerId)
+                continue;
+
+            value.CustomerId = null;
+            value.UpdatedAtUtc = DateTime.UtcNow;
         }
     }
 

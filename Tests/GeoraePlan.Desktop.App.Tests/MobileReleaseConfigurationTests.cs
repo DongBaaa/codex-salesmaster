@@ -2201,7 +2201,8 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("ClearRentalBillingProfileReferences(state.PendingPush.RentalAssets, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("ClearRentalAssignmentHistoryBillingProfileReferences(state.SyncedRentalAssetAssignmentHistories, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("ClearRentalAssignmentHistoryBillingProfileReferences(state.PendingPush.RentalAssetAssignmentHistories, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("if (value.BillingProfileId == profileId)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Equal(2, CountOccurrences(coordinatorSource, "if (IsEntityNewerThanPurge(value, purgeRevision) || value.BillingProfileId != profileId)"));
+        Assert.Contains("value.BillingProfileId = null;", coordinatorSource, StringComparison.Ordinal);
         Assert.DoesNotContain("value.BillingProfileId == profileId && !IsEntityNewerThanPurge(value, purgeRevision)", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedRentalAssets, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveIncludedAssetIdFromBillingTemplates(state.SyncedRentalBillingProfiles, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
@@ -2221,9 +2222,10 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("JsonNode.Parse(templateJson ?? \"[]\")", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("if (IsEntityNewerThanPurge(value, purgeRevision))", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("private static void ClearRentalAssignmentHistoryCustomerReferences(", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("if (value.CustomerId == customerId)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("if (IsEntityNewerThanPurge(value, purgeRevision) || value.CustomerId != customerId)", coordinatorSource, StringComparison.Ordinal);
         Assert.DoesNotContain("value.CustomerId == customerId && !IsEntityNewerThanPurge(value, purgeRevision)", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("value.CustomerId = null;", coordinatorSource, StringComparison.Ordinal);
+        Assert.True(CountOccurrences(coordinatorSource, "value.UpdatedAtUtc = DateTime.UtcNow;") >= 5);
         Assert.Contains("value.Id == entityId && IsEntityNewerThanPurge(value, purgeRevision)", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("public Task RemoveCustomerContractsAsync(Guid customerId, CancellationToken ct = default)", contractCacheSource, StringComparison.Ordinal);
         Assert.Contains("public async Task RemoveCustomerAsync(Guid customerId, long purgeRevision, CancellationToken ct = default)", contractCacheSource, StringComparison.Ordinal);
