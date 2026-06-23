@@ -1138,7 +1138,7 @@ public sealed class SyncCoordinator
             case "customer":
                 RemoveEntityById(state.SyncedCustomers, entityId, purgeRevision);
                 RemoveEntityById(state.PendingPush.Customers, entityId, purgeRevision);
-                state.PendingPush.CustomerContracts.RemoveAll(contract => contract.CustomerId == entityId);
+                RemoveCustomerContractsForPurgedCustomer(state.PendingPush.CustomerContracts, entityId, purgeRevision);
                 await _contractCacheStore.RemoveCustomerAsync(entityId, purgeRevision, ct);
                 ClearRentalAssignmentHistoryCustomerReferences(state.SyncedRentalAssetAssignmentHistories, entityId, purgeRevision);
                 ClearRentalAssignmentHistoryCustomerReferences(state.PendingPush.RentalAssetAssignmentHistories, entityId, purgeRevision);
@@ -1245,6 +1245,19 @@ public sealed class SyncCoordinator
             return;
 
         values.RemoveAll(value => value.Id == entityId);
+    }
+
+    private static void RemoveCustomerContractsForPurgedCustomer(
+        List<CustomerContractDto> values,
+        Guid customerId,
+        long purgeRevision)
+    {
+        if (customerId == Guid.Empty)
+            return;
+
+        values.RemoveAll(contract =>
+            contract.CustomerId == customerId &&
+            !IsEntityNewerThanPurge(contract, purgeRevision));
     }
 
     private static void ClearRentalBillingProfileReferences(

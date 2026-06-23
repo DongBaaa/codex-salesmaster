@@ -2157,7 +2157,11 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("RemoveEntityById(state.PendingPush.ItemCategoryOptions, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedCustomers, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.PendingPush.Customers, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("state.PendingPush.CustomerContracts.RemoveAll(contract => contract.CustomerId == entityId);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("RemoveCustomerContractsForPurgedCustomer(state.PendingPush.CustomerContracts, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("private static void RemoveCustomerContractsForPurgedCustomer(", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("contract.CustomerId == customerId &&", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("!IsEntityNewerThanPurge(contract, purgeRevision)", coordinatorSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("state.PendingPush.CustomerContracts.RemoveAll(contract => contract.CustomerId == entityId);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("await _contractCacheStore.RemoveCustomerAsync(entityId, purgeRevision, ct);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("case \"contract\":", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("case \"customercontract\":", coordinatorSource, StringComparison.Ordinal);
