@@ -192,13 +192,25 @@ function Invoke-SshCommand {
     $arguments = New-SshArgumentList -Config $Config -BatchMode:$BatchMode
     $arguments += $Command
 
-    $stdoutPath = Join-Path ([System.IO.Path]::GetTempPath()) ("georaeplan-linux-ssh-out-" + [Guid]::NewGuid().ToString('N') + '.log')
-    $stderrPath = Join-Path ([System.IO.Path]::GetTempPath()) ("georaeplan-linux-ssh-err-" + [Guid]::NewGuid().ToString('N') + '.log')
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new($sshExe)
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.Arguments = ($arguments | ForEach-Object { Quote-ProcessArgument -Argument $_ }) -join ' '
 
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
     try {
-        $process = Start-Process -FilePath $sshExe -ArgumentList $arguments -NoNewWindow -PassThru -Wait -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
-        $stdout = if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { '' }
-        $stderr = if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw } else { '' }
+        if (-not $process.Start()) {
+            throw 'Failed to start Linux PC ssh process.'
+        }
+
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
 
         if (-not $IgnoreExitCode -and $process.ExitCode -ne 0) {
             $message = if ([string]::IsNullOrWhiteSpace($stderr)) { $stdout } else { $stderr }
@@ -212,7 +224,7 @@ function Invoke-SshCommand {
         }
     }
     finally {
-        Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+        $process.Dispose()
     }
 }
 
@@ -334,8 +346,9 @@ function Invoke-LinuxPcRemotePrune {
     $quotedRoot = Convert-ToSingleQuotedShellLiteral -Value $root
     $quotedPattern = Convert-ToSingleQuotedShellLiteral -Value $Pattern
     $quotedLabel = Convert-ToSingleQuotedShellLiteral -Value $Label
-    $remoteCommand = @"
+$remoteCommand = @"
 set -e
+set -o pipefail
 root=$quotedRoot
 pattern=$quotedPattern
 keep=$KeepCount

@@ -275,6 +275,36 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public void LinuxPcReleaseSshCommandPreservesRemoteCommandQuotingAndFailsPrunePipelines()
+    {
+        var source = ReadRepositoryFile(
+            "tools",
+            "linux",
+            "Publish-GeoraeplanLinuxPcRelease.ps1");
+
+        Assert.Contains("function Invoke-SshCommand", source, StringComparison.Ordinal);
+        Assert.Contains("[System.Diagnostics.ProcessStartInfo]::new($sshExe)", source, StringComparison.Ordinal);
+        Assert.Contains("$startInfo.Arguments = ($arguments | ForEach-Object { Quote-ProcessArgument -Argument $_ }) -join ' '", source, StringComparison.Ordinal);
+        Assert.Contains("$startInfo.RedirectStandardOutput = $true", source, StringComparison.Ordinal);
+        Assert.Contains("$process.Start()", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Start-Process -FilePath $sshExe -ArgumentList $arguments", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("$startInfo.ArgumentList.Add($argument)", source, StringComparison.Ordinal);
+        AssertInOrder(
+            source,
+            "function Invoke-SshCommand",
+            "[System.Diagnostics.ProcessStartInfo]::new($sshExe)",
+            "$startInfo.Arguments = ($arguments | ForEach-Object { Quote-ProcessArgument -Argument $_ }) -join ' '",
+            "$process.Start()");
+
+        Assert.Contains("set -o pipefail", source, StringComparison.Ordinal);
+        AssertInOrder(
+            source,
+            "set -e",
+            "set -o pipefail",
+            "find \"`$real_root\" -mindepth 1 -maxdepth 1 -type d -name \"`$pattern\"");
+    }
+
+    [Fact]
     public void FullReleaseForwardsExplicitRentalTemplateRiskAcceptanceToLinuxDeploy()
     {
         var source = ReadRepositoryFile(
