@@ -142,6 +142,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private bool CanEditRentalProfiles => _session.HasAdministrativePrivileges ||
                                            _session.HasPermission(AppPermissionNames.RentalEditAll) ||
                                            _session.HasPermission(AppPermissionNames.RentalProfileEdit);
+    private bool CanEditPayments => _session.HasAdministrativePrivileges ||
+                                    _session.HasPermission(AppPermissionNames.PaymentEdit);
+    private bool CanEditInvoices => _session.HasAdministrativePrivileges ||
+                                    _session.HasPermission(AppPermissionNames.InvoiceEdit);
     public bool CanSave => CanEditRentalProfiles && (SelectedRow is null || (CanEditCurrentSelection && CanEditSelectedRowInEditor));
     public bool IsCustomerGroupSelection => SelectedRow?.IsAggregateRow == true;
     public bool CanEditBillingProfileDetails => SelectedRow is null || !SelectedRow.IsAggregateRow;
@@ -157,14 +161,15 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                                                ? SelectedRow.GroupedPersistedProfileIds.Any(id => id != Guid.Empty)
                                                : HasPersistedSelectedProfile);
     public bool CanHoldSelected => SelectedRow is not null && HasPersistedSelectedProfile && CanEditCurrentSelection && !SelectedRow.IsAggregateRow;
-    public bool CanRegisterSettlementSelected => SelectedRow is not null && HasPersistedSelectedProfile && CanEditCurrentSelection && !SelectedRow.IsAggregateRow;
+    public bool CanRegisterSettlementSelected => SelectedRow is not null && HasPersistedSelectedProfile && CanEditCurrentSelection && CanEditPayments && !SelectedRow.IsAggregateRow;
     public bool CanDeleteSelectedBillingHistory => SelectedRow is not null &&
                                                    SelectedBillingHistory is not null &&
                                                    HasPersistedSelectedProfile &&
                                                    CanEditCurrentSelection &&
                                                    !SelectedRow.IsAggregateRow &&
                                                    SelectedBillingHistory.BillingProfileId == SelectedRow.Source.Id &&
-                                                   SelectedBillingHistory.CanDelete;
+                                                   SelectedBillingHistory.CanDelete &&
+                                                   CanDeleteSelectedBillingHistoryFinancialEffects;
     public bool CanDeleteSelected => SelectedRow is not null && CanEditCurrentSelection && !SelectedRow.IsAggregateRow;
     public bool CanMarkCompletedSelected => SelectedRow is not null &&
                                             HasPersistedSelectedProfile &&
@@ -226,6 +231,11 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private bool CanEditCurrentSelection => CanEditRentalProfiles && (SelectedRow is null || CanOperateScope(
         ResolveProfileOfficeCode(SelectedRow.Source, _session.OfficeCode)));
+
+    private bool CanDeleteSelectedBillingHistoryFinancialEffects =>
+        SelectedBillingHistory is null ||
+        ((!SelectedBillingHistory.HasInvoice || CanEditInvoices) &&
+         (!SelectedBillingHistory.HasSettlement || CanEditPayments));
 
     public RentalBillingViewModel(RentalStateService rental, LocalStateService local, SessionState session, ErpApiClient? api = null)
     {

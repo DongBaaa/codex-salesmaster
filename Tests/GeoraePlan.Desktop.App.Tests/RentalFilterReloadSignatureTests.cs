@@ -184,6 +184,72 @@ public sealed class RentalFilterReloadSignatureTests
         }
     }
 
+    [Fact]
+    public void RentalBillingViewModel_SettlementAndHistoryButtonsRequireFinancialPermissions()
+    {
+        var profileId = Guid.NewGuid();
+        var invoiceRunId = Guid.NewGuid();
+        var settlementRunId = Guid.NewGuid();
+        var selectedRow = new RentalBillingViewRow
+        {
+            SelectionId = profileId,
+            HasPersistedProfile = true,
+            Source = new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                IsActive = true
+            }
+        };
+
+        var rentalOnly = new RentalBillingViewModel(
+            null!,
+            null!,
+            CreateUserSession(AppPermissionNames.RentalProfileEdit));
+        SetPrivateField(rentalOnly, "_selectedRow", selectedRow);
+        SetPrivateField(rentalOnly, "_selectedBillingHistory", new RentalBillingHistoryRow
+        {
+            BillingProfileId = profileId,
+            BillingRunId = settlementRunId,
+            SettledAmount = 10_000m
+        });
+
+        Assert.False(rentalOnly.CanRegisterSettlementSelected);
+        Assert.False(rentalOnly.CanDeleteSelectedBillingHistory);
+
+        var rentalAndPayment = new RentalBillingViewModel(
+            null!,
+            null!,
+            CreateUserSession(AppPermissionNames.RentalProfileEdit, AppPermissionNames.PaymentEdit));
+        SetPrivateField(rentalAndPayment, "_selectedRow", selectedRow);
+        SetPrivateField(rentalAndPayment, "_selectedBillingHistory", new RentalBillingHistoryRow
+            {
+                BillingProfileId = profileId,
+                BillingRunId = settlementRunId,
+                SettledAmount = 10_000m
+            });
+
+        Assert.True(rentalAndPayment.CanRegisterSettlementSelected);
+        Assert.True(rentalAndPayment.CanDeleteSelectedBillingHistory);
+
+        var rentalAndInvoice = new RentalBillingViewModel(
+            null!,
+            null!,
+            CreateUserSession(AppPermissionNames.RentalProfileEdit, AppPermissionNames.InvoiceEdit));
+        SetPrivateField(rentalAndInvoice, "_selectedRow", selectedRow);
+        SetPrivateField(rentalAndInvoice, "_selectedBillingHistory", new RentalBillingHistoryRow
+            {
+                BillingProfileId = profileId,
+                BillingRunId = invoiceRunId,
+                HasInvoice = true
+            });
+
+        Assert.False(rentalAndInvoice.CanRegisterSettlementSelected);
+        Assert.True(rentalAndInvoice.CanDeleteSelectedBillingHistory);
+    }
+
     private static SessionState CreateAdminSession()
     {
         var session = new SessionState();
@@ -194,6 +260,21 @@ public sealed class RentalFilterReloadSignatureTests
             TenantCode = TenantScopeCatalog.UsenetGroup,
             OfficeCode = OfficeCodeCatalog.Usenet,
             ScopeType = TenantScopeCatalog.ScopeAdmin
+        });
+        return session;
+    }
+
+    private static SessionState CreateUserSession(params string[] permissions)
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            Username = "user",
+            Role = DomainConstants.RoleUser,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = permissions.ToList()
         });
         return session;
     }

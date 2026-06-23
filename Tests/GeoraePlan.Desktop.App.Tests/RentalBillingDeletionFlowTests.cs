@@ -3513,6 +3513,64 @@ public sealed class RentalBillingDeletionFlowTests
         }
     }
 
+    [Fact]
+    public async Task RegisterBillingSettlement_RequiresPaymentEditBeforeCreatingEvidence()
+    {
+        PrepareAppRoot("georaeplan-rental-register-settlement-requires-payment-edit");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Register settlement payment permission customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            profile.SettledAmount = 0m;
+            profile.OutstandingAmount = 100_000m;
+            profile.SettlementStatus = PaymentFlowConstants.SettlementStatusPending;
+            profile.CompletionStatus = PaymentFlowConstants.CompletionPending;
+            profile.IsDirty = false;
+            db.RentalBillingProfiles.Add(profile);
+            await db.SaveChangesAsync();
+
+            var session = CreateUserSession(AppPermissionNames.RentalProfileEdit);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+
+            var result = await rental.RegisterBillingSettlementAsync(
+                profileId,
+                new DateOnly(2026, 5, 27),
+                50_000m,
+                "payment permission denied",
+                session);
+
+            Assert.False(result.Success);
+            Assert.Contains("수금/지급 편집 권한", result.Message);
+            Assert.Empty(await db.Transactions.IgnoreQueryFilters().ToListAsync());
+            Assert.Empty(await db.Payments.IgnoreQueryFilters().ToListAsync());
+            Assert.Empty(await db.RentalBillingLogs.IgnoreQueryFilters().ToListAsync());
+
+            var storedProfile = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == profileId);
+            Assert.False(storedProfile.IsDirty);
+            Assert.Equal(0m, storedProfile.SettledAmount);
+            Assert.Equal(100_000m, storedProfile.OutstandingAmount);
+            Assert.Equal(PaymentFlowConstants.SettlementStatusPending, storedProfile.SettlementStatus);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
