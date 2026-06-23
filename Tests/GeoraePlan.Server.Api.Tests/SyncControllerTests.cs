@@ -5312,6 +5312,143 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Pull_OfficeOnlyUser_RemovesUnreadableRentalProfileReferencesFromLinkedRows()
+    {
+        var visibleCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "SYNC-RENTAL-LINK-VISIBLE-CUSTOMER",
+            NameMatchKey = "SYNCRENTALLINKVISIBLECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var hiddenProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "SYNC-RENTAL-LINK-HIDDEN-PROFILE",
+            CustomerId = visibleCustomer.Id,
+            CustomerName = visibleCustomer.NameOriginal
+        };
+        var linkedRunId = Guid.NewGuid();
+        var visibleInvoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = visibleCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            InvoiceNumber = "SYNC-RENTAL-LINK-VISIBLE-INVOICE",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 24),
+            LinkedRentalBillingProfileId = hiddenProfile.Id,
+            LinkedRentalBillingRunId = linkedRunId
+        };
+        var visibleTransaction = new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = visibleCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TransactionDate = new DateOnly(2026, 6, 24),
+            TransactionKind = "SYNC-RENTAL-LINK-VISIBLE-TRANSACTION",
+            LinkedInvoiceId = visibleInvoice.Id,
+            LinkedInvoiceNumber = visibleInvoice.InvoiceNumber,
+            LinkedRentalBillingProfileId = hiddenProfile.Id,
+            LinkedRentalBillingRunId = linkedRunId,
+            ReceiptTotal = 100m
+        };
+        var visibleAsset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            AssetKey = "SYNC-RENTAL-LINK-VISIBLE-ASSET",
+            ManagementNumber = "SYNC-RENTAL-LINK-VISIBLE-ASSET",
+            CustomerId = visibleCustomer.Id,
+            CustomerName = visibleCustomer.NameOriginal,
+            BillingProfileId = hiddenProfile.Id,
+            LastBillingProfileId = hiddenProfile.Id,
+            LastBillingProfileDisplay = "숨김 렌탈 프로필 표시명"
+        };
+        var visibleHistory = new RentalAssetAssignmentHistory
+        {
+            Id = Guid.NewGuid(),
+            AssetId = visibleAsset.Id,
+            CustomerId = visibleCustomer.Id,
+            BillingProfileId = hiddenProfile.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            CustomerName = visibleCustomer.NameOriginal,
+            BillingProfileDisplay = "숨김 렌탈 프로필 표시명",
+            ManagementNumber = visibleAsset.ManagementNumber
+        };
+        var visibleLog = new RentalBillingLog
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            BillingProfileId = hiddenProfile.Id,
+            BillingYearMonth = "2026-06",
+            ScheduledDate = new DateOnly(2026, 6, 24),
+            BilledAmount = 100m
+        };
+
+        _dbContext.Customers.Add(visibleCustomer);
+        _dbContext.RentalBillingProfiles.Add(hiddenProfile);
+        _dbContext.Invoices.Add(visibleInvoice);
+        _dbContext.Transactions.Add(visibleTransaction);
+        _dbContext.RentalAssets.Add(visibleAsset);
+        _dbContext.RentalAssetAssignmentHistories.Add(visibleHistory);
+        _dbContext.RentalBillingLogs.Add(visibleLog);
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu_sync_rental_reference_user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+
+        var response = await controller.Pull(0, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPullResponse>(ok.Value);
+
+        Assert.DoesNotContain(result.RentalBillingProfiles, profile => profile.Id == hiddenProfile.Id);
+
+        var pulledInvoice = Assert.Single(result.Invoices, invoice => invoice.Id == visibleInvoice.Id);
+        Assert.Null(pulledInvoice.LinkedRentalBillingProfileId);
+        Assert.Null(pulledInvoice.LinkedRentalBillingRunId);
+
+        var pulledTransaction = Assert.Single(result.Transactions, transaction => transaction.Id == visibleTransaction.Id);
+        Assert.Equal(visibleInvoice.Id, pulledTransaction.LinkedInvoiceId);
+        Assert.Null(pulledTransaction.LinkedRentalBillingProfileId);
+        Assert.Null(pulledTransaction.LinkedRentalBillingRunId);
+
+        var pulledAsset = Assert.Single(result.RentalAssets, asset => asset.Id == visibleAsset.Id);
+        Assert.Null(pulledAsset.BillingProfileId);
+        Assert.Null(pulledAsset.LastBillingProfileId);
+        Assert.Equal(string.Empty, pulledAsset.LastBillingProfileDisplay);
+
+        var pulledHistory = Assert.Single(result.RentalAssetAssignmentHistories, history => history.Id == visibleHistory.Id);
+        Assert.Null(pulledHistory.BillingProfileId);
+        Assert.Equal(string.Empty, pulledHistory.BillingProfileDisplay);
+
+        Assert.DoesNotContain(result.RentalBillingLogs, log => log.BillingProfileId == hiddenProfile.Id);
+    }
+
+    [Fact]
     public async Task Pull_OfficeOnlyUser_DoesNotReturnRentalAssignmentHistoryOutsideHistoryScopeEvenWhenAssetIsReadable()
     {
         var visibleAsset = new RentalAsset
@@ -7924,6 +8061,230 @@ public sealed class SyncControllerTests : IDisposable
             .SingleAsync(current => current.Id == profileId);
         Assert.Equal(0m, profile.SettledAmount);
         Assert.Equal(100_000m, profile.OutstandingAmount);
+    }
+
+    [Fact]
+    public async Task Push_RejectsPaymentUpdate_WhenLinkedTransactionRentalProfileOutsideWritableScope()
+    {
+        var currentUser = CreateOfficeSyncUser(PermissionNames.PaymentEdit);
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var scenario = SeedSyncPaymentWithOutOfScopeLinkedTransactionRentalProfileScenario(scopedDb);
+        await scopedDb.SaveChangesAsync();
+        var storedPayment = await scopedDb.Payments.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(payment => payment.Id == scenario.PaymentId);
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-sync-hidden-rental-payment-update",
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = scenario.PaymentId,
+                    InvoiceId = scenario.InvoiceId,
+                    PaymentDate = storedPayment.PaymentDate,
+                    Amount = 30_000m,
+                    Note = "must not update hidden rental linked transaction",
+                    ExpectedRevision = storedPayment.Revision,
+                    CreatedAtUtc = storedPayment.CreatedAtUtc,
+                    UpdatedAtUtc = storedPayment.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(Payment), StringComparison.Ordinal) &&
+            conflict.Reason.Contains("outside the writable office scope", StringComparison.OrdinalIgnoreCase));
+
+        var unchangedPayment = await scopedDb.Payments.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(payment => payment.Id == scenario.PaymentId);
+        Assert.Equal(40_000m, unchangedPayment.Amount);
+        Assert.Equal("seeded hidden linked transaction payment", unchangedPayment.Note);
+        var unchangedTransaction = await scopedDb.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == scenario.PaymentId);
+        Assert.False(unchangedTransaction.IsDeleted);
+        Assert.Equal(scenario.ProfileId, unchangedTransaction.LinkedRentalBillingProfileId);
+        Assert.Equal(scenario.RunId, unchangedTransaction.LinkedRentalBillingRunId);
+        Assert.Equal(40_000m, unchangedTransaction.SettlementAmount);
+        await AssertOutOfScopeSyncRentalSettlementUnchangedAsync(scopedDb, scenario.ProfileId, 40_000m, 60_000m);
+    }
+
+    [Fact]
+    public async Task Push_RejectsPaymentDelete_WhenLinkedTransactionRentalProfileOutsideWritableScope()
+    {
+        var currentUser = CreateOfficeSyncUser(PermissionNames.PaymentEdit);
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var scenario = SeedSyncPaymentWithOutOfScopeLinkedTransactionRentalProfileScenario(scopedDb);
+        await scopedDb.SaveChangesAsync();
+        var storedPayment = await scopedDb.Payments.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(payment => payment.Id == scenario.PaymentId);
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-sync-hidden-rental-payment-delete",
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = scenario.PaymentId,
+                    InvoiceId = scenario.InvoiceId,
+                    PaymentDate = storedPayment.PaymentDate,
+                    Amount = storedPayment.Amount,
+                    Note = "must not delete hidden rental linked transaction",
+                    IsDeleted = true,
+                    ExpectedRevision = storedPayment.Revision,
+                    CreatedAtUtc = storedPayment.CreatedAtUtc,
+                    UpdatedAtUtc = storedPayment.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(Payment), StringComparison.Ordinal) &&
+            conflict.Reason.Contains("outside the writable office scope", StringComparison.OrdinalIgnoreCase));
+
+        Assert.False(await scopedDb.Payments.IgnoreQueryFilters()
+            .Where(payment => payment.Id == scenario.PaymentId)
+            .Select(payment => payment.IsDeleted)
+            .SingleAsync());
+        var unchangedTransaction = await scopedDb.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == scenario.PaymentId);
+        Assert.False(unchangedTransaction.IsDeleted);
+        Assert.Equal(scenario.ProfileId, unchangedTransaction.LinkedRentalBillingProfileId);
+        Assert.Equal(scenario.RunId, unchangedTransaction.LinkedRentalBillingRunId);
+        await AssertOutOfScopeSyncRentalSettlementUnchangedAsync(scopedDb, scenario.ProfileId, 40_000m, 60_000m);
+    }
+
+    [Fact]
+    public async Task Push_RejectsInvoiceDelete_WhenExistingRentalProfileOutsideWritableScope()
+    {
+        var currentUser = CreateOfficeSyncUser(PermissionNames.InvoiceEdit, PermissionNames.PaymentEdit);
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var scenario = SeedSyncInvoiceWithOutOfScopeRentalProfileScenario(scopedDb);
+        await scopedDb.SaveChangesAsync();
+        var storedInvoice = await scopedDb.Invoices.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(invoice => invoice.Id == scenario.InvoiceId);
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-sync-hidden-rental-invoice-delete",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = scenario.InvoiceId,
+                    CustomerId = scenario.CustomerId,
+                    CustomerName = "SYNC-HIDDEN-INVOICE-RENTAL-CUSTOMER",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    InvoiceNumber = "SYNC-HIDDEN-INVOICE-RENTAL",
+                    VersionGroupId = storedInvoice.VersionGroupId,
+                    VersionNumber = storedInvoice.VersionNumber,
+                    IsLatestVersion = true,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = storedInvoice.InvoiceDate,
+                    LinkedRentalBillingProfileId = scenario.ProfileId,
+                    LinkedRentalBillingRunId = scenario.RunId,
+                    IsDeleted = true,
+                    ExpectedRevision = storedInvoice.Revision,
+                    CreatedAtUtc = storedInvoice.CreatedAtUtc,
+                    UpdatedAtUtc = storedInvoice.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(Invoice), StringComparison.Ordinal) &&
+            conflict.Reason.Contains("outside the writable office scope", StringComparison.OrdinalIgnoreCase));
+
+        Assert.False(await scopedDb.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.Id == scenario.InvoiceId)
+            .Select(invoice => invoice.IsDeleted)
+            .SingleAsync());
+        await AssertOutOfScopeSyncRentalSettlementUnchangedAsync(scopedDb, scenario.ProfileId, 40_000m, 60_000m);
+    }
+
+    [Fact]
+    public async Task Push_RejectsInvoiceDelete_WhenLinkedTransactionRentalProfileOutsideWritableScope()
+    {
+        var currentUser = CreateOfficeSyncUser(PermissionNames.InvoiceEdit, PermissionNames.PaymentEdit);
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var scenario = SeedSyncPaymentWithOutOfScopeLinkedTransactionRentalProfileScenario(scopedDb);
+        await scopedDb.SaveChangesAsync();
+        var storedInvoice = await scopedDb.Invoices.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(invoice => invoice.Id == scenario.InvoiceId);
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-sync-hidden-linked-transaction-invoice-delete",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = scenario.InvoiceId,
+                    CustomerId = scenario.CustomerId,
+                    CustomerName = "SYNC-HIDDEN-LINKED-TX-RENTAL-CUSTOMER",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    InvoiceNumber = "SYNC-HIDDEN-LINKED-TX-RENTAL",
+                    VersionGroupId = storedInvoice.VersionGroupId,
+                    VersionNumber = storedInvoice.VersionNumber,
+                    IsLatestVersion = true,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = storedInvoice.InvoiceDate,
+                    IsDeleted = true,
+                    ExpectedRevision = storedInvoice.Revision,
+                    CreatedAtUtc = storedInvoice.CreatedAtUtc,
+                    UpdatedAtUtc = storedInvoice.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(Invoice), StringComparison.Ordinal) &&
+            conflict.Reason.Contains("outside the writable office scope", StringComparison.OrdinalIgnoreCase));
+
+        Assert.False(await scopedDb.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.Id == scenario.InvoiceId)
+            .Select(invoice => invoice.IsDeleted)
+            .SingleAsync());
+        Assert.False(await scopedDb.Payments.IgnoreQueryFilters()
+            .Where(payment => payment.Id == scenario.PaymentId)
+            .Select(payment => payment.IsDeleted)
+            .SingleAsync());
+        var unchangedTransaction = await scopedDb.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == scenario.PaymentId);
+        Assert.False(unchangedTransaction.IsDeleted);
+        Assert.Equal(scenario.InvoiceId, unchangedTransaction.LinkedInvoiceId);
+        Assert.Equal(scenario.ProfileId, unchangedTransaction.LinkedRentalBillingProfileId);
+        Assert.Equal(scenario.RunId, unchangedTransaction.LinkedRentalBillingRunId);
+        await AssertOutOfScopeSyncRentalSettlementUnchangedAsync(scopedDb, scenario.ProfileId, 40_000m, 60_000m);
     }
 
     [Fact]
@@ -11842,6 +12203,197 @@ public sealed class SyncControllerTests : IDisposable
         Assert.False(stored.IsActive);
         Assert.Equal("A", stored.PriceSource);
     }
+
+    private static SyncLinkedTransactionOutOfScopeRentalScenario SeedSyncPaymentWithOutOfScopeLinkedTransactionRentalProfileScenario(
+        AppDbContext dbContext)
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        AddSyncOutOfScopeRentalBaseRows(
+            dbContext,
+            customerId,
+            profileId,
+            runId,
+            "SYNC-HIDDEN-LINKED-TX-RENTAL-CUSTOMER");
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-HIDDEN-LINKED-TX-RENTAL",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 9, 25),
+            TotalAmount = 100_000m,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m
+        });
+        dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 9, 26),
+            Amount = 40_000m,
+            Note = "seeded hidden linked transaction payment",
+            CreatedAtUtc = new DateTime(2026, 9, 26, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 9, 26, 0, 0, 0, DateTimeKind.Utc)
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = paymentId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 9, 26),
+            TransactionKind = "legacy hidden rental receipt",
+            LinkedInvoiceId = invoiceId,
+            LinkedInvoiceNumber = "SYNC-HIDDEN-LINKED-TX-RENTAL",
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId,
+            BankReceipt = 40_000m,
+            ReceiptTotal = 40_000m,
+            SettlementAmount = 40_000m,
+            Note = "legacy linked transaction with hidden rental profile"
+        });
+
+        return new SyncLinkedTransactionOutOfScopeRentalScenario(customerId, profileId, runId, invoiceId, paymentId);
+    }
+
+    private static SyncInvoiceOutOfScopeRentalScenario SeedSyncInvoiceWithOutOfScopeRentalProfileScenario(
+        AppDbContext dbContext)
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        AddSyncOutOfScopeRentalBaseRows(
+            dbContext,
+            customerId,
+            profileId,
+            runId,
+            "SYNC-HIDDEN-INVOICE-RENTAL-CUSTOMER");
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-HIDDEN-INVOICE-RENTAL",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 9, 25),
+            TotalAmount = 100_000m,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId
+        });
+
+        return new SyncInvoiceOutOfScopeRentalScenario(customerId, profileId, runId, invoiceId);
+    }
+
+    private static void AddSyncOutOfScopeRentalBaseRows(
+        AppDbContext dbContext,
+        Guid customerId,
+        Guid profileId,
+        Guid runId,
+        string customerName)
+    {
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = customerName,
+            NameMatchKey = customerName.Replace("-", string.Empty, StringComparison.Ordinal),
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ManagementCompanyCode = OfficeCodeCatalog.Yeonsu,
+            ProfileKey = $"sync-hidden-rental-profile-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = customerName,
+            BillingStatus = "in-progress",
+            SettlementStatus = "partial",
+            CompletionStatus = "incomplete",
+            MonthlyAmount = 100_000m,
+            SettledAmount = 40_000m,
+            OutstandingAmount = 60_000m,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new SyncRentalBillingRunSnapshot
+                {
+                    RunId = runId,
+                    RunKey = "2026-09",
+                    ScheduledDate = new DateOnly(2026, 9, 25),
+                    PeriodStartDate = new DateOnly(2026, 9, 1),
+                    PeriodEndDate = new DateOnly(2026, 9, 30),
+                    PeriodLabel = "2026-09",
+                    Status = "in-progress",
+                    BilledAmount = 100_000m,
+                    SettledAmount = 40_000m,
+                    SettlementStatus = "partial",
+                    SettledDate = new DateOnly(2026, 9, 26)
+                }
+            })
+        });
+    }
+
+    private static async Task AssertOutOfScopeSyncRentalSettlementUnchangedAsync(
+        AppDbContext dbContext,
+        Guid profileId,
+        decimal expectedSettled,
+        decimal expectedOutstanding)
+    {
+        var profile = await dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == profileId);
+        Assert.Equal(expectedSettled, profile.SettledAmount);
+        Assert.Equal(expectedOutstanding, profile.OutstandingAmount);
+        var run = Assert.Single(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(profile.BillingRunsJson) ?? []);
+        Assert.Equal(expectedSettled, run.SettledAmount);
+        Assert.Equal("partial", run.SettlementStatus);
+    }
+
+    private static TestCurrentUserContext CreateOfficeSyncUser(params string[] permissions)
+        => new()
+        {
+            Username = "sync-office-usenet",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = permissions
+        };
+
+    private sealed record SyncLinkedTransactionOutOfScopeRentalScenario(
+        Guid CustomerId,
+        Guid ProfileId,
+        Guid RunId,
+        Guid InvoiceId,
+        Guid PaymentId);
+
+    private sealed record SyncInvoiceOutOfScopeRentalScenario(
+        Guid CustomerId,
+        Guid ProfileId,
+        Guid RunId,
+        Guid InvoiceId);
 
     public void Dispose()
     {

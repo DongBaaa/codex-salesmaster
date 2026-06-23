@@ -185,6 +185,7 @@ public sealed class SyncController : ControllerBase
         };
 
         await RemoveUnreadableItemLinesFromPullResponseAsync(response, cancellationToken);
+        await RemoveUnreadableRentalSettlementLinksFromPullResponseAsync(response, cancellationToken);
 
         response.CurrentServerRevision = await GetCurrentRevisionAsync(cancellationToken);
         return Ok(response);
@@ -251,6 +252,95 @@ public sealed class SyncController : ControllerBase
             .Where(line => !line.ItemId.HasValue ||
                            line.ItemId.Value == Guid.Empty ||
                            readableItemIds.Contains(line.ItemId.Value))
+            .ToList();
+    }
+
+    private async Task RemoveUnreadableRentalSettlementLinksFromPullResponseAsync(
+        SyncPullResponse response,
+        CancellationToken cancellationToken)
+    {
+        var referencedProfileIds = response.Invoices
+            .Select(invoice => invoice.LinkedRentalBillingProfileId)
+            .Concat(response.Transactions.Select(transaction => transaction.LinkedRentalBillingProfileId))
+            .Concat(response.RentalAssets.Select(asset => asset.BillingProfileId))
+            .Concat(response.RentalAssets.Select(asset => asset.LastBillingProfileId))
+            .Concat(response.RentalAssetAssignmentHistories.Select(history => history.BillingProfileId))
+            .Concat(response.RentalBillingLogs.Select(log => (Guid?)log.BillingProfileId))
+            .Where(profileId => profileId.HasValue && profileId.Value != Guid.Empty)
+            .Select(profileId => profileId!.Value)
+            .Distinct()
+            .ToList();
+
+        if (referencedProfileIds.Count == 0)
+            return;
+
+        var profiles = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(profile => referencedProfileIds.Contains(profile.Id) && !profile.IsDeleted)
+            .Select(profile => new
+            {
+                profile.Id,
+                profile.ResponsibleOfficeCode,
+                profile.TenantCode,
+                profile.OfficeCode
+            })
+            .ToListAsync(cancellationToken);
+
+        var readableProfileIds = profiles
+            .Where(profile => _officeScopeService.CanReadOfficeForRentals(
+                profile.ResponsibleOfficeCode,
+                profile.TenantCode,
+                profile.OfficeCode))
+            .Select(profile => profile.Id)
+            .ToHashSet();
+
+        bool CanReadProfile(Guid? profileId)
+            => !profileId.HasValue ||
+               profileId.Value == Guid.Empty ||
+               readableProfileIds.Contains(profileId.Value);
+
+        foreach (var invoice in response.Invoices)
+        {
+            if (CanReadProfile(invoice.LinkedRentalBillingProfileId))
+                continue;
+
+            invoice.LinkedRentalBillingProfileId = null;
+            invoice.LinkedRentalBillingRunId = null;
+        }
+
+        foreach (var transaction in response.Transactions)
+        {
+            if (CanReadProfile(transaction.LinkedRentalBillingProfileId))
+                continue;
+
+            transaction.LinkedRentalBillingProfileId = null;
+            transaction.LinkedRentalBillingRunId = null;
+        }
+
+        foreach (var asset in response.RentalAssets)
+        {
+            if (!CanReadProfile(asset.BillingProfileId))
+                asset.BillingProfileId = null;
+
+            if (!CanReadProfile(asset.LastBillingProfileId))
+            {
+                asset.LastBillingProfileId = null;
+                asset.LastBillingProfileDisplay = string.Empty;
+            }
+        }
+
+        foreach (var history in response.RentalAssetAssignmentHistories)
+        {
+            if (CanReadProfile(history.BillingProfileId))
+                continue;
+
+            history.BillingProfileId = null;
+            history.BillingProfileDisplay = string.Empty;
+        }
+
+        response.RentalBillingLogs = response.RentalBillingLogs
+            .Where(log => log.BillingProfileId != Guid.Empty && readableProfileIds.Contains(log.BillingProfileId))
             .ToList();
     }
 
@@ -4916,6 +5006,23 @@ public sealed class SyncController : ControllerBase
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
             if (!await ValidateInvoiceDeletePaymentSideEffectPermissionAsync(dto, existing, result, cancellationToken))
                 continue;
+            if (existing is not null &&
+                !await ValidateWritableRentalSettlementProfileReferenceAsync(
+                    existing.LinkedRentalBillingProfileId,
+                    dto,
+                    nameof(Invoice),
+                    result,
+                    cancellationToken))
+            {
+                continue;
+            }
+
+            if (dto.IsDeleted &&
+                existing is not null &&
+                !await ValidateLinkedTransactionScopesForInvoiceDeleteAsync([existing.Id], dto, result, cancellationToken))
+            {
+                continue;
+            }
 
             var customer = dto.CustomerId == Guid.Empty
                 ? null
@@ -5165,6 +5272,57 @@ public sealed class SyncController : ControllerBase
                 cancellationToken);
     }
 
+    private async Task<bool> ValidateLinkedTransactionScopesForInvoiceDeleteAsync(
+        IReadOnlyCollection<Guid> invoiceIds,
+        InvoiceDto dto,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        if (invoiceIds.Count == 0)
+            return true;
+
+        var linkedTransactions = await _dbContext.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(transaction =>
+                transaction.LinkedInvoiceId.HasValue &&
+                invoiceIds.Contains(transaction.LinkedInvoiceId.Value))
+            .Select(transaction => new
+            {
+                transaction.Id,
+                transaction.ResponsibleOfficeCode,
+                transaction.TenantCode,
+                transaction.OfficeCode,
+                transaction.LinkedRentalBillingProfileId
+            })
+            .ToListAsync(cancellationToken);
+
+        foreach (var linkedTransaction in linkedTransactions)
+        {
+            if (!_officeScopeService.CanWriteOfficeForPayments(
+                    linkedTransaction.ResponsibleOfficeCode,
+                    linkedTransaction.TenantCode,
+                    linkedTransaction.OfficeCode))
+            {
+                AddClientConflict(dto, nameof(Invoice),
+                    $"Linked transaction is outside the writable office scope: {linkedTransaction.Id}.", result);
+                return false;
+            }
+
+            if (!await ValidateWritableRentalSettlementProfileReferenceAsync(
+                    linkedTransaction.LinkedRentalBillingProfileId,
+                    dto,
+                    nameof(Invoice),
+                    result,
+                    cancellationToken))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private async Task<bool> ValidateReadableInvoiceLineItemsAsync(
         InvoiceDto dto,
         SyncPushResult result,
@@ -5219,11 +5377,18 @@ public sealed class SyncController : ControllerBase
         SyncPushResult result,
         CancellationToken cancellationToken)
     {
-        if (dto.IsDeleted)
-            return true;
-
         if (!dto.LinkedRentalBillingProfileId.HasValue || dto.LinkedRentalBillingProfileId.Value == Guid.Empty)
             return true;
+
+        if (dto.IsDeleted)
+        {
+            return await ValidateWritableRentalSettlementProfileReferenceAsync(
+                dto.LinkedRentalBillingProfileId,
+                dto,
+                nameof(Invoice),
+                result,
+                cancellationToken);
+        }
 
         var profile = await _dbContext.RentalBillingProfiles
             .IgnoreQueryFilters()
@@ -5476,6 +5641,16 @@ public sealed class SyncController : ControllerBase
         {
             AddClientConflict(dto, nameof(Payment),
                 $"Linked transaction is outside the writable office scope: {linkedTransaction.Id}.", result);
+            return false;
+        }
+
+        if (!await ValidateWritableRentalSettlementProfileReferenceAsync(
+                linkedTransaction.LinkedRentalBillingProfileId,
+                dto,
+                nameof(Payment),
+                result,
+                cancellationToken))
+        {
             return false;
         }
 
