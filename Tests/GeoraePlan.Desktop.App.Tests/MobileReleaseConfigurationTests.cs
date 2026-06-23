@@ -819,6 +819,42 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void MobilePaymentAttachmentDraftStore_CleansOnlyOldOrphanDraftFiles()
+    {
+        var root = FindRepositoryRoot();
+        var coordinatorSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "SyncCoordinator.cs"));
+        var draftStoreSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "PaymentAttachmentDraftStore.cs"));
+
+        Assert.Contains("public async Task<int> RemoveOrphanDraftsAsync(", draftStoreSource, StringComparison.Ordinal);
+        Assert.Contains("Directory.EnumerateFiles(DraftDirectory, \"*\", SearchOption.TopDirectoryOnly)", draftStoreSource, StringComparison.Ordinal);
+        Assert.Contains("IsDraftFileName(Path.GetFileName(fullPath))", draftStoreSource, StringComparison.Ordinal);
+        Assert.Contains("activePaths.Contains(fullPath)", draftStoreSource, StringComparison.Ordinal);
+        Assert.Contains("File.GetLastWriteTimeUtc(fullPath) > cutoffUtc", draftStoreSource, StringComparison.Ordinal);
+        Assert.Contains("NormalizeDraftPathOrNull(attachment.StoredPath, draftRoot)", draftStoreSource, StringComparison.Ordinal);
+        Assert.Contains("File.Exists(storedPath)", draftStoreSource, StringComparison.Ordinal);
+        Assert.Matches("(?s)private static string\\? NormalizeDraftPathOrNull\\(string\\? path, string draftRoot\\).*catch\\s*\\{\\s*return null;\\s*\\}", draftStoreSource);
+        Assert.Contains("EnsureTrailingDirectorySeparator(Path.GetFullPath(DraftDirectory))", draftStoreSource, StringComparison.Ordinal);
+        Assert.Contains("private static bool IsDraftFileName(string? fileName)", draftStoreSource, StringComparison.Ordinal);
+        Assert.Contains("private static string EnsureTrailingDirectorySeparator(string path)", draftStoreSource, StringComparison.Ordinal);
+
+        Assert.Contains("private static readonly TimeSpan OrphanPaymentAttachmentDraftMinimumAge = TimeSpan.FromDays(7);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("public async Task<MobileSyncState> LoadAsync(CancellationToken ct = default)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("await CleanupOrphanPaymentAttachmentDraftsAsync(state, ct);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("await _attachmentStore.RemoveOrphanDraftsAsync(", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);", coordinatorSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MobilePaymentAttachmentUpload_DoesNotDeleteDraftOnEmptyUploadResponse()
     {
         var source = File.ReadAllText(Path.Combine(

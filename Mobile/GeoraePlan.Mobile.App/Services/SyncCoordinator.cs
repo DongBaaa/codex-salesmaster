@@ -14,6 +14,7 @@ public sealed class SyncCoordinator
     private readonly CustomerContractCacheStore _contractCacheStore;
     private readonly SemaphoreSlim _syncLock = new(1, 1);
     private readonly List<PendingPaymentAttachmentRecord> _discardedPaymentAttachmentDrafts = new();
+    private static readonly TimeSpan OrphanPaymentAttachmentDraftMinimumAge = TimeSpan.FromDays(7);
 
     public const string ConcurrencyConflictUserMessage = "다른 PC/모바일에서 먼저 수정되어 최신값을 다시 불러왔습니다. 내용을 확인한 뒤 다시 저장해 주세요.";
 
@@ -32,8 +33,12 @@ public sealed class SyncCoordinator
         => !string.IsNullOrWhiteSpace(message) &&
            message.Contains("다른 PC/모바일에서 먼저 수정", StringComparison.Ordinal);
 
-    public Task<MobileSyncState> LoadAsync(CancellationToken ct = default)
-        => _store.LoadAsync(ct);
+    public async Task<MobileSyncState> LoadAsync(CancellationToken ct = default)
+    {
+        var state = await _store.LoadAsync(ct);
+        await CleanupOrphanPaymentAttachmentDraftsAsync(state, ct);
+        return state;
+    }
 
     public async Task<MobileSyncState> PullAsync(CancellationToken ct = default)
     {
@@ -454,6 +459,22 @@ public sealed class SyncCoordinator
     {
         await _store.SaveAsync(state, ct);
         await RemoveDiscardedPaymentAttachmentDraftsAsync(ct);
+        await CleanupOrphanPaymentAttachmentDraftsAsync(state, ct);
+    }
+
+    private async Task CleanupOrphanPaymentAttachmentDraftsAsync(MobileSyncState state, CancellationToken ct)
+    {
+        try
+        {
+            await _attachmentStore.RemoveOrphanDraftsAsync(
+                state.PendingPaymentAttachments,
+                OrphanPaymentAttachmentDraftMinimumAge,
+                ct);
+        }
+        catch (Exception ex)
+        {
+            MobileAppLogger.Warn("SYNC", $"고아 수금첨부 임시 파일 정리 실패: {ex.Message}");
+        }
     }
 
     private void RemovePendingPaymentAttachments(
