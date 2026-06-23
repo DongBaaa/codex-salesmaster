@@ -472,16 +472,18 @@ public sealed class SyncController : ControllerBase
                 await _dbContext.SaveChangesAsync(cancellationToken);
             }
             var validInvoices = await FilterValidInvoicesAsync(request.Invoices ?? [], result, cancellationToken);
-            var invoiceRentalSettlementTargets = await UpsertInvoicesAsync(
+            var invoiceUpsertResult = await UpsertInvoicesAsync(
                 validInvoices,
                 result,
                 deviceId,
                 itemWarehouseStockResult.AcceptedStockKeys,
                 cancellationToken);
+            var invoiceRentalSettlementTargets = invoiceUpsertResult.RentalSettlementTargets;
             if (validInvoices.Count > 0)
             {
                 await _dbContext.SaveChangesAsync(cancellationToken);
-                requiresInventoryLedgerRebuild = true;
+                if (invoiceUpsertResult.AcceptedCount > 0)
+                    requiresInventoryLedgerRebuild = true;
             }
             var scopedTransactions = await PrepareScopedTransactionsAsync(request.Transactions ?? [], result, cancellationToken);
             var validTransactions = await FilterValidTransactionsAsync(scopedTransactions, result, cancellationToken);
@@ -504,8 +506,8 @@ public sealed class SyncController : ControllerBase
             }
             var scopedInventoryTransfers = await PrepareScopedInventoryTransfersAsync(request.InventoryTransfers ?? [], result, cancellationToken);
             var validInventoryTransfers = await FilterValidInventoryTransfersAsync(scopedInventoryTransfers, result, cancellationToken);
-            await UpsertInventoryTransfersAsync(validInventoryTransfers, result, deviceId, itemWarehouseStockResult.AcceptedStockKeys, cancellationToken);
-            if (validInventoryTransfers.Count > 0)
+            var acceptedInventoryTransferCount = await UpsertInventoryTransfersAsync(validInventoryTransfers, result, deviceId, itemWarehouseStockResult.AcceptedStockKeys, cancellationToken);
+            if (acceptedInventoryTransferCount > 0)
                 requiresInventoryLedgerRebuild = true;
             var scopedRentalCompanies = await PrepareScopedRentalManagementCompaniesAsync(request.RentalManagementCompanies ?? [], result, cancellationToken);
             await UpsertEntitiesAsync(scopedRentalCompanies, _dbContext.RentalManagementCompanies,
@@ -516,11 +518,12 @@ public sealed class SyncController : ControllerBase
             var incomingRentalProfileIdMap = BuildIncomingRentalBillingProfileIdMap(requestedRentalProfiles);
             var scopedRentalProfiles = await PrepareScopedRentalBillingProfilesAsync(requestedRentalProfiles, result, cancellationToken);
             var validRentalProfiles = await FilterValidRentalBillingProfilesAsync(scopedRentalProfiles, result, cancellationToken);
-            await UpsertRentalBillingProfilesAsync(validRentalProfiles, result, deviceId, cancellationToken);
+            var acceptedRentalProfiles = await UpsertRentalBillingProfilesAsync(validRentalProfiles, result, deviceId, cancellationToken);
             if (validRentalProfiles.Count > 0)
             {
                 await _dbContext.SaveChangesAsync(cancellationToken);
-                requiresRentalAssignmentRefresh = true;
+                if (acceptedRentalProfiles.Count > 0)
+                    requiresRentalAssignmentRefresh = true;
             }
 
             var resolvedRentalProfileIds = BuildResolvedRentalBillingProfileIdMap(validRentalProfiles, incomingRentalProfileIdMap);
@@ -534,7 +537,7 @@ public sealed class SyncController : ControllerBase
             {
                 var scopedRentalAssets = await PrepareScopedRentalAssetsAsync(request.RentalAssets ?? [], result, cancellationToken);
                 var validRentalAssets = await FilterValidRentalAssetsAsync(scopedRentalAssets, resolvedRentalProfileIds, result, cancellationToken);
-                await UpsertEntitiesAsync(validRentalAssets, _dbContext.RentalAssets,
+                var acceptedRentalAssets = await UpsertEntitiesAsync(validRentalAssets, _dbContext.RentalAssets,
                     (e, d) => e.Apply(d), d => new RentalAsset { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
                 if (validRentalAssets.Count > 0)
                     await _dbContext.SaveChangesAsync(cancellationToken);
@@ -570,7 +573,7 @@ public sealed class SyncController : ControllerBase
                 await PopulateAcceptedRevisionsAsync(result, scopedRentalAssignmentHistories, _dbContext.RentalAssetAssignmentHistories, nameof(RentalAssetAssignmentHistory), cancellationToken);
                 await PopulateAcceptedRevisionsAsync(result, validRentalBillingLogs, _dbContext.RentalBillingLogs, nameof(RentalBillingLog), cancellationToken);
                 await PopulateAcceptedRevisionsAsync(result, validPayments, _dbContext.Payments, nameof(Payment), cancellationToken);
-                if (validRentalAssets.Count > 0)
+                if (acceptedRentalAssets.Count > 0)
                     requiresRentalAssignmentRefresh = true;
             }
             finally
@@ -1024,7 +1027,7 @@ public sealed class SyncController : ControllerBase
         }
     }
 
-    private async Task<List<(Guid ProfileId, Guid? RunId)>> UpsertInvoicesAsync(
+    private async Task<(List<(Guid ProfileId, Guid? RunId)> RentalSettlementTargets, int AcceptedCount)> UpsertInvoicesAsync(
         IEnumerable<InvoiceDto> payload,
         SyncPushResult result,
         string deviceId,
@@ -1033,6 +1036,7 @@ public sealed class SyncController : ControllerBase
     {
         var rentalSettlementTargets = new List<(Guid ProfileId, Guid? RunId)>();
         var acceptedDeletedInvoiceIds = new List<Guid>();
+        var acceptedCount = 0;
         foreach (var dto in payload)
         {
             if (await TryAcceptDuplicateMutationAsync(dto, nameof(Invoice), deviceId, result, cancellationToken))
@@ -1071,6 +1075,7 @@ public sealed class SyncController : ControllerBase
                     acceptedDeletedInvoiceIds.Add(entity.Id);
                 RegisterProcessedMutation(dto, nameof(Invoice), deviceId);
                 await ResolveHistoricalConflictsAsync(nameof(Invoice), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
+                acceptedCount++;
                 result.AcceptedCount++;
                 continue;
             }
@@ -1119,6 +1124,7 @@ public sealed class SyncController : ControllerBase
                 cancellationToken);
             RegisterProcessedMutation(dto, nameof(Invoice), deviceId);
             await ResolveHistoricalConflictsAsync(nameof(Invoice), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
+            acceptedCount++;
             result.AcceptedCount++;
         }
 
@@ -1134,7 +1140,7 @@ public sealed class SyncController : ControllerBase
             await _rentalSettlementRecalculationService.MarkPaymentsDeletedForInvoicesAsync(distinctDeletedInvoiceIds, cancellationToken);
         }
 
-        return rentalSettlementTargets.Distinct().ToList();
+        return (rentalSettlementTargets.Distinct().ToList(), acceptedCount);
     }
 
     private async Task<Dictionary<Guid, List<(Guid ProfileId, Guid? RunId)>>> LoadExistingRentalSettlementTargetsByTransactionIdAsync(
@@ -2450,13 +2456,14 @@ public sealed class SyncController : ControllerBase
         return valid;
     }
 
-    private async Task UpsertInventoryTransfersAsync(
+    private async Task<int> UpsertInventoryTransfersAsync(
         IEnumerable<InventoryTransferDto> payload,
         SyncPushResult result,
         string deviceId,
         IReadOnlySet<string> itemWarehouseStockKeysHandledByClient,
         CancellationToken cancellationToken)
     {
+        var acceptedCount = 0;
         foreach (var dto in payload)
         {
             if (await TryAcceptDuplicateMutationAsync(dto, nameof(InventoryTransfer), deviceId, result, cancellationToken))
@@ -2490,6 +2497,7 @@ public sealed class SyncController : ControllerBase
                 _dbContext.InventoryTransfers.Add(entity);
                 RegisterProcessedMutation(dto, nameof(InventoryTransfer), deviceId);
                 await ResolveHistoricalConflictsAsync(nameof(InventoryTransfer), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
+                acceptedCount++;
                 result.AcceptedCount++;
                 continue;
             }
@@ -2543,8 +2551,11 @@ public sealed class SyncController : ControllerBase
             ApplyInventoryTransferLines(entity, dto.Lines ?? []);
             RegisterProcessedMutation(dto, nameof(InventoryTransfer), deviceId);
             await ResolveHistoricalConflictsAsync(nameof(InventoryTransfer), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
+            acceptedCount++;
             result.AcceptedCount++;
         }
+
+        return acceptedCount;
     }
 
     private async Task ApplyStockSnapshotDeltaAsync(
@@ -2774,12 +2785,13 @@ public sealed class SyncController : ControllerBase
         return result;
     }
 
-    private async Task UpsertRentalBillingProfilesAsync(
+    private async Task<List<RentalBillingProfileDto>> UpsertRentalBillingProfilesAsync(
         IEnumerable<RentalBillingProfileDto> payload,
         SyncPushResult result,
         string deviceId,
         CancellationToken cancellationToken)
     {
+        var accepted = new List<RentalBillingProfileDto>();
         foreach (var dto in payload)
         {
             if (await TryAcceptDuplicateMutationAsync(dto, nameof(RentalBillingProfile), deviceId, result, cancellationToken))
@@ -2805,6 +2817,7 @@ public sealed class SyncController : ControllerBase
                 _dbContext.RentalBillingProfiles.Add(newEntity);
                 RegisterProcessedMutation(dto, nameof(RentalBillingProfile), deviceId);
                 await ResolveHistoricalConflictsAsync(nameof(RentalBillingProfile), newEntity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
+                accepted.Add(dto);
                 result.AcceptedCount++;
                 continue;
             }
@@ -2825,8 +2838,11 @@ public sealed class SyncController : ControllerBase
             entity.Apply(dto);
             RegisterProcessedMutation(dto, nameof(RentalBillingProfile), deviceId);
             await ResolveHistoricalConflictsAsync(nameof(RentalBillingProfile), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
+            accepted.Add(dto);
             result.AcceptedCount++;
         }
+
+        return accepted;
     }
 
     private async Task<List<RentalBillingProfileDto>> FilterValidRentalBillingProfilesAsync(

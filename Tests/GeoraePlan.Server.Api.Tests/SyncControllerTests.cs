@@ -3265,6 +3265,385 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_DoesNotRefreshRentalAssignmentHistory_WhenRentalAssetUpdateIsRejected()
+    {
+        var asset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "USENET|SYNC-REJECTED-ASSET|NO-CURRENT-ASSIGNMENT",
+            ManagementId = "SYNC-REJECTED-ASSET",
+            ManagementNumber = "SYNC-REJECTED-ASSET",
+            ItemName = "Rejected sync copier",
+            MachineNumber = "REJECTED-SYNC-001",
+            CurrentLocation = "창고",
+            MonthlyFee = 100m
+        };
+        var history = new RentalAssetAssignmentHistory
+        {
+            Id = Guid.NewGuid(),
+            AssetId = asset.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            CustomerName = "기존 설치 거래처",
+            InstallLocation = "기존 설치 위치",
+            ItemName = asset.ItemName,
+            MachineNumber = asset.MachineNumber,
+            ManagementNumber = asset.ManagementNumber,
+            MonthlyFee = asset.MonthlyFee,
+            ChangeReason = "초기 설치",
+            IsCurrent = true,
+            LinkedAtUtc = new DateTime(2026, 6, 20, 0, 0, 0, DateTimeKind.Utc)
+        };
+        _dbContext.RentalAssets.Add(asset);
+        _dbContext.RentalAssetAssignmentHistories.Add(history);
+        await _dbContext.SaveChangesAsync();
+
+        var serverRevision = asset.Revision;
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-asset-rejected-refresh",
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = asset.Id,
+                    TenantCode = asset.TenantCode,
+                    OfficeCode = asset.OfficeCode,
+                    ResponsibleOfficeCode = asset.ResponsibleOfficeCode,
+                    ManagementCompanyCode = asset.ManagementCompanyCode,
+                    AssetKey = asset.AssetKey,
+                    ManagementId = asset.ManagementId,
+                    ManagementNumber = asset.ManagementNumber,
+                    ItemName = asset.ItemName,
+                    MachineNumber = asset.MachineNumber,
+                    CurrentLocation = "회수",
+                    MonthlyFee = asset.MonthlyFee,
+                    CreatedAtUtc = asset.CreatedAtUtc,
+                    UpdatedAtUtc = asset.UpdatedAtUtc.AddMinutes(5),
+                    Revision = serverRevision,
+                    ExpectedRevision = serverRevision + 1
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalAsset) &&
+            conflict.Reason.Contains("Expected revision mismatch", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(0, result.AcceptedCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedHistory = await _dbContext.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .SingleAsync(row => row.Id == history.Id);
+        Assert.True(storedHistory.IsCurrent);
+        Assert.Null(storedHistory.UnlinkedAtUtc);
+        Assert.Equal("초기 설치", storedHistory.ChangeReason);
+
+        var storedAsset = await _dbContext.RentalAssets
+            .IgnoreQueryFilters()
+            .SingleAsync(row => row.Id == asset.Id);
+        Assert.Equal("창고", storedAsset.CurrentLocation);
+        Assert.Equal(serverRevision, storedAsset.Revision);
+    }
+
+    [Fact]
+    public async Task Push_DoesNotRefreshRentalAssignmentHistory_WhenRentalBillingProfileUpdateIsRejected()
+    {
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "유즈넷"
+        });
+        var profile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "USENET|REJECTED-PROFILE|MODEL-P",
+            CustomerName = "거절 프로필 거래처",
+            ItemName = "MODEL-P",
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            BillingDay = 25,
+            MonthlyAmount = 100m
+        };
+        var unrelatedAsset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "USENET|PROFILE-REJECTED-UNRELATED-ASSET",
+            ManagementId = "PROFILE-REJECTED-ASSET",
+            ManagementNumber = "PROFILE-REJECTED-ASSET",
+            ItemName = "Profile rejected unrelated copier",
+            MachineNumber = "PROFILE-REJECTED-001",
+            CurrentLocation = "창고",
+            MonthlyFee = 100m
+        };
+        var history = new RentalAssetAssignmentHistory
+        {
+            Id = Guid.NewGuid(),
+            AssetId = unrelatedAsset.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            CustomerName = "기존 프로필 설치 거래처",
+            InstallLocation = "기존 프로필 설치 위치",
+            ItemName = unrelatedAsset.ItemName,
+            MachineNumber = unrelatedAsset.MachineNumber,
+            ManagementNumber = unrelatedAsset.ManagementNumber,
+            MonthlyFee = unrelatedAsset.MonthlyFee,
+            ChangeReason = "프로필 테스트 초기 설치",
+            IsCurrent = true,
+            LinkedAtUtc = new DateTime(2026, 6, 20, 1, 0, 0, DateTimeKind.Utc)
+        };
+        _dbContext.RentalBillingProfiles.Add(profile);
+        _dbContext.RentalAssets.Add(unrelatedAsset);
+        _dbContext.RentalAssetAssignmentHistories.Add(history);
+        await _dbContext.SaveChangesAsync();
+
+        var serverRevision = profile.Revision;
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-profile-rejected-refresh",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profile.Id,
+                    TenantCode = profile.TenantCode,
+                    OfficeCode = profile.OfficeCode,
+                    ResponsibleOfficeCode = profile.ResponsibleOfficeCode,
+                    ProfileKey = profile.ProfileKey,
+                    CustomerName = profile.CustomerName,
+                    ItemName = profile.ItemName,
+                    ManagementCompanyCode = profile.ManagementCompanyCode,
+                    BillingDay = profile.BillingDay,
+                    MonthlyAmount = 200m,
+                    CreatedAtUtc = profile.CreatedAtUtc,
+                    UpdatedAtUtc = profile.UpdatedAtUtc.AddMinutes(5),
+                    Revision = serverRevision,
+                    ExpectedRevision = serverRevision + 1
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.Reason.Contains("Expected revision mismatch", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(0, result.AcceptedCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedHistory = await _dbContext.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .SingleAsync(row => row.Id == history.Id);
+        Assert.True(storedHistory.IsCurrent);
+        Assert.Null(storedHistory.UnlinkedAtUtc);
+        Assert.Equal("프로필 테스트 초기 설치", storedHistory.ChangeReason);
+
+        var storedProfile = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .SingleAsync(row => row.Id == profile.Id);
+        Assert.Equal(100m, storedProfile.MonthlyAmount);
+        Assert.Equal(serverRevision, storedProfile.Revision);
+    }
+
+    [Fact]
+    public async Task Push_DoesNotRebuildInventoryLedger_WhenInvoiceUpdateIsRejected()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-REJECTED-INVOICE-CUSTOMER",
+            NameMatchKey = "SYNCREJECTEDINVOICECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "REJECTED-INV-001",
+            VersionGroupId = Guid.NewGuid(),
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 20),
+            SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            TotalAmount = 100m,
+            SupplyAmount = 100m,
+            VatAmount = 0m
+        };
+        var ledgerEntry = new InventoryLedgerEntry
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ItemId = Guid.NewGuid(),
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            SourceType = "Probe:BeforeRejectedInvoice",
+            SourceDocumentId = Guid.NewGuid(),
+            QuantityDelta = 7m,
+            OccurredDate = new DateOnly(2026, 6, 20),
+            Note = "rejected invoice should not rebuild ledger"
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.Invoices.Add(invoice);
+        _dbContext.InventoryLedgerEntries.Add(ledgerEntry);
+        await _dbContext.SaveChangesAsync();
+
+        var serverRevision = invoice.Revision;
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rejected-invoice-ledger-rebuild",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoice.Id,
+                    CustomerId = customer.Id,
+                    CustomerName = customer.NameOriginal,
+                    TenantCode = invoice.TenantCode,
+                    OfficeCode = invoice.OfficeCode,
+                    ResponsibleOfficeCode = invoice.ResponsibleOfficeCode,
+                    InvoiceNumber = invoice.InvoiceNumber,
+                    VersionGroupId = invoice.VersionGroupId,
+                    VersionNumber = invoice.VersionNumber,
+                    IsLatestVersion = invoice.IsLatestVersion,
+                    VoucherType = invoice.VoucherType,
+                    InvoiceDate = invoice.InvoiceDate,
+                    SourceWarehouseCode = invoice.SourceWarehouseCode,
+                    TotalAmount = 200m,
+                    SupplyAmount = 200m,
+                    VatAmount = 0m,
+                    CreatedAtUtc = invoice.CreatedAtUtc,
+                    UpdatedAtUtc = invoice.UpdatedAtUtc.AddMinutes(5),
+                    Revision = serverRevision,
+                    ExpectedRevision = serverRevision + 1
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(Invoice) &&
+            conflict.Reason.Contains("Expected revision mismatch", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(0, result.AcceptedCount);
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.True(await _dbContext.InventoryLedgerEntries
+            .AnyAsync(entry => entry.Id == ledgerEntry.Id));
+        var storedInvoice = await _dbContext.Invoices.IgnoreQueryFilters()
+            .SingleAsync(row => row.Id == invoice.Id);
+        Assert.Equal(100m, storedInvoice.TotalAmount);
+        Assert.Equal(serverRevision, storedInvoice.Revision);
+    }
+
+    [Fact]
+    public async Task Push_DoesNotRebuildInventoryLedger_WhenInventoryTransferUpdateIsRejected()
+    {
+        var transfer = new InventoryTransfer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TransferNumber = "REJECTED-TRANSFER-001",
+            TransferDate = new DateOnly(2026, 6, 20),
+            FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            Memo = "server memo",
+            CreatedByUsername = "server",
+            LastSavedByUsername = "server",
+            LastSavedAtUtc = new DateTime(2026, 6, 20, 0, 0, 0, DateTimeKind.Utc),
+            TransferStatus = InventoryTransferStatusNormalizer.Pending
+        };
+        var ledgerEntry = new InventoryLedgerEntry
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ItemId = Guid.NewGuid(),
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            SourceType = "Probe:BeforeRejectedTransfer",
+            SourceDocumentId = Guid.NewGuid(),
+            QuantityDelta = -3m,
+            OccurredDate = new DateOnly(2026, 6, 20),
+            Note = "rejected transfer should not rebuild ledger"
+        };
+        _dbContext.InventoryTransfers.Add(transfer);
+        _dbContext.InventoryLedgerEntries.Add(ledgerEntry);
+        await _dbContext.SaveChangesAsync();
+
+        var serverRevision = transfer.Revision;
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rejected-transfer-ledger-rebuild",
+            InventoryTransfers =
+            [
+                new InventoryTransferDto
+                {
+                    Id = transfer.Id,
+                    TenantCode = transfer.TenantCode,
+                    SourceOfficeCode = transfer.SourceOfficeCode,
+                    TargetOfficeCode = transfer.TargetOfficeCode,
+                    TransferNumber = transfer.TransferNumber,
+                    TransferDate = transfer.TransferDate,
+                    FromWarehouseCode = transfer.FromWarehouseCode,
+                    ToWarehouseCode = transfer.ToWarehouseCode,
+                    Memo = "client stale memo",
+                    CreatedByUsername = transfer.CreatedByUsername,
+                    LastSavedByUsername = "client",
+                    LastSavedAtUtc = transfer.LastSavedAtUtc.AddMinutes(5),
+                    TransferStatus = transfer.TransferStatus,
+                    CreatedAtUtc = transfer.CreatedAtUtc,
+                    UpdatedAtUtc = transfer.UpdatedAtUtc.AddMinutes(5),
+                    Revision = serverRevision,
+                    ExpectedRevision = serverRevision + 1
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(InventoryTransfer) &&
+            conflict.Reason.Contains("Expected revision mismatch", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(0, result.AcceptedCount);
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.True(await _dbContext.InventoryLedgerEntries
+            .AnyAsync(entry => entry.Id == ledgerEntry.Id));
+        var storedTransfer = await _dbContext.InventoryTransfers.IgnoreQueryFilters()
+            .SingleAsync(row => row.Id == transfer.Id);
+        Assert.Equal("server memo", storedTransfer.Memo);
+        Assert.Equal(serverRevision, storedTransfer.Revision);
+    }
+
+    [Fact]
     public async Task Push_ReusesExistingRentalAsset_WhenIncomingIdDiffersButManagementNumberMatches()
     {
         var existing = new RentalAsset
