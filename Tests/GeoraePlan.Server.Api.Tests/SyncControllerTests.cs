@@ -5761,6 +5761,104 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_DoesNotApplyPurchaseInvoiceStock_WhenReceivingIsPending()
+    {
+        var customerId = Guid.NewGuid();
+        var itemId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-PURCHASE-PENDING-STOCK-CUSTOMER",
+            NameMatchKey = "SYNCPURCHASEPENDINGSTOCKCUSTOMER",
+            TradeType = "매입"
+        });
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "SYNC-PURCHASE-PENDING-STOCK-ITEM",
+            NameMatchKey = "SYNCPURCHASEPENDINGSTOCKITEM",
+            Unit = "EA",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 5m
+        });
+        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 5m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
+            Revision = 10
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var invoiceId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purchase-pending-stock",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customerId,
+                    CustomerName = "SYNC-PURCHASE-PENDING-STOCK-CUSTOMER",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    InvoiceNumber = "SYNC-PURCHASE-PENDING-STOCK-001",
+                    VersionGroupId = invoiceId,
+                    VersionNumber = 1,
+                    IsLatestVersion = true,
+                    VoucherType = VoucherType.Purchase,
+                    PurchaseReceivingRequired = true,
+                    PurchaseReceivingStatus = InvoiceReceivingStatuses.Pending,
+                    SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    InvoiceDate = new DateOnly(2026, 6, 28),
+                    Lines =
+                    [
+                        new InvoiceLineDto
+                        {
+                            Id = lineId,
+                            InvoiceId = invoiceId,
+                            ItemId = itemId,
+                            ItemNameOriginal = "SYNC-PURCHASE-PENDING-STOCK-ITEM",
+                            Unit = "EA",
+                            Quantity = 2m,
+                            UnitPrice = 1000m,
+                            LineAmount = 2000m,
+                            ItemTrackingType = ItemTrackingTypes.Stock
+                        }
+                    ],
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(5m, await _dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(5m, await _dbContext.Items.IgnoreQueryFilters()
+            .Where(item => item.Id == itemId)
+            .Select(item => item.CurrentStock)
+            .SingleAsync());
+        Assert.False(await _dbContext.InventoryLedgerEntries.AnyAsync(entry => entry.SourceDocumentId == invoiceId));
+    }
+
+    [Fact]
     public async Task Push_RenumbersActiveInvoiceLinesByPayloadOrder()
     {
         var customer = new Customer

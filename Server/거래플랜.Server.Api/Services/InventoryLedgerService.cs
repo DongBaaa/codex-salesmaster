@@ -53,6 +53,12 @@ public sealed class InventoryLedgerService
         var entries = new List<InventoryLedgerEntry>();
         foreach (var invoice in invoices)
         {
+            if (invoice.VoucherType == VoucherType.Purchase &&
+                !InvoiceReceivingStatuses.IsConfirmed(invoice.PurchaseReceivingStatus))
+            {
+                continue;
+            }
+
             var warehouseCode = ResolveInvoiceWarehouseCode(invoice);
             foreach (var line in invoice.Lines.Where(line => !line.IsDeleted && line.ItemId.HasValue && line.ItemId.Value != Guid.Empty && line.Quantity != 0))
             {

@@ -3404,6 +3404,8 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
             SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
             VoucherType = VoucherType.Purchase,
+            PurchaseReceivingRequired = true,
+            PurchaseReceivingStatus = InvoiceReceivingStatuses.Confirmed,
             InvoiceDate = new DateOnly(2026, 5, 21),
             Lines =
             [
@@ -3462,6 +3464,92 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         Assert.True(await dbContext.InvoiceLines.IgnoreQueryFilters()
             .Where(line => line.InvoiceId == invoiceId)
             .AllAsync(line => line.IsDeleted));
+    }
+
+    [Fact]
+    public async Task InvoicesController_PurchasePending_DoesNotAdjustWarehouseStockOrLedger()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Purchase pending vendor",
+            NameMatchKey = "PURCHASEPENDINGVENDOR",
+            TradeType = "Purchase"
+        };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Purchase pending item",
+            NameMatchKey = "PURCHASEPENDINGITEM",
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 5m
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Items.Add(item);
+        dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 5m,
+            Revision = 1
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = new InvoicesController(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
+        var invoiceId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+        var createResponse = await controller.Create(new InvoiceDto
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            VoucherType = VoucherType.Purchase,
+            PurchaseReceivingRequired = true,
+            PurchaseReceivingStatus = InvoiceReceivingStatuses.Pending,
+            InvoiceDate = new DateOnly(2026, 5, 22),
+            Lines =
+            [
+                new InvoiceLineDto
+                {
+                    Id = lineId,
+                    InvoiceId = invoiceId,
+                    ItemId = item.Id,
+                    ItemNameOriginal = item.NameOriginal,
+                    ItemTrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    Quantity = 2m,
+                    UnitPrice = 1000m,
+                    LineAmount = 2000m
+                }
+            ]
+        }, CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(createResponse.Result);
+        Assert.Equal(5m, await dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == item.Id && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(5m, (await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id)).CurrentStock);
+        Assert.False(await dbContext.InventoryLedgerEntries.AnyAsync(entry => entry.SourceDocumentId == invoiceId));
     }
 
     [Fact]

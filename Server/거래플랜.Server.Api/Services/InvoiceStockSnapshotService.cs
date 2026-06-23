@@ -25,6 +25,9 @@ public sealed class InvoiceStockSnapshotService
             return deltas;
         if (invoice.VoucherType is not (VoucherType.Sales or VoucherType.Purchase or VoucherType.Procurement))
             return deltas;
+        if (invoice.VoucherType == VoucherType.Purchase &&
+            !InvoiceReceivingStatuses.IsConfirmed(invoice.PurchaseReceivingStatus))
+            return deltas;
 
         var candidateItemIds = invoice.Lines
             .Where(line => !line.IsDeleted && line.ItemId.HasValue && line.ItemId.Value != Guid.Empty && line.Quantity != 0m)
