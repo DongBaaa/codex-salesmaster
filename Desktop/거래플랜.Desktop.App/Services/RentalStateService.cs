@@ -12362,7 +12362,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (!asset.CustomerId.HasValue || asset.CustomerId.Value == Guid.Empty)
             return null;
 
-        var normalizedOfficeCode = NormalizeOfficeCode(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode);
+        var assetScope = RentalScopeNormalizer.ResolveScope(
+            asset.TenantCode,
+            asset.OfficeCode,
+            asset.ManagementCompanyCode,
+            asset.ResponsibleOfficeCode,
+            asset.ManagementCompanyCode);
         var siteKeys = new[] { asset.InstallLocation, asset.InstallSiteName }
             .Select(RentalCatalogValueNormalizer.NormalizeLooseKey)
             .Where(value => !string.IsNullOrWhiteSpace(value))
@@ -12373,10 +12378,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Where(profile => !profile.IsDeleted)
             .Where(profile => profile.CustomerId == asset.CustomerId.Value);
 
-        if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
-            profiles = profiles.Where(profile => profile.ResponsibleOfficeCode == normalizedOfficeCode);
-
-        var candidates = await profiles.ToListAsync(ct);
+        var candidates = (await profiles.ToListAsync(ct))
+            .Where(profile => MatchesBillingProfileAutoLinkScope(profile, assetScope))
+            .ToList();
 
         if (candidates.Count == 0)
             return null;
@@ -12398,6 +12402,22 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         return null;
+    }
+
+    private static bool MatchesBillingProfileAutoLinkScope(
+        LocalRentalBillingProfile profile,
+        RentalOperationalScope assetScope)
+    {
+        var profileScope = RentalScopeNormalizer.ResolveScope(
+            profile.TenantCode,
+            profile.OfficeCode,
+            profile.ManagementCompanyCode,
+            profile.ResponsibleOfficeCode,
+            assetScope.ResponsibleOfficeCode);
+
+        return string.Equals(profileScope.TenantCode, assetScope.TenantCode, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(profileScope.OwnerOfficeCode, assetScope.OwnerOfficeCode, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(profileScope.ResponsibleOfficeCode, assetScope.ResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string BuildProfileKey(
