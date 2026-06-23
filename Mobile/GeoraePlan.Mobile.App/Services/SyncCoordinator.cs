@@ -13,6 +13,7 @@ public sealed class SyncCoordinator
     private readonly PaymentAttachmentDraftStore _attachmentStore;
     private readonly CustomerContractCacheStore _contractCacheStore;
     private readonly SemaphoreSlim _syncLock = new(1, 1);
+    private readonly List<PendingPaymentAttachmentRecord> _discardedPaymentAttachmentDrafts = new();
 
     public const string ConcurrencyConflictUserMessage = "다른 PC/모바일에서 먼저 수정되어 최신값을 다시 불러왔습니다. 내용을 확인한 뒤 다시 저장해 주세요.";
 
@@ -52,7 +53,7 @@ public sealed class SyncCoordinator
                 MarkFailure(state, ex);
             }
 
-            await _store.SaveAsync(state, ct);
+            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
             return state;
         }
         finally
@@ -88,12 +89,12 @@ public sealed class SyncCoordinator
             state = await UploadPendingPaymentAttachmentsInternalAsync(state, ct);
             if (!string.IsNullOrWhiteSpace(state.LastError))
             {
-                await _store.SaveAsync(state, ct);
+                await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
                 return state;
             }
 
             state = await PullInternalAsync(state, ct);
-            await _store.SaveAsync(state, ct);
+            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
             return state;
         }
         finally
@@ -122,7 +123,7 @@ public sealed class SyncCoordinator
                 if (string.IsNullOrWhiteSpace(state.LastError))
                     state = await PullInternalAsync(state, ct);
 
-                await _store.SaveAsync(state, ct);
+                await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
                 return state;
             }
 
@@ -143,7 +144,7 @@ public sealed class SyncCoordinator
                 MarkFailure(state, ex);
             }
 
-            await _store.SaveAsync(state, ct);
+            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
             return state;
         }
         finally
@@ -191,7 +192,7 @@ public sealed class SyncCoordinator
                 MarkFailure(state, ex);
             }
 
-            await _store.SaveAsync(state, ct);
+            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
             return state;
         }
         finally
@@ -218,6 +219,7 @@ public sealed class SyncCoordinator
 
             var attachmentList = attachments?.ToList() ?? [];
             var uploadedAttachments = new List<PendingPaymentAttachmentRecord>();
+            var terminalFailedAttachments = new List<PendingPaymentAttachmentRecord>();
             var attachmentUploadErrors = new List<string>();
             var terminalAttachmentUploadErrors = new List<string>();
 
@@ -240,7 +242,7 @@ public sealed class SyncCoordinator
                     {
                         QueueUnacceptedLinkedPaymentConflict(state.PendingPush, payment, linkedTransaction, result.AcceptedRevisions);
                         await MarkPushConflictAndRefreshAsync(state, result, ct);
-                        await _store.SaveAsync(state, ct);
+                        await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
                         return state;
                     }
                 }
@@ -268,6 +270,7 @@ public sealed class SyncCoordinator
                     catch (Exception uploadEx)
                     {
                         terminalAttachmentUploadErrors.Add(BuildTerminalPaymentAttachmentUploadFailureMessage(attachment, uploadEx));
+                        terminalFailedAttachments.Add(attachment);
                     }
                 }
 
@@ -301,8 +304,9 @@ public sealed class SyncCoordinator
                 MarkFailure(state, ex);
             }
 
-            await _store.SaveAsync(state, ct);
-            await RemoveUploadedPaymentAttachmentDraftsAsync(uploadedAttachments, ct);
+            QueueDiscardedPaymentAttachmentDrafts(uploadedAttachments);
+            QueueDiscardedPaymentAttachmentDrafts(terminalFailedAttachments);
+            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
             return state;
         }
         finally
@@ -437,12 +441,48 @@ public sealed class SyncCoordinator
             var state = await _store.LoadAsync(ct);
             state.Normalize();
             mutate(state);
-            await _store.SaveAsync(state, ct);
+            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
             return state;
         }
         finally
         {
             _syncLock.Release();
+        }
+    }
+
+    private async Task SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(MobileSyncState state, CancellationToken ct)
+    {
+        await _store.SaveAsync(state, ct);
+        await RemoveDiscardedPaymentAttachmentDraftsAsync(ct);
+    }
+
+    private void RemovePendingPaymentAttachments(
+        MobileSyncState state,
+        Predicate<PendingPaymentAttachmentRecord> predicate)
+    {
+        var removed = state.PendingPaymentAttachments
+            .Where(attachment => predicate(attachment))
+            .ToList();
+        if (removed.Count == 0)
+            return;
+
+        var removedLocalIds = removed
+            .Select(attachment => attachment.LocalId)
+            .ToHashSet();
+        state.PendingPaymentAttachments.RemoveAll(attachment => removedLocalIds.Contains(attachment.LocalId));
+        QueueDiscardedPaymentAttachmentDrafts(removed);
+    }
+
+    private void QueueDiscardedPaymentAttachmentDrafts(IEnumerable<PendingPaymentAttachmentRecord> attachments)
+    {
+        foreach (var attachment in attachments)
+        {
+            if (attachment is null)
+                continue;
+            if (_discardedPaymentAttachmentDrafts.Any(current => current.LocalId == attachment.LocalId))
+                continue;
+
+            _discardedPaymentAttachmentDrafts.Add(attachment);
         }
     }
 
@@ -478,7 +518,7 @@ public sealed class SyncCoordinator
                 {
                     RemoveAcceptedPendingMutations(state.PendingPush, result.AcceptedRevisions);
                     await MarkPushConflictAndRefreshAsync(state, result, ct);
-                    await _store.SaveAsync(state, ct);
+                    await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
                     return state;
                 }
 
@@ -489,13 +529,13 @@ public sealed class SyncCoordinator
             state.LastError = string.Empty;
             state.LastFailureAllowsCachedDisplay = true;
             state.ConsecutiveFailureCount = 0;
-            await _store.SaveAsync(state, ct);
+            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
             return state;
         }
         catch (Exception ex)
         {
             MarkFailure(state, ex);
-            await _store.SaveAsync(state, ct);
+            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
             return state;
         }
     }
@@ -613,7 +653,6 @@ public sealed class SyncCoordinator
         }
 
         var uploadedIds = new List<Guid>();
-        var uploadedAttachments = new List<PendingPaymentAttachmentRecord>();
         var errors = new List<string>();
 
         foreach (var attachment in pending)
@@ -635,7 +674,6 @@ public sealed class SyncCoordinator
 
                 EnsurePaymentAttachmentResult(await _api.UploadPaymentAttachmentAsync(attachment.PaymentId, attachment, ct));
                 uploadedIds.Add(attachment.LocalId);
-                uploadedAttachments.Add(attachment);
             }
             catch (Exception ex) when (ShouldRetryPaymentAttachmentUpload(ex))
             {
@@ -648,7 +686,7 @@ public sealed class SyncCoordinator
             }
         }
 
-        state.PendingPaymentAttachments.RemoveAll(x => uploadedIds.Contains(x.LocalId));
+        RemovePendingPaymentAttachments(state, attachment => uploadedIds.Contains(attachment.LocalId));
         if (errors.Count == 0)
         {
             state.LastSuccessUtc = DateTime.UtcNow;
@@ -663,8 +701,7 @@ public sealed class SyncCoordinator
             state.ConsecutiveFailureCount++;
         }
 
-        await _store.SaveAsync(state, ct);
-        await RemoveUploadedPaymentAttachmentDraftsAsync(uploadedAttachments, ct);
+        await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
         return state;
     }
 
@@ -749,10 +786,17 @@ public sealed class SyncCoordinator
             : $"첨부 업로드를 계속 재시도하지 않도록 대기 목록에서 제외했습니다: {fileName}. {detail} 첨부를 확인한 뒤 다시 선택해 주세요.";
     }
 
-    private async Task RemoveUploadedPaymentAttachmentDraftsAsync(
-        IEnumerable<PendingPaymentAttachmentRecord> attachments,
-        CancellationToken ct)
+    private async Task RemoveDiscardedPaymentAttachmentDraftsAsync(CancellationToken ct)
     {
+        if (_discardedPaymentAttachmentDrafts.Count == 0)
+            return;
+
+        var attachments = _discardedPaymentAttachmentDrafts
+            .GroupBy(attachment => attachment.LocalId)
+            .Select(group => group.First())
+            .ToList();
+        _discardedPaymentAttachmentDrafts.Clear();
+
         foreach (var attachment in attachments)
         {
             try
@@ -761,7 +805,7 @@ public sealed class SyncCoordinator
             }
             catch (Exception ex)
             {
-                MobileAppLogger.Warn("SYNC", $"업로드 완료 첨부 임시 파일 정리 실패: {attachment.FileName} / {ex.Message}");
+                MobileAppLogger.Warn("SYNC", $"제거된 첨부 임시 파일 정리 실패: {attachment.FileName} / {ex.Message}");
             }
         }
     }
@@ -1109,7 +1153,7 @@ public sealed class SyncCoordinator
                 var removedPaymentIds = new HashSet<Guid>();
                 RemovePaymentsForPurgedInvoice(state.SyncedPayments, entityId, purgeRevision, removedPaymentIds);
                 RemovePaymentsForPurgedInvoice(state.PendingPush.Payments, entityId, purgeRevision, removedPaymentIds);
-                state.PendingPaymentAttachments.RemoveAll(attachment => removedPaymentIds.Contains(attachment.PaymentId));
+                RemovePendingPaymentAttachments(state, attachment => removedPaymentIds.Contains(attachment.PaymentId));
                 var removedTransactionIds = new HashSet<Guid>();
                 RemoveTransactionsForPurgedInvoice(state.SyncedTransactions, entityId, purgeRevision, removedTransactionIds);
                 RemoveTransactionsForPurgedInvoice(state.PendingPush.Transactions, entityId, purgeRevision, removedTransactionIds);
@@ -1119,7 +1163,7 @@ public sealed class SyncCoordinator
             case "payment":
                 RemoveEntityById(state.SyncedPayments, entityId, purgeRevision);
                 RemoveEntityById(state.PendingPush.Payments, entityId, purgeRevision);
-                state.PendingPaymentAttachments.RemoveAll(attachment => attachment.PaymentId == entityId);
+                RemovePendingPaymentAttachments(state, attachment => attachment.PaymentId == entityId);
                 RemoveEntityById(state.SyncedTransactions, entityId, purgeRevision);
                 RemoveEntityById(state.PendingPush.Transactions, entityId, purgeRevision);
                 state.SyncedTransactionAttachments.RemoveAll(attachment => attachment.TransactionId == entityId && !IsEntityNewerThanPurge(attachment, purgeRevision));
@@ -1131,7 +1175,7 @@ public sealed class SyncCoordinator
                 var transactionRemovedPaymentIds = new HashSet<Guid>();
                 RemovePaymentForPurgedTransaction(state.SyncedPayments, entityId, purgeRevision, transactionRemovedPaymentIds);
                 RemovePaymentForPurgedTransaction(state.PendingPush.Payments, entityId, purgeRevision, transactionRemovedPaymentIds);
-                state.PendingPaymentAttachments.RemoveAll(attachment => transactionRemovedPaymentIds.Contains(attachment.PaymentId));
+                RemovePendingPaymentAttachments(state, attachment => transactionRemovedPaymentIds.Contains(attachment.PaymentId));
                 state.SyncedTransactionAttachments.RemoveAll(attachment => attachment.TransactionId == entityId && !IsEntityNewerThanPurge(attachment, purgeRevision));
                 state.PendingPush.TransactionAttachments.RemoveAll(attachment => attachment.TransactionId == entityId && !IsEntityNewerThanPurge(attachment, purgeRevision));
                 break;

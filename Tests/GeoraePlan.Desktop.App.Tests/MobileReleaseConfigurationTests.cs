@@ -834,7 +834,9 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("EnsurePaymentAttachmentResult(await _api.UploadPaymentAttachmentAsync(attachment.PaymentId, attachment, ct));", source, StringComparison.Ordinal);
         Assert.Contains("state.PendingPaymentAttachments.Add(attachment);", source, StringComparison.Ordinal);
         Assert.Contains("errors.Add(ex.Message);", source, StringComparison.Ordinal);
-        Assert.Contains("state.PendingPaymentAttachments.RemoveAll(x => uploadedIds.Contains(x.LocalId));", source, StringComparison.Ordinal);
+        Assert.Contains("RemovePendingPaymentAttachments(state, attachment => uploadedIds.Contains(attachment.LocalId));", source, StringComparison.Ordinal);
+        Assert.Contains("await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);", source, StringComparison.Ordinal);
+        Assert.Contains("await RemoveDiscardedPaymentAttachmentDraftsAsync(ct);", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -856,6 +858,8 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("private static string BuildTerminalPaymentAttachmentUploadFailureMessage(", source, StringComparison.Ordinal);
         Assert.Contains("catch (Exception uploadEx) when (ShouldRetryPaymentAttachmentUpload(uploadEx))", source, StringComparison.Ordinal);
         Assert.Contains("BuildTerminalPaymentAttachmentUploadFailureMessage(attachment, uploadEx)", source, StringComparison.Ordinal);
+        Assert.Contains("terminalFailedAttachments.Add(attachment);", source, StringComparison.Ordinal);
+        Assert.Contains("QueueDiscardedPaymentAttachmentDrafts(terminalFailedAttachments);", source, StringComparison.Ordinal);
         Assert.Contains("catch (Exception ex) when (ShouldRetryPaymentAttachmentUpload(ex))", source, StringComparison.Ordinal);
         Assert.Contains(
             "uploadedIds.Add(attachment.LocalId);\n                errors.Add(BuildTerminalPaymentAttachmentUploadFailureMessage(attachment, ex));",
@@ -2137,14 +2141,14 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("var removedPaymentIds = new HashSet<Guid>();", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemovePaymentsForPurgedInvoice(state.SyncedPayments, entityId, purgeRevision, removedPaymentIds);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemovePaymentsForPurgedInvoice(state.PendingPush.Payments, entityId, purgeRevision, removedPaymentIds);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("state.PendingPaymentAttachments.RemoveAll(attachment => removedPaymentIds.Contains(attachment.PaymentId));", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("RemovePendingPaymentAttachments(state, attachment => removedPaymentIds.Contains(attachment.PaymentId));", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("var removedTransactionIds = new HashSet<Guid>();", invoicePurgeCaseSource, StringComparison.Ordinal);
         Assert.Contains("RemoveTransactionsForPurgedInvoice(state.SyncedTransactions, entityId, purgeRevision, removedTransactionIds);", invoicePurgeCaseSource, StringComparison.Ordinal);
         Assert.Contains("RemoveTransactionsForPurgedInvoice(state.PendingPush.Transactions, entityId, purgeRevision, removedTransactionIds);", invoicePurgeCaseSource, StringComparison.Ordinal);
         Assert.Contains("state.SyncedTransactionAttachments.RemoveAll(attachment => removedTransactionIds.Contains(attachment.TransactionId)", invoicePurgeCaseSource, StringComparison.Ordinal);
         Assert.Contains("state.PendingPush.TransactionAttachments.RemoveAll(attachment => removedTransactionIds.Contains(attachment.TransactionId)", invoicePurgeCaseSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedPayments, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("state.PendingPaymentAttachments.RemoveAll(attachment => attachment.PaymentId == entityId);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("RemovePendingPaymentAttachments(state, attachment => attachment.PaymentId == entityId);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedTransactions, entityId, purgeRevision);", paymentPurgeCaseSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.PendingPush.Transactions, entityId, purgeRevision);", paymentPurgeCaseSource, StringComparison.Ordinal);
         Assert.Contains("state.SyncedTransactionAttachments.RemoveAll(attachment => attachment.TransactionId == entityId", paymentPurgeCaseSource, StringComparison.Ordinal);
@@ -2152,7 +2156,7 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("var transactionRemovedPaymentIds = new HashSet<Guid>();", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemovePaymentForPurgedTransaction(state.SyncedPayments, entityId, purgeRevision, transactionRemovedPaymentIds);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemovePaymentForPurgedTransaction(state.PendingPush.Payments, entityId, purgeRevision, transactionRemovedPaymentIds);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("state.PendingPaymentAttachments.RemoveAll(attachment => transactionRemovedPaymentIds.Contains(attachment.PaymentId));", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("RemovePendingPaymentAttachments(state, attachment => transactionRemovedPaymentIds.Contains(attachment.PaymentId));", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("state.SyncedTransactionAttachments.RemoveAll(attachment => attachment.TransactionId == entityId", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedInventoryTransfers, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedRentalBillingProfiles, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
