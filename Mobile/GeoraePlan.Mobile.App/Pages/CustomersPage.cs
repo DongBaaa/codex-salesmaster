@@ -978,13 +978,19 @@ try
         if (!await EnsureCanEditCustomersAsync("수정"))
             return;
 
+        var editedCustomerId = _viewModel.SelectedCustomer.Id;
         await Navigation.PushModalAsync(new CustomerEditPage(
             _viewModel.SelectedCustomer,
             async saved =>
             {
+                if (saved is null || saved.IsDeleted)
+                {
+                    await _viewModel.RemoveDeletedCustomerFromCurrentViewAsync(editedCustomerId);
+                    return;
+                }
+
                 await _viewModel.RefreshAsync();
-                if (saved is not null)
-                    await _viewModel.SelectCustomerAsync(saved);
+                await _viewModel.SelectCustomerAsync(saved);
             }));
     }
 

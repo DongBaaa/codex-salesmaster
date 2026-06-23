@@ -432,15 +432,22 @@ try
         if (!await EnsureCanEditItemsAsync("수정"))
             return;
 
+        var editedItemId = _viewModel.SelectedItem.Id;
         await Navigation.PushModalAsync(new ItemEditPage(
             _viewModel.SelectedItem,
             _viewModel.SelectedCategory?.Name,
             async saved =>
             {
+                if (saved is null || saved.IsDeleted)
+                {
+                    _viewModel.RemoveDeletedItemFromCurrentView(editedItemId);
+                    RebuildCategoryButtons();
+                    return;
+                }
+
                 await _viewModel.RefreshAsync();
                 RebuildCategoryButtons();
-                if (saved is not null)
-                    await _viewModel.SelectItemAsync(saved);
+                await _viewModel.SelectItemAsync(saved);
             }));
     }
 

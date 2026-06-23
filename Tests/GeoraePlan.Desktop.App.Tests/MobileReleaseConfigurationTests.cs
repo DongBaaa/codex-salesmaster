@@ -460,6 +460,31 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void MobileEditModalPendingDelete_HidesDeletedCustomerAndItemInsteadOfReselecting()
+    {
+        var root = FindRepositoryRoot();
+        var customersPageSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Pages",
+            "CustomersPage.cs"));
+        var itemsPageSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Pages",
+            "ItemsPage.cs"));
+
+        Assert.Contains("if (saved is null || saved.IsDeleted)", customersPageSource, StringComparison.Ordinal);
+        Assert.Contains("await _viewModel.RemoveDeletedCustomerFromCurrentViewAsync(editedCustomerId);", customersPageSource, StringComparison.Ordinal);
+        Assert.Contains("var editedCustomerId = _viewModel.SelectedCustomer.Id;", customersPageSource, StringComparison.Ordinal);
+        Assert.Contains("if (saved is null || saved.IsDeleted)", itemsPageSource, StringComparison.Ordinal);
+        Assert.Contains("_viewModel.RemoveDeletedItemFromCurrentView(editedItemId);", itemsPageSource, StringComparison.Ordinal);
+        Assert.Contains("var editedItemId = _viewModel.SelectedItem.Id;", itemsPageSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MobileCoreMutationDrafts_RequireServerEditPermissionsBeforeEntryAndSave()
     {
         var root = FindRepositoryRoot();
