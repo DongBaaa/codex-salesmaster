@@ -2196,10 +2196,16 @@ public sealed class RecycleBinController : ControllerBase
             .IgnoreQueryFilters()
             .Where(current => current.BillingProfileId == profileId)
             .ToListAsync(cancellationToken);
+        if (logs.Any(log => !_officeScopeService.CanWriteOfficeForRentals(log.ResponsibleOfficeCode, log.TenantCode, log.OfficeCode)))
+            return (false, "현재 계정으로 연결된 렌탈 청구로그를 변경할 수 없어 렌탈 청구프로필을 영구삭제할 수 없습니다.");
+
         var assignmentHistories = await _dbContext.RentalAssetAssignmentHistories
             .IgnoreQueryFilters()
             .Where(current => current.BillingProfileId == profileId)
             .ToListAsync(cancellationToken);
+        if (assignmentHistories.Any(history => !_officeScopeService.CanWriteOfficeForRentals(history.ResponsibleOfficeCode, history.TenantCode, history.OfficeCode)))
+            return (false, "현재 계정으로 연결된 렌탈 임대이력을 변경할 수 없어 렌탈 청구프로필을 영구삭제할 수 없습니다.");
+
         foreach (var history in assignmentHistories)
             history.BillingProfileId = null;
 
@@ -2253,6 +2259,9 @@ public sealed class RecycleBinController : ControllerBase
             .IgnoreQueryFilters()
             .Where(current => current.AssetId == assetId)
             .ToListAsync(cancellationToken);
+        if (assignmentHistories.Any(history => !_officeScopeService.CanWriteOfficeForRentals(history.ResponsibleOfficeCode, history.TenantCode, history.OfficeCode)))
+            return (false, "현재 계정으로 연결된 렌탈 임대이력을 삭제할 수 없어 렌탈 자산을 영구삭제할 수 없습니다.");
+
         _dbContext.RentalAssetAssignmentHistories.RemoveRange(assignmentHistories);
         _dbContext.RentalAssets.Remove(asset);
         await _dbContext.SaveChangesAsync(cancellationToken);

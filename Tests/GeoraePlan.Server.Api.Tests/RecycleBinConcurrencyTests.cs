@@ -2133,6 +2133,145 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PurgeRentalBillingProfile_RejectsWhenLinkedBillingLogOutsideRentalWriteScope()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var profileId = Guid.NewGuid();
+        var hiddenLogId = Guid.NewGuid();
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "PURGE-PROFILE-HIDDEN-LOG-001",
+            CustomerName = "영구삭제 숨김 로그 프로필",
+            IsDeleted = true,
+            IsActive = false
+        });
+        dbContext.RentalBillingLogs.Add(new RentalBillingLog
+        {
+            Id = hiddenLogId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            BillingProfileId = profileId,
+            BillingYearMonth = "2026-06",
+            BilledAmount = 100m,
+            IsDeleted = true
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = profileId,
+                        Kind = "rental-billing-profile"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("렌탈 청구로그", item.Message);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.True(await dbContext.RentalBillingProfiles.IgnoreQueryFilters().AnyAsync(current => current.Id == profileId));
+        Assert.True(await dbContext.RentalBillingLogs.IgnoreQueryFilters().AnyAsync(current => current.Id == hiddenLogId));
+    }
+
+    [Fact]
+    public async Task PurgeRentalBillingProfile_RejectsWhenAssignmentHistoryOutsideRentalWriteScope()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        var hiddenHistoryId = Guid.NewGuid();
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "PURGE-PROFILE-HIDDEN-HISTORY-001",
+            CustomerName = "영구삭제 숨김 이력 프로필",
+            IsDeleted = true,
+            IsActive = false
+        });
+        dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            AssetKey = "PURGE-PROFILE-HIDDEN-HISTORY-ASSET-001",
+            ManagementId = "PURGE-PROFILE-HIDDEN-HISTORY-ASSET-001",
+            ManagementNumber = "PURGE-PROFILE-HIDDEN-HISTORY-ASSET-001",
+            ItemName = "권한 외 이력 자산",
+            IsDeleted = false
+        });
+        dbContext.RentalAssetAssignmentHistories.Add(new RentalAssetAssignmentHistory
+        {
+            Id = hiddenHistoryId,
+            AssetId = assetId,
+            BillingProfileId = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            BillingProfileDisplay = "권한 외 이력 프로필",
+            ItemName = "권한 외 이력 자산",
+            ManagementNumber = "PURGE-PROFILE-HIDDEN-HISTORY-ASSET-001",
+            IsCurrent = false,
+            IsDeleted = false
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = profileId,
+                        Kind = "rental-billing-profile"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("임대이력", item.Message);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.True(await dbContext.RentalBillingProfiles.IgnoreQueryFilters().AnyAsync(current => current.Id == profileId));
+        Assert.Equal(
+            profileId,
+            await dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                .Where(current => current.Id == hiddenHistoryId)
+                .Select(current => current.BillingProfileId)
+                .SingleAsync());
+    }
+
+    [Fact]
     public async Task PurgeRentalAsset_RejectsWhenReferencedProfileOutsideRentalWriteScope()
     {
         var currentUser = CreateOfficeOnlyUser();
@@ -2198,6 +2337,67 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
                 .Where(current => current.Id == outOfScopeProfile.Id)
                 .Select(current => current.BillingTemplateJson)
                 .SingleAsync());
+    }
+
+    [Fact]
+    public async Task PurgeRentalAsset_RejectsWhenAssignmentHistoryOutsideRentalWriteScope()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var assetId = Guid.NewGuid();
+        var hiddenHistoryId = Guid.NewGuid();
+        dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "PURGE-ASSET-HIDDEN-HISTORY-001",
+            ManagementId = "PURGE-ASSET-HIDDEN-HISTORY-001",
+            ManagementNumber = "PURGE-ASSET-HIDDEN-HISTORY-001",
+            ItemName = "영구삭제 숨김 이력 자산",
+            IsDeleted = true
+        });
+        dbContext.RentalAssetAssignmentHistories.Add(new RentalAssetAssignmentHistory
+        {
+            Id = hiddenHistoryId,
+            AssetId = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ItemName = "권한 외 임대이력",
+            ManagementNumber = "PURGE-ASSET-HIDDEN-HISTORY-001",
+            IsCurrent = false,
+            IsDeleted = false
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = assetId,
+                        Kind = "rental-asset"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("임대이력", item.Message);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.True(await dbContext.RentalAssets.IgnoreQueryFilters().AnyAsync(current => current.Id == assetId));
+        Assert.True(await dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().AnyAsync(current => current.Id == hiddenHistoryId));
     }
 
     [Fact]
