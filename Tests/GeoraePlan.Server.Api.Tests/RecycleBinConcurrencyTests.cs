@@ -877,6 +877,80 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task RestoreContract_RejectsActiveOutOfScopeContractInsteadOfReportingAlreadyActive()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var hiddenCustomer = CreateScopedCustomer("hidden contract customer", OfficeCodeCatalog.Yeonsu);
+        var contract = new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = hiddenCustomer.Id,
+            ContractType = "scope guard contract",
+            IsDeleted = false
+        };
+        dbContext.Customers.Add(hiddenCustomer);
+        dbContext.CustomerContracts.Add(contract);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = contract.Id,
+                        Kind = "contract"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Equal(0, payload.SucceededCount);
+    }
+
+    [Fact]
+    public async Task RestoreInvoice_RejectsActiveOutOfScopeInvoiceInsteadOfReportingAlreadyActive()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var hiddenCustomer = CreateScopedCustomer("hidden invoice customer", OfficeCodeCatalog.Yeonsu);
+        var invoice = CreateScopedInvoice(hiddenCustomer.Id, OfficeCodeCatalog.Yeonsu, "INV-ACTIVE-HIDDEN-SCOPE");
+        dbContext.Customers.Add(hiddenCustomer);
+        dbContext.Invoices.Add(invoice);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = invoice.Id,
+                        Kind = "invoice"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Equal(0, payload.SucceededCount);
+    }
+
+    [Fact]
     public async Task RestoreInvoice_RejectsLinkedDeletedCustomerOutsideCustomerWriteScope()
     {
         var currentUser = CreateOfficeOnlyUser();
@@ -1351,6 +1425,48 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task RestorePayment_RejectsActiveOutOfScopePaymentInsteadOfReportingAlreadyActive()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var hiddenCustomer = CreateScopedCustomer("hidden payment customer", OfficeCodeCatalog.Yeonsu);
+        var hiddenInvoice = CreateScopedInvoice(hiddenCustomer.Id, OfficeCodeCatalog.Yeonsu, "INV-PAYMENT-ACTIVE-HIDDEN");
+        var payment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = hiddenInvoice.Id,
+            Amount = 1000m,
+            IsDeleted = false
+        };
+        dbContext.Customers.Add(hiddenCustomer);
+        dbContext.Invoices.Add(hiddenInvoice);
+        dbContext.Payments.Add(payment);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = payment.Id,
+                        Kind = "payment"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Equal(0, payload.SucceededCount);
+    }
+
+    [Fact]
     public async Task RestoreTransaction_RejectsLinkedDeletedCustomerOutsideCustomerWriteScope()
     {
         var currentUser = CreateOfficeOnlyUser();
@@ -1404,6 +1520,41 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
             .Where(current => current.Id == transaction.Id)
             .Select(current => current.IsDeleted)
             .SingleAsync());
+    }
+
+    [Fact]
+    public async Task RestoreTransaction_RejectsActiveOutOfScopeTransactionInsteadOfReportingAlreadyActive()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var hiddenCustomer = CreateScopedCustomer("hidden transaction customer", OfficeCodeCatalog.Yeonsu);
+        var transaction = CreateDeletedTransaction(Guid.NewGuid(), hiddenCustomer.Id, OfficeCodeCatalog.Yeonsu);
+        transaction.IsDeleted = false;
+        dbContext.Customers.Add(hiddenCustomer);
+        dbContext.Transactions.Add(transaction);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = transaction.Id,
+                        Kind = "transaction"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Equal(0, payload.SucceededCount);
     }
 
     [Fact]
@@ -2452,6 +2603,50 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
             .Where(transfer => transfer.Id == transferId)
             .Select(transfer => transfer.IsDeleted)
             .SingleAsync());
+    }
+
+    [Fact]
+    public async Task RestoreInventoryTransfer_RejectsActiveOutOfScopeTransferInsteadOfReportingAlreadyActive()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var transferId = Guid.NewGuid();
+        dbContext.InventoryTransfers.Add(new InventoryTransfer
+        {
+            Id = transferId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TargetOfficeCode = OfficeCodeCatalog.Usenet,
+            FromWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            TransferNumber = "RESTORE-ACTIVE-HIDDEN-TRANSFER",
+            TransferDate = new DateOnly(2026, 6, 23),
+            TransferStatus = InventoryTransferStatusNormalizer.Pending,
+            IsDeleted = false
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = transferId,
+                        Kind = "inventory-transfer"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var result = Assert.Single(payload.Results);
+        Assert.False(result.Success);
+        Assert.Equal(0, payload.SucceededCount);
     }
 
     [Fact]

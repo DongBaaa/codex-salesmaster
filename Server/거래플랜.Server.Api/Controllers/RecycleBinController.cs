@@ -744,12 +744,6 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == contractId, cancellationToken);
         if (contract is null)
             return (false, "복원할 계약서를 찾을 수 없습니다.");
-        if (!contract.IsDeleted)
-            return (true, "이미 활성 상태인 계약서입니다.");
-
-        var revisionCheck = EnsureRecycleBinMutationRevision(contract, target);
-        if (!revisionCheck.Success)
-            return revisionCheck;
 
         var customer = await _dbContext.Customers
             .IgnoreQueryFilters()
@@ -761,6 +755,12 @@ public sealed class RecycleBinController : ControllerBase
                 customer.TenantCode,
                 customer.OfficeCode))
             return (false, "현재 계정으로 복원할 수 없는 계약서입니다.");
+        if (!contract.IsDeleted)
+            return (true, "이미 활성 상태인 계약서입니다.");
+
+        var revisionCheck = EnsureRecycleBinMutationRevision(contract, target);
+        if (!revisionCheck.Success)
+            return revisionCheck;
 
         if (customer.IsDeleted)
             customer.IsDeleted = false;
@@ -977,12 +977,6 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == invoiceId, cancellationToken);
         if (invoice is null)
             return (false, "복원할 전표를 찾을 수 없습니다.");
-        if (!invoice.IsDeleted)
-            return (true, "이미 활성 상태인 전표입니다.");
-
-        var revisionCheck = EnsureRecycleBinMutationRevision(invoice, target);
-        if (!revisionCheck.Success)
-            return revisionCheck;
 
         var customer = await _dbContext.Customers
             .IgnoreQueryFilters()
@@ -991,6 +985,12 @@ public sealed class RecycleBinController : ControllerBase
             return (false, "전표와 연결된 거래처를 찾을 수 없습니다.");
         if (!_officeScopeService.CanWriteOfficeForInvoices(invoice.ResponsibleOfficeCode, invoice.TenantCode, invoice.OfficeCode))
             return (false, "현재 계정으로 복원할 수 없는 전표입니다.");
+        if (!invoice.IsDeleted)
+            return (true, "이미 활성 상태인 전표입니다.");
+
+        var revisionCheck = EnsureRecycleBinMutationRevision(invoice, target);
+        if (!revisionCheck.Success)
+            return revisionCheck;
 
         var invoiceGroupRestore = await RestoreInvoiceGroupAsync(invoice, customer, cancellationToken);
         if (!invoiceGroupRestore.Success)
@@ -1052,12 +1052,6 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == paymentId, cancellationToken);
         if (payment is null)
             return (false, "복원할 수금/지급 기록을 찾을 수 없습니다.");
-        if (!payment.IsDeleted)
-            return (true, "이미 활성 상태인 수금/지급 기록입니다.");
-
-        var revisionCheck = EnsureRecycleBinMutationRevision(payment, target);
-        if (!revisionCheck.Success)
-            return revisionCheck;
 
         var invoice = await _dbContext.Invoices
             .IgnoreQueryFilters()
@@ -1072,6 +1066,12 @@ public sealed class RecycleBinController : ControllerBase
             return (false, "연결된 거래처를 찾을 수 없습니다.");
         if (!_officeScopeService.CanWriteOfficeForPayments(invoice.ResponsibleOfficeCode, invoice.TenantCode, invoice.OfficeCode))
             return (false, "현재 계정으로 복원할 수 없는 수금/지급 기록입니다.");
+        if (!payment.IsDeleted)
+            return (true, "이미 활성 상태인 수금/지급 기록입니다.");
+
+        var revisionCheck = EnsureRecycleBinMutationRevision(payment, target);
+        if (!revisionCheck.Success)
+            return revisionCheck;
 
         var customerRestored = false;
         var invoiceRestored = false;
@@ -1126,14 +1126,14 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == transactionId, cancellationToken);
         if (transaction is null)
             return (false, "복원할 거래내역을 찾을 수 없습니다.");
+        if (!_officeScopeService.CanWriteOfficeForPayments(transaction.ResponsibleOfficeCode, transaction.TenantCode, transaction.OfficeCode))
+            return (false, "현재 계정으로 복원할 수 없는 거래내역입니다.");
         if (!transaction.IsDeleted)
             return (true, "이미 활성 상태인 거래내역입니다.");
 
         var revisionCheck = EnsureRecycleBinMutationRevision(transaction, target);
         if (!revisionCheck.Success)
             return revisionCheck;
-        if (!_officeScopeService.CanWriteOfficeForPayments(transaction.ResponsibleOfficeCode, transaction.TenantCode, transaction.OfficeCode))
-            return (false, "현재 계정으로 복원할 수 없는 거래내역입니다.");
 
         var customer = await _dbContext.Customers
             .IgnoreQueryFilters()
@@ -1539,16 +1539,16 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == transferId, cancellationToken);
         if (transfer is null)
             return (false, "복원할 재고이동을 찾을 수 없습니다.");
+        if (!CanMutateInventoryTransferFromRecycleBin(transfer, out var scopeMessage))
+        {
+            return (false, scopeMessage);
+        }
         if (!transfer.IsDeleted)
             return (true, "이미 활성 상태인 재고이동입니다.");
 
         var revisionCheck = EnsureRecycleBinMutationRevision(transfer, target);
         if (!revisionCheck.Success)
             return revisionCheck;
-        if (!CanMutateInventoryTransferFromRecycleBin(transfer, out var scopeMessage))
-        {
-            return (false, scopeMessage);
-        }
 
         var originalTransferDeleted = transfer.IsDeleted;
         var originalLineDeletedStates = transfer.Lines
