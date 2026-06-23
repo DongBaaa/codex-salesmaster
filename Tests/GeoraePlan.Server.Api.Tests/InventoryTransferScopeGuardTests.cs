@@ -403,6 +403,89 @@ public sealed class InventoryTransferScopeGuardTests : IDisposable
         Assert.True(await scopedDb.InventoryTransferLines.IgnoreQueryFilters().AnyAsync(line => line.Id == lineId));
     }
 
+    [Fact]
+    public async Task RecycleBinPurge_RejectsTargetOfficeUserBeforeRevisionConflict()
+    {
+        var itemId = Guid.Parse("f9111111-1111-1111-1111-111111111111");
+        var transferId = Guid.Parse("f9222222-2222-2222-2222-222222222222");
+        var lineId = Guid.Parse("f9333333-3333-3333-3333-333333333333");
+        await SeedDeletedPendingTransferAsync(itemId, transferId, lineId, "Target purge revision denied item");
+
+        var targetUser = CreateDeliveryUser("yeonsu-target-transfer-purge-revision", OfficeCodeCatalog.Yeonsu);
+        await using var scopedDb = CreateDbContext(targetUser);
+        var controller = CreateRecycleBinController(scopedDb, targetUser);
+        var storedBefore = await scopedDb.InventoryTransfers.IgnoreQueryFilters().SingleAsync(transfer => transfer.Id == transferId);
+
+        var response = await controller.Purge(new RecycleBinMutationRequest
+        {
+            Items =
+            [
+                new RecycleBinMutationTargetDto
+                {
+                    EntityId = transferId,
+                    Kind = "inventory-transfer",
+                    ExpectedRevision = storedBefore.Revision + 1
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("source office", item.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, payload.SucceededCount);
+        scopedDb.ChangeTracker.Clear();
+        Assert.True(await scopedDb.InventoryTransfers.IgnoreQueryFilters().AnyAsync(transfer => transfer.Id == transferId));
+        Assert.True(await scopedDb.InventoryTransferLines.IgnoreQueryFilters().AnyAsync(line => line.Id == lineId));
+    }
+
+    [Fact]
+    public async Task RecycleBinPurge_PublishesInventoryTransferPurgeRecordToTargetOfficePull()
+    {
+        var itemId = Guid.Parse("fa111111-1111-1111-1111-111111111111");
+        var transferId = Guid.Parse("fa222222-2222-2222-2222-222222222222");
+        var lineId = Guid.Parse("fa333333-3333-3333-3333-333333333333");
+        await SeedDeletedPendingTransferAsync(itemId, transferId, lineId, "Target purge pull item");
+
+        var sourceUser = CreateDeliveryUser("usenet-source-transfer-purge", OfficeCodeCatalog.Usenet);
+        await using (var sourceDb = CreateDbContext(sourceUser))
+        {
+            var purgeController = CreateRecycleBinController(sourceDb, sourceUser);
+            var storedBefore = await sourceDb.InventoryTransfers.IgnoreQueryFilters().SingleAsync(transfer => transfer.Id == transferId);
+            var purgeResponse = await purgeController.Purge(new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = transferId,
+                        Kind = "inventory-transfer",
+                        ExpectedRevision = storedBefore.Revision
+                    }
+                ]
+            }, CancellationToken.None);
+
+            var purgeOk = Assert.IsType<OkObjectResult>(purgeResponse.Result);
+            var purgePayload = Assert.IsType<RecycleBinMutationResultDto>(purgeOk.Value);
+            var purgeItem = Assert.Single(purgePayload.Results);
+            Assert.True(purgeItem.Success, purgeItem.Message);
+        }
+
+        var targetUser = CreateDeliveryUser("yeonsu-target-transfer-purge-pull", OfficeCodeCatalog.Yeonsu);
+        await using var targetDb = CreateDbContext(targetUser);
+        var syncController = CreateController(targetDb, targetUser);
+
+        var pullResponse = await syncController.Pull(0, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(pullResponse.Result);
+        var payload = Assert.IsType<SyncPullResponse>(ok.Value);
+        Assert.Contains(payload.PurgeRecords, record =>
+            string.Equals(record.Kind, "inventory-transfer", StringComparison.OrdinalIgnoreCase) &&
+            record.EntityId == transferId);
+        Assert.DoesNotContain(payload.InventoryTransfers, transfer => transfer.Id == transferId);
+    }
+
     private async Task SeedPendingTransferAsync(
         Guid itemId,
         Guid transferId,

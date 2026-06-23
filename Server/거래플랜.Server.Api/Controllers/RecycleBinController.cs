@@ -2284,22 +2284,22 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == transferId, cancellationToken);
         if (transfer is null)
             return (false, "영구삭제할 재고이동을 찾을 수 없습니다.");
+        if (!CanMutateInventoryTransferFromRecycleBin(transfer, out var scopeMessage))
+        {
+            return (false, scopeMessage);
+        }
         if (!transfer.IsDeleted)
             return (false, "활성 상태 재고이동은 휴지통에서 영구삭제할 수 없습니다.");
 
         var revisionCheck = EnsureRecycleBinMutationRevision(transfer, target);
         if (!revisionCheck.Success)
             return revisionCheck;
-        if (!CanMutateInventoryTransferFromRecycleBin(transfer, out var scopeMessage))
-        {
-            return (false, scopeMessage);
-        }
 
         var receiveEvidencePath = transfer.ReceiveEvidencePath;
         await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
         await TouchPurgeRecordsAsync(
         [
-            CreatePurgeRecord("inventory-transfer", transfer.Id, transfer.TenantCode, transfer.SourceOfficeCode)
+            CreatePurgeRecord("inventory-transfer", transfer.Id, transfer.TenantCode, OfficeCodeCatalog.Shared, transfer.SourceOfficeCode)
         ], cancellationToken);
         _dbContext.InventoryTransferLines.RemoveRange(transfer.Lines);
         _dbContext.InventoryTransfers.Remove(transfer);
