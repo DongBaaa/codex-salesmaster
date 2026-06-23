@@ -877,6 +877,55 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task GetAll_RentalBillingLog_UsesLogScopeAndDoesNotLeakHiddenProfile()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var hiddenProfileId = Guid.NewGuid();
+        var logId = Guid.NewGuid();
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = hiddenProfileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ProfileKey = "HIDDEN-PROFILE-001",
+            CustomerName = "숨김 렌탈 거래처",
+            InstallSiteName = "숨김 설치처",
+            ItemName = "숨김 품목",
+            IsDeleted = true
+        });
+        dbContext.RentalBillingLogs.Add(new RentalBillingLog
+        {
+            Id = logId,
+            BillingProfileId = hiddenProfileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            BillingYearMonth = "2026-06",
+            ScheduledDate = new DateOnly(2026, 6, 25),
+            Status = "예정",
+            BilledAmount = 12000m,
+            IsDeleted = true
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetAll("rental-billing-log", null, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<List<RecycleBinEntryDto>>(ok.Value);
+        var entry = Assert.Single(payload);
+        Assert.Equal(logId, entry.EntityId);
+        Assert.Equal("청구로그 2026-06", entry.Title);
+        Assert.DoesNotContain("숨김", entry.Title);
+        Assert.DoesNotContain("숨김", entry.Subtitle);
+        Assert.DoesNotContain("숨김", entry.Detail);
+    }
+
+    [Fact]
     public async Task RestoreContract_RejectsActiveOutOfScopeContractInsteadOfReportingAlreadyActive()
     {
         var currentUser = CreateOfficeOnlyUser();

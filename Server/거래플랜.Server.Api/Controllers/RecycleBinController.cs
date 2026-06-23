@@ -427,10 +427,10 @@ public sealed class RecycleBinController : ControllerBase
                 .ToList();
             var profileMap = deletedProfileIds.Count == 0
                 ? new Dictionary<Guid, RentalBillingProfile>()
-                : await _dbContext.RentalBillingProfiles
-                    .IgnoreQueryFilters()
-                    .AsNoTracking()
-                    .Where(profile => deletedProfileIds.Contains(profile.Id))
+                : await _officeScopeService.ApplyRentalBillingProfileScope(_dbContext.RentalBillingProfiles
+                        .IgnoreQueryFilters()
+                        .AsNoTracking()
+                        .Where(profile => deletedProfileIds.Contains(profile.Id)))
                     .ToDictionaryAsync(profile => profile.Id, cancellationToken);
 
             entries.AddRange(deletedLogs.Select(log =>

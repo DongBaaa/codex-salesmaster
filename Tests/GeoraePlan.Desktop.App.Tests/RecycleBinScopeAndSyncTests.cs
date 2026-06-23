@@ -641,6 +641,72 @@ public sealed class RecycleBinScopeAndSyncTests
     }
 
     [Fact]
+    public async Task LocalStateService_GetRecycleBinEntries_RentalBillingLogUsesLogScopeAndDoesNotLeakHiddenProfile()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-log-hidden-profile-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var hiddenProfileId = Guid.NewGuid();
+            var logId = Guid.NewGuid();
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = hiddenProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                ManagementCompanyCode = OfficeCodeCatalog.Yeonsu,
+                ProfileKey = "LOCAL-HIDDEN-PROFILE-001",
+                CustomerName = "숨김 렌탈 거래처",
+                InstallSiteName = "숨김 설치처",
+                ItemName = "숨김 품목",
+                IsDeleted = true,
+                IsDirty = false,
+                Revision = 40
+            });
+            db.RentalBillingLogs.Add(new LocalRentalBillingLog
+            {
+                Id = logId,
+                BillingProfileId = hiddenProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                BillingYearMonth = "2026-06",
+                ScheduledDate = new DateOnly(2026, 6, 25),
+                Status = "예정",
+                BilledAmount = 12000m,
+                IsDeleted = true,
+                IsDirty = false,
+                Revision = 41
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeUserSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var entries = await service.GetRecycleBinEntriesAsync(session);
+
+            var entry = Assert.Single(entries, current => current.Kind == RecycleBinEntityKind.RentalBillingLog);
+            Assert.Equal(logId, entry.EntityId);
+            Assert.Equal("청구로그 2026-06", entry.Title);
+            Assert.Equal(OfficeCodeCatalog.Usenet, entry.ResponsibleOfficeCode);
+            Assert.DoesNotContain("숨김", entry.Title);
+            Assert.DoesNotContain("숨김", entry.Subtitle);
+            Assert.DoesNotContain("숨김", entry.Detail);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task LocalStateService_RestoreRentalAsset_IgnoresActiveNaturalKeyConflictInOtherBusinessDatabase()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-asset-restore-cross-db-{Guid.NewGuid():N}");

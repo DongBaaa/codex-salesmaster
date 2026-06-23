@@ -505,34 +505,39 @@ public sealed partial class LocalStateService
 
         entries.AddRange(deletedRentalLogs
             .Where(log =>
-            {
-                deletedRentalLogProfiles.TryGetValue(log.BillingProfileId, out var profile);
-                return CanWriteRentalRecycleBinScope(
+                CanWriteRentalRecycleBinScope(
                     session,
-                    profile?.TenantCode ?? log.TenantCode,
-                    profile?.OfficeCode ?? log.OfficeCode,
-                    profile?.ResponsibleOfficeCode ?? log.ResponsibleOfficeCode,
-                    profile?.ManagementCompanyCode);
-            })
+                    log.TenantCode,
+                    log.OfficeCode,
+                    log.ResponsibleOfficeCode))
             .Select(log =>
             {
                 deletedRentalLogProfiles.TryGetValue(log.BillingProfileId, out var profile);
-                var title = profile is null
+                var displayProfile = profile is not null &&
+                                     CanWriteRentalRecycleBinScope(
+                                         session,
+                                         profile.TenantCode,
+                                         profile.OfficeCode,
+                                         profile.ResponsibleOfficeCode,
+                                         profile.ManagementCompanyCode)
+                    ? profile
+                    : null;
+                var title = displayProfile is null
                     ? $"청구로그 {log.BillingYearMonth}"
-                    : $"{(string.IsNullOrWhiteSpace(profile.CustomerName) ? "(거래처 미상)" : profile.CustomerName)} · {log.BillingYearMonth}";
+                    : $"{(string.IsNullOrWhiteSpace(displayProfile.CustomerName) ? "(거래처 미상)" : displayProfile.CustomerName)} · {log.BillingYearMonth}";
                 return new RecycleBinEntry
                 {
                     EntityId = log.Id,
                     Kind = RecycleBinEntityKind.RentalBillingLog,
-                    TenantCode = profile?.TenantCode ?? log.TenantCode,
-                    OfficeCode = profile?.OfficeCode ?? log.OfficeCode,
-                    ResponsibleOfficeCode = profile?.ResponsibleOfficeCode ?? log.ResponsibleOfficeCode,
-                    ManagementCompanyCode = profile?.ManagementCompanyCode ?? string.Empty,
+                    TenantCode = log.TenantCode,
+                    OfficeCode = log.OfficeCode,
+                    ResponsibleOfficeCode = log.ResponsibleOfficeCode,
+                    ManagementCompanyCode = displayProfile?.ManagementCompanyCode ?? string.Empty,
                     BusinessDatabaseName = ResolveRecycleBinBusinessDatabaseName(
-                        profile?.TenantCode ?? log.TenantCode,
-                        profile?.OfficeCode ?? log.OfficeCode,
-                        profile?.ResponsibleOfficeCode ?? log.ResponsibleOfficeCode,
-                        profile?.ManagementCompanyCode),
+                        log.TenantCode,
+                        log.OfficeCode,
+                        log.ResponsibleOfficeCode,
+                        displayProfile?.ManagementCompanyCode),
                     Title = title,
                     Subtitle = JoinSegments(
                         log.ScheduledDate.ToString("yyyy-MM-dd"),
