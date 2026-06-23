@@ -2703,7 +2703,24 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 		Guid targetInvoiceId = ((latest != null) ? Guid.NewGuid() : ((invoice.Id == Guid.Empty) ? Guid.NewGuid() : invoice.Id));
 		int versionNumber = (latest?.VersionNumber ?? 0) + 1;
-		string responsibleOfficeCode = NormalizeOfficeScope((!string.IsNullOrWhiteSpace(invoice.ResponsibleOfficeCode)) ? invoice.ResponsibleOfficeCode : latest?.ResponsibleOfficeCode, customerOfficeCode);
+		string responsibleOfficeCode = ResolveInvoiceResponsibleOfficeForSave(
+			session,
+			(!string.IsNullOrWhiteSpace(invoice.ResponsibleOfficeCode)) ? invoice.ResponsibleOfficeCode : latest?.ResponsibleOfficeCode,
+			customerOfficeCode);
+		string ownerOfficeCode = OfficeCodeCatalog.ResolveOwningOfficeCode(
+			invoice.OfficeCode,
+			responsibleOfficeCode,
+			customer.OfficeCode);
+		string tenantCode = ResolveOperationalTenantForSave(
+			session,
+			invoice.TenantCode,
+			ownerOfficeCode,
+			customer.TenantCode,
+			customer.OfficeCode);
+		if (session != null && !CanWriteOperationalScope(session, tenantCode, responsibleOfficeCode, ownerOfficeCode))
+		{
+			return InvoiceSaveResult.Denied("권한이 없어 해당 담당지점 범위의 전표를 저장할 수 없습니다.");
+		}
 		string warehouseOfficeCode = (IsSharedOfficeScope(responsibleOfficeCode) ? NormalizeOfficeCode(context.OfficeCode, DomainConstants.OfficeUsenet) : NormalizeOfficeCode(responsibleOfficeCode, customerOfficeCode));
 		string sourceWarehouseCode = NormalizeWarehouseCode(invoice.SourceWarehouseCode, warehouseOfficeCode, warehouseOfficeCode);
 		bool hasIncomingReceivingStatus = !string.IsNullOrWhiteSpace(invoice.PurchaseReceivingStatus);
@@ -2717,6 +2734,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		string purchaseReceivingWarehouseCode = (!string.IsNullOrWhiteSpace(invoice.PurchaseReceivingWarehouseCode)) ? invoice.PurchaseReceivingWarehouseCode : (latest?.PurchaseReceivingWarehouseCode ?? string.Empty);
 		string purchaseReceivingMemo = invoice.PurchaseReceivingMemo ?? string.Empty;
 		List<LocalInvoiceLine> validLines = (invoice.Lines ?? new List<LocalInvoiceLine>()).Where((LocalInvoiceLine localInvoiceLine) => !localInvoiceLine.IsDeleted && !string.IsNullOrWhiteSpace(localInvoiceLine.ItemNameOriginal)).ToList();
+		if (await ValidateInvoiceLineItemScopeAsync(validLines, session, ct) is { } itemScopeResult)
+		{
+			return itemScopeResult;
+		}
 		Dictionary<Guid, string> itemTrackingMap = await BuildItemTrackingMapAsync(ct);
 		foreach (LocalInvoiceLine line in validLines)
 		{
@@ -2730,6 +2751,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			Id = targetInvoiceId,
 			CustomerId = invoice.CustomerId,
+			TenantCode = tenantCode,
+			OfficeCode = ownerOfficeCode,
 			InvoiceNumber = ((!string.IsNullOrWhiteSpace(invoice.InvoiceNumber)) ? invoice.InvoiceNumber : (latest?.InvoiceNumber ?? string.Empty)),
 			LocalTempNumber = ((!string.IsNullOrWhiteSpace(invoice.LocalTempNumber)) ? invoice.LocalTempNumber : (latest?.LocalTempNumber ?? string.Empty)),
 			VoucherType = invoice.VoucherType,
@@ -6495,6 +6518,141 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		HashSet<string> readableOfficeCodes = GetReadableOfficeCodes(session);
 		string tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session.TenantCode, session.OfficeCode);
 		return query.Where((LocalItem item) => item.TenantCode == tenantCode && (item.OfficeCode == "ALL" || readableOfficeCodes.Contains(item.OfficeCode)));
+	}
+
+	private async Task<InvoiceSaveResult?> ValidateInvoiceLineItemScopeAsync(
+		IEnumerable<LocalInvoiceLine> lines,
+		SessionState? session,
+		CancellationToken ct)
+	{
+		var itemIds = lines
+			.Where(line => line.ItemId.HasValue && line.ItemId.Value != Guid.Empty)
+			.Select(line => line.ItemId!.Value)
+			.Distinct()
+			.ToList();
+		if (itemIds.Count == 0)
+		{
+			return null;
+		}
+
+		var items = await _db.Items
+			.IgnoreQueryFilters()
+			.AsNoTracking()
+			.Where(item => itemIds.Contains(item.Id) && !item.IsDeleted)
+			.ToDictionaryAsync(item => item.Id, ct);
+
+		foreach (var itemId in itemIds)
+		{
+			if (!items.TryGetValue(itemId, out var item))
+			{
+				return InvoiceSaveResult.Missing($"전표 품목 정보를 찾을 수 없습니다: {itemId:D}");
+			}
+
+			if (!CanReadItemScope(item, session))
+			{
+				return InvoiceSaveResult.Denied("권한이 없어 현재 담당지점/회사 범위 밖의 품목을 전표에 저장할 수 없습니다.");
+			}
+		}
+
+		return null;
+	}
+
+	private static bool CanReadItemScope(LocalItem item, SessionState? session)
+	{
+		if (HasFullAccess(session))
+		{
+			return true;
+		}
+
+		string itemOfficeCode = NormalizeOfficeScope(item.OfficeCode, "ALL");
+		string itemTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+			item.TenantCode,
+			itemOfficeCode,
+			session?.TenantCode,
+			session?.OfficeCode);
+		if (!string.Equals(itemTenantCode, ResolveCurrentTenantCode(session), StringComparison.OrdinalIgnoreCase))
+		{
+			return false;
+		}
+
+		return IsSharedOfficeScope(itemOfficeCode) || GetReadableOfficeCodes(session).Contains(itemOfficeCode);
+	}
+
+	private static string ResolveInvoiceResponsibleOfficeForSave(
+		SessionState? session,
+		string? requestedOfficeCode,
+		string? fallbackOfficeCode)
+	{
+		if (session == null || !session.IsLoggedIn || session.HasGlobalDataScope)
+		{
+			return NormalizeOfficeScope(
+				requestedOfficeCode,
+				NormalizeOfficeScope(fallbackOfficeCode, session?.OfficeCode ?? DomainConstants.OfficeUsenet));
+		}
+
+		var writableOfficeCodes = GetWritableOfficeCodes(session);
+		if (TryResolveWritableOperationalOffice(session, requestedOfficeCode, writableOfficeCodes, out var requestedOffice))
+		{
+			return requestedOffice;
+		}
+
+		if (TryResolveWritableOperationalOffice(session, fallbackOfficeCode, writableOfficeCodes, out var fallbackOffice))
+		{
+			return fallbackOffice;
+		}
+
+		return writableOfficeCodes.FirstOrDefault() ?? NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet);
+	}
+
+	private static bool TryResolveWritableOperationalOffice(
+		SessionState session,
+		string? officeCode,
+		IReadOnlySet<string> writableOfficeCodes,
+		out string resolvedOfficeCode)
+	{
+		resolvedOfficeCode = string.Empty;
+		if (!OfficeCodeCatalog.TryNormalizeScope(officeCode, out var normalizedOfficeCode))
+		{
+			return false;
+		}
+
+		if (IsSharedOfficeScope(normalizedOfficeCode))
+		{
+			if (!CanWriteSharedOfficeScope(session))
+			{
+				return false;
+			}
+
+			resolvedOfficeCode = normalizedOfficeCode;
+			return true;
+		}
+
+		if (!writableOfficeCodes.Contains(normalizedOfficeCode))
+		{
+			return false;
+		}
+
+		resolvedOfficeCode = normalizedOfficeCode;
+		return true;
+	}
+
+	private static string ResolveOperationalTenantForSave(
+		SessionState? session,
+		string? requestedTenantCode,
+		string? ownerOfficeCode,
+		string? fallbackTenantCode,
+		string? fallbackOfficeCode)
+	{
+		if (session != null && session.IsLoggedIn && !session.HasGlobalDataScope)
+		{
+			return ResolveCurrentTenantCode(session);
+		}
+
+		return TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+			requestedTenantCode,
+			ownerOfficeCode,
+			fallbackTenantCode,
+			fallbackOfficeCode);
 	}
 
 	private IQueryable<LocalItem> ApplyRentalItemScope(IQueryable<LocalItem> query, SessionState session)
