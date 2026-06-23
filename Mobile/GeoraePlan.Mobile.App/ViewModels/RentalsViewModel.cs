@@ -515,9 +515,10 @@ public sealed class RentalsViewModel : ObservableObject
         }
 
         foreach (var transaction in transactions.Where(transaction =>
-                     !transaction.IsDeleted &&
-                     transaction.LinkedRentalBillingProfileId.HasValue &&
-                     transaction.LinkedRentalBillingRunId.HasValue))
+                      !transaction.IsDeleted &&
+                      transaction.LinkedRentalBillingProfileId.HasValue &&
+                      transaction.LinkedRentalBillingRunId.HasValue &&
+                      transaction.SettlementAmount > 0m))
         {
             AddTransactionBillingRunEvidence(
                 GetEvidence(transaction.LinkedRentalBillingProfileId!.Value, transaction.LinkedRentalBillingRunId!.Value),
@@ -540,6 +541,9 @@ public sealed class RentalsViewModel : ObservableObject
 
         foreach (var payment in payments.Where(payment => !payment.IsDeleted))
         {
+            if (payment.Amount <= 0m)
+                continue;
+
             if (!invoiceById.TryGetValue(payment.InvoiceId, out var invoice))
                 continue;
             if (transactionIds.Contains(payment.Id))
@@ -575,6 +579,9 @@ public sealed class RentalsViewModel : ObservableObject
 
     private static void AddTransactionBillingRunEvidence(MobileRentalBillingRunEvidence evidence, TransactionDto transaction)
     {
+        if (transaction.SettlementAmount <= 0m)
+            return;
+
         evidence.SettlementAmount += Math.Max(0m, transaction.SettlementAmount);
         evidence.SettledDate = Max(evidence.SettledDate, transaction.TransactionDate);
         evidence.OfficeCode = ResolveOffice(transaction.ResponsibleOfficeCode, transaction.OfficeCode);
@@ -583,6 +590,9 @@ public sealed class RentalsViewModel : ObservableObject
 
     private static void AddPaymentBillingRunEvidence(MobileRentalBillingRunEvidence evidence, PaymentDto payment)
     {
+        if (payment.Amount <= 0m)
+            return;
+
         evidence.SettlementAmount += Math.Max(0m, payment.Amount);
         evidence.SettledDate = Max(evidence.SettledDate, payment.PaymentDate);
         evidence.HasPayment = true;

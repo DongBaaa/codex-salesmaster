@@ -1890,8 +1890,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
             var scopedBatchIds = batchIds;
             var settlementRows = await _db.Transactions.AsNoTracking()
                 .Where(transaction => !transaction.IsDeleted &&
-                                      transaction.LinkedRentalBillingRunId.HasValue &&
-                                      scopedBatchIds.Contains(transaction.LinkedRentalBillingRunId.Value))
+                                       transaction.LinkedRentalBillingRunId.HasValue &&
+                                       transaction.SettlementAmount > 0m &&
+                                       scopedBatchIds.Contains(transaction.LinkedRentalBillingRunId.Value))
                 .Select(transaction => new RentalBillingRunSettlementLookup(
                     transaction.LinkedRentalBillingRunId!.Value,
                     transaction.SettlementAmount,
@@ -1922,6 +1923,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     join invoice in _db.Invoices.AsNoTracking()
                         on payment.InvoiceId equals invoice.Id
                     where !payment.IsDeleted &&
+                          payment.Amount > 0m &&
                           !invoice.IsDeleted &&
                           invoice.IsLatestVersion &&
                           invoice.LinkedRentalBillingRunId.HasValue &&
@@ -2382,6 +2384,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .Where(invoice =>
                     !invoice.IsDeleted &&
                     invoice.IsLatestVersion &&
+                    invoice.TotalAmount > 0m &&
                     invoice.LinkedRentalBillingProfileId.HasValue &&
                     invoice.LinkedRentalBillingRunId.HasValue &&
                     scopedBatchIds.Contains(invoice.LinkedRentalBillingProfileId.Value))
@@ -2410,6 +2413,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     !transaction.IsDeleted &&
                     transaction.LinkedRentalBillingProfileId.HasValue &&
                     transaction.LinkedRentalBillingRunId.HasValue &&
+                    transaction.SettlementAmount > 0m &&
                     scopedBatchIds.Contains(transaction.LinkedRentalBillingProfileId.Value))
                 .Select(transaction => new SupplementalBillingRunSettlementLookup(
                     transaction.LinkedRentalBillingProfileId!.Value,
@@ -2436,6 +2440,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     join invoice in _db.Invoices.AsNoTracking()
                         on payment.InvoiceId equals invoice.Id
                     where !payment.IsDeleted &&
+                          payment.Amount > 0m &&
                           !invoice.IsDeleted &&
                           invoice.IsLatestVersion &&
                           invoice.LinkedRentalBillingProfileId.HasValue &&

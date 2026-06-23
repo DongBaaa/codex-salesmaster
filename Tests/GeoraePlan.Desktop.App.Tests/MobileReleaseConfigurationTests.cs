@@ -616,8 +616,10 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("effectiveTransactions", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("effectiveBillingProfiles", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("AddTransactionBillingRunEvidence", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("if (transaction.SettlementAmount <= 0m)", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("AddInvoiceBillingRunEvidence", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("AddPaymentBillingRunEvidence", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("if (payment.Amount <= 0m)", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("RentalBillingEvidenceStatusResolver.Resolve(", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("evidence.HasInvoice || evidence.HasTransaction || evidence.HasPayment", viewModelSource, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveEvidenceStatus(", viewModelSource, StringComparison.Ordinal);
