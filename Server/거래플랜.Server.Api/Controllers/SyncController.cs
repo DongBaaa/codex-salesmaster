@@ -480,10 +480,12 @@ public sealed class SyncController : ControllerBase
             }
             var scopedTransactions = await PrepareScopedTransactionsAsync(request.Transactions ?? [], result, cancellationToken);
             var validTransactions = await FilterValidTransactionsAsync(scopedTransactions, result, cancellationToken);
-            var transactionRentalSettlementTargets =
-                await LoadRentalSettlementTargetsForTransactionsAsync(validTransactions, cancellationToken);
-            await UpsertEntitiesAsync(validTransactions, _dbContext.Transactions,
+            var existingTransactionRentalSettlementTargets =
+                await LoadExistingRentalSettlementTargetsByTransactionIdAsync(validTransactions, cancellationToken);
+            var acceptedTransactions = await UpsertEntitiesAsync(validTransactions, _dbContext.Transactions,
                 (e, d) => e.Apply(d), d => new TransactionRecord { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+            var transactionRentalSettlementTargets =
+                BuildRentalSettlementTargetsForAcceptedTransactions(acceptedTransactions, existingTransactionRentalSettlementTargets);
             if (validTransactions.Count > 0)
                 await _dbContext.SaveChangesAsync(cancellationToken);
             var validTransactionAttachments = await FilterValidTransactionAttachmentsAsync(request.TransactionAttachments ?? [], result, cancellationToken);
@@ -1096,38 +1098,56 @@ public sealed class SyncController : ControllerBase
         return rentalSettlementTargets.Distinct().ToList();
     }
 
-    private async Task<List<(Guid ProfileId, Guid? RunId)>> LoadRentalSettlementTargetsForTransactionsAsync(
+    private async Task<Dictionary<Guid, List<(Guid ProfileId, Guid? RunId)>>> LoadExistingRentalSettlementTargetsByTransactionIdAsync(
         IEnumerable<TransactionDto> payload,
         CancellationToken cancellationToken)
     {
-        var targets = new List<(Guid ProfileId, Guid? RunId)>();
-        var transactions = (payload ?? Enumerable.Empty<TransactionDto>()).ToList();
-        var transactionIds = transactions
+        var transactionIds = (payload ?? Enumerable.Empty<TransactionDto>())
             .Select(transaction => transaction.Id)
             .Where(id => id != Guid.Empty)
             .Distinct()
             .ToList();
+        if (transactionIds.Count == 0)
+            return [];
 
-        if (transactionIds.Count > 0)
+        var existingTargets = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(transaction => transactionIds.Contains(transaction.Id) &&
+                                  transaction.LinkedRentalBillingProfileId.HasValue &&
+                                  transaction.LinkedRentalBillingProfileId.Value != Guid.Empty)
+            .Select(transaction => new
+            {
+                transaction.Id,
+                ProfileId = transaction.LinkedRentalBillingProfileId!.Value,
+                RunId = transaction.LinkedRentalBillingRunId
+            })
+            .ToListAsync(cancellationToken);
+
+        return existingTargets
+            .GroupBy(target => target.Id)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .Select(target => (target.ProfileId, target.RunId))
+                    .Distinct()
+                    .ToList());
+    }
+
+    private static List<(Guid ProfileId, Guid? RunId)> BuildRentalSettlementTargetsForAcceptedTransactions(
+        IEnumerable<TransactionDto> acceptedTransactions,
+        IReadOnlyDictionary<Guid, List<(Guid ProfileId, Guid? RunId)>> existingTargetsByTransactionId)
+    {
+        var targets = new List<(Guid ProfileId, Guid? RunId)>();
+        foreach (var transaction in acceptedTransactions ?? Enumerable.Empty<TransactionDto>())
         {
-            var existingTargets = await _dbContext.Transactions.IgnoreQueryFilters()
-                .AsNoTracking()
-                .Where(transaction => transactionIds.Contains(transaction.Id) &&
-                                      transaction.LinkedRentalBillingProfileId.HasValue &&
-                                      transaction.LinkedRentalBillingProfileId.Value != Guid.Empty)
-                .Select(transaction => new
-                {
-                    ProfileId = transaction.LinkedRentalBillingProfileId!.Value,
-                    RunId = transaction.LinkedRentalBillingRunId
-                })
-                .ToListAsync(cancellationToken);
+            if (transaction.Id != Guid.Empty &&
+                existingTargetsByTransactionId.TryGetValue(transaction.Id, out var existingTargets))
+            {
+                targets.AddRange(existingTargets);
+            }
 
-            foreach (var target in existingTargets)
-                AddRentalSettlementTarget(targets, target.ProfileId, target.RunId);
-        }
-
-        foreach (var transaction in transactions)
             AddRentalSettlementTarget(targets, transaction.LinkedRentalBillingProfileId, transaction.LinkedRentalBillingRunId);
+        }
 
         return targets.Distinct().ToList();
     }

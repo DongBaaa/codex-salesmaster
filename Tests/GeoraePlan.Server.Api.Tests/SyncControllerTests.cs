@@ -5636,6 +5636,125 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_StaleRentalTransactionDelete_DoesNotRecalculateSettlement()
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-STALE-RENTAL-TX-CUSTOMER",
+            NameMatchKey = "SYNCSTALERENTALTXCUSTOMER",
+            TradeType = "매출"
+        });
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"stale-transaction-profile-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = "SYNC-STALE-RENTAL-TX-CUSTOMER",
+            BillingStatus = "청구중",
+            SettlementStatus = "미입금",
+            CompletionStatus = "미완료",
+            MonthlyAmount = 100_000m,
+            SettledAmount = 0m,
+            OutstandingAmount = 100_000m,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new SyncRentalBillingRunSnapshot
+                {
+                    RunId = runId,
+                    RunKey = "2026-06",
+                    ScheduledDate = new DateOnly(2026, 6, 25),
+                    PeriodStartDate = new DateOnly(2026, 6, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    PeriodLabel = "2026-06",
+                    Status = "청구중",
+                    BilledAmount = 100_000m,
+                    SettledAmount = 0m,
+                    SettlementStatus = "미입금"
+                }
+            })
+        });
+        _dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = transactionId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 26),
+            TransactionKind = "렌탈수금",
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId,
+            BankReceipt = 40_000m,
+            ReceiptTotal = 40_000m,
+            SettlementAmount = 40_000m,
+            CreatedAtUtc = new DateTime(2026, 6, 26, 1, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 26, 1, 1, 0, DateTimeKind.Utc)
+        });
+        await _dbContext.SaveChangesAsync();
+        var storedTransaction = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == transactionId);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-stale-rental-transaction-delete",
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = transactionId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 6, 26),
+                    TransactionKind = "렌탈수금",
+                    LinkedRentalBillingProfileId = profileId,
+                    LinkedRentalBillingRunId = runId,
+                    BankReceipt = 40_000m,
+                    ReceiptTotal = 40_000m,
+                    SettlementAmount = 40_000m,
+                    IsDeleted = true,
+                    ExpectedRevision = storedTransaction.Revision + 1,
+                    CreatedAtUtc = storedTransaction.CreatedAtUtc,
+                    UpdatedAtUtc = DateTime.UtcNow.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.ConflictCount);
+
+        Assert.False(await _dbContext.Transactions.IgnoreQueryFilters()
+            .Where(transaction => transaction.Id == transactionId)
+            .Select(transaction => transaction.IsDeleted)
+            .SingleAsync());
+        var profile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == profileId);
+        Assert.Equal(0m, profile.SettledAmount);
+        Assert.Equal(100_000m, profile.OutstandingAmount);
+        Assert.Equal("미입금", profile.SettlementStatus);
+        var run = Assert.Single(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(profile.BillingRunsJson) ?? []);
+        Assert.Equal(0m, run.SettledAmount);
+        Assert.Equal("미입금", run.SettlementStatus);
+    }
+
+    [Fact]
     public async Task Push_RentalTransactionWithZeroSettlement_ClearsRentalLinkAndDoesNotRecreateDirtyEvidence()
     {
         var customerId = Guid.NewGuid();
@@ -7029,6 +7148,191 @@ public sealed class SyncControllerTests : IDisposable
             .Where(attachment => attachment.Id == transactionAttachmentId)
             .Select(attachment => attachment.IsDeleted)
             .SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_RelinkPaymentBetweenRentalInvoices_RecalculatesPreviousAndTargetSettlement()
+    {
+        var customerId = Guid.NewGuid();
+        var firstProfileId = Guid.NewGuid();
+        var secondProfileId = Guid.NewGuid();
+        var firstRunId = Guid.NewGuid();
+        var secondRunId = Guid.NewGuid();
+        var firstInvoiceId = Guid.NewGuid();
+        var secondInvoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-PAYMENT-RELINK-SETTLEMENT-CUSTOMER",
+            NameMatchKey = "SYNCPAYMENTRELINKSETTLEMENTCUSTOMER",
+            TradeType = "매출"
+        });
+        _dbContext.RentalBillingProfiles.AddRange(
+            new RentalBillingProfile
+            {
+                Id = firstProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = $"payment-relink-first-{firstProfileId:N}",
+                CustomerId = customerId,
+                CustomerName = "SYNC-PAYMENT-RELINK-SETTLEMENT-CUSTOMER",
+                BillingStatus = "청구중",
+                SettlementStatus = "부분입금",
+                CompletionStatus = "미완료",
+                MonthlyAmount = 100_000m,
+                SettledAmount = 40_000m,
+                OutstandingAmount = 60_000m,
+                BillingRunsJson = JsonSerializer.Serialize(new[]
+                {
+                    new SyncRentalBillingRunSnapshot
+                    {
+                        RunId = firstRunId,
+                        RunKey = "2026-06",
+                        ScheduledDate = new DateOnly(2026, 6, 25),
+                        PeriodStartDate = new DateOnly(2026, 6, 1),
+                        PeriodEndDate = new DateOnly(2026, 6, 30),
+                        PeriodLabel = "2026-06",
+                        Status = "청구중",
+                        BilledAmount = 100_000m,
+                        SettledAmount = 40_000m,
+                        SettlementStatus = "부분입금"
+                    }
+                })
+            },
+            new RentalBillingProfile
+            {
+                Id = secondProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = $"payment-relink-second-{secondProfileId:N}",
+                CustomerId = customerId,
+                CustomerName = "SYNC-PAYMENT-RELINK-SETTLEMENT-CUSTOMER",
+                BillingStatus = "청구중",
+                SettlementStatus = "미입금",
+                CompletionStatus = "미완료",
+                MonthlyAmount = 100_000m,
+                SettledAmount = 0m,
+                OutstandingAmount = 100_000m,
+                BillingRunsJson = JsonSerializer.Serialize(new[]
+                {
+                    new SyncRentalBillingRunSnapshot
+                    {
+                        RunId = secondRunId,
+                        RunKey = "2026-07",
+                        ScheduledDate = new DateOnly(2026, 7, 25),
+                        PeriodStartDate = new DateOnly(2026, 7, 1),
+                        PeriodEndDate = new DateOnly(2026, 7, 31),
+                        PeriodLabel = "2026-07",
+                        Status = "청구중",
+                        BilledAmount = 100_000m,
+                        SettledAmount = 0m,
+                        SettlementStatus = "미입금"
+                    }
+                })
+            });
+        _dbContext.Invoices.AddRange(
+            new Invoice
+            {
+                Id = firstInvoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "SYNC-PAYMENT-RELINK-FIRST",
+                VersionGroupId = firstInvoiceId,
+                VersionNumber = 1,
+                IsLatestVersion = true,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 25),
+                TotalAmount = 100_000m,
+                SupplyAmount = 90_909m,
+                VatAmount = 9_091m,
+                LinkedRentalBillingProfileId = firstProfileId,
+                LinkedRentalBillingRunId = firstRunId
+            },
+            new Invoice
+            {
+                Id = secondInvoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "SYNC-PAYMENT-RELINK-SECOND",
+                VersionGroupId = secondInvoiceId,
+                VersionNumber = 1,
+                IsLatestVersion = true,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 7, 25),
+                TotalAmount = 100_000m,
+                SupplyAmount = 90_909m,
+                VatAmount = 9_091m,
+                LinkedRentalBillingProfileId = secondProfileId,
+                LinkedRentalBillingRunId = secondRunId
+            });
+        _dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = firstInvoiceId,
+            PaymentDate = new DateOnly(2026, 6, 26),
+            Amount = 40_000m,
+            Note = "payment before relink",
+            CreatedAtUtc = new DateTime(2026, 6, 26, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 26, 0, 0, 0, DateTimeKind.Utc)
+        });
+        await _dbContext.SaveChangesAsync();
+        var storedPayment = await _dbContext.Payments.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(payment => payment.Id == paymentId);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-payment-relink-settlement",
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = paymentId,
+                    InvoiceId = secondInvoiceId,
+                    PaymentDate = new DateOnly(2026, 7, 26),
+                    Amount = 40_000m,
+                    Note = "payment relinked to second invoice",
+                    ExpectedRevision = storedPayment.Revision,
+                    CreatedAtUtc = storedPayment.CreatedAtUtc,
+                    UpdatedAtUtc = DateTime.UtcNow.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        Assert.Equal(secondInvoiceId, await _dbContext.Payments.IgnoreQueryFilters()
+            .Where(payment => payment.Id == paymentId)
+            .Select(payment => payment.InvoiceId)
+            .SingleAsync());
+
+        var firstProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == firstProfileId);
+        var secondProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == secondProfileId);
+        Assert.Equal(0m, firstProfile.SettledAmount);
+        Assert.Equal(100_000m, firstProfile.OutstandingAmount);
+        Assert.Equal("확인대기", firstProfile.SettlementStatus);
+        Assert.Equal(40_000m, secondProfile.SettledAmount);
+        Assert.Equal(60_000m, secondProfile.OutstandingAmount);
+        Assert.Equal("부분입금", secondProfile.SettlementStatus);
     }
 
     [Fact]
