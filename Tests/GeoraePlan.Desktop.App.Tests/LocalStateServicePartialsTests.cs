@@ -5169,6 +5169,171 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task LocalStateService_ApplyServerPurgeInvoice_CleansOrphanedChildrenWhenInvoiceAlreadyMissing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-invoice-purge-orphans-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var customerId = Guid.Parse("b8600000-0000-0000-0000-000000000001");
+            var itemId = Guid.Parse("b8700000-0000-0000-0000-000000000001");
+            var invoiceId = Guid.Parse("b8700000-0000-0000-0000-000000000002");
+            var invoiceLineId = Guid.Parse("b8700000-0000-0000-0000-000000000003");
+            var paymentId = Guid.Parse("b8700000-0000-0000-0000-000000000004");
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "전표 purge 고아 거래처",
+                NameMatchKey = "전표purge고아거래처"
+            });
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "전표 purge 고아 품목",
+                NameMatchKey = "전표purge고아품목",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                PurchasePrice = 1000m,
+                CurrentStock = 1m
+            });
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = invoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 23),
+                IsDeleted = true,
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        Id = invoiceLineId,
+                        InvoiceId = invoiceId,
+                        ItemId = itemId,
+                        ItemNameOriginal = "전표 purge 고아 품목",
+                        ItemTrackingType = ItemTrackingTypes.Stock,
+                        Unit = "EA",
+                        Quantity = 1m,
+                        UnitPrice = 1000m,
+                        LineAmount = 1000m
+                    }
+                }
+            });
+            db.Payments.Add(new LocalPayment
+            {
+                Id = paymentId,
+                InvoiceId = invoiceId,
+                PaymentDate = new DateOnly(2026, 6, 23),
+                Amount = 1000m,
+                IsDeleted = true
+            });
+            db.InvoiceLineSerials.Add(new LocalInvoiceLineSerial
+            {
+                InvoiceId = invoiceId,
+                InvoiceLineId = invoiceLineId,
+                ItemId = itemId,
+                SerialNumber = "INV-PURGE-ORPHAN-SN"
+            });
+            db.SerialLedgers.Add(new LocalSerialLedger
+            {
+                ItemId = itemId,
+                SerialNumber = "INV-PURGE-ORPHAN-SN",
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Status = "Sold",
+                SourceSalesInvoiceId = invoiceId,
+                LastInvoiceId = invoiceId
+            });
+            db.InventoryMovements.Add(new LocalInventoryMovement
+            {
+                ItemId = itemId,
+                InvoiceId = invoiceId,
+                InvoiceLineId = invoiceLineId,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                MovementType = "Sale",
+                QuantityDelta = -1m,
+                OccurredDate = new DateOnly(2026, 6, 23)
+            });
+            db.StockLayers.Add(new LocalStockLayer
+            {
+                ItemId = itemId,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                SourceInvoiceId = invoiceId,
+                SourceInvoiceLineId = invoiceLineId,
+                ReceiptDate = new DateOnly(2026, 6, 23),
+                OriginalQuantity = 1m,
+                RemainingQuantity = 1m,
+                UnitCost = 100m
+            });
+            db.CostAllocations.Add(new LocalCostAllocation
+            {
+                SalesInvoiceId = invoiceId,
+                SalesInvoiceLineId = invoiceLineId,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 1m,
+                UnitCost = 100m,
+                CostAmount = 100m
+            });
+            db.ItemWarehouseStocks.Add(new LocalItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 1m
+            });
+            await db.SaveChangesAsync();
+
+            await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
+            await db.Database.ExecuteSqlRawAsync("DELETE FROM \"Invoices\";");
+            await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
+            db.ChangeTracker.Clear();
+
+            Assert.False(await db.Invoices.IgnoreQueryFilters().AnyAsync(invoice => invoice.Id == invoiceId));
+            Assert.True(await db.InvoiceLines.IgnoreQueryFilters().AnyAsync(line => line.InvoiceId == invoiceId));
+            Assert.True(await db.Payments.IgnoreQueryFilters().AnyAsync(payment => payment.InvoiceId == invoiceId));
+            Assert.True(await db.InventoryMovements.AnyAsync(movement => movement.InvoiceId == invoiceId));
+
+            var purgeResult = await service.ApplyServerPurgeRecycleBinEntryAsync(
+                RecycleBinEntityKind.Invoice,
+                invoiceId);
+
+            Assert.True(purgeResult.Success, purgeResult.Message);
+            db.ChangeTracker.Clear();
+
+            Assert.False(await db.InvoiceLines.IgnoreQueryFilters().AnyAsync(line => line.InvoiceId == invoiceId));
+            Assert.False(await db.Payments.IgnoreQueryFilters().AnyAsync(payment => payment.InvoiceId == invoiceId));
+            Assert.False(await db.InvoiceLineSerials.AnyAsync(serial => serial.InvoiceId == invoiceId));
+            Assert.False(await db.SerialLedgers.AnyAsync(ledger => ledger.LastInvoiceId == invoiceId || ledger.SourceSalesInvoiceId == invoiceId));
+            Assert.False(await db.InventoryMovements.AnyAsync(movement => movement.InvoiceId == invoiceId));
+            Assert.False(await db.StockLayers.AnyAsync(layer => layer.SourceInvoiceId == invoiceId));
+            Assert.False(await db.CostAllocations.AnyAsync(cost => cost.SalesInvoiceId == invoiceId || cost.PurchaseInvoiceId == invoiceId));
+            Assert.False(await db.ItemWarehouseStocks.AnyAsync(stock => stock.ItemId == itemId));
+            Assert.Equal(0m, (await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == itemId)).CurrentStock);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task LocalStateService_ApplyServerPurgeItem_CleansOrphanedReferencesWhenItemAlreadyMissing()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-item-purge-orphans-{Guid.NewGuid():N}");

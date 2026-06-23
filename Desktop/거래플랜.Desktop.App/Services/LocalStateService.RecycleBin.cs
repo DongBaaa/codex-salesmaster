@@ -1271,21 +1271,51 @@ public sealed partial class LocalStateService
         var target = await _db.Invoices
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == invoiceId, ct);
-        if (target is null)
+
+        var groupInvoices = target is null
+            ? await _db.Invoices
+                .IgnoreQueryFilters()
+                .Where(current => current.Id == invoiceId || current.VersionGroupId == invoiceId)
+                .ToListAsync(ct)
+            : await _db.Invoices
+                .IgnoreQueryFilters()
+                .Where(current =>
+                    current.Id == target.Id ||
+                    current.VersionGroupId == (target.VersionGroupId == Guid.Empty ? target.Id : target.VersionGroupId))
+                .ToListAsync(ct);
+        var invoiceIds = groupInvoices
+            .Select(current => current.Id)
+            .Append(invoiceId)
+            .Distinct()
+            .ToList();
+        var linkedPayments = await _db.Payments
+            .IgnoreQueryFilters()
+            .Where(current => invoiceIds.Contains(current.InvoiceId))
+            .ToListAsync(ct);
+        var invoiceLines = await _db.InvoiceLines
+            .IgnoreQueryFilters()
+            .Where(current => invoiceIds.Contains(current.InvoiceId))
+            .ToListAsync(ct);
+        var hasInventoryResidue = await _db.InvoiceLineSerials.AnyAsync(current => invoiceIds.Contains(current.InvoiceId), ct) ||
+                                  await _db.InventoryMovements.AnyAsync(current => current.InvoiceId.HasValue && invoiceIds.Contains(current.InvoiceId.Value), ct) ||
+                                  await _db.StockLayers.AnyAsync(current => current.SourceInvoiceId.HasValue && invoiceIds.Contains(current.SourceInvoiceId.Value), ct) ||
+                                  await _db.CostAllocations.AnyAsync(current =>
+                                      invoiceIds.Contains(current.SalesInvoiceId) ||
+                                      (current.PurchaseInvoiceId.HasValue && invoiceIds.Contains(current.PurchaseInvoiceId.Value)), ct) ||
+                                  await _db.SerialLedgers.AnyAsync(current =>
+                                      (current.SourcePurchaseInvoiceId.HasValue && invoiceIds.Contains(current.SourcePurchaseInvoiceId.Value)) ||
+                                      (current.SourceSalesInvoiceId.HasValue && invoiceIds.Contains(current.SourceSalesInvoiceId.Value)) ||
+                                      (current.LastInvoiceId.HasValue && invoiceIds.Contains(current.LastInvoiceId.Value)), ct);
+        if (groupInvoices.Count == 0 &&
+            linkedPayments.Count == 0 &&
+            invoiceLines.Count == 0 &&
+            !hasInventoryResidue)
+        {
             return OfficeMutationResult.Ok(invoiceId, "전표 서버 영구삭제 상태가 이미 로컬에 반영되어 있습니다.");
+        }
 
-        var versionGroupId = target.VersionGroupId == Guid.Empty ? target.Id : target.VersionGroupId;
-        var groupInvoices = await _db.Invoices
-            .IgnoreQueryFilters()
-            .Where(current => current.Id == target.Id || current.VersionGroupId == versionGroupId)
-            .ToListAsync(ct);
-        var invoiceIds = groupInvoices.Select(current => current.Id).Distinct().ToList();
-        var deletedPayments = await _db.Payments
-            .IgnoreQueryFilters()
-            .Where(current => invoiceIds.Contains(current.InvoiceId) && current.IsDeleted)
-            .ToListAsync(ct);
-
-        _db.Payments.RemoveRange(deletedPayments);
+        _db.Payments.RemoveRange(linkedPayments);
+        _db.InvoiceLines.RemoveRange(invoiceLines);
         _db.Invoices.RemoveRange(groupInvoices);
         await _db.SaveChangesAsync(ct);
 
