@@ -314,6 +314,14 @@ public sealed class PaymentsController : ControllerBase
                 return Forbid();
             }
 
+            if (await ValidateWritableRentalBillingProfileAsync(
+                    linkedTransaction.LinkedRentalBillingProfileId,
+                    allowMissingOrDeleted: true,
+                    cancellationToken) is { } linkedTransactionRentalProfileScopeError)
+            {
+                return linkedTransactionRentalProfileScopeError;
+            }
+
             AddRentalSettlementTarget(
                 linkedTransactionRentalTargets,
                 linkedTransaction.LinkedRentalBillingProfileId,
@@ -376,6 +384,14 @@ public sealed class PaymentsController : ControllerBase
                     linkedTransaction.OfficeCode))
             {
                 return Forbid();
+            }
+
+            if (await ValidateWritableRentalBillingProfileAsync(
+                    linkedTransaction.LinkedRentalBillingProfileId,
+                    allowMissingOrDeleted: true,
+                    cancellationToken) is { } linkedTransactionRentalProfileScopeError)
+            {
+                return linkedTransactionRentalProfileScopeError;
             }
 
             linkedTransaction.IsDeleted = true;
@@ -533,10 +549,24 @@ public sealed class PaymentsController : ControllerBase
             return null;
         }
 
+        return await ValidateWritableRentalBillingProfileAsync(
+            invoice.LinkedRentalBillingProfileId,
+            allowMissingOrDeleted,
+            cancellationToken);
+    }
+
+    private async Task<ActionResult?> ValidateWritableRentalBillingProfileAsync(
+        Guid? profileId,
+        bool allowMissingOrDeleted,
+        CancellationToken cancellationToken)
+    {
+        if (!profileId.HasValue || profileId.Value == Guid.Empty)
+            return null;
+
         var profile = await _dbContext.RentalBillingProfiles
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(current => current.Id == invoice.LinkedRentalBillingProfileId.Value)
+            .Where(current => current.Id == profileId.Value)
             .Select(current => new
             {
                 current.IsDeleted,

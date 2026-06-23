@@ -247,6 +247,8 @@ public sealed class InvoicesController : ControllerBase
         {
             return Forbid();
         }
+        if (await ValidateLinkedTransactionScopesForInvoiceDeleteAsync([id], cancellationToken) is { } linkedTransactionScopeError)
+            return linkedTransactionScopeError;
 
         var rentalSettlementTargets = await _rentalSettlementRecalculationService.LoadRentalSettlementTargetsForInvoiceDeleteAsync([id], cancellationToken);
         var previousStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
@@ -307,6 +309,61 @@ public sealed class InvoicesController : ControllerBase
             return;
 
         targets.Add((profileId.Value, runId));
+    }
+
+    private async Task<ActionResult?> ValidateLinkedTransactionScopesForInvoiceDeleteAsync(
+        IReadOnlyCollection<Guid> invoiceIds,
+        CancellationToken cancellationToken)
+    {
+        if (invoiceIds.Count == 0)
+            return null;
+
+        var linkedTransactions = await _dbContext.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(transaction =>
+                transaction.LinkedInvoiceId.HasValue &&
+                invoiceIds.Contains(transaction.LinkedInvoiceId.Value))
+            .Select(transaction => new
+            {
+                transaction.ResponsibleOfficeCode,
+                transaction.TenantCode,
+                transaction.OfficeCode,
+                transaction.LinkedRentalBillingProfileId
+            })
+            .ToListAsync(cancellationToken);
+
+        foreach (var transaction in linkedTransactions)
+        {
+            if (!_officeScopeService.CanWriteOfficeForPayments(
+                    transaction.ResponsibleOfficeCode,
+                    transaction.TenantCode,
+                    transaction.OfficeCode))
+            {
+                return Forbid();
+            }
+        }
+
+        var profileIds = linkedTransactions
+            .Where(transaction =>
+                transaction.LinkedRentalBillingProfileId.HasValue &&
+                transaction.LinkedRentalBillingProfileId.Value != Guid.Empty)
+            .Select(transaction => transaction.LinkedRentalBillingProfileId!.Value)
+            .Distinct()
+            .ToList();
+
+        foreach (var profileId in profileIds)
+        {
+            if (await ValidateLinkedRentalBillingProfileScopeAsync(
+                    profileId,
+                    allowMissingOrDeleted: true,
+                    cancellationToken) is { } rentalProfileScopeError)
+            {
+                return rentalProfileScopeError;
+            }
+        }
+
+        return null;
     }
 
     private async Task<ActionResult?> ValidateInvoiceLineItemScopeAsync(

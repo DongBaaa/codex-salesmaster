@@ -2637,6 +2637,55 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task InvoicesController_Delete_ForbidsLinkedTransactionRentalProfileOutsideWritableScope()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "invoice-payment-editor-usenet",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = new[] { PermissionNames.InvoiceEdit, PermissionNames.PaymentEdit }
+        };
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var scenario = SeedPaymentWithOutOfScopeLinkedTransactionRentalProfileScenario(dbContext);
+        await dbContext.SaveChangesAsync();
+        var storedInvoice = await dbContext.Invoices.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(invoice => invoice.Id == scenario.InvoiceId);
+        var controller = new InvoicesController(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
+
+        var deleteResponse = await controller.Delete(scenario.InvoiceId, storedInvoice.Revision, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(deleteResponse);
+        Assert.False(await dbContext.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.Id == scenario.InvoiceId)
+            .Select(invoice => invoice.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.Payments.IgnoreQueryFilters()
+            .Where(payment => payment.Id == scenario.PaymentId)
+            .Select(payment => payment.IsDeleted)
+            .SingleAsync());
+        var unchangedTransaction = await dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == scenario.PaymentId);
+        Assert.False(unchangedTransaction.IsDeleted);
+        Assert.Equal(scenario.InvoiceId, unchangedTransaction.LinkedInvoiceId);
+        Assert.Equal(scenario.ProfileId, unchangedTransaction.LinkedRentalBillingProfileId);
+        Assert.Equal(scenario.RunId, unchangedTransaction.LinkedRentalBillingRunId);
+        Assert.Equal(40_000m, unchangedTransaction.SettlementAmount);
+        await AssertOutOfScopeRentalSettlementUnchangedAsync(dbContext, scenario.ProfileId, settledAmount: 40_000m, outstandingAmount: 60_000m);
+    }
+
+    [Fact]
     public async Task InvoicesController_Delete_RentalBillingInvoice_RevertsSettlementAndDeletesLinkedPayments()
     {
         var currentUser = CreateAdminUser();
@@ -3440,6 +3489,45 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PaymentsController_Update_ForbidsLinkedTransactionRentalProfileOutsideWritableScope()
+    {
+        var currentUser = CreateOfficePaymentEditor();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var scenario = SeedPaymentWithOutOfScopeLinkedTransactionRentalProfileScenario(dbContext);
+        await dbContext.SaveChangesAsync();
+        var storedPayment = await dbContext.Payments.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(payment => payment.Id == scenario.PaymentId);
+
+        var controller = CreatePaymentsController(dbContext, currentUser);
+        var updateResponse = await controller.Update(scenario.PaymentId, new PaymentDto
+        {
+            Id = scenario.PaymentId,
+            InvoiceId = scenario.InvoiceId,
+            PaymentDate = storedPayment.PaymentDate,
+            Amount = 30_000m,
+            Note = "must not recalculate hidden linked transaction rental profile",
+            ExpectedRevision = storedPayment.Revision
+        }, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(updateResponse.Result);
+        var unchangedPayment = await dbContext.Payments.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(payment => payment.Id == scenario.PaymentId);
+        Assert.Equal(40_000m, unchangedPayment.Amount);
+        Assert.Equal("seeded linked transaction payment", unchangedPayment.Note);
+        var unchangedTransaction = await dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == scenario.PaymentId);
+        Assert.False(unchangedTransaction.IsDeleted);
+        Assert.Equal(scenario.ProfileId, unchangedTransaction.LinkedRentalBillingProfileId);
+        Assert.Equal(scenario.RunId, unchangedTransaction.LinkedRentalBillingRunId);
+        Assert.Equal(40_000m, unchangedTransaction.SettlementAmount);
+        await AssertOutOfScopeRentalSettlementUnchangedAsync(dbContext, scenario.ProfileId, settledAmount: 40_000m, outstandingAmount: 60_000m);
+    }
+
+    [Fact]
     public async Task PaymentsController_Update_RejectsInvoiceWhoseCustomerIsDeleted()
     {
         var currentUser = CreateAdminUser();
@@ -3609,6 +3697,36 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         Assert.IsType<ForbidResult>(deleteResponse);
         var unchangedPayment = await dbContext.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(payment => payment.Id == scenario.PaymentId);
         Assert.False(unchangedPayment.IsDeleted);
+        await AssertOutOfScopeRentalSettlementUnchangedAsync(dbContext, scenario.ProfileId, settledAmount: 40_000m, outstandingAmount: 60_000m);
+    }
+
+    [Fact]
+    public async Task PaymentsController_Delete_ForbidsLinkedTransactionRentalProfileOutsideWritableScope()
+    {
+        var currentUser = CreateOfficePaymentEditor();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var scenario = SeedPaymentWithOutOfScopeLinkedTransactionRentalProfileScenario(dbContext);
+        await dbContext.SaveChangesAsync();
+        var storedPayment = await dbContext.Payments.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(payment => payment.Id == scenario.PaymentId);
+
+        var controller = CreatePaymentsController(dbContext, currentUser);
+        var deleteResponse = await controller.Delete(scenario.PaymentId, storedPayment.Revision, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(deleteResponse);
+        var unchangedPayment = await dbContext.Payments.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(payment => payment.Id == scenario.PaymentId);
+        Assert.False(unchangedPayment.IsDeleted);
+        var unchangedTransaction = await dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == scenario.PaymentId);
+        Assert.False(unchangedTransaction.IsDeleted);
+        Assert.Equal(scenario.ProfileId, unchangedTransaction.LinkedRentalBillingProfileId);
+        Assert.Equal(scenario.RunId, unchangedTransaction.LinkedRentalBillingRunId);
+        Assert.Equal(40_000m, unchangedTransaction.SettlementAmount);
         await AssertOutOfScopeRentalSettlementUnchangedAsync(dbContext, scenario.ProfileId, settledAmount: 40_000m, outstandingAmount: 60_000m);
     }
 
@@ -4889,6 +5007,108 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         return new OutOfScopeRentalLinkedInvoiceScenario(customerId, profileId, runId, invoiceId, paymentId);
     }
 
+    private static LinkedTransactionOutOfScopeRentalScenario SeedPaymentWithOutOfScopeLinkedTransactionRentalProfileScenario(
+        AppDbContext dbContext)
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var billedAmount = 100_000m;
+        var settledAmount = 40_000m;
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Payment linked transaction hidden rental customer",
+            NameMatchKey = "PAYMENTLINKEDTRANSACTIONHIDDENRENTALCUSTOMER",
+            TradeType = "Sales"
+        });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ManagementCompanyCode = OfficeCodeCatalog.Yeonsu,
+            ProfileKey = $"linked-transaction-hidden-profile-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = "Payment linked transaction hidden rental customer",
+            BillingStatus = "in-progress",
+            SettlementStatus = "partial",
+            CompletionStatus = "incomplete",
+            MonthlyAmount = billedAmount,
+            SettledAmount = settledAmount,
+            OutstandingAmount = billedAmount - settledAmount,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new ServerRentalBillingRunSnapshot
+                {
+                    RunId = runId,
+                    RunKey = "2026-09",
+                    ScheduledDate = new DateOnly(2026, 9, 25),
+                    PeriodStartDate = new DateOnly(2026, 9, 1),
+                    PeriodEndDate = new DateOnly(2026, 9, 30),
+                    PeriodLabel = "2026-09",
+                    Status = "in-progress",
+                    BilledAmount = billedAmount,
+                    SettledAmount = settledAmount,
+                    SettlementStatus = "partial",
+                    SettledDate = new DateOnly(2026, 9, 26)
+                }
+            })
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "PAY-LINKED-TX-HIDDEN-RENTAL",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 9, 25),
+            TotalAmount = billedAmount,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m
+        });
+        dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 9, 26),
+            Amount = settledAmount,
+            Note = "seeded linked transaction payment"
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = paymentId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 9, 26),
+            TransactionKind = "legacy linked rental receipt",
+            LinkedInvoiceId = invoiceId,
+            LinkedInvoiceNumber = "PAY-LINKED-TX-HIDDEN-RENTAL",
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId,
+            BankReceipt = settledAmount,
+            ReceiptTotal = settledAmount,
+            SettlementAmount = settledAmount,
+            Note = "legacy linked transaction with hidden rental profile"
+        });
+
+        return new LinkedTransactionOutOfScopeRentalScenario(customerId, profileId, runId, invoiceId, paymentId);
+    }
+
     private static async Task AssertRentalSettlementAsync(
         AppDbContext dbContext,
         Guid profileId,
@@ -4948,6 +5168,13 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         Guid PaymentId);
 
     private sealed record OutOfScopeRentalLinkedInvoiceScenario(
+        Guid CustomerId,
+        Guid ProfileId,
+        Guid RunId,
+        Guid InvoiceId,
+        Guid PaymentId);
+
+    private sealed record LinkedTransactionOutOfScopeRentalScenario(
         Guid CustomerId,
         Guid ProfileId,
         Guid RunId,
