@@ -589,16 +589,25 @@ function Open-BottomTabAndAssert {
         }
     }
 
-    if ($missingAfterTap.Count -gt 0 -and
-        ($afterTapDump.Content.Contains('design_bottom_sheet') -or $afterTapDump.Content.Contains('touch_outside'))) {
+    for ($menuAttempt = 1; $menuAttempt -le 2 -and $missingAfterTap.Count -gt 0 -and
+        ($afterTapDump.Content.Contains('design_bottom_sheet') -or $afterTapDump.Content.Contains('touch_outside')); $menuAttempt++) {
         $tabPoint = Get-NodeCenterByText -Content $afterTapDump.Content -Text $TabText -ClassName 'android.widget.TextView'
         if (-not $tabPoint) {
             $tabPoint = Get-NodeCenterByText -Content $afterTapDump.Content -Text $TabText -ClassName ''
         }
 
-        if ($tabPoint) {
-            Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $tabPoint.X -Y $tabPoint.Y
-            Start-Sleep -Seconds 1
+        if (-not $tabPoint) {
+            break
+        }
+
+        Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $tabPoint.X -Y $tabPoint.Y
+        Start-Sleep -Seconds 2
+        $afterTapDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-smoke-$Timestamp-after-menu-$StepName-$menuAttempt"
+        $missingAfterTap = @()
+        foreach ($needle in $Needles) {
+            if (-not $afterTapDump.Content.Contains($needle)) {
+                $missingAfterTap += $needle
+            }
         }
     }
 

@@ -5169,6 +5169,200 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task LocalStateService_ApplyServerPurgeItem_CleansOrphanedReferencesWhenItemAlreadyMissing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-item-purge-orphans-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var itemId = Guid.Parse("b8800000-0000-0000-0000-000000000001");
+            var customerId = Guid.Parse("b8900000-0000-0000-0000-000000000001");
+            var invoiceId = Guid.Parse("b8a00000-0000-0000-0000-000000000001");
+            var invoiceLineId = Guid.Parse("b8b00000-0000-0000-0000-000000000001");
+            var transferId = Guid.Parse("b8c00000-0000-0000-0000-000000000001");
+            var transferLineId = Guid.Parse("b8d00000-0000-0000-0000-000000000001");
+            var assetId = Guid.Parse("b8e00000-0000-0000-0000-000000000001");
+            var profileId = Guid.Parse("b8f00000-0000-0000-0000-000000000001");
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "품목 purge 고아 거래처",
+                NameMatchKey = "품목purge고아거래처"
+            });
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = invoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 23),
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        Id = invoiceLineId,
+                        InvoiceId = invoiceId,
+                        ItemId = itemId,
+                        ItemNameOriginal = "품목 purge 고아 품목",
+                        Unit = "EA",
+                        Quantity = 1m,
+                        UnitPrice = 1000m,
+                        LineAmount = 1000m
+                    }
+                }
+            });
+            db.InventoryTransfers.Add(new LocalInventoryTransfer
+            {
+                Id = transferId,
+                TransferNumber = "TR-ITEM-PURGE-ORPHAN",
+                TransferDate = new DateOnly(2026, 6, 23),
+                FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                Lines =
+                {
+                    new LocalInventoryTransferLine
+                    {
+                        Id = transferLineId,
+                        TransferId = transferId,
+                        ItemId = itemId,
+                        ItemNameOriginal = "품목 purge 고아 품목",
+                        Unit = "EA",
+                        Quantity = 1m
+                    }
+                }
+            });
+            db.InvoiceLineSerials.Add(new LocalInvoiceLineSerial
+            {
+                InvoiceId = invoiceId,
+                InvoiceLineId = invoiceLineId,
+                ItemId = itemId,
+                SerialNumber = "ITEM-PURGE-SN"
+            });
+            db.SerialLedgers.Add(new LocalSerialLedger
+            {
+                ItemId = itemId,
+                SerialNumber = "ITEM-PURGE-SN",
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Status = "InStock"
+            });
+            db.InventoryMovements.Add(new LocalInventoryMovement
+            {
+                ItemId = itemId,
+                InvoiceId = invoiceId,
+                InvoiceLineId = invoiceLineId,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                MovementType = "Sale",
+                QuantityDelta = -1m,
+                OccurredDate = new DateOnly(2026, 6, 23)
+            });
+            db.StockLayers.Add(new LocalStockLayer
+            {
+                ItemId = itemId,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                SourceInvoiceId = invoiceId,
+                SourceInvoiceLineId = invoiceLineId,
+                ReceiptDate = new DateOnly(2026, 6, 23),
+                OriginalQuantity = 1m,
+                RemainingQuantity = 1m,
+                UnitCost = 100m
+            });
+            db.ItemWarehouseStocks.Add(new LocalItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 1m
+            });
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ItemId = itemId,
+                AssetKey = "USENET|ITEM-PURGE-ORPHAN|A4-MFP",
+                CustomerName = "품목 purge 고아 고객",
+                CurrentCustomerName = "품목 purge 고아 고객",
+                ItemName = "A4-MFP",
+                ManagementNumber = "ITEM-PURGE-ORPHAN-001",
+                AssetStatus = "임대",
+                IsDirty = true
+            });
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "품목 purge 고아 고객",
+                ItemName = "A4-MFP",
+                BillingType = "묶음",
+                BillingAdvanceMode = "후불",
+                BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                {
+                    new()
+                    {
+                        ItemId = itemId,
+                        DisplayItemName = "A4-MFP",
+                        BillingLineMode = "묶음",
+                        Quantity = 1m,
+                        UnitPrice = 10000m,
+                        Amount = 10000m
+                    }
+                }),
+                IsDirty = true
+            });
+            await db.SaveChangesAsync();
+
+            var purgeResult = await service.ApplyServerPurgeRecycleBinEntryAsync(
+                RecycleBinEntityKind.Item,
+                itemId);
+
+            Assert.True(purgeResult.Success, purgeResult.Message);
+            db.ChangeTracker.Clear();
+
+            Assert.Null(await db.InvoiceLines.Select(line => line.ItemId).SingleAsync());
+            Assert.Null(await db.InventoryTransferLines.Select(line => line.ItemId).SingleAsync());
+            Assert.False(await db.InvoiceLineSerials.AnyAsync(serial => serial.ItemId == itemId));
+            Assert.False(await db.SerialLedgers.AnyAsync(ledger => ledger.ItemId == itemId));
+            Assert.Empty(await db.InventoryMovements.Where(current => current.ItemId == itemId).ToListAsync());
+            Assert.Empty(await db.StockLayers.Where(current => current.ItemId == itemId).ToListAsync());
+            Assert.Empty(await db.ItemWarehouseStocks.Where(current => current.ItemId == itemId).ToListAsync());
+
+            var asset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(current => current.Id == assetId);
+            Assert.Null(asset.ItemId);
+            Assert.False(asset.IsDirty);
+
+            var profile = await db.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(current => current.Id == profileId);
+            var templateItems = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(profile.BillingTemplateJson) ?? [];
+            Assert.Single(templateItems);
+            Assert.Equal(Guid.Empty, templateItems[0].ItemId);
+            Assert.False(profile.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task LocalStateService_ApplyServerPurgeRentalBillingProfile_CleansOrphanedChildrenWhenProfileAlreadyMissing()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-profile-purge-orphans-{Guid.NewGuid():N}");

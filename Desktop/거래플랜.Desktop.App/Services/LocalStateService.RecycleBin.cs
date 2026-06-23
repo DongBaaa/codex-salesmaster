@@ -1184,8 +1184,6 @@ public sealed partial class LocalStateService
         var item = await _db.Items
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == itemId, ct);
-        if (item is null)
-            return OfficeMutationResult.Ok(itemId, "품목 서버 영구삭제 상태가 이미 로컬에 반영되어 있습니다.");
 
         var invoiceLines = await _db.InvoiceLines
             .IgnoreQueryFilters()
@@ -1216,11 +1214,49 @@ public sealed partial class LocalStateService
         var movements = await _db.InventoryMovements.Where(current => current.ItemId == itemId).ToListAsync(ct);
         var stockLayers = await _db.StockLayers.Where(current => current.ItemId == itemId).ToListAsync(ct);
         var warehouseStocks = await _db.ItemWarehouseStocks.Where(current => current.ItemId == itemId).ToListAsync(ct);
+        var rentalAssets = await _db.RentalAssets
+            .IgnoreQueryFilters()
+            .Where(current => current.ItemId == itemId)
+            .ToListAsync(ct);
+        var rentalBillingProfiles = await GetBillingProfilesContainingItemIdAsync(itemId, ct);
+        if (item is null &&
+            invoiceLines.Count == 0 &&
+            transferLines.Count == 0 &&
+            invoiceLineSerials.Count == 0 &&
+            serialLedgers.Count == 0 &&
+            movements.Count == 0 &&
+            stockLayers.Count == 0 &&
+            warehouseStocks.Count == 0 &&
+            rentalAssets.Count == 0 &&
+            rentalBillingProfiles.Count == 0)
+        {
+            return OfficeMutationResult.Ok(itemId, "품목 서버 영구삭제 상태가 이미 로컬에 반영되어 있습니다.");
+        }
+
+        var now = DateTime.UtcNow;
+        foreach (var asset in rentalAssets)
+        {
+            asset.ItemId = null;
+            asset.IsDirty = false;
+            asset.UpdatedAtUtc = now;
+        }
+
+        foreach (var profile in rentalBillingProfiles)
+        {
+            var normalizedJson = RemoveItemId(profile.BillingTemplateJson, itemId);
+            if (string.Equals(normalizedJson, profile.BillingTemplateJson, StringComparison.Ordinal))
+                continue;
+
+            profile.BillingTemplateJson = normalizedJson;
+            profile.IsDirty = false;
+            profile.UpdatedAtUtc = now;
+        }
 
         _db.InventoryMovements.RemoveRange(movements);
         _db.StockLayers.RemoveRange(stockLayers);
         _db.ItemWarehouseStocks.RemoveRange(warehouseStocks);
-        _db.Items.Remove(item);
+        if (item is not null)
+            _db.Items.Remove(item);
         await _db.SaveChangesAsync(ct);
 
         await RebuildInventorySnapshotsAsync(CreateServerPurgeInvoiceSaveContext(), ct);
@@ -3149,6 +3185,28 @@ public sealed partial class LocalStateService
         }
     }
 
+    private static string RemoveItemId(string? templateJson, Guid itemId)
+    {
+        if (itemId == Guid.Empty)
+            return templateJson ?? "[]";
+
+        try
+        {
+            var items = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(templateJson ?? "[]") ?? new List<RentalBillingTemplateItemModel>();
+            foreach (var item in items)
+            {
+                if (item.ItemId == itemId)
+                    item.ItemId = Guid.Empty;
+            }
+
+            return JsonSerializer.Serialize(items);
+        }
+        catch
+        {
+            return templateJson ?? "[]";
+        }
+    }
+
     private async Task<List<LocalRentalBillingProfile>> GetBillingProfilesContainingAssetIdAsync(
         Guid assetId,
         CancellationToken ct)
@@ -3165,6 +3223,22 @@ public sealed partial class LocalStateService
             .ToList();
     }
 
+    private async Task<List<LocalRentalBillingProfile>> GetBillingProfilesContainingItemIdAsync(
+        Guid itemId,
+        CancellationToken ct)
+    {
+        if (itemId == Guid.Empty)
+            return [];
+
+        var profiles = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .ToListAsync(ct);
+
+        return profiles
+            .Where(profile => BillingTemplateContainsItemId(profile.BillingTemplateJson, itemId))
+            .ToList();
+    }
+
     private static bool BillingTemplateContainsAssetId(string? templateJson, Guid assetId)
     {
         if (assetId == Guid.Empty || string.IsNullOrWhiteSpace(templateJson))
@@ -3174,6 +3248,22 @@ public sealed partial class LocalStateService
         {
             var items = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(templateJson) ?? [];
             return items.Any(item => item.IncludedAssetIds.Any(id => id == assetId));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool BillingTemplateContainsItemId(string? templateJson, Guid itemId)
+    {
+        if (itemId == Guid.Empty || string.IsNullOrWhiteSpace(templateJson))
+            return false;
+
+        try
+        {
+            var items = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(templateJson) ?? [];
+            return items.Any(item => item.ItemId == itemId);
         }
         catch
         {

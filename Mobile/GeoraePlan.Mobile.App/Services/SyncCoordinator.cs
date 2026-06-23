@@ -1089,6 +1089,14 @@ public sealed class SyncCoordinator
                 RemoveEntityById(state.PendingPush.Items, entityId, purgeRevision);
                 state.SyncedItemWarehouseStocks.RemoveAll(stock => stock.ItemId == entityId);
                 state.PendingPush.ItemWarehouseStocks.RemoveAll(stock => stock.ItemId == entityId);
+                ClearInvoiceLineItemReferences(state.SyncedInvoices, entityId, purgeRevision);
+                ClearInvoiceLineItemReferences(state.PendingPush.Invoices, entityId, purgeRevision);
+                ClearInventoryTransferLineItemReferences(state.SyncedInventoryTransfers, entityId, purgeRevision);
+                ClearInventoryTransferLineItemReferences(state.PendingPush.InventoryTransfers, entityId, purgeRevision);
+                ClearRentalAssetItemReferences(state.SyncedRentalAssets, entityId, purgeRevision);
+                ClearRentalAssetItemReferences(state.PendingPush.RentalAssets, entityId, purgeRevision);
+                RemoveItemIdFromBillingTemplates(state.SyncedRentalBillingProfiles, entityId, purgeRevision);
+                RemoveItemIdFromBillingTemplates(state.PendingPush.RentalBillingProfiles, entityId, purgeRevision);
                 break;
             case "pricegradeoption":
             case "price-grade-option":
@@ -1197,6 +1205,102 @@ public sealed class SyncCoordinator
         }
     }
 
+    private static void ClearInvoiceLineItemReferences(
+        List<InvoiceDto> values,
+        Guid itemId,
+        long purgeRevision)
+    {
+        if (itemId == Guid.Empty)
+            return;
+
+        foreach (var value in values)
+        {
+            if (IsEntityNewerThanPurge(value, purgeRevision))
+                continue;
+
+            var changed = false;
+            foreach (var line in value.Lines)
+            {
+                if (line.ItemId != itemId)
+                    continue;
+
+                line.ItemId = null;
+                changed = true;
+            }
+
+            if (changed)
+                value.UpdatedAtUtc = DateTime.UtcNow;
+        }
+    }
+
+    private static void ClearInventoryTransferLineItemReferences(
+        List<InventoryTransferDto> values,
+        Guid itemId,
+        long purgeRevision)
+    {
+        if (itemId == Guid.Empty)
+            return;
+
+        foreach (var value in values)
+        {
+            if (IsEntityNewerThanPurge(value, purgeRevision))
+                continue;
+
+            var changed = false;
+            foreach (var line in value.Lines)
+            {
+                if (line.ItemId != itemId)
+                    continue;
+
+                line.ItemId = null;
+                changed = true;
+            }
+
+            if (changed)
+                value.UpdatedAtUtc = DateTime.UtcNow;
+        }
+    }
+
+    private static void ClearRentalAssetItemReferences(
+        List<RentalAssetDto> values,
+        Guid itemId,
+        long purgeRevision)
+    {
+        if (itemId == Guid.Empty)
+            return;
+
+        foreach (var value in values)
+        {
+            if (IsEntityNewerThanPurge(value, purgeRevision) || value.ItemId != itemId)
+                continue;
+
+            value.ItemId = null;
+            value.UpdatedAtUtc = DateTime.UtcNow;
+        }
+    }
+
+    private static void RemoveItemIdFromBillingTemplates(
+        List<RentalBillingProfileDto> values,
+        Guid itemId,
+        long purgeRevision)
+    {
+        if (itemId == Guid.Empty)
+            return;
+
+        foreach (var value in values)
+        {
+            if (IsEntityNewerThanPurge(value, purgeRevision))
+                continue;
+
+            var normalizedJson = RemoveItemId(value.BillingTemplateJson, itemId);
+            if (string.Equals(normalizedJson, value.BillingTemplateJson, StringComparison.Ordinal))
+                continue;
+
+            value.BillingTemplateJson = normalizedJson;
+            value.UpdatedAtUtc = DateTime.UtcNow;
+        }
+    }
+
     private static void RemoveIncludedAssetIdFromBillingTemplates(
         List<RentalBillingProfileDto> values,
         Guid assetId,
@@ -1216,6 +1320,31 @@ public sealed class SyncCoordinator
 
             value.BillingTemplateJson = normalizedJson;
             value.UpdatedAtUtc = DateTime.UtcNow;
+        }
+    }
+
+    private static string RemoveItemId(string? templateJson, Guid itemId)
+    {
+        if (itemId == Guid.Empty)
+            return templateJson ?? "[]";
+
+        try
+        {
+            var root = JsonNode.Parse(templateJson ?? "[]");
+            if (root is not JsonArray items)
+                return templateJson ?? "[]";
+
+            foreach (var item in items.OfType<JsonObject>())
+            {
+                if (IsMatchingJsonGuid(item["ItemId"], itemId))
+                    item["ItemId"] = Guid.Empty.ToString("D");
+            }
+
+            return items.ToJsonString();
+        }
+        catch
+        {
+            return templateJson ?? "[]";
         }
     }
 
