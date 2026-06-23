@@ -14,6 +14,10 @@ public sealed partial class RentalStateService
         var customers = await BuildRentalCleanupCustomerQuery(session)
             .OrderBy(customer => customer.NameOriginal)
             .ToListAsync(ct);
+        var writableCustomerIds = (await BuildRentalCleanupWritableCustomerQuery(session)
+                .Select(customer => customer.Id)
+                .ToListAsync(ct))
+            .ToHashSet();
         var profiles = await ApplyBillingScope(_db.RentalBillingProfiles.AsNoTracking(), session)
             .Where(profile => !profile.IsDeleted)
             .OrderBy(profile => profile.CustomerName)
@@ -26,7 +30,17 @@ public sealed partial class RentalStateService
             .ToListAsync(ct);
 
         await NormalizeAssetCustomerDisplayNamesAsync(assets, ct);
-        return BuildRentalCustomerLinkCleanupRows(profiles, assets, customers, offices);
+        return BuildRentalCustomerLinkCleanupRows(
+            profiles,
+            assets,
+            customers,
+            offices,
+            (profile, resolvedCustomer) =>
+                CanNormalizeRentalProfileEntityScope(profile, session) &&
+                writableCustomerIds.Contains(resolvedCustomer.Id),
+            (asset, resolvedCustomer) =>
+                CanNormalizeRentalAssetEntityScope(asset, session) &&
+                writableCustomerIds.Contains(resolvedCustomer.Id));
     }
 
     public async Task<RentalCustomerLinkCleanupResult> NormalizeRentalCustomerLinksAsync(
@@ -250,7 +264,9 @@ public sealed partial class RentalStateService
         IReadOnlyList<LocalRentalBillingProfile> profiles,
         IReadOnlyList<LocalRentalAsset> assets,
         IReadOnlyList<LocalCustomer> customers,
-        IReadOnlyDictionary<string, string> offices)
+        IReadOnlyDictionary<string, string> offices,
+        Func<LocalRentalBillingProfile, LocalCustomer, bool>? canAutoNormalizeProfile = null,
+        Func<LocalRentalAsset, LocalCustomer, bool>? canAutoNormalizeAsset = null)
     {
         var customerById = customers.ToDictionary(customer => customer.Id);
         var customerNameMap = customers.ToDictionary(
@@ -297,6 +313,8 @@ public sealed partial class RentalStateService
             if (issues.Count == 0)
                 continue;
 
+            var canAutoNormalize = resolvedCustomer is not null &&
+                (canAutoNormalizeProfile?.Invoke(profile, resolvedCustomer) ?? true);
             rows.Add(new RentalCustomerLinkCleanupRow
             {
                 EntityType = "청구프로필",
@@ -309,8 +327,11 @@ public sealed partial class RentalStateService
                 InstallLocation = profile.InstallSiteName,
                 LinkedProfileDisplay = BuildBillingProfileDisplayName(profile, customerNameMap),
                 IssueSummary = string.Join(" / ", issues),
-                SuggestedAction = resolvedCustomer is null ? "수동 거래처 연결 필요" : "메인 거래처명/담당지점 동기화",
-                CanAutoNormalize = resolvedCustomer is not null
+                SuggestedAction = BuildRentalCleanupSuggestedAction(
+                    resolvedCustomer is not null,
+                    canAutoNormalize,
+                    "메인 거래처명/담당지점 동기화"),
+                CanAutoNormalize = canAutoNormalize
             });
         }
 
@@ -369,6 +390,8 @@ public sealed partial class RentalStateService
             if (issues.Count == 0)
                 continue;
 
+            var canAutoNormalize = resolvedCustomer is not null &&
+                (canAutoNormalizeAsset?.Invoke(asset, resolvedCustomer) ?? true);
             rows.Add(new RentalCustomerLinkCleanupRow
             {
                 EntityType = "설치자산",
@@ -381,8 +404,11 @@ public sealed partial class RentalStateService
                 InstallLocation = string.IsNullOrWhiteSpace(asset.InstallLocation) ? asset.InstallSiteName : asset.InstallLocation,
                 LinkedProfileDisplay = linkedProfile is null ? "미연결" : BuildBillingProfileDisplayName(linkedProfile, customerNameMap),
                 IssueSummary = string.Join(" / ", issues),
-                SuggestedAction = resolvedCustomer is null ? "수동 거래처 연결 필요" : "메인 거래처명/설치 자산 거래처 동기화",
-                CanAutoNormalize = resolvedCustomer is not null
+                SuggestedAction = BuildRentalCleanupSuggestedAction(
+                    resolvedCustomer is not null,
+                    canAutoNormalize,
+                    "메인 거래처명/설치 자산 거래처 동기화"),
+                CanAutoNormalize = canAutoNormalize
             });
         }
 
@@ -393,6 +419,19 @@ public sealed partial class RentalStateService
             .ThenBy(row => row.CurrentCustomerName, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(row => row.ItemName, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
+    }
+
+    private static string BuildRentalCleanupSuggestedAction(
+        bool hasResolvedCustomer,
+        bool canAutoNormalize,
+        string autoNormalizeAction)
+    {
+        if (!hasResolvedCustomer)
+            return "수동 거래처 연결 필요";
+
+        return canAutoNormalize
+            ? autoNormalizeAction
+            : "권한 범위 밖 - 권한 있는 계정에서 정리";
     }
 
     private IQueryable<LocalCustomer> BuildRentalCleanupCustomerQuery(SessionState session)

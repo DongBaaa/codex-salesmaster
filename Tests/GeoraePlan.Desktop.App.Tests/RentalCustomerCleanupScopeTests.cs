@@ -10,6 +10,72 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class RentalCustomerCleanupScopeTests
 {
     [Fact]
+    public async Task GetRentalCustomerLinkCleanupRows_DoesNotMarkReadOnlyWideScopeRowsAsAuto()
+    {
+        PrepareAppRoot("georaeplan-rental-customer-cleanup-preview-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var usenetCustomer = CreateCustomer(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                "USENET 정식 거래처",
+                "111-11-11111");
+            var yeonsuCustomer = CreateCustomer(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Yeonsu,
+                "YEONSU 정식 거래처",
+                "222-22-22222");
+            var usenetProfile = CreateProfile(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                "USENET 이전 거래처",
+                usenetCustomer.BusinessNumber);
+            var usenetProfileWithReadOnlyCustomerNumber = CreateProfile(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                "USENET 외부 번호 거래처",
+                yeonsuCustomer.BusinessNumber);
+            var yeonsuProfile = CreateProfile(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Yeonsu,
+                "YEONSU 이전 거래처",
+                yeonsuCustomer.BusinessNumber);
+            db.Customers.AddRange(usenetCustomer, yeonsuCustomer);
+            db.RentalBillingProfiles.AddRange(usenetProfile, usenetProfileWithReadOnlyCustomerNumber, yeonsuProfile);
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                AppPermissionNames.RentalSettingsEdit,
+                AppPermissionNames.RentalViewAll);
+
+            var rows = await new RentalStateService(db).GetRentalCustomerLinkCleanupRowsAsync(session);
+
+            var writableProfileRow = Assert.Single(rows, row => row.EntityId == usenetProfile.Id);
+            var readOnlyCustomerCandidateRow = Assert.Single(rows, row => row.EntityId == usenetProfileWithReadOnlyCustomerNumber.Id);
+            var readOnlyProfileRow = Assert.Single(rows, row => row.EntityId == yeonsuProfile.Id);
+
+            Assert.True(writableProfileRow.CanAutoNormalize);
+            Assert.Equal("메인 거래처명/담당지점 동기화", writableProfileRow.SuggestedAction);
+            Assert.False(readOnlyCustomerCandidateRow.CanAutoNormalize);
+            Assert.Contains("권한", readOnlyCustomerCandidateRow.SuggestedAction, StringComparison.Ordinal);
+            Assert.False(readOnlyProfileRow.CanAutoNormalize);
+            Assert.Contains("권한", readOnlyProfileRow.SuggestedAction, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task NormalizeRentalCustomerLinks_DoesNotMutateReadOnlyWideScopeRows()
     {
         PrepareAppRoot("georaeplan-rental-customer-cleanup-scope");
