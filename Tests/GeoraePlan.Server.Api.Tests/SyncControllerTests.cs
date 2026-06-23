@@ -5436,6 +5436,331 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_AppliesInvoiceStockSnapshots_WhenWarehouseStocksAreNotInPayload()
+    {
+        var customerId = Guid.NewGuid();
+        var itemId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-INVOICE-STOCK-CUSTOMER",
+            NameMatchKey = "SYNCINVOICESTOCKCUSTOMER",
+            TradeType = "매출"
+        });
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "SYNC-INVOICE-STOCK-ITEM",
+            NameMatchKey = "SYNCINVOICESTOCKITEM",
+            Unit = "EA",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 10m
+        });
+        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
+            Revision = 10
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var invoiceId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-invoice-stock-server-delta",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customerId,
+                    CustomerName = "SYNC-INVOICE-STOCK-CUSTOMER",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    InvoiceNumber = "SYNC-INVOICE-STOCK-001",
+                    VersionGroupId = invoiceId,
+                    VersionNumber = 1,
+                    IsLatestVersion = true,
+                    VoucherType = VoucherType.Sales,
+                    SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    InvoiceDate = new DateOnly(2026, 6, 27),
+                    Lines =
+                    [
+                        new InvoiceLineDto
+                        {
+                            Id = lineId,
+                            InvoiceId = invoiceId,
+                            ItemId = itemId,
+                            ItemNameOriginal = "SYNC-INVOICE-STOCK-ITEM",
+                            Unit = "EA",
+                            Quantity = 2m,
+                            UnitPrice = 1000m,
+                            LineAmount = 2000m,
+                            ItemTrackingType = ItemTrackingTypes.Stock
+                        }
+                    ],
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(8m, await _dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(8m, await _dbContext.Items.IgnoreQueryFilters()
+            .Where(item => item.Id == itemId)
+            .Select(item => item.CurrentStock)
+            .SingleAsync());
+        Assert.True(await _dbContext.InventoryLedgerEntries.AnyAsync(entry =>
+            entry.SourceDocumentId == invoiceId &&
+            entry.SourceLineId == lineId &&
+            entry.QuantityDelta == -2m));
+    }
+
+    [Fact]
+    public async Task Push_DoesNotDoubleApplyInvoiceStock_WhenWarehouseStockSnapshotIsAcceptedInSameBatch()
+    {
+        var customerId = Guid.NewGuid();
+        var itemId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-INVOICE-STOCK-SNAPSHOT-CUSTOMER",
+            NameMatchKey = "SYNCINVOICESTOCKSNAPSHOTCUSTOMER",
+            TradeType = "매출"
+        });
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "SYNC-INVOICE-STOCK-SNAPSHOT-ITEM",
+            NameMatchKey = "SYNCINVOICESTOCKSNAPSHOTITEM",
+            Unit = "EA",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 10m
+        });
+        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
+            Revision = 10
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var invoiceId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-invoice-stock-client-snapshot",
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = itemId,
+                    WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 8m,
+                    ExpectedRevision = 10,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ],
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customerId,
+                    CustomerName = "SYNC-INVOICE-STOCK-SNAPSHOT-CUSTOMER",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    InvoiceNumber = "SYNC-INVOICE-STOCK-CLIENT-001",
+                    VersionGroupId = invoiceId,
+                    VersionNumber = 1,
+                    IsLatestVersion = true,
+                    VoucherType = VoucherType.Sales,
+                    SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    InvoiceDate = new DateOnly(2026, 6, 27),
+                    Lines =
+                    [
+                        new InvoiceLineDto
+                        {
+                            Id = lineId,
+                            InvoiceId = invoiceId,
+                            ItemId = itemId,
+                            ItemNameOriginal = "SYNC-INVOICE-STOCK-SNAPSHOT-ITEM",
+                            Unit = "EA",
+                            Quantity = 2m,
+                            UnitPrice = 1000m,
+                            LineAmount = 2000m,
+                            ItemTrackingType = ItemTrackingTypes.Stock
+                        }
+                    ],
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(8m, await _dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(8m, await _dbContext.Items.IgnoreQueryFilters()
+            .Where(item => item.Id == itemId)
+            .Select(item => item.CurrentStock)
+            .SingleAsync());
+        Assert.True(await _dbContext.InventoryLedgerEntries.AnyAsync(entry =>
+            entry.SourceDocumentId == invoiceId &&
+            entry.SourceLineId == lineId &&
+            entry.QuantityDelta == -2m));
+    }
+
+    [Fact]
+    public async Task Push_RestoresInvoiceStockSnapshots_WhenExistingInvoiceIsDeletedWithoutWarehouseStocks()
+    {
+        var customerId = Guid.NewGuid();
+        var itemId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-INVOICE-STOCK-DELETE-CUSTOMER",
+            NameMatchKey = "SYNCINVOICESTOCKDELETECUSTOMER",
+            TradeType = "매출"
+        });
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "SYNC-INVOICE-STOCK-DELETE-ITEM",
+            NameMatchKey = "SYNCINVOICESTOCKDELETEITEM",
+            Unit = "EA",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 8m
+        });
+        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 8m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
+            Revision = 10
+        });
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-INVOICE-STOCK-DELETE-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            InvoiceDate = new DateOnly(2026, 6, 27),
+            TotalAmount = 2000m,
+            SupplyAmount = 2000m
+        });
+        _dbContext.InvoiceLines.Add(new InvoiceLine
+        {
+            Id = lineId,
+            InvoiceId = invoiceId,
+            ItemId = itemId,
+            ItemNameOriginal = "SYNC-INVOICE-STOCK-DELETE-ITEM",
+            Unit = "EA",
+            Quantity = 2m,
+            UnitPrice = 1000m,
+            LineAmount = 2000m,
+            ItemTrackingType = ItemTrackingTypes.Stock
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var storedInvoice = await _dbContext.Invoices.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(invoice => invoice.Id == invoiceId);
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-invoice-stock-delete-server-delta",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customerId,
+                    CustomerName = "SYNC-INVOICE-STOCK-DELETE-CUSTOMER",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    InvoiceNumber = storedInvoice.InvoiceNumber,
+                    VersionGroupId = storedInvoice.VersionGroupId,
+                    VersionNumber = storedInvoice.VersionNumber,
+                    IsLatestVersion = storedInvoice.IsLatestVersion,
+                    VoucherType = storedInvoice.VoucherType,
+                    SourceWarehouseCode = storedInvoice.SourceWarehouseCode,
+                    InvoiceDate = storedInvoice.InvoiceDate,
+                    ExpectedRevision = storedInvoice.Revision,
+                    IsDeleted = true,
+                    CreatedAtUtc = storedInvoice.CreatedAtUtc,
+                    UpdatedAtUtc = DateTime.UtcNow.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(10m, await _dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(10m, await _dbContext.Items.IgnoreQueryFilters()
+            .Where(item => item.Id == itemId)
+            .Select(item => item.CurrentStock)
+            .SingleAsync());
+        Assert.False(await _dbContext.InventoryLedgerEntries.AnyAsync(entry => entry.SourceDocumentId == invoiceId));
+    }
+
+    [Fact]
     public async Task Push_RenumbersActiveInvoiceLinesByPayloadOrder()
     {
         var customer = new Customer

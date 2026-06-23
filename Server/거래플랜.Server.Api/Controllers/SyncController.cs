@@ -472,7 +472,12 @@ public sealed class SyncController : ControllerBase
                 await _dbContext.SaveChangesAsync(cancellationToken);
             }
             var validInvoices = await FilterValidInvoicesAsync(request.Invoices ?? [], result, cancellationToken);
-            var invoiceRentalSettlementTargets = await UpsertInvoicesAsync(validInvoices, result, deviceId, cancellationToken);
+            var invoiceRentalSettlementTargets = await UpsertInvoicesAsync(
+                validInvoices,
+                result,
+                deviceId,
+                itemWarehouseStockResult.AcceptedStockKeys,
+                cancellationToken);
             if (validInvoices.Count > 0)
             {
                 await _dbContext.SaveChangesAsync(cancellationToken);
@@ -1020,7 +1025,12 @@ public sealed class SyncController : ControllerBase
         }
     }
 
-    private async Task<List<(Guid ProfileId, Guid? RunId)>> UpsertInvoicesAsync(IEnumerable<InvoiceDto> payload, SyncPushResult result, string deviceId, CancellationToken cancellationToken)
+    private async Task<List<(Guid ProfileId, Guid? RunId)>> UpsertInvoicesAsync(
+        IEnumerable<InvoiceDto> payload,
+        SyncPushResult result,
+        string deviceId,
+        IReadOnlySet<string> itemWarehouseStockKeysHandledByClient,
+        CancellationToken cancellationToken)
     {
         var rentalSettlementTargets = new List<(Guid ProfileId, Guid? RunId)>();
         var acceptedDeletedInvoiceIds = new List<Guid>();
@@ -1050,6 +1060,12 @@ public sealed class SyncController : ControllerBase
                 }
 
                 ApplyInvoiceLines(entity, dto.Lines ?? []);
+                var createdStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
+                await ApplyStockSnapshotDeltaAsync(
+                    new Dictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal>(),
+                    createdStockDeltas,
+                    itemWarehouseStockKeysHandledByClient,
+                    cancellationToken);
                 _dbContext.Invoices.Add(entity);
                 AddRentalSettlementTarget(rentalSettlementTargets, entity.LinkedRentalBillingProfileId, entity.LinkedRentalBillingRunId);
                 if (entity.IsDeleted)
@@ -1081,6 +1097,7 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
+            var previousStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
             AddRentalSettlementTarget(rentalSettlementTargets, entity.LinkedRentalBillingProfileId, entity.LinkedRentalBillingRunId);
             entity.Apply(dto);
             if (string.IsNullOrWhiteSpace(entity.InvoiceNumber))
@@ -1095,6 +1112,12 @@ public sealed class SyncController : ControllerBase
             _dbContext.InvoiceLines.RemoveRange(entity.Lines);
             entity.Lines.Clear();
             ApplyInvoiceLines(entity, dto.Lines ?? []);
+            var updatedInvoiceStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
+            await ApplyStockSnapshotDeltaAsync(
+                previousStockDeltas,
+                updatedInvoiceStockDeltas,
+                itemWarehouseStockKeysHandledByClient,
+                cancellationToken);
             RegisterProcessedMutation(dto, nameof(Invoice), deviceId);
             await ResolveHistoricalConflictsAsync(nameof(Invoice), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
             result.AcceptedCount++;
@@ -2460,7 +2483,7 @@ public sealed class SyncController : ControllerBase
                     continue;
                 }
 
-                await ApplyInventoryTransferStockSnapshotDeltaAsync(
+                await ApplyStockSnapshotDeltaAsync(
                     new Dictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal>(),
                     currentStockDeltas,
                     itemWarehouseStockKeysHandledByClient,
@@ -2510,7 +2533,7 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            await ApplyInventoryTransferStockSnapshotDeltaAsync(
+            await ApplyStockSnapshotDeltaAsync(
                 previousStockDeltas,
                 updatedStockDeltas,
                 itemWarehouseStockKeysHandledByClient,
@@ -2525,7 +2548,7 @@ public sealed class SyncController : ControllerBase
         }
     }
 
-    private async Task ApplyInventoryTransferStockSnapshotDeltaAsync(
+    private async Task ApplyStockSnapshotDeltaAsync(
         IReadOnlyDictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal> previousStockDeltas,
         IReadOnlyDictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal> currentStockDeltas,
         IReadOnlySet<string> itemWarehouseStockKeysHandledByClient,
