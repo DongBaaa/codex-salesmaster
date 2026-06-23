@@ -1355,8 +1355,6 @@ public sealed partial class LocalStateService
         var transaction = await _db.Transactions
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == transactionId, ct);
-        if (transaction is null)
-            return OfficeMutationResult.Ok(transactionId, "거래내역 서버 영구삭제 상태가 이미 로컬에 반영되어 있습니다.");
 
         var attachments = await _db.TransactionAttachments
             .IgnoreQueryFilters()
@@ -1366,15 +1364,32 @@ public sealed partial class LocalStateService
         var linkedPayment = await _db.Payments
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == transactionId, ct);
+        if (transaction is null && attachments.Count == 0 && linkedPayment is null)
+            return OfficeMutationResult.Ok(transactionId, "거래내역 서버 영구삭제 상태가 이미 로컬에 반영되어 있습니다.");
+
+        Guid? rentalBillingProfileId = transaction?.LinkedRentalBillingProfileId;
+        Guid? rentalBillingRunId = transaction?.LinkedRentalBillingRunId;
+        if ((!rentalBillingProfileId.HasValue || rentalBillingProfileId.Value == Guid.Empty) &&
+            linkedPayment is not null)
+        {
+            var linkedInvoice = await _db.Invoices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .FirstOrDefaultAsync(current => current.Id == linkedPayment.InvoiceId, ct);
+            rentalBillingProfileId = linkedInvoice?.LinkedRentalBillingProfileId;
+            rentalBillingRunId = linkedInvoice?.LinkedRentalBillingRunId;
+        }
+
         if (linkedPayment is not null)
             _db.Payments.Remove(linkedPayment);
 
         _db.TransactionAttachments.RemoveRange(attachments);
-        _db.Transactions.Remove(transaction);
+        if (transaction is not null)
+            _db.Transactions.Remove(transaction);
         await _db.SaveChangesAsync(ct);
 
-        if (transaction.LinkedRentalBillingProfileId.HasValue && transaction.LinkedRentalBillingProfileId.Value != Guid.Empty)
-            await RecalculateRentalSettlementAsync(transaction.LinkedRentalBillingProfileId.Value, transaction.LinkedRentalBillingRunId, ct);
+        if (rentalBillingProfileId.HasValue && rentalBillingProfileId.Value != Guid.Empty)
+            await RecalculateRentalSettlementAsync(rentalBillingProfileId.Value, rentalBillingRunId, ct);
 
         foreach (var attachment in attachments)
             TryDeleteAttachmentFile(attachment);

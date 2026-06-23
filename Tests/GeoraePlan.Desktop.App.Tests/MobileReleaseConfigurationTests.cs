@@ -2131,6 +2131,10 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("RemoveEntityById(state.SyncedPayments, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("state.PendingPaymentAttachments.RemoveAll(attachment => attachment.PaymentId == entityId);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedTransactions, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("var transactionRemovedPaymentIds = new HashSet<Guid>();", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("RemovePaymentForPurgedTransaction(state.SyncedPayments, entityId, purgeRevision, transactionRemovedPaymentIds);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("RemovePaymentForPurgedTransaction(state.PendingPush.Payments, entityId, purgeRevision, transactionRemovedPaymentIds);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("state.PendingPaymentAttachments.RemoveAll(attachment => transactionRemovedPaymentIds.Contains(attachment.PaymentId));", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("state.SyncedTransactionAttachments.RemoveAll(attachment => attachment.TransactionId == entityId", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedInventoryTransfers, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedRentalBillingProfiles, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
@@ -2149,6 +2153,8 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("private static void RemoveEntityById<T>(List<T> values, Guid entityId, long purgeRevision)", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("private static void RemovePaymentsForPurgedInvoice(", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("removedPaymentIds.Add(paymentId);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("private static void RemovePaymentForPurgedTransaction(", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("payment.Id == transactionId && !IsEntityNewerThanPurge(payment, purgeRevision)", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("private static void ClearInvoiceLineItemReferences(", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("line.ItemId = null;", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("private static void RemoveItemIdFromBillingTemplates(", coordinatorSource, StringComparison.Ordinal);

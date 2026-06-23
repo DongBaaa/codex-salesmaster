@@ -1121,6 +1121,10 @@ public sealed class SyncCoordinator
             case "transaction":
                 RemoveEntityById(state.SyncedTransactions, entityId, purgeRevision);
                 RemoveEntityById(state.PendingPush.Transactions, entityId, purgeRevision);
+                var transactionRemovedPaymentIds = new HashSet<Guid>();
+                RemovePaymentForPurgedTransaction(state.SyncedPayments, entityId, purgeRevision, transactionRemovedPaymentIds);
+                RemovePaymentForPurgedTransaction(state.PendingPush.Payments, entityId, purgeRevision, transactionRemovedPaymentIds);
+                state.PendingPaymentAttachments.RemoveAll(attachment => transactionRemovedPaymentIds.Contains(attachment.PaymentId));
                 state.SyncedTransactionAttachments.RemoveAll(attachment => attachment.TransactionId == entityId && !IsEntityNewerThanPurge(attachment, purgeRevision));
                 state.PendingPush.TransactionAttachments.RemoveAll(attachment => attachment.TransactionId == entityId && !IsEntityNewerThanPurge(attachment, purgeRevision));
                 break;
@@ -1218,6 +1222,28 @@ public sealed class SyncCoordinator
 
         var matchingIds = values
             .Where(payment => payment.InvoiceId == invoiceId && !IsEntityNewerThanPurge(payment, purgeRevision))
+            .Select(payment => payment.Id)
+            .ToHashSet();
+        if (matchingIds.Count == 0)
+            return;
+
+        foreach (var paymentId in matchingIds)
+            removedPaymentIds.Add(paymentId);
+
+        values.RemoveAll(payment => matchingIds.Contains(payment.Id));
+    }
+
+    private static void RemovePaymentForPurgedTransaction(
+        List<PaymentDto> values,
+        Guid transactionId,
+        long purgeRevision,
+        ISet<Guid> removedPaymentIds)
+    {
+        if (transactionId == Guid.Empty)
+            return;
+
+        var matchingIds = values
+            .Where(payment => payment.Id == transactionId && !IsEntityNewerThanPurge(payment, purgeRevision))
             .Select(payment => payment.Id)
             .ToHashSet();
         if (matchingIds.Count == 0)
