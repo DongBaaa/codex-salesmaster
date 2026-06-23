@@ -1457,10 +1457,10 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == customerId, ct);
         if (customer is null)
             return OfficeMutationResult.Missing("영구삭제할 거래처를 찾을 수 없습니다.");
-        if (!customer.IsDeleted)
-            return OfficeMutationResult.Denied("활성 상태 거래처는 휴지통에서 영구삭제할 수 없습니다.");
         if (!CanAccessCustomer(customer, session))
             return OfficeMutationResult.Denied("권한이 없어 해당 거래처를 영구삭제할 수 없습니다.");
+        if (!customer.IsDeleted)
+            return OfficeMutationResult.Denied("활성 상태 거래처는 휴지통에서 영구삭제할 수 없습니다.");
 
         var hasInvoices = await _db.Invoices
             .IgnoreQueryFilters()
@@ -1599,8 +1599,6 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == contractId, ct);
         if (contract is null)
             return OfficeMutationResult.Missing("영구삭제할 계약서를 찾을 수 없습니다.");
-        if (!contract.IsDeleted)
-            return OfficeMutationResult.Denied("활성 상태 계약서는 휴지통에서 영구삭제할 수 없습니다.");
 
         var customer = await _db.Customers
             .IgnoreQueryFilters()
@@ -1609,6 +1607,8 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Missing("계약서와 연결된 거래처를 찾을 수 없습니다.");
         if (!CanAccessCustomer(customer, session))
             return OfficeMutationResult.Denied("권한이 없어 해당 계약서를 영구삭제할 수 없습니다.");
+        if (!contract.IsDeleted)
+            return OfficeMutationResult.Denied("활성 상태 계약서는 휴지통에서 영구삭제할 수 없습니다.");
 
         var now = DateTime.UtcNow;
         _db.CustomerContracts.Remove(contract);
@@ -1786,8 +1786,6 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == invoiceId, ct);
         if (target is null)
             return OfficeMutationResult.Missing("영구삭제할 전표를 찾을 수 없습니다.");
-        if (!target.IsDeleted)
-            return OfficeMutationResult.Denied("활성 상태 전표는 휴지통에서 영구삭제할 수 없습니다.");
         if (!CanWriteOfficeScope(session, target.ResponsibleOfficeCode, target.OfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 전표를 영구삭제할 수 없습니다.");
 
@@ -1795,6 +1793,8 @@ public sealed partial class LocalStateService
         var groupScopeFailure = EnsureCanWriteInvoiceGroupForRecycleBin(groupInvoices, session, "영구삭제");
         if (groupScopeFailure is not null)
             return groupScopeFailure;
+        if (!target.IsDeleted)
+            return OfficeMutationResult.Denied("활성 상태 전표는 휴지통에서 영구삭제할 수 없습니다.");
 
         var invoiceIds = groupInvoices.Select(current => current.Id).Distinct().ToList();
 
@@ -1916,14 +1916,14 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == paymentId, ct);
         if (payment is null)
             return OfficeMutationResult.Missing("영구삭제할 수금/지급 기록을 찾을 수 없습니다.");
-        if (!payment.IsDeleted)
-            return OfficeMutationResult.Denied("활성 상태 수금/지급 기록은 휴지통에서 영구삭제할 수 없습니다.");
 
         var invoice = await _db.Invoices
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == payment.InvoiceId, ct);
         if (invoice is null || !CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode, invoice.OfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 수금/지급 기록을 영구삭제할 수 없습니다.");
+        if (!payment.IsDeleted)
+            return OfficeMutationResult.Denied("활성 상태 수금/지급 기록은 휴지통에서 영구삭제할 수 없습니다.");
         if (await _db.Transactions.IgnoreQueryFilters().AnyAsync(current => current.Id == paymentId, ct))
             return OfficeMutationResult.Denied("연동 거래내역이 남아 있어 수금/지급 기록만 영구삭제할 수 없습니다. 거래내역 영구삭제를 실행하면 연동 수금/지급도 함께 제거됩니다.");
 
@@ -2066,10 +2066,10 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == transactionId, ct);
         if (transaction is null)
             return OfficeMutationResult.Missing("영구삭제할 거래내역을 찾을 수 없습니다.");
-        if (!transaction.IsDeleted)
-            return OfficeMutationResult.Denied("활성 상태 거래내역은 휴지통에서 영구삭제할 수 없습니다.");
         if (!CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode, transaction.OfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 거래내역을 영구삭제할 수 없습니다.");
+        if (!transaction.IsDeleted)
+            return OfficeMutationResult.Denied("활성 상태 거래내역은 휴지통에서 영구삭제할 수 없습니다.");
 
         var attachments = await _db.TransactionAttachments
             .IgnoreQueryFilters()
@@ -2081,14 +2081,13 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == transactionId, ct);
         if (linkedPayment is not null)
         {
-            if (!linkedPayment.IsDeleted)
-                return OfficeMutationResult.Denied("활성 연동 수금/지급 기록이 남아 있어 거래내역을 영구삭제할 수 없습니다.");
-
             var linkedPaymentInvoice = await _db.Invoices
                 .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(current => current.Id == linkedPayment.InvoiceId, ct);
             if (linkedPaymentInvoice is null || !CanWriteOfficeScope(session, linkedPaymentInvoice.ResponsibleOfficeCode, linkedPaymentInvoice.OfficeCode))
                 return OfficeMutationResult.Denied("권한이 없어 연동 수금/지급 기록을 영구삭제할 수 없습니다.");
+            if (!linkedPayment.IsDeleted)
+                return OfficeMutationResult.Denied("활성 연동 수금/지급 기록이 남아 있어 거래내역을 영구삭제할 수 없습니다.");
         }
 
         var now = DateTime.UtcNow;
@@ -2720,8 +2719,6 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == profileId, ct);
         if (profile is null)
             return OfficeMutationResult.Missing("영구삭제할 렌탈 청구프로필을 찾을 수 없습니다.");
-        if (!profile.IsDeleted)
-            return OfficeMutationResult.Denied("활성 상태의 렌탈 청구프로필은 휴지통에서 영구삭제할 수 없습니다.");
         if (!CanWriteRentalRecycleBinScope(
                 session,
                 profile.TenantCode,
@@ -2729,6 +2726,8 @@ public sealed partial class LocalStateService
                 profile.ResponsibleOfficeCode,
                 profile.ManagementCompanyCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 청구프로필을 영구삭제할 수 없습니다.");
+        if (!profile.IsDeleted)
+            return OfficeMutationResult.Denied("활성 상태의 렌탈 청구프로필은 휴지통에서 영구삭제할 수 없습니다.");
 
         var hasInvoices = await _db.Invoices
             .IgnoreQueryFilters()
@@ -2796,8 +2795,6 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == assetId, ct);
         if (asset is null)
             return OfficeMutationResult.Missing("영구삭제할 렌탈 자산을 찾을 수 없습니다.");
-        if (!asset.IsDeleted)
-            return OfficeMutationResult.Denied("활성 상태의 렌탈 자산은 휴지통에서 영구삭제할 수 없습니다.");
         if (!CanWriteRentalRecycleBinScope(
                 session,
                 asset.TenantCode,
@@ -2805,6 +2802,8 @@ public sealed partial class LocalStateService
                 asset.ResponsibleOfficeCode,
                 asset.ManagementCompanyCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 자산을 영구삭제할 수 없습니다.");
+        if (!asset.IsDeleted)
+            return OfficeMutationResult.Denied("활성 상태의 렌탈 자산은 휴지통에서 영구삭제할 수 없습니다.");
 
         var now = DateTime.UtcNow;
         var profiles = await GetBillingProfilesContainingAssetIdAsync(assetId, ct);
@@ -2849,14 +2848,14 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == logId, ct);
         if (log is null)
             return OfficeMutationResult.Missing("영구삭제할 렌탈 청구로그를 찾을 수 없습니다.");
-        if (!log.IsDeleted)
-            return OfficeMutationResult.Denied("활성 상태의 렌탈 청구로그는 휴지통에서 영구삭제할 수 없습니다.");
         if (!CanWriteRentalRecycleBinScope(
                 session,
                 log.TenantCode,
                 log.OfficeCode,
                 log.ResponsibleOfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 청구로그를 영구삭제할 수 없습니다.");
+        if (!log.IsDeleted)
+            return OfficeMutationResult.Denied("활성 상태의 렌탈 청구로그는 휴지통에서 영구삭제할 수 없습니다.");
 
         var billingProfileId = log.BillingProfileId;
         var now = DateTime.UtcNow;
@@ -3164,10 +3163,10 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == transferId, ct);
         if (transfer is null)
             return OfficeMutationResult.Missing("영구삭제할 재고이동을 찾을 수 없습니다.");
-        if (!transfer.IsDeleted)
-            return OfficeMutationResult.Denied("활성 상태 재고이동은 휴지통에서 영구삭제할 수 없습니다.");
         if (!CanMutateInventoryTransferFromRecycleBin(transfer, session, out var scopeMessage))
             return OfficeMutationResult.Denied(scopeMessage);
+        if (!transfer.IsDeleted)
+            return OfficeMutationResult.Denied("활성 상태 재고이동은 휴지통에서 영구삭제할 수 없습니다.");
 
         var now = DateTime.UtcNow;
         if (!string.IsNullOrWhiteSpace(transfer.ReceiveEvidencePath))

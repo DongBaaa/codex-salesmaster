@@ -343,6 +343,304 @@ public sealed class RecycleBinScopeAndSyncTests
     }
 
     [Fact]
+    public async Task LocalStateService_PermanentlyDeleteActiveOutOfScopeCustomer_IsDeniedBeforeActiveState()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-active-customer-purge-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var hiddenCustomerId = Guid.NewGuid();
+            db.Customers.Add(CreateScopedCustomer(
+                hiddenCustomerId,
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Yeonsu,
+                isDeleted: false));
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeUserSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                AppPermissionNames.CustomerEdit);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var purge = await service.PermanentlyDeleteRecycleBinEntryAsync(
+                RecycleBinEntityKind.Customer,
+                hiddenCustomerId,
+                session);
+
+            Assert.False(purge.Success);
+            Assert.Contains("권한", purge.Message);
+            Assert.DoesNotContain("활성 상태", purge.Message);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalStateService_PermanentlyDeleteActiveOutOfScopeInvoice_IsDeniedBeforeActiveState()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-active-invoice-purge-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var hiddenCustomerId = Guid.NewGuid();
+            var hiddenInvoiceId = Guid.NewGuid();
+            db.Customers.Add(CreateScopedCustomer(
+                hiddenCustomerId,
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Yeonsu,
+                isDeleted: false));
+            db.Invoices.Add(CreateInvoice(
+                hiddenInvoiceId,
+                hiddenCustomerId,
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Yeonsu,
+                isDeleted: false));
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeUserSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var purge = await service.PermanentlyDeleteRecycleBinEntryAsync(
+                RecycleBinEntityKind.Invoice,
+                hiddenInvoiceId,
+                session);
+
+            Assert.False(purge.Success);
+            Assert.Contains("권한", purge.Message);
+            Assert.DoesNotContain("활성 상태", purge.Message);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalStateService_PermanentlyDeleteActiveOutOfScopePayment_IsDeniedBeforeActiveState()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-active-payment-purge-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var hiddenCustomerId = Guid.NewGuid();
+            var hiddenInvoiceId = Guid.NewGuid();
+            var hiddenPaymentId = Guid.NewGuid();
+            db.Customers.Add(CreateScopedCustomer(
+                hiddenCustomerId,
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Yeonsu,
+                isDeleted: false));
+            db.Invoices.Add(CreateInvoice(
+                hiddenInvoiceId,
+                hiddenCustomerId,
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Yeonsu,
+                isDeleted: false));
+            db.Payments.Add(new LocalPayment
+            {
+                Id = hiddenPaymentId,
+                InvoiceId = hiddenInvoiceId,
+                PaymentDate = new DateOnly(2026, 6, 24),
+                Amount = 1000m,
+                IsDeleted = false,
+                IsDirty = false,
+                Revision = 31
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeUserSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var purge = await service.PermanentlyDeleteRecycleBinEntryAsync(
+                RecycleBinEntityKind.Payment,
+                hiddenPaymentId,
+                session);
+
+            Assert.False(purge.Success);
+            Assert.Contains("권한", purge.Message);
+            Assert.DoesNotContain("활성 상태", purge.Message);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalStateService_PermanentlyDeleteActiveOutOfScopeTransaction_IsDeniedBeforeActiveState()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-active-transaction-purge-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var hiddenCustomerId = Guid.NewGuid();
+            var hiddenTransactionId = Guid.NewGuid();
+            db.Customers.Add(CreateScopedCustomer(
+                hiddenCustomerId,
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Yeonsu,
+                isDeleted: false));
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = hiddenTransactionId,
+                CustomerId = hiddenCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                TransactionDate = new DateOnly(2026, 6, 24),
+                TransactionKind = PaymentFlowConstants.TransactionKindReceipt,
+                ReceiptTotal = 1000m,
+                IsDeleted = false,
+                IsDirty = false,
+                Revision = 32
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeUserSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var purge = await service.PermanentlyDeleteRecycleBinEntryAsync(
+                RecycleBinEntityKind.Transaction,
+                hiddenTransactionId,
+                session);
+
+            Assert.False(purge.Success);
+            Assert.Contains("권한", purge.Message);
+            Assert.DoesNotContain("활성 상태", purge.Message);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalStateService_PermanentlyDeleteActiveOutOfScopeRentalAsset_IsDeniedBeforeActiveState()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-active-rental-asset-purge-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var hiddenAssetId = Guid.NewGuid();
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = hiddenAssetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                ManagementCompanyCode = OfficeCodeCatalog.Yeonsu,
+                AssetKey = $"HIDDEN-ACTIVE-ASSET-{hiddenAssetId:N}",
+                ManagementId = $"HIDDEN-ACTIVE-ASSET-{hiddenAssetId:N}",
+                ManagementNumber = $"HIDDEN-ACTIVE-ASSET-{hiddenAssetId:N}",
+                ItemName = "권한 외 활성 자산",
+                AssetStatus = "설치",
+                IsDeleted = false,
+                IsDirty = false,
+                Revision = 33
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeUserSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var purge = await service.PermanentlyDeleteRecycleBinEntryAsync(
+                RecycleBinEntityKind.RentalAsset,
+                hiddenAssetId,
+                session);
+
+            Assert.False(purge.Success);
+            Assert.Contains("권한", purge.Message);
+            Assert.DoesNotContain("활성 상태", purge.Message);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalStateService_PermanentlyDeleteActiveOutOfScopeInventoryTransfer_IsDeniedBeforeActiveState()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-active-transfer-purge-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var hiddenTransferId = Guid.NewGuid();
+            db.InventoryTransfers.Add(new LocalInventoryTransfer
+            {
+                Id = hiddenTransferId,
+                TransferNumber = "HIDDEN-ACTIVE-TRANSFER-001",
+                TransferDate = new DateOnly(2026, 6, 24),
+                FromWarehouseCode = OfficeCodeCatalog.GetMainWarehouseCode(OfficeCodeCatalog.Yeonsu),
+                ToWarehouseCode = OfficeCodeCatalog.GetMainWarehouseCode(OfficeCodeCatalog.Yeonsu),
+                TransferStatus = "수령대기",
+                IsDeleted = false,
+                IsDirty = false,
+                Revision = 34
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeUserSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                AppPermissionNames.DeliveryEdit);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var purge = await service.PermanentlyDeleteRecycleBinEntryAsync(
+                RecycleBinEntityKind.InventoryTransfer,
+                hiddenTransferId,
+                session);
+
+            Assert.False(purge.Success);
+            Assert.Contains("출발지", purge.Message);
+            Assert.DoesNotContain("활성 상태", purge.Message);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task LocalStateService_RestoreRentalAsset_IgnoresActiveNaturalKeyConflictInOtherBusinessDatabase()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-asset-restore-cross-db-{Guid.NewGuid():N}");
@@ -853,6 +1151,50 @@ public sealed class RecycleBinScopeAndSyncTests
             IsDeleted = false,
             IsDirty = false,
             Revision = 5
+        };
+
+    private static LocalCustomer CreateScopedCustomer(Guid customerId, string tenantCode, string officeCode, bool isDeleted)
+        => new()
+        {
+            Id = customerId,
+            TenantCode = tenantCode,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = officeCode,
+            NameOriginal = $"Scoped customer {customerId:N}",
+            NameMatchKey = $"scopedcustomer{customerId:N}",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = isDeleted,
+            IsDirty = false,
+            Revision = 6
+        };
+
+    private static LocalInvoice CreateInvoice(
+        Guid invoiceId,
+        Guid customerId,
+        string tenantCode,
+        string responsibleOfficeCode,
+        bool isDeleted)
+        => new()
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = tenantCode,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = responsibleOfficeCode,
+            InvoiceNumber = $"INV-{invoiceId:N}",
+            LocalTempNumber = $"L{invoiceId:N}"[..12],
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 24),
+            TotalAmount = 1000m,
+            SupplyAmount = 909m,
+            VatAmount = 91m,
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            IsConfirmed = true,
+            IsDeleted = isDeleted,
+            IsDirty = false,
+            Revision = 7
         };
 
     private static LocalCustomer CreateDeletedCustomer(Guid customerId)

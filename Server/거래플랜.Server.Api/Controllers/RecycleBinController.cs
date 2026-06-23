@@ -2118,14 +2118,13 @@ public sealed class RecycleBinController : ControllerBase
         var linkedPaymentAttachments = new List<PaymentAttachment>();
         if (linkedPayment is not null)
         {
-            if (!linkedPayment.IsDeleted)
-                return (false, "활성 연동 수금/지급 기록이 남아 있어 거래내역을 영구삭제할 수 없습니다.");
-
             var linkedPaymentInvoice = await _dbContext.Invoices
                 .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(current => current.Id == linkedPayment.InvoiceId, cancellationToken);
             if (linkedPaymentInvoice is null || !_officeScopeService.CanWriteOfficeForPayments(linkedPaymentInvoice.ResponsibleOfficeCode, linkedPaymentInvoice.TenantCode, linkedPaymentInvoice.OfficeCode))
                 return (false, "현재 계정으로 연동 수금/지급 기록을 영구삭제할 수 없어 거래내역을 영구삭제할 수 없습니다.");
+            if (!linkedPayment.IsDeleted)
+                return (false, "활성 연동 수금/지급 기록이 남아 있어 거래내역을 영구삭제할 수 없습니다.");
 
             linkedPaymentAttachments = await _dbContext.PaymentAttachments
                 .IgnoreQueryFilters()
