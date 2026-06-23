@@ -2599,6 +2599,106 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task RentalSettlementRecalculation_IgnoresZeroAmountEvidenceWhenRestoringMissingBillingRunJson()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var zeroPaymentId = Guid.NewGuid();
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Server rental zero evidence customer",
+            NameMatchKey = "SERVERRENTALZEROEVIDENCECUSTOMER",
+            TradeType = "Sales"
+        });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"profile-zero-evidence-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = "Server rental zero evidence customer",
+            BillingStatus = "in-progress",
+            SettlementStatus = "pending",
+            CompletionStatus = "incomplete",
+            MonthlyAmount = 100_000m,
+            BillingCycleMonths = 1,
+            SettledAmount = 0m,
+            OutstandingAmount = 0m,
+            BillingRunsJson = "[]"
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "RENTAL-ZERO-EVIDENCE-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 9, 25),
+            TotalAmount = 0m,
+            SupplyAmount = 0m,
+            VatAmount = 0m,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId
+        });
+        dbContext.Payments.Add(new Payment
+        {
+            Id = zeroPaymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 9, 26),
+            Amount = 0m,
+            Note = "zero amount direct rental payment must not restore billing run"
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 9, 26),
+            TransactionKind = "rental payment",
+            LinkedInvoiceId = invoiceId,
+            LinkedInvoiceNumber = "RENTAL-ZERO-EVIDENCE-001",
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId,
+            BankReceipt = 0m,
+            ReceiptTotal = 0m,
+            SettlementAmount = 0m,
+            Note = "zero amount rental transaction must not restore billing run"
+        });
+        await dbContext.SaveChangesAsync();
+
+        var service = new RentalSettlementRecalculationService(dbContext);
+        await service.RecalculateRentalSettlementsAsync([(profileId, runId)], CancellationToken.None);
+        await dbContext.SaveChangesAsync();
+
+        var recalculatedProfile = await dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal(0m, recalculatedProfile.SettledAmount);
+        Assert.Equal(100_000m, recalculatedProfile.OutstandingAmount);
+        Assert.Null(recalculatedProfile.LastSettledDate);
+        Assert.Empty(JsonSerializer.Deserialize<List<ServerRentalBillingRunSnapshot>>(recalculatedProfile.BillingRunsJson) ?? []);
+    }
+
+    [Fact]
     public async Task InvoicesController_Update_RentalBillingInvoice_RecalculatesBilledAndOutstandingAmounts()
     {
         var currentUser = CreateAdminUser();

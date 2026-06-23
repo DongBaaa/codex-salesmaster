@@ -204,7 +204,10 @@ public sealed class RentalSettlementRecalculationService
         CancellationToken cancellationToken)
     {
         var transactionQuery = _dbContext.Transactions.IgnoreQueryFilters().AsNoTracking()
-            .Where(transaction => !transaction.IsDeleted && transaction.LinkedRentalBillingProfileId == billingProfileId);
+            .Where(transaction =>
+                !transaction.IsDeleted &&
+                transaction.SettlementAmount > 0m &&
+                transaction.LinkedRentalBillingProfileId == billingProfileId);
         if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
             transactionQuery = transactionQuery.Where(transaction => transaction.LinkedRentalBillingRunId == billingRunId.Value);
 
@@ -217,11 +220,13 @@ public sealed class RentalSettlementRecalculationService
             join invoice in _dbContext.Invoices.IgnoreQueryFilters().AsNoTracking()
                 on payment.InvoiceId equals invoice.Id
             where !payment.IsDeleted &&
+                  payment.Amount > 0m &&
                   !invoice.IsDeleted &&
                   invoice.IsLatestVersion &&
                   invoice.LinkedRentalBillingProfileId == billingProfileId &&
                   !_dbContext.Transactions.IgnoreQueryFilters().AsNoTracking().Any(transaction =>
                       !transaction.IsDeleted &&
+                      transaction.SettlementAmount > 0m &&
                       transaction.Id == payment.Id &&
                       transaction.LinkedRentalBillingProfileId == billingProfileId)
             select new
@@ -245,7 +250,10 @@ public sealed class RentalSettlementRecalculationService
         CancellationToken cancellationToken)
     {
         var transactionQuery = _dbContext.Transactions.IgnoreQueryFilters().AsNoTracking()
-            .Where(transaction => !transaction.IsDeleted && transaction.LinkedRentalBillingProfileId == billingProfileId);
+            .Where(transaction =>
+                !transaction.IsDeleted &&
+                transaction.SettlementAmount > 0m &&
+                transaction.LinkedRentalBillingProfileId == billingProfileId);
         if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
             transactionQuery = transactionQuery.Where(transaction => transaction.LinkedRentalBillingRunId == billingRunId.Value);
 
@@ -258,11 +266,13 @@ public sealed class RentalSettlementRecalculationService
             join invoice in _dbContext.Invoices.IgnoreQueryFilters().AsNoTracking()
                 on payment.InvoiceId equals invoice.Id
             where !payment.IsDeleted &&
+                  payment.Amount > 0m &&
                   !invoice.IsDeleted &&
                   invoice.IsLatestVersion &&
                   invoice.LinkedRentalBillingProfileId == billingProfileId &&
                   !_dbContext.Transactions.IgnoreQueryFilters().AsNoTracking().Any(transaction =>
                       !transaction.IsDeleted &&
+                      transaction.SettlementAmount > 0m &&
                       transaction.Id == payment.Id &&
                       transaction.LinkedRentalBillingProfileId == billingProfileId)
             select new
@@ -360,6 +370,7 @@ public sealed class RentalSettlementRecalculationService
             .Where(invoice =>
                 !invoice.IsDeleted &&
                 invoice.IsLatestVersion &&
+                invoice.TotalAmount > 0m &&
                 invoice.LinkedRentalBillingProfileId == billingProfileId &&
                 invoice.LinkedRentalBillingRunId == billingRunId)
             .OrderByDescending(invoice => invoice.UpdatedAtUtc)
@@ -373,6 +384,7 @@ public sealed class RentalSettlementRecalculationService
         var transactionRows = await _dbContext.Transactions.IgnoreQueryFilters().AsNoTracking()
             .Where(transaction =>
                 !transaction.IsDeleted &&
+                transaction.SettlementAmount > 0m &&
                 transaction.LinkedRentalBillingProfileId == billingProfileId &&
                 transaction.LinkedRentalBillingRunId == billingRunId)
             .Select(transaction => new
@@ -386,12 +398,14 @@ public sealed class RentalSettlementRecalculationService
             join invoice in _dbContext.Invoices.IgnoreQueryFilters().AsNoTracking()
                 on payment.InvoiceId equals invoice.Id
             where !payment.IsDeleted &&
+                  payment.Amount > 0m &&
                   !invoice.IsDeleted &&
                   invoice.IsLatestVersion &&
                   invoice.LinkedRentalBillingProfileId == billingProfileId &&
                   invoice.LinkedRentalBillingRunId == billingRunId &&
                   !_dbContext.Transactions.IgnoreQueryFilters().AsNoTracking().Any(transaction =>
                       !transaction.IsDeleted &&
+                      transaction.SettlementAmount > 0m &&
                       transaction.Id == payment.Id &&
                       transaction.LinkedRentalBillingProfileId == billingProfileId)
             select new
