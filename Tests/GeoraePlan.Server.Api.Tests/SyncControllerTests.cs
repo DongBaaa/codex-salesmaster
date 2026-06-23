@@ -2749,7 +2749,9 @@ public sealed class SyncControllerTests : IDisposable
         var ok = Assert.IsType<OkObjectResult>(response.Result);
         var result = Assert.IsType<SyncPushResult>(ok.Value);
 
-        Assert.Equal(1, result.ConflictCount);
+        Assert.True(
+            result.ConflictCount == 1,
+            $"Expected one protected invoice conflict. accepted={result.AcceptedCount}, conflicts={string.Join(" | ", result.Conflicts.Select(conflict => conflict.Reason))}");
         Assert.Equal(0, result.AcceptedCount);
 
         var reloaded = await scopedDb.Customers.IgnoreQueryFilters().FirstAsync(customer => customer.Id == existing.Id);
@@ -3698,6 +3700,254 @@ public sealed class SyncControllerTests : IDisposable
             .SingleAsync(row => row.Id == invoice.Id);
         Assert.Equal(100m, storedInvoice.TotalAmount);
         Assert.Equal(serverRevision, storedInvoice.Revision);
+    }
+
+    [Fact]
+    public async Task Push_RejectsProtectedInvoiceSameIdLineMutation_WhenPaymentExists()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-PROTECTED-INVOICE-CUSTOMER",
+            NameMatchKey = "SYNCPROTECTEDINVOICECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var invoiceId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+        _dbContext.Customers.Add(customer);
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            InvoiceNumber = "SYNC-PROTECTED-INV-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            InvoiceDate = new DateOnly(2026, 6, 24),
+            VatMode = InvoiceVatModes.None,
+            TotalAmount = 100m,
+            SupplyAmount = 100m,
+            VatAmount = 0m
+        });
+        _dbContext.InvoiceLines.Add(new InvoiceLine
+        {
+            Id = lineId,
+            InvoiceId = invoiceId,
+            ItemNameOriginal = "protected paid line",
+            Unit = "EA",
+            Quantity = 1m,
+            UnitPrice = 100m,
+            LineAmount = 100m,
+            OrderIndex = 1,
+            ItemTrackingType = ItemTrackingTypes.NonStock
+        });
+        _dbContext.Payments.Add(new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 6, 24),
+            Amount = 100m,
+            Note = "existing payment"
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var stored = await _dbContext.Invoices.IgnoreQueryFilters()
+            .Include(invoice => invoice.Lines)
+            .SingleAsync(invoice => invoice.Id == invoiceId);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-protected-paid-invoice-line-mutation",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customer.Id,
+                    CustomerName = customer.NameOriginal,
+                    TenantCode = stored.TenantCode,
+                    OfficeCode = stored.OfficeCode,
+                    ResponsibleOfficeCode = stored.ResponsibleOfficeCode,
+                    InvoiceNumber = stored.InvoiceNumber,
+                    VersionGroupId = stored.VersionGroupId,
+                    VersionNumber = stored.VersionNumber,
+                    IsLatestVersion = stored.IsLatestVersion,
+                    VoucherType = stored.VoucherType,
+                    SourceWarehouseCode = stored.SourceWarehouseCode,
+                    InvoiceDate = stored.InvoiceDate,
+                    VatMode = stored.VatMode,
+                    ExpectedRevision = stored.Revision,
+                    CreatedAtUtc = stored.CreatedAtUtc,
+                    UpdatedAtUtc = stored.UpdatedAtUtc.AddMinutes(1),
+                    Lines =
+                    [
+                        new InvoiceLineDto
+                        {
+                            Id = lineId,
+                            InvoiceId = invoiceId,
+                            ItemNameOriginal = "protected paid line",
+                            Unit = "EA",
+                            Quantity = 1m,
+                            UnitPrice = 200m,
+                            LineAmount = 200m,
+                            ItemTrackingType = ItemTrackingTypes.NonStock
+                        }
+                    ]
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(
+            result.ConflictCount == 1,
+            $"Expected one protected invoice conflict. accepted={result.AcceptedCount}, conflicts={string.Join(" | ", result.Conflicts.Select(conflict => conflict.Reason))}");
+        Assert.Equal(0, result.AcceptedCount);
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Equal(nameof(Invoice), conflict.EntityName);
+        Assert.Contains("same invoice id", conflict.Reason, StringComparison.OrdinalIgnoreCase);
+
+        _dbContext.ChangeTracker.Clear();
+        var unchangedInvoice = await _dbContext.Invoices.IgnoreQueryFilters()
+            .SingleAsync(invoice => invoice.Id == invoiceId);
+        Assert.Equal(100m, unchangedInvoice.TotalAmount);
+        Assert.True(unchangedInvoice.IsLatestVersion);
+        var unchangedLine = await _dbContext.InvoiceLines.IgnoreQueryFilters()
+            .SingleAsync(line => line.InvoiceId == invoiceId && !line.IsDeleted);
+        Assert.Equal(100m, unchangedLine.LineAmount);
+        Assert.Equal(100m, await _dbContext.Payments.IgnoreQueryFilters()
+            .Where(payment => payment.InvoiceId == invoiceId && !payment.IsDeleted)
+            .Select(payment => payment.Amount)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_AllowsProtectedInvoiceMetadataOnlyLatestFlagUpdate_WhenPaymentExists()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-PROTECTED-INVOICE-METADATA-CUSTOMER",
+            NameMatchKey = "SYNCPROTECTEDINVOICEMETADATACUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var invoiceId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+        _dbContext.Customers.Add(customer);
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            InvoiceNumber = "SYNC-PROTECTED-INV-002",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            InvoiceDate = new DateOnly(2026, 6, 24),
+            VatMode = InvoiceVatModes.None,
+            TotalAmount = 100m,
+            SupplyAmount = 100m,
+            VatAmount = 0m
+        });
+        _dbContext.InvoiceLines.Add(new InvoiceLine
+        {
+            Id = lineId,
+            InvoiceId = invoiceId,
+            ItemNameOriginal = "protected metadata line",
+            Unit = "EA",
+            Quantity = 1m,
+            UnitPrice = 100m,
+            LineAmount = 100m,
+            OrderIndex = 1,
+            ItemTrackingType = ItemTrackingTypes.NonStock
+        });
+        _dbContext.Payments.Add(new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 6, 24),
+            Amount = 100m,
+            Note = "existing payment"
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var stored = await _dbContext.Invoices.IgnoreQueryFilters()
+            .Include(invoice => invoice.Lines)
+            .SingleAsync(invoice => invoice.Id == invoiceId);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-protected-paid-invoice-metadata-update",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customer.Id,
+                    CustomerName = customer.NameOriginal,
+                    TenantCode = stored.TenantCode,
+                    OfficeCode = stored.OfficeCode,
+                    ResponsibleOfficeCode = stored.ResponsibleOfficeCode,
+                    InvoiceNumber = stored.InvoiceNumber,
+                    VersionGroupId = stored.VersionGroupId,
+                    VersionNumber = stored.VersionNumber,
+                    IsLatestVersion = false,
+                    VoucherType = stored.VoucherType,
+                    SourceWarehouseCode = stored.SourceWarehouseCode,
+                    InvoiceDate = stored.InvoiceDate,
+                    VatMode = stored.VatMode,
+                    ExpectedRevision = stored.Revision,
+                    CreatedAtUtc = stored.CreatedAtUtc,
+                    UpdatedAtUtc = stored.UpdatedAtUtc.AddMinutes(1),
+                    Lines =
+                    [
+                        new InvoiceLineDto
+                        {
+                            Id = lineId,
+                            InvoiceId = invoiceId,
+                            ItemNameOriginal = "protected metadata line",
+                            Unit = "EA",
+                            Quantity = 1m,
+                            UnitPrice = 100m,
+                            LineAmount = 100m,
+                            ItemTrackingType = ItemTrackingTypes.NonStock
+                        }
+                    ]
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(
+            result.ConflictCount == 0,
+            $"Expected metadata-only update to be accepted. accepted={result.AcceptedCount}, conflicts={string.Join(" | ", result.Conflicts.Select(conflict => conflict.Reason))}");
+        Assert.Equal(1, result.AcceptedCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var updatedInvoice = await _dbContext.Invoices.IgnoreQueryFilters()
+            .SingleAsync(invoice => invoice.Id == invoiceId);
+        Assert.Equal(100m, updatedInvoice.TotalAmount);
+        Assert.False(updatedInvoice.IsLatestVersion);
+        Assert.Equal(100m, await _dbContext.Payments.IgnoreQueryFilters()
+            .Where(payment => payment.InvoiceId == invoiceId && !payment.IsDeleted)
+            .Select(payment => payment.Amount)
+            .SingleAsync());
     }
 
     [Fact]
