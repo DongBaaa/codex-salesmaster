@@ -783,7 +783,7 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         var conflict = Assert.IsType<ConflictObjectResult>(response.Result);
         var payload = Assert.IsType<ExpectedRevisionConflictResponse>(conflict.Value);
         Assert.Equal(nameof(Invoice), payload.EntityName);
-        Assert.Contains("same invoice id", payload.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(ApiConflictReasonTranslator.ProtectedInvoiceSameIdStructuralMutation, payload.Reason);
         Assert.Equal(100m, await dbContext.Invoices.IgnoreQueryFilters()
             .Where(row => row.Id == invoiceId)
             .Select(row => row.TotalAmount)
@@ -890,7 +890,7 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         var conflict = Assert.IsType<ConflictObjectResult>(response.Result);
         var payload = Assert.IsType<ExpectedRevisionConflictResponse>(conflict.Value);
         Assert.Equal(nameof(Invoice), payload.EntityName);
-        Assert.Contains("same invoice id", payload.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(ApiConflictReasonTranslator.ProtectedInvoiceSameIdStructuralMutation, payload.Reason);
         Assert.Equal(100m, await dbContext.Invoices.IgnoreQueryFilters()
             .Where(row => row.Id == invoiceId)
             .Select(row => row.TotalAmount)

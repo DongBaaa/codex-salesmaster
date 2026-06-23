@@ -196,7 +196,7 @@ public sealed class InvoicesController : ControllerBase
                 EntityId = entity.Id,
                 ExpectedRevision = dto.ExpectedRevision > 0 ? dto.ExpectedRevision : dto.Revision,
                 CurrentRevision = entity.Revision,
-                Reason = "A paid, rental-linked, or versioned invoice cannot be structurally changed with the same invoice id. Save it as a new invoice version."
+                Reason = ApiConflictReasonTranslator.ProtectedInvoiceSameIdStructuralMutation
             });
         }
 

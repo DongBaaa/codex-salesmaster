@@ -2419,6 +2419,27 @@ public sealed class MobileReleaseConfigurationTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void MobileSyncCoordinator_TranslatesPushConflictReasonForDisplay()
+    {
+        var source = File.ReadAllText(Path.Combine(
+                FindRepositoryRoot(),
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "Services",
+                "SyncCoordinator.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains(
+            "ApiConflictReasonTranslator.ToUserMessage(firstConflict?.Reason)",
+            source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "var reason = firstConflict?.Reason?.Trim();",
+            source,
+            StringComparison.Ordinal);
+    }
+
     private static int CountOccurrences(string source, string value)
     {
         var count = 0;

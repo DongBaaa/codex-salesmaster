@@ -9,7 +9,7 @@ public static class ApiErrorMessageFormatter
     {
         var statusText = BuildStatusText(statusCode, reasonPhrase);
 
-        if (TryBuildPayloadMessage(statusText, body, out var payloadMessage))
+        if (TryBuildPayloadMessage(statusCode, statusText, body, out var payloadMessage))
             return payloadMessage;
 
         var trimmedBody = TrimBody(body);
@@ -23,7 +23,7 @@ public static class ApiErrorMessageFormatter
         return $"{statusText} {trimmedBody}".Trim();
     }
 
-    private static bool TryBuildPayloadMessage(string statusText, string? body, out string message)
+    private static bool TryBuildPayloadMessage(HttpStatusCode statusCode, string statusText, string? body, out string message)
     {
         message = string.Empty;
         if (string.IsNullOrWhiteSpace(body))
@@ -46,11 +46,18 @@ public static class ApiErrorMessageFormatter
             if (root.ValueKind != JsonValueKind.Object)
                 return false;
 
+            if (statusCode == HttpStatusCode.Conflict &&
+                TryBuildExpectedRevisionConflictMessage(statusText, root, out message))
+            {
+                return true;
+            }
+
             var parts = new List<string>();
             var errorCode = GetStringProperty(root, "error");
             AddDistinctPart(parts, MapKnownError(errorCode) ?? errorCode);
             AddDistinctPart(parts, GetStringProperty(root, "message"));
             AddDistinctPart(parts, GetStringProperty(root, "detail"));
+            AddDistinctPart(parts, ApiConflictReasonTranslator.ToUserMessage(GetStringProperty(root, "reason")));
             AddDistinctPart(parts, GetStringProperty(root, "title"));
 
             foreach (var validationError in GetValidationErrorMessages(root))
@@ -66,6 +73,36 @@ public static class ApiErrorMessageFormatter
         {
             return false;
         }
+    }
+
+    private static bool TryBuildExpectedRevisionConflictMessage(string statusText, JsonElement root, out string message)
+    {
+        message = string.Empty;
+        var entityName = GetStringProperty(root, "entityName");
+        var reason = GetStringProperty(root, "reason");
+        var expectedRevision = GetInt64Property(root, "expectedRevision");
+        var currentRevision = GetInt64Property(root, "currentRevision");
+
+        if (string.IsNullOrWhiteSpace(entityName) &&
+            expectedRevision is null &&
+            currentRevision is null)
+        {
+            return false;
+        }
+
+        var entityDisplayName = ResolveEntityDisplayName(entityName);
+        var revisionHint = expectedRevision is > 0 && currentRevision is > 0
+            ? $" (요청 rev {expectedRevision.Value:N0} / 서버 rev {currentRevision.Value:N0})"
+            : currentRevision is > 0
+                ? $" (서버 rev {currentRevision.Value:N0})"
+                : string.Empty;
+
+        var translatedReason = ApiConflictReasonTranslator.ToUserMessage(reason);
+        var baseMessage = $"{statusText} {entityDisplayName} 저장 충돌: 서버 최신 내용과 현재 저장 내용이 충돌했습니다. 최신 데이터를 다시 불러온 뒤 다시 시도하세요.{revisionHint}";
+        message = string.IsNullOrWhiteSpace(translatedReason)
+            ? baseMessage
+            : $"{baseMessage} {translatedReason}";
+        return true;
     }
 
     private static IEnumerable<string> GetValidationErrorMessages(JsonElement root)
@@ -119,7 +156,7 @@ public static class ApiErrorMessageFormatter
 
     private static string? GetStringProperty(JsonElement root, string propertyName)
     {
-        if (!root.TryGetProperty(propertyName, out var property) ||
+        if (!TryGetPropertyIgnoreCase(root, propertyName, out var property) ||
             property.ValueKind != JsonValueKind.String)
         {
             return null;
@@ -127,6 +164,41 @@ public static class ApiErrorMessageFormatter
 
         var value = property.GetString();
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static long? GetInt64Property(JsonElement root, string propertyName)
+    {
+        if (!TryGetPropertyIgnoreCase(root, propertyName, out var property))
+            return null;
+
+        if (property.ValueKind == JsonValueKind.Number && property.TryGetInt64(out var value))
+            return value;
+
+        if (property.ValueKind == JsonValueKind.String &&
+            long.TryParse(property.GetString(), out var parsed))
+        {
+            return parsed;
+        }
+
+        return null;
+    }
+
+    private static bool TryGetPropertyIgnoreCase(JsonElement root, string propertyName, out JsonElement property)
+    {
+        if (root.TryGetProperty(propertyName, out property))
+            return true;
+
+        foreach (var current in root.EnumerateObject())
+        {
+            if (string.Equals(current.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                property = current.Value;
+                return true;
+            }
+        }
+
+        property = default;
+        return false;
     }
 
     private static string? MapKnownError(string? errorCode)
@@ -137,6 +209,22 @@ public static class ApiErrorMessageFormatter
             "attachment_content_unavailable" =>
                 "첨부 파일 내용을 찾을 수 없습니다. 서버에는 첨부 정보가 있으나 실제 파일이 없거나 손상되었습니다. 운영 점검의 파일 저장소 무결성 결과를 확인한 뒤 다시 시도하세요.",
             _ => null
+        };
+
+    private static string ResolveEntityDisplayName(string? entityName)
+        => entityName?.Trim() switch
+        {
+            "Customer" => "거래처",
+            "Item" => "품목",
+            "Invoice" => "전표",
+            "Payment" => "수금/지급",
+            "TransactionRecord" => "거래내역",
+            "InventoryTransfer" => "재고이동",
+            "RentalBillingProfile" => "렌탈 청구",
+            "RentalAsset" => "렌탈 자산",
+            "UserAccount" => "사용자",
+            { Length: > 0 } value => value,
+            _ => "데이터"
         };
 
     private static void AddDistinctPart(List<string> parts, string? value)

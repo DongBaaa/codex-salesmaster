@@ -3813,7 +3813,7 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Equal(0, result.AcceptedCount);
         var conflict = Assert.Single(result.Conflicts);
         Assert.Equal(nameof(Invoice), conflict.EntityName);
-        Assert.Contains("same invoice id", conflict.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(ApiConflictReasonTranslator.ProtectedInvoiceSameIdStructuralMutation, conflict.Reason);
 
         _dbContext.ChangeTracker.Clear();
         var unchangedInvoice = await _dbContext.Invoices.IgnoreQueryFilters()

@@ -196,6 +196,36 @@ public sealed class ErpApiClientSessionRefreshTests
         Assert.Contains("관리자", exception.Message);
     }
 
+
+
+    [Fact]
+    public async Task GetSyncStatusAsync_ExpectedRevisionConflictPayload_ThrowsBusinessGuidanceWithoutEnglishReason()
+    {
+        var session = new SessionState();
+        session.SetSession("conflict-token", CreateAdminUser(), DateTime.UtcNow.AddDays(1));
+
+        var handler = new ErrorResponseHandler(
+            HttpStatusCode.Conflict,
+            new
+            {
+                entityName = "Invoice",
+                entityId = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+                expectedRevision = 10,
+                currentRevision = 12,
+                reason = "A paid, rental-linked, or versioned invoice cannot be structurally changed with the same invoice id. Save it as a new invoice version."
+            });
+        var api = new ErpApiClient(new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://localhost/")
+        }, session);
+
+        var exception = await Assert.ThrowsAnyAsync<HttpRequestException>(() => api.GetSyncStatusAsync());
+
+        Assert.Equal(HttpStatusCode.Conflict, exception.StatusCode);
+        Assert.Contains(ApiConflictReasonTranslator.ProtectedInvoiceSameIdStructuralMutation, exception.Message);
+        Assert.DoesNotContain("same invoice id", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static UserSessionDto CreateAdminUser() => new()
     {
         UserId = Guid.Parse("11111111-2222-3333-4444-555555555555"),

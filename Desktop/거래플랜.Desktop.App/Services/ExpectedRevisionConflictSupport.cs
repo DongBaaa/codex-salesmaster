@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
 
@@ -66,9 +67,10 @@ internal static class ConcurrencyConflictFormatter
                 : string.Empty;
 
         var baseMessage = $"다른 PC에서 해당 {resolvedEntityName}의 최신 내용이 먼저 저장되었습니다. 최신값을 다시 불러온 뒤 다시 시도하세요.{revisionHint}";
-        return string.IsNullOrWhiteSpace(reason)
+        var translatedReason = ApiConflictReasonTranslator.ToUserMessage(reason);
+        return string.IsNullOrWhiteSpace(translatedReason)
             ? baseMessage
-            : $"{baseMessage}{Environment.NewLine}{Environment.NewLine}{reason.Trim()}";
+            : $"{baseMessage}{Environment.NewLine}{Environment.NewLine}{translatedReason}";
     }
 
     private static string ResolveEntityDisplayName(string entityDisplayName)

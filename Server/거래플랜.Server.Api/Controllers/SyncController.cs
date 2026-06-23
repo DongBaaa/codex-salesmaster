@@ -1113,7 +1113,7 @@ public sealed class SyncController : ControllerBase
                 AddClientConflict(
                     dto,
                     nameof(Invoice),
-                    "A paid, rental-linked, or versioned invoice cannot be structurally changed with the same invoice id. Save it as a new invoice version.",
+                    ApiConflictReasonTranslator.ProtectedInvoiceSameIdStructuralMutation,
                     result);
                 continue;
             }

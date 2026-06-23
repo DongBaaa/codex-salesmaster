@@ -883,7 +883,7 @@ public sealed class SyncCoordinator
     private static string BuildPushConflictMessage(SyncPushResult result)
     {
         var firstConflict = result.Conflicts.FirstOrDefault();
-        var reason = firstConflict?.Reason?.Trim();
+        var reason = ApiConflictReasonTranslator.ToUserMessage(firstConflict?.Reason);
         if (string.IsNullOrWhiteSpace(reason))
             return $"{ConcurrencyConflictUserMessage} (충돌 {result.ConflictCount:N0}건)";
 

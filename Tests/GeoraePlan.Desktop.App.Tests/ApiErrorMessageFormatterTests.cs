@@ -88,4 +88,56 @@ public sealed class ApiErrorMessageFormatterTests
         Assert.Contains("파일 본문이 없습니다.", message);
         Assert.DoesNotContain("attachment_content_unavailable", message);
     }
+
+    [Fact]
+    public void BuildFailureMessage_ExpectedRevisionConflictPayload_ReturnsBusinessGuidanceWithoutRawJson()
+    {
+        var body = JsonSerializer.Serialize(new
+        {
+            entityName = "Invoice",
+            entityId = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+            expectedRevision = 10,
+            currentRevision = 12,
+            reason = "A paid, rental-linked, or versioned invoice cannot be structurally changed with the same invoice id. Save it as a new invoice version."
+        });
+
+        var message = ApiErrorMessageFormatter.BuildFailureMessage(
+            HttpStatusCode.Conflict,
+            "Conflict",
+            body);
+
+        Assert.StartsWith("409 Conflict", message);
+        Assert.Contains("\uC804\uD45C \uC800\uC7A5 \uCDA9\uB3CC", message);
+        Assert.Contains("\uC694\uCCAD rev 10", message);
+        Assert.Contains("\uC11C\uBC84 rev 12", message);
+        Assert.Contains("\uC0C8 \uBC84\uC804", message);
+        Assert.Contains("\uC218\uAE08/\uC9C0\uAE09", message);
+        Assert.DoesNotContain("same invoice id", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("{\"entityName\"", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildFailureMessage_ExpectedRevisionMismatchPayload_ReturnsReloadGuidance()
+    {
+        var body = JsonSerializer.Serialize(new
+        {
+            EntityName = "Customer",
+            EntityId = Guid.Parse("11111111-2222-3333-4444-555555555555"),
+            ExpectedRevision = 3,
+            CurrentRevision = 4,
+            Reason = "Expected revision mismatch. client=3, server=4"
+        });
+
+        var message = ApiErrorMessageFormatter.BuildFailureMessage(
+            HttpStatusCode.Conflict,
+            "Conflict",
+            body);
+
+        Assert.StartsWith("409 Conflict", message);
+        Assert.Contains("\uAC70\uB798\uCC98 \uC800\uC7A5 \uCDA9\uB3CC", message);
+        Assert.Contains("\uCD5C\uC2E0 \uB370\uC774\uD130\uB97C \uB2E4\uC2DC \uBD88\uB7EC\uC628 \uB4A4 \uB2E4\uC2DC \uC2DC\uB3C4", message);
+        Assert.DoesNotContain("Expected revision mismatch", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("{\"EntityName\"", message, StringComparison.OrdinalIgnoreCase);
+    }
+
 }
