@@ -305,7 +305,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
                     .Distinct()
                     .ToList();
                 var result = rentalAssetIds.Count > 0
-                    ? await _rental.RepairRentalCatalogLinksAsync(rentalAssetIds)
+                    ? await _rental.RepairRentalCatalogLinksAsync(rentalAssetIds, _session)
                     : new RentalCatalogRepairResult();
                 summaryParts.Add($"렌탈자산 {result.ScannedAssetCount:N0}건");
             }

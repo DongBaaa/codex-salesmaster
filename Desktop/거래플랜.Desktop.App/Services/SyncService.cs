@@ -1538,7 +1538,7 @@ public sealed class SyncService : IDisposable
 
         if (scopedDirtyRentalAssetIds.Count > 0)
         {
-            var rentalRepair = await _rental.RepairRentalCatalogLinksAsync(scopedDirtyRentalAssetIds, ct);
+            var rentalRepair = await _rental.RepairRentalCatalogLinksAsync(scopedDirtyRentalAssetIds, session, ct);
             if (rentalRepair.UpdatedAssetCount > 0 ||
                 rentalRepair.AddedItemNames.Count > 0 ||
                 rentalRepair.AmbiguousItemNames.Count > 0)

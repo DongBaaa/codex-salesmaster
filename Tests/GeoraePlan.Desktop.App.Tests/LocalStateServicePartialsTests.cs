@@ -1607,6 +1607,402 @@ public sealed class LocalStateServicePartialsTests
         }
     }
 
+
+    [Fact]
+    public async Task RentalStateService_RepairRentalCatalogLinks_DoesNotLinkSameTenantCustomerFromDifferentOffice()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-catalog-customer-office-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.Parse("c1111111-1111-1111-1111-111111111111");
+            var assetId = Guid.Parse("c2222222-2222-2222-2222-222222222222");
+            var yeonsuCustomerId = Guid.Parse("c3333333-3333-3333-3333-333333333333");
+
+            db.ItemCategoryOptions.Add(new LocalItemCategoryOption
+            {
+                Id = Guid.NewGuid(),
+                Name = "Scoped Category",
+                SortOrder = 10,
+                IsActive = true,
+                IsDirty = false
+            });
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Office Scoped Copier",
+                NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey("Office Scoped Copier"),
+                CategoryName = "Scoped Category",
+                ItemKind = ItemKinds.Asset,
+                TrackingType = ItemTrackingTypes.Asset,
+                MaterialNumber = "US-001",
+                SerialNumber = "US-SN-001",
+                IsRental = true,
+                IsSale = false,
+                SimpleMemo = RentalStateService.AutoCreatedRentalItemMemo,
+                IsDirty = false,
+                IsDeleted = false
+            });
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = yeonsuCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                NameOriginal = "Shared Office Customer",
+                NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey("Shared Office Customer"),
+                IsDirty = false,
+                IsDeleted = false
+            });
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                ItemId = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ManagementNumber = "US-001",
+                MachineNumber = "US-SN-001",
+                ItemCategoryName = "Scoped Category",
+                ItemName = "Office Scoped Copier",
+                CustomerName = "Shared Office Customer",
+                CurrentCustomerName = "Shared Office Customer",
+                AssetStatus = RentalAssetStatusNormalizer.Active,
+                IsDirty = false,
+                IsDeleted = false
+            });
+            await db.SaveChangesAsync();
+
+            var result = await new RentalStateService(db).RepairRentalCatalogLinksAsync([assetId]);
+
+            Assert.Equal(1, result.ScannedAssetCount);
+            var asset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(current => current.Id == assetId);
+            Assert.Null(asset.CustomerId);
+            Assert.Equal(OfficeCodeCatalog.Usenet, asset.ResponsibleOfficeCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalStateService_RepairRentalCatalogLinks_ClearsExistingCustomerLinkWhenOfficeDiffers()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-catalog-customer-office-clear-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.Parse("c4444444-4444-4444-4444-444444444444");
+            var assetId = Guid.Parse("c5555555-5555-5555-5555-555555555555");
+            var yeonsuCustomerId = Guid.Parse("c6666666-6666-6666-6666-666666666666");
+
+            db.ItemCategoryOptions.Add(new LocalItemCategoryOption
+            {
+                Id = Guid.NewGuid(),
+                Name = "Scoped Category",
+                SortOrder = 10,
+                IsActive = true,
+                IsDirty = false
+            });
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Office Scoped Existing Copier",
+                NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey("Office Scoped Existing Copier"),
+                CategoryName = "Scoped Category",
+                ItemKind = ItemKinds.Asset,
+                TrackingType = ItemTrackingTypes.Asset,
+                MaterialNumber = "US-002",
+                SerialNumber = "US-SN-002",
+                IsRental = true,
+                IsSale = false,
+                SimpleMemo = RentalStateService.AutoCreatedRentalItemMemo,
+                IsDirty = false,
+                IsDeleted = false
+            });
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = yeonsuCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                NameOriginal = "Existing Office Customer",
+                NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey("Existing Office Customer"),
+                IsDirty = false,
+                IsDeleted = false
+            });
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                CustomerId = yeonsuCustomerId,
+                ItemId = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ManagementNumber = "US-002",
+                MachineNumber = "US-SN-002",
+                ItemCategoryName = "Scoped Category",
+                ItemName = "Office Scoped Existing Copier",
+                CustomerName = "Existing Office Customer",
+                CurrentCustomerName = "Existing Office Customer",
+                AssetStatus = RentalAssetStatusNormalizer.Active,
+                IsDirty = false,
+                IsDeleted = false
+            });
+            await db.SaveChangesAsync();
+
+            var result = await new RentalStateService(db).RepairRentalCatalogLinksAsync([assetId]);
+
+            Assert.Equal(1, result.ScannedAssetCount);
+            Assert.Equal(1, result.UpdatedAssetCount);
+            var asset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(current => current.Id == assetId);
+            Assert.Null(asset.CustomerId);
+            Assert.Equal(OfficeCodeCatalog.Usenet, asset.ResponsibleOfficeCode);
+            Assert.True(asset.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+
+    [Fact]
+    public async Task RentalStateService_RepairRentalCatalogLinks_ExplicitAssetIdsDoNotRetireOtherOfficeOrphanItems()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-catalog-orphan-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var usenetItemId = Guid.Parse("c7777777-7777-7777-7777-777777777777");
+            var usenetAssetId = Guid.Parse("c8888888-8888-8888-8888-888888888888");
+            var yeonsuOrphanItemId = Guid.Parse("c9999999-9999-9999-9999-999999999999");
+
+            db.ItemCategoryOptions.Add(new LocalItemCategoryOption
+            {
+                Id = Guid.NewGuid(),
+                Name = "Scoped Category",
+                SortOrder = 10,
+                IsActive = true,
+                IsDirty = false
+            });
+            db.Items.AddRange(
+                new LocalItem
+                {
+                    Id = usenetItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "Scoped Explicit Copier",
+                    NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey("Scoped Explicit Copier"),
+                    CategoryName = "Scoped Category",
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = "US-003",
+                    SerialNumber = "US-SN-003",
+                    IsRental = true,
+                    IsSale = false,
+                    SimpleMemo = RentalStateService.AutoCreatedRentalItemMemo,
+                    IsDirty = false,
+                    IsDeleted = false
+                },
+                new LocalItem
+                {
+                    Id = yeonsuOrphanItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Yeonsu,
+                    NameOriginal = "Other Office Orphan Copier",
+                    NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey("Other Office Orphan Copier"),
+                    CategoryName = "Scoped Category",
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = "YS-ORPHAN",
+                    SerialNumber = "YS-SN-ORPHAN",
+                    IsRental = true,
+                    IsSale = false,
+                    SimpleMemo = RentalStateService.AutoCreatedRentalItemMemo,
+                    IsDirty = false,
+                    IsDeleted = false
+                });
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = usenetAssetId,
+                ItemId = usenetItemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ManagementNumber = "US-003",
+                MachineNumber = "US-SN-003",
+                ItemCategoryName = "Scoped Category",
+                ItemName = "Scoped Explicit Copier",
+                CustomerName = "Scoped Customer",
+                CurrentCustomerName = "Scoped Customer",
+                AssetStatus = RentalAssetStatusNormalizer.Active,
+                IsDirty = false,
+                IsDeleted = false
+            });
+            await db.SaveChangesAsync();
+
+            var result = await new RentalStateService(db).RepairRentalCatalogLinksAsync([usenetAssetId]);
+
+            Assert.Equal(1, result.ScannedAssetCount);
+            var otherOfficeItem = await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == yeonsuOrphanItemId);
+            Assert.False(otherOfficeItem.IsDeleted);
+            Assert.False(otherOfficeItem.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+
+    [Fact]
+    public async Task RentalStateService_RepairRentalCatalogLinks_WithSessionSkipsOutOfScopeAssetIds()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-catalog-session-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var usenetItemId = Guid.Parse("ca111111-1111-1111-1111-111111111111");
+            var yeonsuItemId = Guid.Parse("ca222222-2222-2222-2222-222222222222");
+            var usenetAssetId = Guid.Parse("ca333333-3333-3333-3333-333333333333");
+            var yeonsuAssetId = Guid.Parse("ca444444-4444-4444-4444-444444444444");
+
+            db.ItemCategoryOptions.Add(new LocalItemCategoryOption
+            {
+                Id = Guid.NewGuid(),
+                Name = "Scoped Category",
+                SortOrder = 10,
+                IsActive = true,
+                IsDirty = false
+            });
+            db.Items.AddRange(
+                new LocalItem
+                {
+                    Id = usenetItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "Session Scope US Copier",
+                    NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey("Session Scope US Copier"),
+                    CategoryName = "Scoped Category",
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = "US-004",
+                    SerialNumber = "US-SN-004",
+                    IsRental = true,
+                    IsSale = false,
+                    IsDirty = false,
+                    IsDeleted = false
+                },
+                new LocalItem
+                {
+                    Id = yeonsuItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Yeonsu,
+                    NameOriginal = "Session Scope YS Copier",
+                    NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey("Session Scope YS Copier"),
+                    CategoryName = "Scoped Category",
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = "YS-004",
+                    SerialNumber = "YS-SN-004",
+                    IsRental = true,
+                    IsSale = false,
+                    IsDirty = false,
+                    IsDeleted = false
+                });
+            db.RentalAssets.AddRange(
+                new LocalRentalAsset
+                {
+                    Id = usenetAssetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ManagementNumber = "US-004",
+                    MachineNumber = "US-SN-004",
+                    ItemCategoryName = "Scoped Category",
+                    ItemName = "Session Scope US Copier",
+                    CustomerName = "Session Scope Customer",
+                    CurrentCustomerName = "Session Scope Customer",
+                    AssetStatus = RentalAssetStatusNormalizer.Active,
+                    IsDirty = false,
+                    IsDeleted = false
+                },
+                new LocalRentalAsset
+                {
+                    Id = yeonsuAssetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ManagementNumber = "YS-004",
+                    MachineNumber = "YS-SN-004",
+                    ItemCategoryName = "Scoped Category",
+                    ItemName = "Session Scope YS Copier",
+                    CustomerName = "Session Scope Customer",
+                    CurrentCustomerName = "Session Scope Customer",
+                    AssetStatus = RentalAssetStatusNormalizer.Active,
+                    IsDirty = false,
+                    IsDeleted = false
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateUserSession(AppPermissionNames.RentalAssetEdit);
+            var result = await new RentalStateService(db).RepairRentalCatalogLinksAsync(
+                [usenetAssetId, yeonsuAssetId],
+                session);
+
+            Assert.Equal(1, result.ScannedAssetCount);
+            var usenetAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == usenetAssetId);
+            var yeonsuAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == yeonsuAssetId);
+            Assert.Equal(usenetItemId, usenetAsset.ItemId);
+            Assert.True(usenetAsset.IsDirty);
+            Assert.Null(yeonsuAsset.ItemId);
+            Assert.False(yeonsuAsset.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     [Fact]
     public async Task RentalStateService_RepairRentalCatalogLinks_BatchesExplicitAssetIds()
     {

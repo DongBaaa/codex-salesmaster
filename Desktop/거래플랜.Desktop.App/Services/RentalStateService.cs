@@ -7589,6 +7589,42 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
     public async Task<RentalCatalogRepairResult> RepairRentalCatalogLinksAsync(
         IReadOnlyCollection<Guid>? assetIds,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return new RentalCatalogRepairResult();
+
+        List<LocalRentalAsset> candidates;
+        if (assetIds is { Count: > 0 })
+        {
+            candidates = await LoadRentalAssetsByIdsAsync(
+                assetIds,
+                ignoreQueryFilters: true,
+                asNoTracking: true,
+                excludeDeleted: true,
+                ct);
+        }
+        else
+        {
+            candidates = await _db.RentalAssets.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(asset => !asset.IsDeleted)
+                .ToListAsync(ct);
+        }
+
+        var scopedAssetIds = candidates
+            .Where(asset => CanEditRentalAssetEntityScope(asset, session))
+            .Select(asset => asset.Id)
+            .Distinct()
+            .ToList();
+        return scopedAssetIds.Count == 0
+            ? new RentalCatalogRepairResult()
+            : await RepairRentalCatalogLinksAsync(scopedAssetIds, ct);
+    }
+
+    public async Task<RentalCatalogRepairResult> RepairRentalCatalogLinksAsync(
+        IReadOnlyCollection<Guid>? assetIds,
         CancellationToken ct = default)
     {
         await AssetSaveLock.WaitAsync(ct);
@@ -7630,9 +7666,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
             result.ScannedAssetCount = assets.Count;
 
+            var isExplicitAssetRepair = assetIds is { Count: > 0 };
             var beforeSignatureByAssetId = new Dictionary<Guid, string>();
             var assetBaseKeyById = new Dictionary<Guid, string>();
             var displacedItemIds = new HashSet<Guid>();
+            var repairedRentalItemScopeKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var asset in assets)
             {
@@ -7660,6 +7698,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
                 assetBaseKeyById[asset.Id] = BuildAssetKey(asset.ManagementCompanyCode, asset.ManagementNumber, asset.ManagementId, asset.MachineNumber, asset.CustomerName, asset.ItemName);
                 asset.AssetStatus = ResolveAssetStatus(asset.AssetStatus, asset.CurrentLocation, asset.DisposalDate);
+                var assetItemOfficeCode = ResolveAssetItemOfficeCode(asset);
+                repairedRentalItemScopeKeys.Add(BuildRentalItemScopeKey(
+                    assetItemOfficeCode,
+                    TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, assetItemOfficeCode)));
             }
 
             AssignUniqueAssetKeysForRepair(assets, assetBaseKeyById);
@@ -7675,9 +7717,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 }
             }
 
-            foreach (var autoCreatedItemId in activeItems
-                         .Where(IsAutoCreatedRentalItem)
-                         .Select(item => item.Id))
+            var autoCreatedItemsToCheck = activeItems.Where(IsAutoCreatedRentalItem);
+            if (isExplicitAssetRepair)
+            {
+                autoCreatedItemsToCheck = autoCreatedItemsToCheck
+                    .Where(item => repairedRentalItemScopeKeys.Contains(BuildRentalItemScopeKey(item.OfficeCode, item.TenantCode)));
+            }
+
+            foreach (var autoCreatedItemId in autoCreatedItemsToCheck.Select(item => item.Id))
             {
                 displacedItemIds.Add(autoCreatedItemId);
             }
@@ -11614,6 +11661,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .FirstOrDefaultAsync(current => current.Id == asset.CustomerId.Value, ct);
         }
 
+        var assetCustomerScope = RentalScopeNormalizer.ResolveScope(
+            asset.TenantCode,
+            asset.OfficeCode,
+            asset.ManagementCompanyCode,
+            asset.ResponsibleOfficeCode,
+            asset.ManagementCompanyCode);
+        var preferredCustomerTenantCode = assetCustomerScope.TenantCode;
+        var preferredCustomerOfficeCode = assetCustomerScope.ResponsibleOfficeCode;
         var customerNameCandidates = (allowWorkbookNameVariants
                 ? BuildWorkbookCustomerNameCandidates(asset.CustomerName)
                 : BuildStrictCustomerNameCandidates(asset.CustomerName))
@@ -11621,10 +11676,17 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var linkedAssetCustomerTenantMismatch = customer is not null &&
             !MatchesPreferredCustomerTenant(
                 customer,
-                asset.TenantCode,
+                preferredCustomerTenantCode,
                 current => current.TenantCode);
+        var linkedAssetCustomerOfficeMismatch = customer is not null &&
+            !MatchesPreferredCustomerOffice(
+                customer,
+                preferredCustomerOfficeCode,
+                current => current.OfficeCode,
+                current => current.ResponsibleOfficeCode);
         if (customer is not null &&
             (linkedAssetCustomerTenantMismatch ||
+             linkedAssetCustomerOfficeMismatch ||
              (customerNameCandidates.Count > 0 &&
               !CustomerMatchesAnyCandidateName(
                   customer,
@@ -11637,8 +11699,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 null,
                 ct,
                 allowWorkbookNameVariants,
-                asset.ResponsibleOfficeCode,
-                asset.TenantCode);
+                preferredCustomerOfficeCode,
+                preferredCustomerTenantCode);
             if (correctedCustomerId.HasValue &&
                 correctedCustomerId.Value != Guid.Empty &&
                 correctedCustomerId.Value != asset.CustomerId)
@@ -11661,7 +11723,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 null,
                 ct,
                 allowWorkbookNameVariants,
-                preferredTenantCode: asset.TenantCode);
+                preferredCustomerOfficeCode,
+                preferredCustomerTenantCode);
 
         if (asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
         {
@@ -11960,6 +12023,17 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         return string.Equals(normalizedOfficeCode, preferredOfficeCode, StringComparison.OrdinalIgnoreCase) &&
                string.Equals(normalizedTenantCode, preferredTenantCode, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildRentalItemScopeKey(string? officeCode, string? tenantCode)
+    {
+        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(officeCode, OfficeCodeCatalog.Shared);
+        var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            tenantCode,
+            normalizedOfficeCode,
+            tenantCode,
+            normalizedOfficeCode);
+        return $"{normalizedTenantCode}|{normalizedOfficeCode}";
     }
 
     private async Task RetireOrphanedAutoCreatedRentalItemsAsync(
