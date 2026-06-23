@@ -435,9 +435,9 @@ public sealed class SyncController : ControllerBase
                 await _dbContext.SaveChangesAsync(cancellationToken);
             var scopedCustomers = await PrepareScopedCustomersAsync(request.Customers ?? [], result, cancellationToken);
             var validCustomers = await FilterValidCustomersAsync(scopedCustomers, result, cancellationToken);
-            await UpsertEntitiesAsync(validCustomers, _dbContext.Customers,
+            var acceptedCustomers = await UpsertEntitiesAsync(validCustomers, _dbContext.Customers,
                 (e, d) => e.Apply(d), d => new Customer { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
-            await CascadeDeletedCustomerContractsAsync(validCustomers, cancellationToken);
+            await CascadeDeletedCustomerContractsAsync(acceptedCustomers, cancellationToken);
             if (validCustomers.Count > 0)
                 await _dbContext.SaveChangesAsync(cancellationToken);
             var validCustomerContracts = await FilterValidCustomerContractsAsync(request.CustomerContracts ?? [], result, cancellationToken);
@@ -451,18 +451,18 @@ public sealed class SyncController : ControllerBase
             }
             var scopedItems = await PrepareScopedItemsAsync(request.Items ?? [], result, cancellationToken);
             await EnsureItemCategoryOptionsForItemsAsync(scopedItems, cancellationToken);
-            var deletedItemIds = scopedItems
-                .Where(item => item.IsDeleted && item.Id != Guid.Empty)
-                .Select(item => item.Id)
-                .Distinct()
-                .ToList();
-            await UpsertEntitiesAsync(scopedItems, _dbContext.Items,
+            var acceptedItems = await UpsertEntitiesAsync(scopedItems, _dbContext.Items,
                 (e, d) => e.Apply(d), d => new Item { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
             if (scopedItems.Count > 0)
             {
                 await _dbContext.SaveChangesAsync(cancellationToken);
+                var deletedItemIds = acceptedItems
+                    .Where(item => item.IsDeleted && item.Id != Guid.Empty)
+                    .Select(item => item.Id)
+                    .Distinct()
+                    .ToList();
                 await RemoveWarehouseStocksForDeletedItemsAsync(deletedItemIds, cancellationToken);
-                await RemoveSupersededPurgeRecordsAsync("item", scopedItems, cancellationToken);
+                await RemoveSupersededPurgeRecordsAsync("item", acceptedItems, cancellationToken);
             }
             var itemWarehouseStockResult = await UpsertItemWarehouseStocksAsync(request.ItemWarehouseStocks ?? [], result, cancellationToken);
             if (itemWarehouseStockResult.AffectedItemIds.Count > 0)

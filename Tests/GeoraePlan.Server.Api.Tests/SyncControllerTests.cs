@@ -925,6 +925,76 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Equal(0, await _dbContext.ProcessedSyncMutations.CountAsync());
     }
 
+    [Fact]
+    public async Task Push_DoesNotCascadeDeleteCustomerContracts_WhenCustomerDeleteIsRejected()
+    {
+        var customerId = Guid.NewGuid();
+        var contractId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "STALE-DELETE-CONTRACT-CUSTOMER",
+            NameMatchKey = "STALEDELETECONTRACTCUSTOMER",
+            TradeType = "매출"
+        });
+        _dbContext.CustomerContracts.Add(new CustomerContract
+        {
+            Id = contractId,
+            CustomerId = customerId,
+            ContractType = "거래계약서",
+            FileName = "stale-delete-contract.pdf",
+            MimeType = "application/pdf",
+            FileSize = 128,
+            FileHash = "hash"
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var customer = await _dbContext.Customers.IgnoreQueryFilters().FirstAsync(x => x.Id == customerId);
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-customer-delete-conflict-contract",
+            Customers =
+            [
+                new CustomerDto
+                {
+                    Id = customerId,
+                    TenantCode = customer.TenantCode,
+                    OfficeCode = customer.OfficeCode,
+                    ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+                    NameOriginal = customer.NameOriginal,
+                    NameMatchKey = customer.NameMatchKey,
+                    TradeType = customer.TradeType,
+                    IsDeleted = true,
+                    ExpectedRevision = customer.Revision + 1,
+                    Revision = customer.Revision,
+                    MutationId = $"device-customer-delete-conflict-contract:Customer:{customerId:N}:stale-delete",
+                    MutationCreatedAtUtc = customer.UpdatedAtUtc.AddMinutes(1),
+                    CreatedAtUtc = customer.CreatedAtUtc,
+                    UpdatedAtUtc = customer.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(Customer) &&
+            conflict.Reason.Contains("Expected revision mismatch", StringComparison.Ordinal));
+        Assert.False(await _dbContext.Customers.IgnoreQueryFilters()
+            .Where(row => row.Id == customerId)
+            .Select(row => row.IsDeleted)
+            .SingleAsync());
+        Assert.False(await _dbContext.CustomerContracts.IgnoreQueryFilters()
+            .Where(row => row.Id == contractId)
+            .Select(row => row.IsDeleted)
+            .SingleAsync());
+    }
+
 
     [Fact]
     public async Task Push_DeduplicatesRepeatedOpenConflictLogs_ForSameEntityReasonAndPayload()
@@ -2098,6 +2168,69 @@ public sealed class SyncControllerTests : IDisposable
             .Where(row => row.Id == item.Id)
             .Select(row => row.IsDeleted)
             .SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_DoesNotRemoveItemPurgeRecord_WhenItemRestoreIsRejected()
+    {
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-STALE-RESTORE-PURGE-ITEM",
+            NameMatchKey = "SYNCSTALERESTOREPURGEITEM",
+            TrackingType = ItemTrackingTypes.Stock,
+            IsDeleted = true
+        };
+        _dbContext.Items.Add(item);
+        _dbContext.RecycleBinPurgeRecords.Add(new RecycleBinPurgeRecord
+        {
+            Id = Guid.NewGuid(),
+            Kind = "item",
+            EntityId = item.Id,
+            TenantCode = item.TenantCode,
+            OfficeCode = item.OfficeCode,
+            PurgedAtUtc = DateTime.UtcNow.AddMinutes(-5)
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var stored = await _dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id);
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-item-restore-conflict-purge",
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = item.Id,
+                    TenantCode = item.TenantCode,
+                    OfficeCode = item.OfficeCode,
+                    NameOriginal = item.NameOriginal,
+                    NameMatchKey = item.NameMatchKey,
+                    TrackingType = item.TrackingType,
+                    IsDeleted = false,
+                    ExpectedRevision = stored.Revision + 1,
+                    Revision = stored.Revision,
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(Item) &&
+            conflict.Reason.Contains("Expected revision mismatch", StringComparison.Ordinal));
+        Assert.True(await _dbContext.Items.IgnoreQueryFilters()
+            .Where(row => row.Id == item.Id)
+            .Select(row => row.IsDeleted)
+            .SingleAsync());
+        Assert.True(await _dbContext.RecycleBinPurgeRecords
+            .AnyAsync(row => row.Kind == "item" && row.EntityId == item.Id));
     }
 
     [Fact]
