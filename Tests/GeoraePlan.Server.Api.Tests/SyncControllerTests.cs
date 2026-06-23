@@ -5449,6 +5449,177 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Pull_PaymentOnlySharing_DoesNotReturnPaymentsOrLinkedInvoiceIdsWithoutReadableInvoice()
+    {
+        var sourceCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-PAYMENT-ONLY-SOURCE-CUSTOMER",
+            NameMatchKey = "SYNCPAYMENTONLYSOURCECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var sourceInvoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = sourceCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-PAYMENT-ONLY-HIDDEN-INVOICE",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 24),
+            TotalAmount = 100_000m
+        };
+        var sourcePayment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = sourceInvoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 24),
+            Amount = 50_000m,
+            Note = "SYNC-PAYMENT-ONLY-HIDDEN-INVOICE-PAYMENT"
+        };
+        var sourceTransaction = new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = sourceCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 24),
+            TransactionKind = "SYNC-PAYMENT-ONLY-LINKED-TRANSACTION",
+            LinkedInvoiceId = sourceInvoice.Id,
+            LinkedInvoiceNumber = sourceInvoice.InvoiceNumber,
+            BankReceipt = 50_000m,
+            ReceiptTotal = 50_000m,
+            SettlementAmount = 50_000m
+        };
+
+        _dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        {
+            Id = Guid.NewGuid(),
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ShareCustomers = false,
+            ShareItems = false,
+            ShareInvoices = false,
+            SharePayments = true,
+            ShareContracts = false,
+            ShareReports = false,
+            ShareRentals = false,
+            ShareDeliveries = false,
+            AllowTargetWrite = false,
+            IsActive = true
+        });
+        _dbContext.Customers.Add(sourceCustomer);
+        _dbContext.Invoices.Add(sourceInvoice);
+        _dbContext.Payments.Add(sourcePayment);
+        _dbContext.Transactions.Add(sourceTransaction);
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu_payment_only_pull_user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+
+        var response = await controller.Pull(0, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPullResponse>(ok.Value);
+
+        Assert.DoesNotContain(result.Invoices, invoice => invoice.Id == sourceInvoice.Id);
+        Assert.DoesNotContain(result.Payments, payment => payment.Id == sourcePayment.Id);
+
+        var pulledTransaction = Assert.Single(result.Transactions, transaction => transaction.Id == sourceTransaction.Id);
+        Assert.Null(pulledTransaction.LinkedInvoiceId);
+        Assert.Equal(string.Empty, pulledTransaction.LinkedInvoiceNumber);
+    }
+
+    [Fact]
+    public async Task Pull_InvoiceSharingWithoutPaymentSharing_RemovesNestedPaymentsFromInvoices()
+    {
+        var sourceCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-INVOICE-ONLY-SOURCE-CUSTOMER",
+            NameMatchKey = "SYNCINVOICEONLYSOURCECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var sourceInvoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = sourceCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-INVOICE-ONLY-VISIBLE-INVOICE",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 24),
+            TotalAmount = 100_000m
+        };
+        var sourcePayment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = sourceInvoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 24),
+            Amount = 50_000m,
+            Note = "SYNC-INVOICE-ONLY-HIDDEN-PAYMENT"
+        };
+
+        _dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        {
+            Id = Guid.NewGuid(),
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ShareCustomers = false,
+            ShareItems = false,
+            ShareInvoices = true,
+            SharePayments = false,
+            ShareContracts = false,
+            ShareReports = false,
+            ShareRentals = false,
+            ShareDeliveries = false,
+            AllowTargetWrite = false,
+            IsActive = true
+        });
+        _dbContext.Customers.Add(sourceCustomer);
+        _dbContext.Invoices.Add(sourceInvoice);
+        _dbContext.Payments.Add(sourcePayment);
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu_invoice_only_pull_user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+
+        var response = await controller.Pull(0, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPullResponse>(ok.Value);
+
+        var pulledInvoice = Assert.Single(result.Invoices, invoice => invoice.Id == sourceInvoice.Id);
+        Assert.Empty(pulledInvoice.Payments);
+        Assert.DoesNotContain(result.Payments, payment => payment.Id == sourcePayment.Id);
+    }
+
+    [Fact]
     public async Task Pull_OfficeOnlyUser_DoesNotReturnRentalAssignmentHistoryOutsideHistoryScopeEvenWhenAssetIsReadable()
     {
         var visibleAsset = new RentalAsset

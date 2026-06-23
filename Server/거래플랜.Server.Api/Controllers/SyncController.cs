@@ -185,6 +185,7 @@ public sealed class SyncController : ControllerBase
         };
 
         await RemoveUnreadableItemLinesFromPullResponseAsync(response, cancellationToken);
+        await RemoveUnreadableInvoicePaymentLinksFromPullResponseAsync(response, cancellationToken);
         await RemoveUnreadableRentalSettlementLinksFromPullResponseAsync(response, cancellationToken);
 
         response.CurrentServerRevision = await GetCurrentRevisionAsync(cancellationToken);
@@ -252,6 +253,85 @@ public sealed class SyncController : ControllerBase
             .Where(line => !line.ItemId.HasValue ||
                            line.ItemId.Value == Guid.Empty ||
                            readableItemIds.Contains(line.ItemId.Value))
+            .ToList();
+    }
+
+    private async Task RemoveUnreadableInvoicePaymentLinksFromPullResponseAsync(
+        SyncPullResponse response,
+        CancellationToken cancellationToken)
+    {
+        var referencedInvoiceIds = response.Payments
+            .Select(payment => payment.InvoiceId)
+            .Concat(response.Invoices
+                .SelectMany(invoice => invoice.Payments ?? [])
+                .Select(payment => payment.InvoiceId))
+            .Concat(response.Transactions
+                .Where(transaction => transaction.LinkedInvoiceId.HasValue)
+                .Select(transaction => transaction.LinkedInvoiceId!.Value))
+            .Where(invoiceId => invoiceId != Guid.Empty)
+            .Distinct()
+            .ToList();
+
+        var readableInvoiceIds = referencedInvoiceIds.Count == 0
+            ? []
+            : (await _officeScopeService.ApplySyncInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
+                .Where(invoice => referencedInvoiceIds.Contains(invoice.Id))
+                .Select(invoice => invoice.Id)
+                .ToListAsync(cancellationToken))
+            .ToHashSet();
+
+        if (response.Payments.Count > 0)
+        {
+            response.Payments = response.Payments
+                .Where(payment => payment.InvoiceId != Guid.Empty && readableInvoiceIds.Contains(payment.InvoiceId))
+                .ToList();
+        }
+
+        foreach (var transaction in response.Transactions)
+        {
+            if (!transaction.LinkedInvoiceId.HasValue ||
+                transaction.LinkedInvoiceId.Value == Guid.Empty ||
+                readableInvoiceIds.Contains(transaction.LinkedInvoiceId.Value))
+            {
+                continue;
+            }
+
+            transaction.LinkedInvoiceId = null;
+            transaction.LinkedInvoiceNumber = string.Empty;
+            transaction.LinkedRentalBillingProfileId = null;
+            transaction.LinkedRentalBillingRunId = null;
+        }
+
+        var nestedPaymentIds = response.Invoices
+            .SelectMany(invoice => invoice.Payments ?? [])
+            .Where(payment => payment.Id != Guid.Empty)
+            .Select(payment => payment.Id)
+            .Distinct()
+            .ToList();
+
+        if (nestedPaymentIds.Count == 0)
+            return;
+
+        var readablePaymentIds = (await _officeScopeService
+                .ApplyPaymentScope(_dbContext.Payments.IgnoreQueryFilters().AsNoTracking())
+                .Where(payment => nestedPaymentIds.Contains(payment.Id))
+                .Select(payment => payment.Id)
+                .ToListAsync(cancellationToken))
+            .ToHashSet();
+
+        foreach (var invoice in response.Invoices)
+            invoice.Payments = FilterReadableInvoicePayments(invoice.Payments, readablePaymentIds);
+    }
+
+    private static List<PaymentDto> FilterReadableInvoicePayments(
+        List<PaymentDto>? payments,
+        IReadOnlySet<Guid> readablePaymentIds)
+    {
+        if (payments is null || payments.Count == 0)
+            return [];
+
+        return payments
+            .Where(payment => payment.Id != Guid.Empty && readablePaymentIds.Contains(payment.Id))
             .ToList();
     }
 
