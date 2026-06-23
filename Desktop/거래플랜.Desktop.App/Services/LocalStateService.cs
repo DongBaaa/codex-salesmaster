@@ -5908,6 +5908,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			throw new ArgumentNullException("transfer");
 		}
+		if (!CanEditDeliveries(session))
+		{
+			return OfficeMutationResult.Denied("납품/재고이동 편집 권한이 필요합니다.");
+		}
 		DateTime now = DateTime.UtcNow;
 		string fromWarehouseCode = NormalizeWarehouseCode(transfer.FromWarehouseCode, session.OfficeCode, DomainConstants.OfficeUsenet);
 		string toWarehouseCode = NormalizeWarehouseCode(transfer.ToWarehouseCode, session.OfficeCode, DomainConstants.OfficeYeonsu);
@@ -5923,9 +5927,9 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Denied("재고이동은 같은 업체 내부 지점 간 이동만 지원합니다. 다른 업체로 보내려면 대상 업체에 품목을 먼저 등록/복제한 뒤 처리하세요.");
 		}
-		if (!CanWriteOfficeScope(session, sourceOfficeCode) && !CanWriteOfficeScope(session, targetOfficeCode))
+		if (!CanWriteOfficeScope(session, sourceOfficeCode))
 		{
-			return OfficeMutationResult.Denied("권한이 없어 해당 업체 범위의 재고이동을 저장할 수 없습니다.");
+			return OfficeMutationResult.Denied("출발지 담당자 또는 관리자만 재고이동을 저장할 수 있습니다.");
 		}
 		List<LocalInventoryTransferLine> validLines = (transfer.Lines ?? new List<LocalInventoryTransferLine>()).Where((LocalInventoryTransferLine localInventoryTransferLine) => !localInventoryTransferLine.IsDeleted && localInventoryTransferLine.ItemId.HasValue && !string.IsNullOrWhiteSpace(localInventoryTransferLine.ItemNameOriginal) && localInventoryTransferLine.Quantity > 0m).ToList();
 		if (validLines.Count == 0)
@@ -6129,6 +6133,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<OfficeMutationResult> DeleteInventoryTransferAsync(Guid transferId, SessionState session, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
+		if (!CanEditDeliveries(session))
+		{
+			return OfficeMutationResult.Denied("납품/재고이동 편집 권한이 필요합니다.");
+		}
 		var transfer = await _db.InventoryTransfers.IgnoreQueryFilters().FirstOrDefaultAsync((LocalInventoryTransfer current) => current.Id == transferId, ct);
 		transfer = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, transfer, ct);
 		if (transfer == null)
@@ -6137,14 +6145,14 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 		string sourceOfficeCode = ResolveOfficeCodeFromWarehouseCode(transfer.FromWarehouseCode);
 		string targetOfficeCode = ResolveOfficeCodeFromWarehouseCode(transfer.ToWarehouseCode);
-		if (!CanWriteOfficeScope(session, sourceOfficeCode) && !CanWriteOfficeScope(session, targetOfficeCode))
-		{
-			return OfficeMutationResult.Denied("권한이 없어 해당 업체 범위의 재고이동을 삭제할 수 없습니다.");
-		}
 		string normalizedStatus = InventoryTransferStatusNormalizer.Normalize(transfer.TransferStatus, transfer.ReceivedByUsername, transfer.ReceivedAtUtc, transfer.RejectedByUsername, transfer.RejectedAtUtc);
 		if (normalizedStatus is InventoryTransferStatusNormalizer.Received or InventoryTransferStatusNormalizer.Rejected && !CanWriteOfficeScope(session, targetOfficeCode))
 		{
 			return OfficeMutationResult.Denied("도착지 담당자 또는 관리자만 수령확정 또는 반려된 재고이동을 삭제할 수 있습니다.");
+		}
+		if (normalizedStatus is not (InventoryTransferStatusNormalizer.Received or InventoryTransferStatusNormalizer.Rejected) && !CanWriteOfficeScope(session, sourceOfficeCode))
+		{
+			return OfficeMutationResult.Denied("출발지 담당자 또는 관리자만 대기 중인 재고이동을 삭제할 수 있습니다.");
 		}
 		if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(transfer, expectedRevision, "재고이동 문서", out string conflictMessage))
 		{
@@ -7326,6 +7334,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	private bool CanReceiveInventoryTransfer(LocalInventoryTransfer transfer, SessionState? session)
 	{
+		if (!CanEditDeliveries(session))
+		{
+			return false;
+		}
 		if (HasFullAccess(session))
 		{
 			return true;

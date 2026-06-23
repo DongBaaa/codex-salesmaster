@@ -119,10 +119,15 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     public bool IsFinalTransferStatus =>
         string.Equals(TransferStatus, "수령확정", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(TransferStatus, "반려", StringComparison.OrdinalIgnoreCase);
+    private bool CanCurrentUserEditDeliveries =>
+        _session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.DeliveryEdit);
     public bool CanCurrentUserReceive
     {
         get
         {
+            if (!CanCurrentUserEditDeliveries)
+                return false;
+
             if (_session.HasAdministrativePrivileges)
                 return true;
 
@@ -135,6 +140,9 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     {
         get
         {
+            if (!CanCurrentUserEditDeliveries)
+                return false;
+
             if (_session.HasAdministrativePrivileges)
                 return true;
 
@@ -145,8 +153,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             if (IsFinalTransferStatus)
                 return writableOfficeCodes.Contains(destinationOfficeCode, StringComparer.OrdinalIgnoreCase);
 
-            return writableOfficeCodes.Contains(sourceOfficeCode, StringComparer.OrdinalIgnoreCase) ||
-                   writableOfficeCodes.Contains(destinationOfficeCode, StringComparer.OrdinalIgnoreCase);
+            return writableOfficeCodes.Contains(sourceOfficeCode, StringComparer.OrdinalIgnoreCase);
         }
     }
 

@@ -2586,6 +2586,10 @@ public sealed class SyncController : ControllerBase
 
         foreach (var dto in payload)
         {
+            var existing = await _dbContext.InventoryTransfers.IgnoreQueryFilters()
+                .Include(x => x.Lines)
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
             var sourceTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(dto.TenantCode, dto.SourceOfficeCode);
             var targetTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, dto.TargetOfficeCode);
             if (!string.Equals(sourceTenantCode, targetTenantCode, StringComparison.OrdinalIgnoreCase))
@@ -2598,29 +2602,16 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            var canAccessTransfer =
-                _officeScopeService.CanWriteInventoryTransferRoute(
-                    dto.SourceOfficeCode,
-                    dto.TargetOfficeCode,
-                    dto.TenantCode);
-            if (!canAccessTransfer)
-            {
-                AddClientConflict(dto, nameof(InventoryTransfer),
-                    "Current account cannot modify the source or target office scope.", result);
-                continue;
-            }
-
             var normalizedStatus = InventoryTransferStatusNormalizer.Normalize(
                 dto.TransferStatus,
                 dto.ReceivedByUsername,
                 dto.ReceivedAtUtc,
                 dto.RejectedByUsername,
                 dto.RejectedAtUtc);
-            if (normalizedStatus is InventoryTransferStatusNormalizer.Received or InventoryTransferStatusNormalizer.Rejected &&
-                !_officeScopeService.CanWriteOfficeForDeliveries(dto.TargetOfficeCode, dto.TenantCode))
+
+            if (!CanAcceptInventoryTransferScopeMutation(dto, existing, normalizedStatus, out var scopeConflictReason))
             {
-                AddClientConflict(dto, nameof(InventoryTransfer),
-                    $"Inventory transfer target office is outside the writable delivery scope: {dto.TargetOfficeCode}.", result);
+                AddClientConflict(dto, nameof(InventoryTransfer), scopeConflictReason, result);
                 continue;
             }
 
@@ -2655,6 +2646,188 @@ public sealed class SyncController : ControllerBase
 
         return valid;
     }
+
+    private bool CanAcceptInventoryTransferScopeMutation(
+        InventoryTransferDto dto,
+        InventoryTransfer? existing,
+        string normalizedStatus,
+        out string reason)
+    {
+        reason = string.Empty;
+
+        var candidateSourceOffice = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(dto.SourceOfficeCode);
+        var candidateTargetOffice = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(dto.TargetOfficeCode);
+        var candidateTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(dto.TenantCode, candidateSourceOffice);
+        var existingTenant = existing is null
+            ? candidateTenant
+            : TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(existing.TenantCode, existing.SourceOfficeCode);
+
+        var canWriteCandidateSource = _officeScopeService.CanWriteOfficeForDeliveries(candidateSourceOffice, candidateTenant);
+        var canWriteCandidateTarget = _officeScopeService.CanWriteOfficeForDeliveries(candidateTargetOffice, candidateTenant);
+        var canWriteExistingSource = existing is null ||
+            _officeScopeService.CanWriteOfficeForDeliveries(existing.SourceOfficeCode, existingTenant);
+        var canWriteExistingTarget = existing is null ||
+            _officeScopeService.CanWriteOfficeForDeliveries(existing.TargetOfficeCode, existingTenant);
+        var canWriteSource = canWriteCandidateSource && canWriteExistingSource;
+        var canWriteTarget = canWriteCandidateTarget && canWriteExistingTarget;
+
+        if (!canWriteSource && !canWriteTarget)
+        {
+            reason = "Current account cannot modify the source or target office scope.";
+            return false;
+        }
+
+        var existingStatus = existing is null
+            ? string.Empty
+            : InventoryTransferStatusNormalizer.Normalize(
+                existing.TransferStatus,
+                existing.ReceivedByUsername,
+                existing.ReceivedAtUtc,
+                existing.RejectedByUsername,
+                existing.RejectedAtUtc);
+        var candidateIsFinal = IsFinalInventoryTransferStatus(normalizedStatus);
+        var existingIsFinal = IsFinalInventoryTransferStatus(existingStatus);
+
+        if (dto.IsDeleted)
+        {
+            if (existingIsFinal)
+            {
+                if (canWriteTarget)
+                    return true;
+
+                reason = $"Inventory transfer target office is outside the writable delivery scope: {candidateTargetOffice}.";
+                return false;
+            }
+
+            if (canWriteSource)
+                return true;
+
+            reason = $"Inventory transfer source office is outside the writable delivery scope: {candidateSourceOffice}.";
+            return false;
+        }
+
+        if (existing is null)
+        {
+            if (!canWriteSource)
+            {
+                reason = $"Inventory transfer source office is outside the writable delivery scope: {candidateSourceOffice}.";
+                return false;
+            }
+
+            if (candidateIsFinal && !canWriteTarget)
+            {
+                reason = $"Inventory transfer target office is outside the writable delivery scope: {candidateTargetOffice}.";
+                return false;
+            }
+
+            return true;
+        }
+
+        if (candidateIsFinal)
+        {
+            if (!canWriteTarget)
+            {
+                reason = $"Inventory transfer target office is outside the writable delivery scope: {candidateTargetOffice}.";
+                return false;
+            }
+
+            if (!canWriteSource &&
+                !IsTargetOnlyInventoryTransferStatusMutation(existing, dto, normalizedStatus))
+            {
+                reason = "Inventory transfer target-only status updates cannot change source route or requested lines.";
+                return false;
+            }
+
+            return true;
+        }
+
+        if (canWriteSource)
+            return true;
+
+        reason = $"Inventory transfer source office is outside the writable delivery scope: {candidateSourceOffice}.";
+        return false;
+    }
+
+    private static bool IsFinalInventoryTransferStatus(string? status)
+        => string.Equals(status, InventoryTransferStatusNormalizer.Received, StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(status, InventoryTransferStatusNormalizer.Rejected, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsTargetOnlyInventoryTransferStatusMutation(
+        InventoryTransfer existing,
+        InventoryTransferDto dto,
+        string normalizedStatus)
+    {
+        if (!IsFinalInventoryTransferStatus(normalizedStatus) || dto.IsDeleted)
+            return false;
+
+        if (!string.Equals(
+                TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(dto.TenantCode, dto.SourceOfficeCode),
+                TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(existing.TenantCode, existing.SourceOfficeCode),
+                StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!string.Equals(
+                OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(dto.SourceOfficeCode),
+                OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(existing.SourceOfficeCode),
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(dto.TargetOfficeCode),
+                OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(existing.TargetOfficeCode),
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                OfficeCodeCatalog.NormalizeWarehouseCodeLoose(dto.FromWarehouseCode),
+                OfficeCodeCatalog.NormalizeWarehouseCodeLoose(existing.FromWarehouseCode),
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                OfficeCodeCatalog.NormalizeWarehouseCodeLoose(dto.ToWarehouseCode),
+                OfficeCodeCatalog.NormalizeWarehouseCodeLoose(existing.ToWarehouseCode),
+                StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!string.Equals(NormalizeInventoryTransferGuardText(dto.TransferNumber), NormalizeInventoryTransferGuardText(existing.TransferNumber), StringComparison.Ordinal) ||
+            dto.TransferDate != existing.TransferDate ||
+            !string.Equals(NormalizeInventoryTransferGuardText(dto.Memo), NormalizeInventoryTransferGuardText(existing.Memo), StringComparison.Ordinal) ||
+            !string.Equals(NormalizeInventoryTransferGuardText(dto.RequestedByUsername), NormalizeInventoryTransferGuardText(existing.RequestedByUsername), StringComparison.Ordinal) ||
+            NormalizeInventoryTransferGuardUtc(dto.RequestedAtUtc) != NormalizeInventoryTransferGuardUtc(existing.RequestedAtUtc))
+            return false;
+
+        var existingLines = existing.Lines
+            .Where(line => !line.IsDeleted)
+            .OrderBy(line => line.Id)
+            .ToList();
+        var incomingLines = (dto.Lines ?? [])
+            .Where(line => !line.IsDeleted)
+            .OrderBy(line => line.Id)
+            .ToList();
+
+        if (existingLines.Count != incomingLines.Count)
+            return false;
+
+        for (var i = 0; i < existingLines.Count; i++)
+        {
+            var existingLine = existingLines[i];
+            var incomingLine = incomingLines[i];
+            if (existingLine.Id != incomingLine.Id ||
+                existingLine.TransferId != incomingLine.TransferId ||
+                existingLine.ItemId != incomingLine.ItemId ||
+                !string.Equals(NormalizeInventoryTransferGuardText(existingLine.ItemNameOriginal), NormalizeInventoryTransferGuardText(incomingLine.ItemNameOriginal), StringComparison.Ordinal) ||
+                !string.Equals(NormalizeInventoryTransferGuardText(existingLine.SpecificationOriginal), NormalizeInventoryTransferGuardText(incomingLine.SpecificationOriginal), StringComparison.Ordinal) ||
+                !string.Equals(UnitCatalogNormalizer.Normalize(existingLine.Unit), UnitCatalogNormalizer.Normalize(incomingLine.Unit), StringComparison.Ordinal) ||
+                existingLine.Quantity != incomingLine.Quantity ||
+                !string.Equals(NormalizeInventoryTransferGuardText(existingLine.Remark), NormalizeInventoryTransferGuardText(incomingLine.Remark), StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static string NormalizeInventoryTransferGuardText(string? value)
+        => (value ?? string.Empty).Trim();
+
+    private static DateTime? NormalizeInventoryTransferGuardUtc(DateTime? value)
+        => value.HasValue ? DateTime.SpecifyKind(value.Value, DateTimeKind.Utc) : null;
 
     private async Task<int> UpsertInventoryTransfersAsync(
         IEnumerable<InventoryTransferDto> payload,
