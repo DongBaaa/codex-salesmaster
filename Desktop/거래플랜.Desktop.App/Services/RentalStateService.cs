@@ -4770,11 +4770,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         profile = await ReloadRentalBillingProfileForMutationAsync(profile, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
-        if (!CanEditRental(
-                string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
-                    ? profile.ManagementCompanyCode
-                    : profile.ResponsibleOfficeCode,
-                session))
+        if (!CanEditRentalProfileEntityScope(profile, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구 데이터를 삭제할 수 없습니다.");
 
         if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
@@ -4784,6 +4780,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var linkedAssets = await _db.RentalAssets.IgnoreQueryFilters()
             .Where(asset => !asset.IsDeleted && asset.BillingProfileId == profileId)
             .ToListAsync(ct);
+        if (linkedAssets.Any(asset => !CanEditRentalAssetEntityScope(asset, session)))
+            return LocalMutationResult.Denied("권한이 없어 연결된 렌탈 자산을 정리할 수 없습니다.");
         foreach (var asset in linkedAssets)
         {
             var previousBillingProfileId = asset.BillingProfileId;
@@ -4815,13 +4813,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (asset is null || asset.IsDeleted)
             return LocalMutationResult.Missing("청구 목록에서 제외할 렌탈 자산을 찾을 수 없습니다.");
 
-        var officeCode = RentalScopeNormalizer.ResolveResponsibleOfficeCode(
-            asset.TenantCode,
-            asset.OfficeCode,
-            asset.ManagementCompanyCode,
-            asset.ResponsibleOfficeCode,
-            session.OfficeCode);
-        if (!CanEditAssetScope(officeCode, session))
+        if (!CanEditRentalAssetEntityScope(asset, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 청구 목록에서 제외할 수 없습니다.");
 
         if (asset.BillingProfileId.HasValue && asset.BillingProfileId.Value != Guid.Empty)
@@ -4847,11 +4839,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         profile = await ReloadRentalBillingProfileForMutationAsync(profile, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
-        if (!CanEditRental(
-                string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
-                    ? profile.ManagementCompanyCode
-                    : profile.ResponsibleOfficeCode,
-                session))
+        if (!CanEditRentalProfileEntityScope(profile, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구를 시작할 수 없습니다.");
         if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
             return LocalMutationResult.Conflict(conflictMessage);
@@ -5151,11 +5139,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         profile = await ReloadRentalBillingProfileForMutationAsync(profile, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
-        if (!CanEditRental(
-                string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
-                    ? profile.ManagementCompanyCode
-                    : profile.ResponsibleOfficeCode,
-                session))
+        if (!CanEditRentalProfileEntityScope(profile, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구를 보류할 수 없습니다.");
         if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
             return LocalMutationResult.Conflict(conflictMessage);
@@ -5193,11 +5177,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         profile = await ReloadRentalBillingProfileForMutationAsync(profile, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
-        if (!CanEditRental(
-                string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
-                    ? profile.ManagementCompanyCode
-                    : profile.ResponsibleOfficeCode,
-                session))
+        if (!CanEditRentalProfileEntityScope(profile, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구의 수금을 등록할 수 없습니다.");
         if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
             return LocalMutationResult.Conflict(conflictMessage);
@@ -5373,11 +5353,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         profile = await ReloadRentalBillingProfileForMutationAsync(profile, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
-        if (!CanEditRental(
-                string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
-                    ? profile.ManagementCompanyCode
-                    : profile.ResponsibleOfficeCode,
-                session))
+        if (!CanEditRentalProfileEntityScope(profile, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구/입금 내역을 삭제할 수 없습니다.");
         if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
             return LocalMutationResult.Conflict(conflictMessage);
@@ -6424,7 +6400,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (asset is null)
             return LocalMutationResult.Missing("렌탈 자산을 찾을 수 없습니다.");
 
-        if (!CanEditAssetScope(asset.ResponsibleOfficeCode, session))
+        if (!CanEditRentalAssetEntityScope(asset, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산의 임대이력을 수정할 수 없습니다.");
 
         LocalRentalAssetAssignmentHistory? existing = null;
@@ -6503,7 +6479,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (asset is null)
             return LocalMutationResult.Missing("렌탈 자산을 찾을 수 없습니다.");
 
-        if (!CanEditAssetScope(asset.ResponsibleOfficeCode, session))
+        if (!CanEditRentalAssetEntityScope(asset, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산의 임대이력을 삭제할 수 없습니다.");
 
         history.IsDeleted = true;
@@ -6692,7 +6668,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         return candidates
             .Where(IsRentalEquipmentReplacementCandidate)
-            .Where(asset => CanEditAssetScope(ResolveAssetResponsibleOfficeCodeForPermission(asset, session), session))
+            .Where(asset => CanEditRentalAssetEntityScope(asset, session))
             .OrderBy(asset => asset.ItemName, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(asset => asset.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(asset => asset.MachineNumber, StringComparer.CurrentCultureIgnoreCase)
@@ -6730,9 +6706,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             if (replacement is null)
                 return LocalMutationResult.Missing("새로 연결할 렌탈 장비를 찾을 수 없습니다.");
 
-            var originalOfficeCode = ResolveAssetResponsibleOfficeCodeForPermission(original, session);
-            var replacementOfficeCode = ResolveAssetResponsibleOfficeCodeForPermission(replacement, session);
-            if (!CanEditAssetScope(originalOfficeCode, session) || !CanEditAssetScope(replacementOfficeCode, session))
+            if (!CanEditRentalAssetEntityScope(original, session) || !CanEditRentalAssetEntityScope(replacement, session))
                 return LocalMutationResult.Denied("기존 장비와 새 장비를 모두 수정할 권한이 있어야 렌탈 장비 교체를 진행할 수 있습니다.");
 
             if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(original, request.OriginalAssetRevision, "렌탈 자산", out var originalConflictMessage))
@@ -6771,12 +6745,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 if (profile is null)
                     return LocalMutationResult.Missing("기존 장비의 청구 프로필을 찾을 수 없습니다. 청구 연결을 먼저 정리한 뒤 렌탈 장비 교체를 다시 시도하세요.");
 
-                var profileOfficeCode = NormalizeOfficeCode(
-                    string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
-                        ? profile.ManagementCompanyCode
-                        : profile.ResponsibleOfficeCode,
-                    originalOfficeCode);
-                if (!CanEditRental(profileOfficeCode, session))
+                if (!CanEditRentalProfileEntityScope(profile, session))
                     return LocalMutationResult.Denied("연결된 렌탈 청구 프로필을 수정할 권한이 없어 렌탈 장비 교체를 진행할 수 없습니다.");
             }
 
@@ -7601,7 +7570,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         asset = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, asset, ct);
         if (asset is null)
             return LocalMutationResult.Missing("렌탈 자산을 찾을 수 없습니다.");
-        if (!CanEditAssetScope(asset.ResponsibleOfficeCode, session))
+        if (!CanEditRentalAssetEntityScope(asset, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 삭제할 수 없습니다.");
 
         if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(asset, expectedRevision, "렌탈 자산", out var conflictMessage))
@@ -7744,11 +7713,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         profile = await ReloadRentalBillingProfileForMutationAsync(profile, ct);
         if (profile is null)
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
-        if (!CanEditRental(
-                string.IsNullOrWhiteSpace(profile.ResponsibleOfficeCode)
-                    ? profile.ManagementCompanyCode
-                    : profile.ResponsibleOfficeCode,
-                session))
+        if (!CanEditRentalProfileEntityScope(profile, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구를 처리할 수 없습니다.");
         if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
             return LocalMutationResult.Conflict(conflictMessage);
