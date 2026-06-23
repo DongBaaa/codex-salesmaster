@@ -104,15 +104,22 @@ public sealed class UpdatesController : ControllerBase
         if (package.Mandatory && string.IsNullOrWhiteSpace(package.MinimumSupportedVersion))
             package.MinimumSupportedVersion = package.Version;
 
-        if (string.IsNullOrWhiteSpace(package.FileName) && !string.IsNullOrWhiteSpace(package.PackageUrl))
-            package.FileName = Path.GetFileName(package.PackageUrl);
+        var packageUrl = package.PackageUrl?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(package.FileName) && !string.IsNullOrWhiteSpace(packageUrl))
+            package.FileName = Path.GetFileName(packageUrl);
 
-        if (Uri.TryCreate(package.PackageUrl, UriKind.Absolute, out _))
-            return;
-
-        if (!string.IsNullOrWhiteSpace(package.PackageUrl) && package.PackageUrl.StartsWith('/'))
+        if (!string.IsNullOrWhiteSpace(packageUrl) && packageUrl.StartsWith("/", StringComparison.Ordinal))
         {
-            package.PackageUrl = $"{Request.Scheme}://{Request.Host}{package.PackageUrl}";
+            package.PackageUrl = $"{Request.Scheme}://{Request.Host}{packageUrl}";
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(packageUrl) &&
+            Uri.TryCreate(packageUrl, UriKind.Absolute, out var absolutePackageUri) &&
+            (string.Equals(absolutePackageUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(absolutePackageUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+        {
+            package.PackageUrl = packageUrl;
             return;
         }
 

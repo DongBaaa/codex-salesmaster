@@ -85,6 +85,50 @@ public sealed class UpdatesControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetManifestAsync_RewritesNonHttpAbsolutePackageUrl_ToSafeServerDownloadUrl()
+    {
+        var manifest = new AppUpdateManifestDto
+        {
+            Channel = "stable",
+            Desktop = new AppUpdatePackageDto
+            {
+                Platform = "desktop",
+                Version = "1.1.115",
+                Mandatory = false,
+                FileName = "package.zip",
+                PackageUrl = "file:///tmp/package.zip",
+                Sha256 = "ABCDEF",
+                FileSize = 4321,
+                Notes = "test"
+            }
+        };
+
+        await WriteManifestAsync("stable", manifest);
+        var controller = CreateController();
+
+        var response = await controller.GetManifestAsync("stable", CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<AppUpdateManifestDto>(ok.Value);
+
+        Assert.NotNull(payload.Desktop);
+        Assert.Equal("https://updates.example.com/updates/download/desktop/package.zip", payload.Desktop!.PackageUrl);
+    }
+
+    [Fact]
+    public void UpdatesController_ChecksRootRelativePackageUrlBeforeAbsoluteUriParsing()
+    {
+        var source = ReadUpdatesControllerSource();
+
+        Assert.Contains("packageUrl.StartsWith(\"/\", StringComparison.Ordinal)", source, StringComparison.Ordinal);
+        Assert.Contains("Uri.TryCreate(packageUrl, UriKind.Absolute, out var absolutePackageUri)", source, StringComparison.Ordinal);
+        Assert.Contains("absolutePackageUri.Scheme", source, StringComparison.Ordinal);
+        AssertInOrder(
+            source,
+            "packageUrl.StartsWith(\"/\", StringComparison.Ordinal)",
+            "Uri.TryCreate(packageUrl, UriKind.Absolute, out var absolutePackageUri)");
+    }
+
+    [Fact]
     public void HeadPackage_ReturnsHeaders_ForExistingDesktopPackage()
     {
         const string fileName = "package.zip";
@@ -146,5 +190,41 @@ public sealed class UpdatesControllerTests : IDisposable
         var manifestPath = Path.Combine(_storageRoot, "manifest", channel + ".json");
         var json = JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         await File.WriteAllTextAsync(manifestPath, json);
+    }
+
+    private static string ReadUpdatesControllerSource()
+    {
+        var root = FindRepositoryRoot();
+        var serverRoot = Path.Combine(root, "Server");
+        var apiDirectory = Directory.EnumerateDirectories(serverRoot, "*.Server.Api").Single();
+        return File.ReadAllText(Path.Combine(apiDirectory, "Controllers", "UpdatesController.cs"));
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current is not null)
+        {
+            if (Directory.Exists(Path.Combine(current.FullName, "Server")) &&
+                Directory.Exists(Path.Combine(current.FullName, "Tests")))
+            {
+                return current.FullName;
+            }
+
+            current = current.Parent;
+        }
+
+        throw new DirectoryNotFoundException("Repository root was not found.");
+    }
+
+    private static void AssertInOrder(string source, params string[] fragments)
+    {
+        var index = -1;
+        foreach (var fragment in fragments)
+        {
+            var nextIndex = source.IndexOf(fragment, index + 1, StringComparison.Ordinal);
+            Assert.True(nextIndex >= 0, $"Fragment not found after index {index}: {fragment}");
+            index = nextIndex;
+        }
     }
 }
