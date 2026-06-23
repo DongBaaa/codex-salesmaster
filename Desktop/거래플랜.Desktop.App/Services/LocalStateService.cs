@@ -6206,6 +6206,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Denied("이미 수령확정된 문서는 반려할 수 없습니다.");
 		}
+		if (string.Equals(transfer.TransferStatus, "반려", StringComparison.OrdinalIgnoreCase))
+		{
+			return OfficeMutationResult.Denied("이미 반려된 문서입니다.");
+		}
 		if (string.IsNullOrWhiteSpace(rejectReason))
 		{
 			return OfficeMutationResult.Denied("반려 사유를 입력하세요.");

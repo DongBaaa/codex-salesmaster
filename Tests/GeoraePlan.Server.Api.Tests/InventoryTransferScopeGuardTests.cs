@@ -231,6 +231,101 @@ public sealed class InventoryTransferScopeGuardTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsTargetOfficeStatusFlip_WhenExistingTransferIsReceived()
+    {
+        var itemId = Guid.Parse("f7111111-1111-1111-1111-111111111111");
+        var transferId = Guid.Parse("f7222222-2222-2222-2222-222222222222");
+        var lineId = Guid.Parse("f7333333-3333-3333-3333-333333333333");
+        await SeedReceivedTransferAsync(itemId, transferId, lineId, "Target final flip denied item");
+
+        var targetUser = CreateDeliveryUser("yeonsu-target-transfer-final-flip", OfficeCodeCatalog.Yeonsu);
+        await using var scopedDb = CreateDbContext(targetUser);
+        var controller = CreateController(scopedDb, targetUser);
+        var existing = await scopedDb.InventoryTransfers
+            .IgnoreQueryFilters()
+            .Include(transfer => transfer.Lines)
+            .SingleAsync(transfer => transfer.Id == transferId);
+        var dto = BuildReceiptDto(existing, targetUser.Username, requestedQuantity: 2m);
+        dto.TransferStatus = InventoryTransferStatusNormalizer.Rejected;
+        dto.RejectReason = "flip after receipt";
+        dto.RejectedByUsername = targetUser.Username;
+        dto.RejectedAtUtc = existing.UpdatedAtUtc.AddMinutes(2);
+        dto.MutationId = $"target-transfer-final-flip:InventoryTransfer:{existing.Id:N}";
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "target-transfer-final-flip",
+            InventoryTransfers = [dto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(InventoryTransfer), StringComparison.Ordinal));
+        scopedDb.ChangeTracker.Clear();
+        var stored = await scopedDb.InventoryTransfers.IgnoreQueryFilters().SingleAsync(transfer => transfer.Id == transferId);
+        Assert.Equal(InventoryTransferStatusNormalizer.Received, stored.TransferStatus);
+        Assert.Equal(8m, await scopedDb.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(2m, await scopedDb.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.YeonsuMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_RejectsTargetOfficeReceivedQuantityChange_WhenTransferAlreadyReceived()
+    {
+        var itemId = Guid.Parse("f8111111-1111-1111-1111-111111111111");
+        var transferId = Guid.Parse("f8222222-2222-2222-2222-222222222222");
+        var lineId = Guid.Parse("f8333333-3333-3333-3333-333333333333");
+        await SeedReceivedTransferAsync(itemId, transferId, lineId, "Target final quantity denied item");
+
+        var targetUser = CreateDeliveryUser("yeonsu-target-transfer-final-quantity", OfficeCodeCatalog.Yeonsu);
+        await using var scopedDb = CreateDbContext(targetUser);
+        var controller = CreateController(scopedDb, targetUser);
+        var existing = await scopedDb.InventoryTransfers
+            .IgnoreQueryFilters()
+            .Include(transfer => transfer.Lines)
+            .SingleAsync(transfer => transfer.Id == transferId);
+
+        var dto = BuildReceiptDto(existing, targetUser.Username, requestedQuantity: 2m);
+        var line = Assert.Single(dto.Lines);
+        line.ReceivedQuantity = 1m;
+        line.QuantityDifference = -1m;
+        line.ReceiptRemark = "changed after final";
+        dto.MutationId = $"target-transfer-final-quantity:InventoryTransfer:{existing.Id:N}";
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "target-transfer-final-quantity",
+            InventoryTransfers = [dto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(InventoryTransfer), StringComparison.Ordinal));
+        scopedDb.ChangeTracker.Clear();
+        var storedLine = await scopedDb.InventoryTransferLines.IgnoreQueryFilters().SingleAsync(line => line.Id == lineId);
+        Assert.Equal(2m, storedLine.ReceivedQuantity);
+        Assert.Equal(8m, await scopedDb.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(2m, await scopedDb.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.YeonsuMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task RecycleBinRestore_RejectsTargetOfficeUserFromRestoringSourceMove()
     {
         var itemId = Guid.Parse("f5111111-1111-1111-1111-111111111111");

@@ -2725,6 +2725,23 @@ public sealed class SyncController : ControllerBase
             return true;
         }
 
+        if (existingIsFinal)
+        {
+            if (!candidateIsFinal)
+            {
+                reason = "Final inventory transfer status cannot be changed after receipt or rejection.";
+                return false;
+            }
+
+            if (!IsFinalInventoryTransferSnapshotUnchanged(existing, dto, existingStatus, normalizedStatus))
+            {
+                reason = "Final inventory transfer status cannot be changed after receipt or rejection.";
+                return false;
+            }
+
+            return true;
+        }
+
         if (candidateIsFinal)
         {
             if (!canWriteTarget)
@@ -2817,6 +2834,68 @@ public sealed class SyncController : ControllerBase
                 !string.Equals(UnitCatalogNormalizer.Normalize(existingLine.Unit), UnitCatalogNormalizer.Normalize(incomingLine.Unit), StringComparison.Ordinal) ||
                 existingLine.Quantity != incomingLine.Quantity ||
                 !string.Equals(NormalizeInventoryTransferGuardText(existingLine.Remark), NormalizeInventoryTransferGuardText(incomingLine.Remark), StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsFinalInventoryTransferSnapshotUnchanged(
+        InventoryTransfer existing,
+        InventoryTransferDto dto,
+        string existingStatus,
+        string normalizedStatus)
+    {
+        if (!string.Equals(existingStatus, normalizedStatus, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!IsTargetOnlyInventoryTransferStatusMutation(existing, dto, normalizedStatus))
+            return false;
+
+        if (string.Equals(normalizedStatus, InventoryTransferStatusNormalizer.Received, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.Equals(NormalizeInventoryTransferGuardText(existing.ReceivedByUsername), NormalizeInventoryTransferGuardText(dto.ReceivedByUsername), StringComparison.Ordinal) ||
+                NormalizeInventoryTransferGuardUtc(existing.ReceivedAtUtc) != NormalizeInventoryTransferGuardUtc(dto.ReceivedAtUtc) ||
+                !string.Equals(NormalizeInventoryTransferGuardText(existing.ReceiveMemo), NormalizeInventoryTransferGuardText(dto.ReceiveMemo), StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+        else if (string.Equals(normalizedStatus, InventoryTransferStatusNormalizer.Rejected, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.Equals(NormalizeInventoryTransferGuardText(existing.RejectedByUsername), NormalizeInventoryTransferGuardText(dto.RejectedByUsername), StringComparison.Ordinal) ||
+                NormalizeInventoryTransferGuardUtc(existing.RejectedAtUtc) != NormalizeInventoryTransferGuardUtc(dto.RejectedAtUtc) ||
+                !string.Equals(NormalizeInventoryTransferGuardText(existing.RejectReason), NormalizeInventoryTransferGuardText(dto.RejectReason), StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+        else
+        {
+            return false;
+        }
+
+        var existingLines = existing.Lines
+            .Where(line => !line.IsDeleted)
+            .OrderBy(line => line.Id)
+            .ToList();
+        var incomingLines = (dto.Lines ?? [])
+            .Where(line => !line.IsDeleted)
+            .OrderBy(line => line.Id)
+            .ToList();
+        if (existingLines.Count != incomingLines.Count)
+            return false;
+
+        for (var i = 0; i < existingLines.Count; i++)
+        {
+            var existingLine = existingLines[i];
+            var incomingLine = incomingLines[i];
+            if (existingLine.Id != incomingLine.Id ||
+                existingLine.ReceivedQuantity != incomingLine.ReceivedQuantity ||
+                existingLine.QuantityDifference != incomingLine.QuantityDifference ||
+                !string.Equals(NormalizeInventoryTransferGuardText(existingLine.ReceiptRemark), NormalizeInventoryTransferGuardText(incomingLine.ReceiptRemark), StringComparison.Ordinal))
             {
                 return false;
             }

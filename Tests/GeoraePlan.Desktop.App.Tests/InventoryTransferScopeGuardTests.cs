@@ -356,6 +356,70 @@ public sealed class InventoryTransferScopeGuardTests
     }
 
     [Fact]
+    public async Task RejectInventoryTransfer_DeniesAlreadyRejectedTransferFromChangingFinalReason()
+    {
+        using var appRoot = new LocalAppRootScope("georaeplan-transfer-reject-final-locked");
+        await using var db = CreateDbContext(appRoot.DbPath);
+        await db.Database.EnsureDeletedAsync();
+        await db.Database.EnsureCreatedAsync();
+
+        var itemId = Guid.Parse("b7111111-1111-1111-1111-111111111111");
+        var transferId = Guid.Parse("b7222222-2222-2222-2222-222222222222");
+        var lineId = Guid.Parse("b7333333-3333-3333-3333-333333333333");
+        var now = new DateTime(2026, 6, 24, 3, 55, 0, DateTimeKind.Utc);
+        db.Items.Add(CreateStockItem(itemId, "Rejected transfer reason locked item"));
+        db.InventoryTransfers.Add(new LocalInventoryTransfer
+        {
+            Id = transferId,
+            FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            TransferNumber = "TR-REJECT-FINAL-LOCKED",
+            TransferDate = new DateOnly(2026, 6, 24),
+            TransferStatus = InventoryTransferStatusNormalizer.Rejected,
+            RejectReason = "initial reject",
+            RejectedByUsername = "yeonsu-target",
+            RejectedAtUtc = now.AddMinutes(-10),
+            CreatedAtUtc = now.AddHours(-1),
+            UpdatedAtUtc = now,
+            Revision = 70,
+            IsDirty = false,
+            Lines =
+            [
+                new LocalInventoryTransferLine
+                {
+                    Id = lineId,
+                    TransferId = transferId,
+                    ItemId = itemId,
+                    ItemNameOriginal = "Rejected transfer reason locked item",
+                    Unit = "EA",
+                    Quantity = 2m
+                }
+            ]
+        });
+        await db.SaveChangesAsync();
+
+        var targetSession = CreateUserSession(
+            TenantScopeCatalog.UsenetGroup,
+            OfficeCodeCatalog.Yeonsu,
+            TenantScopeCatalog.ScopeOfficeOnly,
+            AppPermissionNames.DeliveryEdit);
+        var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), targetSession);
+
+        var result = await service.RejectInventoryTransferAsync(
+            transferId,
+            "changed reject reason",
+            targetSession,
+            expectedRevision: 70);
+
+        Assert.False(result.Success);
+        db.ChangeTracker.Clear();
+        var stored = await db.InventoryTransfers.IgnoreQueryFilters().SingleAsync(transfer => transfer.Id == transferId);
+        Assert.Equal(InventoryTransferStatusNormalizer.Rejected, stored.TransferStatus);
+        Assert.Equal("initial reject", stored.RejectReason);
+        Assert.False(stored.IsDirty);
+    }
+
+    [Fact]
     public void InventoryTransferViewModel_CanDeleteTransfer_RequiresSourceOfficeForPendingStatus()
     {
         using var appRoot = new LocalAppRootScope("georaeplan-transfer-delete-ui-source-scope");
