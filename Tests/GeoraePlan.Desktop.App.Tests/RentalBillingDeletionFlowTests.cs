@@ -320,6 +320,93 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     [Fact]
+    public async Task DeleteBillingHistory_DeletesDirectInvoicePaymentAndRevertsBillingRun()
+    {
+        PrepareAppRoot("georaeplan-rental-delete-history-direct-payment");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Rental direct payment delete customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "청구대상"));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+            var started = await rental.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+            Assert.True(started.Success, started.Message);
+
+            var invoice = await db.Invoices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == started.RelatedEntityId);
+            var runId = Assert.IsType<Guid>(invoice.LinkedRentalBillingRunId);
+            var paymentId = Guid.NewGuid();
+
+            var savePayment = await local.SavePaymentAsync(new LocalPayment
+            {
+                Id = paymentId,
+                InvoiceId = invoice.Id,
+                PaymentDate = new DateOnly(2026, 5, 27),
+                Amount = invoice.TotalAmount,
+                Note = "direct rental payment delete success"
+            }, session);
+            Assert.True(savePayment.Success, savePayment.Message);
+            Assert.False(await db.Transactions.IgnoreQueryFilters().AnyAsync(current => current.Id == paymentId));
+
+            var paidProfile = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == profileId);
+            Assert.Equal(invoice.TotalAmount, paidProfile.SettledAmount);
+            Assert.Equal(PaymentFlowConstants.CompletionDone, paidProfile.CompletionStatus);
+
+            var deleted = await rental.DeleteBillingHistoryAsync(profileId, runId, session);
+            Assert.True(deleted.Success, deleted.Message);
+            Assert.Contains("직접 수금", deleted.Message);
+
+            var deletedPayment = await db.Payments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == paymentId);
+            Assert.True(deletedPayment.IsDeleted);
+            Assert.True(deletedPayment.IsDirty);
+
+            var deletedInvoice = await db.Invoices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == invoice.Id);
+            Assert.True(deletedInvoice.IsDeleted);
+            Assert.True(deletedInvoice.IsDirty);
+
+            var revertedProfile = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == profileId);
+            Assert.DoesNotContain(DeserializeRuns(revertedProfile), current => current.RunId == runId);
+            Assert.Equal(0m, revertedProfile.SettledAmount);
+            Assert.Equal(0m, revertedProfile.OutstandingAmount);
+            Assert.Equal(PaymentFlowConstants.CompletionPending, revertedProfile.CompletionStatus);
+            Assert.True(revertedProfile.IsDirty);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task BillingHistoryRows_IncludeFinancialRunMissingFromProfileJson()
     {
         PrepareAppRoot("georaeplan-rental-history-financial-run-missing-json");
