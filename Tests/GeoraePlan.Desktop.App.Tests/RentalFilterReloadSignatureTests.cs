@@ -185,7 +185,7 @@ public sealed class RentalFilterReloadSignatureTests
     }
 
     [Fact]
-    public void RentalBillingViewModel_SettlementAndHistoryButtonsRequireFinancialPermissions()
+    public void RentalBillingViewModel_StartSettlementAndHistoryButtonsRequireFinancialPermissions()
     {
         var profileId = Guid.NewGuid();
         var invoiceRunId = Guid.NewGuid();
@@ -216,6 +216,7 @@ public sealed class RentalFilterReloadSignatureTests
             SettledAmount = 10_000m
         });
 
+        Assert.False(rentalOnly.CanStartBillingSelected);
         Assert.False(rentalOnly.CanRegisterSettlementSelected);
         Assert.False(rentalOnly.CanDeleteSelectedBillingHistory);
 
@@ -231,6 +232,7 @@ public sealed class RentalFilterReloadSignatureTests
                 SettledAmount = 10_000m
             });
 
+        Assert.False(rentalAndPayment.CanStartBillingSelected);
         Assert.True(rentalAndPayment.CanRegisterSettlementSelected);
         Assert.True(rentalAndPayment.CanDeleteSelectedBillingHistory);
 
@@ -246,6 +248,7 @@ public sealed class RentalFilterReloadSignatureTests
                 HasInvoice = true
             });
 
+        Assert.True(rentalAndInvoice.CanStartBillingSelected);
         Assert.False(rentalAndInvoice.CanRegisterSettlementSelected);
         Assert.True(rentalAndInvoice.CanDeleteSelectedBillingHistory);
     }

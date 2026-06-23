@@ -769,7 +769,9 @@ public sealed class RentalBillingRunStateTests
             var customerId = Guid.NewGuid();
             var customerName = "Permission customer";
             db.Customers.Add(CreateCustomer(customerId, customerName));
-            db.RentalBillingProfiles.Add(CreateBillingProfile(profileId, assetId, customerName, customerId));
+            var profile = CreateBillingProfile(profileId, assetId, customerName, customerId);
+            profile.IsDirty = false;
+            db.RentalBillingProfiles.Add(profile);
             db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
             await db.SaveChangesAsync();
 
@@ -780,7 +782,16 @@ public sealed class RentalBillingRunStateTests
             var result = await service.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
 
             Assert.False(result.Success);
+            Assert.Contains("전표 편집 권한", result.Message);
             Assert.Empty(await db.Invoices.AsNoTracking().ToListAsync());
+            Assert.Empty(await db.RentalBillingLogs.AsNoTracking().ToListAsync());
+
+            var storedProfile = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == profileId);
+            Assert.False(storedProfile.IsDirty);
+            Assert.Empty(DeserializeRuns(storedProfile.BillingRunsJson));
         }
         finally
         {

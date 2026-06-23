@@ -4856,6 +4856,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
         if (!CanEditRentalProfileEntityScope(profile, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구를 시작할 수 없습니다.");
+        if (!CanStartRentalBillingInvoice(session))
+            return LocalMutationResult.Denied("권한이 없어 렌탈 청구 전표를 만들 수 없습니다. 전표 편집 권한이 필요합니다.");
         if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
             return LocalMutationResult.Conflict(conflictMessage);
         if (_local is null)
@@ -5624,6 +5626,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
            (session.HasAdministrativePrivileges || session.HasPermission(AppPermissionNames.PaymentEdit));
 
     private static bool CanDeleteRentalBillingInvoices(SessionState? session)
+        => session is not null &&
+           (session.HasAdministrativePrivileges || session.HasPermission(AppPermissionNames.InvoiceEdit));
+
+    private static bool CanStartRentalBillingInvoice(SessionState? session)
         => session is not null &&
            (session.HasAdministrativePrivileges || session.HasPermission(AppPermissionNames.InvoiceEdit));
 

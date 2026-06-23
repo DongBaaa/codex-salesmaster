@@ -157,6 +157,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     public bool CanExpandSelectedSummary => SelectedRow?.IsAggregateRow == true && !ShowIndividualProfiles;
     public bool CanStartBillingSelected => SelectedRow is not null &&
                                            CanEditCurrentSelection &&
+                                           CanEditInvoices &&
                                            (SelectedRow.IsAggregateRow
                                                ? SelectedRow.GroupedPersistedProfileIds.Any(id => id != Guid.Empty)
                                                : HasPersistedSelectedProfile);
