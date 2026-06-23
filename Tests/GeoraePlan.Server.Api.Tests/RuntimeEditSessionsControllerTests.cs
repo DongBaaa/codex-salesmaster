@@ -1,4 +1,4 @@
-﻿using 거래플랜.Server.Api.Controllers;
+using 거래플랜.Server.Api.Controllers;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Security;
@@ -50,7 +50,7 @@ public sealed class RuntimeEditSessionsControllerTests : IDisposable
         });
         await dbContext.SaveChangesAsync();
 
-        var controller = new RuntimeEditSessionsController(dbContext, currentUser);
+        var controller = CreateController(dbContext, currentUser);
         var response = await controller.HeartbeatAsync(new EditSessionHeartbeatRequest
         {
             EditSessionId = Guid.NewGuid(),
@@ -150,7 +150,7 @@ public sealed class RuntimeEditSessionsControllerTests : IDisposable
         await dbContext.SaveChangesAsync();
 
         var editSessionId = Guid.NewGuid();
-        var controller = new RuntimeEditSessionsController(dbContext, currentUser);
+        var controller = CreateController(dbContext, currentUser);
         var response = await controller.HeartbeatAsync(new EditSessionHeartbeatRequest
         {
             EditSessionId = editSessionId,
@@ -244,7 +244,7 @@ public sealed class RuntimeEditSessionsControllerTests : IDisposable
             });
         await dbContext.SaveChangesAsync();
 
-        var controller = new RuntimeEditSessionsController(dbContext, currentUser);
+        var controller = CreateController(dbContext, currentUser);
         var response = await controller.GetActiveAsync("Customer", "ENTITY-1", selfAppSessionId, CancellationToken.None);
 
         var ok = Assert.IsType<OkObjectResult>(response.Result);
@@ -252,6 +252,110 @@ public sealed class RuntimeEditSessionsControllerTests : IDisposable
         var other = Assert.Single(payload.ActiveEditors);
         Assert.Equal("beta", other.Username);
         Assert.Equal(OfficeCodeCatalog.Yeonsu, other.OfficeCode);
+    }
+
+    [Fact]
+    public async Task HeartbeatAsync_ForOutOfScopeInvoice_ReturnsForbidAndDoesNotCreateSession()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "alpha",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+
+        await using var dbContext = CreateDbContext(currentUser);
+        var customerId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "Out of scope invoice customer",
+            NameMatchKey = "OUTOFSCOPEINVOICECUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            InvoiceNumber = "LOCK-SCOPE-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 23)
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.HeartbeatAsync(new EditSessionHeartbeatRequest
+        {
+            EditSessionId = Guid.NewGuid(),
+            AppSessionId = Guid.NewGuid(),
+            ScreenName = "판매/구매 전표",
+            EntityType = "Invoice",
+            EntityId = invoiceId.ToString("D"),
+            EntityDisplayName = "범위 밖 전표",
+            MachineName = "PC-ALPHA"
+        }, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(response.Result);
+        Assert.False(await dbContext.ActiveEditSessions.AsNoTracking()
+            .AnyAsync(session => session.EntityId == invoiceId.ToString("D")));
+    }
+
+    [Fact]
+    public async Task GetActiveAsync_ForOutOfScopeItem_ReturnsForbid()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "alpha",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+
+        await using var dbContext = CreateDbContext(currentUser);
+        var itemId = Guid.NewGuid();
+        var betaAppSessionId = Guid.NewGuid();
+        dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "Out of scope item",
+            NameMatchKey = "OUTOFSCOPEITEM",
+            TrackingType = ItemTrackingTypes.Stock
+        });
+        dbContext.ActiveEditSessions.Add(new ActiveEditSession
+        {
+            Id = Guid.NewGuid(),
+            AppSessionId = betaAppSessionId,
+            Username = "beta",
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            ScreenName = "품목/재고 관리",
+            EntityType = "Item",
+            EntityId = itemId.ToString("D"),
+            EntityDisplayName = "범위 밖 품목",
+            MachineName = "PC-BETA",
+            OpenedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+            LastHeartbeatUtc = DateTime.UtcNow.AddSeconds(-10),
+            ExpiresAtUtc = DateTime.UtcNow.AddMinutes(1)
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.GetActiveAsync("Item", itemId.ToString("D"), null, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(response.Result);
     }
 
     [Fact]
@@ -300,7 +404,7 @@ public sealed class RuntimeEditSessionsControllerTests : IDisposable
             });
         await dbContext.SaveChangesAsync();
 
-        var controller = new RuntimeEditSessionsController(dbContext, currentUser);
+        var controller = CreateController(dbContext, currentUser);
         var response = await controller.ReleaseAsync(new EditSessionReleaseRequest
         {
             EditSessionId = releasedId,
@@ -341,7 +445,7 @@ public sealed class RuntimeEditSessionsControllerTests : IDisposable
         });
         await dbContext.SaveChangesAsync();
 
-        var controller = new RuntimeEditSessionsController(dbContext, currentUser);
+        var controller = CreateController(dbContext, currentUser);
         var response = await controller.HeartbeatAsync(new EditSessionHeartbeatRequest
         {
             EditSessionId = stolenSessionId,
@@ -388,7 +492,7 @@ public sealed class RuntimeEditSessionsControllerTests : IDisposable
         });
         await dbContext.SaveChangesAsync();
 
-        var controller = new RuntimeEditSessionsController(dbContext, currentUser);
+        var controller = CreateController(dbContext, currentUser);
         var response = await controller.ReleaseAsync(new EditSessionReleaseRequest
         {
             EditSessionId = betaSessionId,
@@ -399,6 +503,11 @@ public sealed class RuntimeEditSessionsControllerTests : IDisposable
         var stored = await dbContext.ActiveEditSessions.AsNoTracking().SingleAsync();
         Assert.Equal("beta", stored.Username);
     }
+
+    private static RuntimeEditSessionsController CreateController(
+        AppDbContext dbContext,
+        TestCurrentUserContext currentUser)
+        => new(dbContext, currentUser, new OfficeScopeService(currentUser, dbContext));
 
     private AppDbContext CreateDbContext(TestCurrentUserContext currentUser)
     {

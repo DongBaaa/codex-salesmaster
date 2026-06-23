@@ -18,13 +18,16 @@ public sealed class RuntimeEditSessionsController : ControllerBase
 
     private readonly AppDbContext _dbContext;
     private readonly ICurrentUserContext _currentUserContext;
+    private readonly OfficeScopeService _officeScopeService;
 
     public RuntimeEditSessionsController(
         AppDbContext dbContext,
-        ICurrentUserContext currentUserContext)
+        ICurrentUserContext currentUserContext,
+        OfficeScopeService officeScopeService)
     {
         _dbContext = dbContext;
         _currentUserContext = currentUserContext;
+        _officeScopeService = officeScopeService;
     }
 
     [HttpGet("active")]
@@ -40,6 +43,9 @@ public sealed class RuntimeEditSessionsController : ControllerBase
         var normalizedEntityId = NormalizeRequiredText(entityId, 128);
         if (string.IsNullOrWhiteSpace(normalizedEntityType) || string.IsNullOrWhiteSpace(normalizedEntityId))
             return ValidationProblem("편집 세션 조회 대상 정보가 비어 있습니다.");
+
+        if (!await CanAccessEditSessionSubjectAsync(normalizedEntityType, normalizedEntityId, cancellationToken))
+            return Forbid();
 
         var nowUtc = DateTime.UtcNow;
         var cleaned = await CleanupExpiredSessionsAsync(nowUtc, cancellationToken);
@@ -83,6 +89,9 @@ public sealed class RuntimeEditSessionsController : ControllerBase
         var normalizedEntityId = NormalizeRequiredText(request.EntityId, 128);
         if (string.IsNullOrWhiteSpace(normalizedEntityType) || string.IsNullOrWhiteSpace(normalizedEntityId))
             return ValidationProblem("편집 대상 정보가 비어 있습니다.");
+
+        if (!await CanAccessEditSessionSubjectAsync(normalizedEntityType, normalizedEntityId, cancellationToken))
+            return Forbid();
 
         var nowUtc = DateTime.UtcNow;
         await CleanupExpiredSessionsAsync(nowUtc, cancellationToken);
@@ -215,6 +224,41 @@ public sealed class RuntimeEditSessionsController : ControllerBase
 
             return false;
         }
+    }
+
+    private async Task<bool> CanAccessEditSessionSubjectAsync(
+        string entityType,
+        string entityId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedType = NormalizeOptionalText(entityType, 80);
+        var normalizedId = NormalizeOptionalText(entityId, 128);
+        if (string.IsNullOrWhiteSpace(normalizedType) || string.IsNullOrWhiteSpace(normalizedId))
+            return false;
+
+        if (!Guid.TryParse(normalizedId, out var parsedId))
+        {
+            // Earlier runtime-only coordination keys were not always database GUIDs.
+            // They cannot dereference real business data, so keep them compatible.
+            return true;
+        }
+
+        return normalizedType.ToUpperInvariant() switch
+        {
+            "CUSTOMER" => await _officeScopeService.ApplyCustomerScope(
+                    _dbContext.Customers.IgnoreQueryFilters().AsNoTracking())
+                .AnyAsync(entity => entity.Id == parsedId && !entity.IsDeleted, cancellationToken),
+            "ITEM" => await _officeScopeService.ApplyItemScope(
+                    _dbContext.Items.IgnoreQueryFilters().AsNoTracking())
+                .AnyAsync(entity => entity.Id == parsedId && !entity.IsDeleted, cancellationToken),
+            "INVOICE" => await _officeScopeService.ApplyInvoiceScope(
+                    _dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
+                .AnyAsync(entity => entity.Id == parsedId && !entity.IsDeleted, cancellationToken),
+            "RENTALBILLINGPROFILE" => await _officeScopeService.ApplyRentalBillingProfileScope(
+                    _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking())
+                .AnyAsync(entity => entity.Id == parsedId && !entity.IsDeleted, cancellationToken),
+            _ => false
+        };
     }
 
     private bool IsOwnedByCurrentCaller(ActiveEditSession session, Guid requestAppSessionId, Guid requestEditSessionId)
