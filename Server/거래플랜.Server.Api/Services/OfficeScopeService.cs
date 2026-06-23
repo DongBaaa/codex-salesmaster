@@ -583,6 +583,34 @@ public sealed class OfficeScopeService
     public bool CanReadOfficeForInvoices(string? officeCode, string? tenantCode = null, string? fallbackOfficeCode = null)
         => CanReadOffice(officeCode, tenantCode, DataArea.Invoices, fallbackOfficeCode);
 
+    public bool CanReadOfficeForSyncInvoices(string? officeCode, string? tenantCode = null, string? fallbackOfficeCode = null)
+    {
+        if (HasGlobalDataScope)
+            return true;
+
+        if (!HasDeliveryWideReadScope)
+            return CanReadOfficeForInvoices(officeCode, tenantCode, fallbackOfficeCode);
+
+        if (!IsExplicitTenantCompatibleWithAccessOffice(tenantCode, officeCode, fallbackOfficeCode))
+            return false;
+
+        var normalizedTenant = ResolveEntityTenantCode(tenantCode, officeCode, fallbackOfficeCode);
+        if (!string.Equals(normalizedTenant, CurrentTenantCode, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var tenantOffices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(CurrentTenantCode);
+        foreach (var normalizedOffice in ResolveOfficeScopesForAccess(officeCode, fallbackOfficeCode))
+        {
+            if (string.Equals(normalizedOffice, OfficeCodeCatalog.Shared, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (tenantOffices.Contains(normalizedOffice, StringComparer.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
     public bool CanWriteOfficeForInvoices(string? officeCode, string? tenantCode = null, string? fallbackOfficeCode = null)
         => CanWriteOffice(officeCode, tenantCode, DataArea.Invoices, fallbackOfficeCode);
 

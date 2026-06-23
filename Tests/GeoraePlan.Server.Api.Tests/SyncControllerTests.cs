@@ -5620,6 +5620,172 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Pull_PaymentOnlySharing_DoesNotReturnUnsharedDomainPurgeRecords()
+    {
+        var hiddenInvoicePurgeId = Guid.NewGuid();
+        var hiddenItemPurgeId = Guid.NewGuid();
+        var hiddenRentalAssetPurgeId = Guid.NewGuid();
+        var visibleTransactionPurgeId = Guid.NewGuid();
+
+        _dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        {
+            Id = Guid.NewGuid(),
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ShareCustomers = false,
+            ShareItems = false,
+            ShareInvoices = false,
+            SharePayments = true,
+            ShareContracts = false,
+            ShareReports = false,
+            ShareRentals = false,
+            ShareDeliveries = false,
+            AllowTargetWrite = false,
+            IsActive = true
+        });
+        _dbContext.RecycleBinPurgeRecords.AddRange(
+            new RecycleBinPurgeRecord
+            {
+                Id = Guid.NewGuid(),
+                Kind = "invoice",
+                EntityId = hiddenInvoicePurgeId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                Revision = 10,
+                PurgedAtUtc = new DateTime(2026, 6, 24, 0, 0, 0, DateTimeKind.Utc)
+            },
+            new RecycleBinPurgeRecord
+            {
+                Id = Guid.NewGuid(),
+                Kind = "item",
+                EntityId = hiddenItemPurgeId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                Revision = 11,
+                PurgedAtUtc = new DateTime(2026, 6, 24, 0, 1, 0, DateTimeKind.Utc)
+            },
+            new RecycleBinPurgeRecord
+            {
+                Id = Guid.NewGuid(),
+                Kind = "rental-asset",
+                EntityId = hiddenRentalAssetPurgeId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                Revision = 12,
+                PurgedAtUtc = new DateTime(2026, 6, 24, 0, 2, 0, DateTimeKind.Utc)
+            },
+            new RecycleBinPurgeRecord
+            {
+                Id = Guid.NewGuid(),
+                Kind = "transaction",
+                EntityId = visibleTransactionPurgeId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                Revision = 13,
+                PurgedAtUtc = new DateTime(2026, 6, 24, 0, 3, 0, DateTimeKind.Utc)
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu_payment_purge_scope_user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+
+        var response = await controller.Pull(0, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPullResponse>(ok.Value);
+
+        Assert.DoesNotContain(result.PurgeRecords, record => record.EntityId == hiddenInvoicePurgeId);
+        Assert.DoesNotContain(result.PurgeRecords, record => record.EntityId == hiddenItemPurgeId);
+        Assert.DoesNotContain(result.PurgeRecords, record => record.EntityId == hiddenRentalAssetPurgeId);
+        Assert.Contains(result.PurgeRecords, record => record.EntityId == visibleTransactionPurgeId);
+    }
+
+    [Fact]
+    public async Task Pull_InvoiceSharingWithoutPaymentSharing_DoesNotReturnPaymentDomainPurgeRecords()
+    {
+        var visibleInvoicePurgeId = Guid.NewGuid();
+        var hiddenPaymentPurgeId = Guid.NewGuid();
+        var hiddenTransactionPurgeId = Guid.NewGuid();
+
+        _dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        {
+            Id = Guid.NewGuid(),
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ShareCustomers = false,
+            ShareItems = false,
+            ShareInvoices = true,
+            SharePayments = false,
+            ShareContracts = false,
+            ShareReports = false,
+            ShareRentals = false,
+            ShareDeliveries = false,
+            AllowTargetWrite = false,
+            IsActive = true
+        });
+        _dbContext.RecycleBinPurgeRecords.AddRange(
+            new RecycleBinPurgeRecord
+            {
+                Id = Guid.NewGuid(),
+                Kind = "invoice",
+                EntityId = visibleInvoicePurgeId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                Revision = 10,
+                PurgedAtUtc = new DateTime(2026, 6, 24, 0, 0, 0, DateTimeKind.Utc)
+            },
+            new RecycleBinPurgeRecord
+            {
+                Id = Guid.NewGuid(),
+                Kind = "payment",
+                EntityId = hiddenPaymentPurgeId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                Revision = 11,
+                PurgedAtUtc = new DateTime(2026, 6, 24, 0, 1, 0, DateTimeKind.Utc)
+            },
+            new RecycleBinPurgeRecord
+            {
+                Id = Guid.NewGuid(),
+                Kind = "transaction",
+                EntityId = hiddenTransactionPurgeId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                Revision = 12,
+                PurgedAtUtc = new DateTime(2026, 6, 24, 0, 2, 0, DateTimeKind.Utc)
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu_invoice_purge_scope_user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+
+        var response = await controller.Pull(0, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPullResponse>(ok.Value);
+
+        Assert.Contains(result.PurgeRecords, record => record.EntityId == visibleInvoicePurgeId);
+        Assert.DoesNotContain(result.PurgeRecords, record => record.EntityId == hiddenPaymentPurgeId);
+        Assert.DoesNotContain(result.PurgeRecords, record => record.EntityId == hiddenTransactionPurgeId);
+    }
+
+    [Fact]
     public async Task Pull_OfficeOnlyUser_DoesNotReturnRentalAssignmentHistoryOutsideHistoryScopeEvenWhenAssetIsReadable()
     {
         var visibleAsset = new RentalAsset

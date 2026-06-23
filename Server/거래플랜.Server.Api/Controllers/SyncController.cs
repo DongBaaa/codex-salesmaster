@@ -6524,10 +6524,21 @@ public sealed class SyncController : ControllerBase
         if (IsGlobalSettingPurgeRecordKind(normalizedKind))
             return true;
 
-        if (string.Equals(normalizedKind, "company-profile", StringComparison.Ordinal))
-            return _officeScopeService.CanReadOfficeForCompanyProfiles(record.OfficeCode);
-
-        return _officeScopeService.CanReadOffice(record.OfficeCode, record.TenantCode);
+        return normalizedKind switch
+        {
+            "customer" => _officeScopeService.CanReadOfficeForCustomers(record.OfficeCode, record.TenantCode),
+            "contract" => _officeScopeService.CanReadOfficeForContracts(record.OfficeCode, record.TenantCode),
+            "item" => _officeScopeService.CanReadOfficeForItems(record.OfficeCode, record.TenantCode),
+            "company-profile" or "companyprofile" => _officeScopeService.CanReadOfficeForCompanyProfiles(record.OfficeCode),
+            "invoice" => _officeScopeService.CanReadOfficeForSyncInvoices(record.OfficeCode, record.TenantCode),
+            "payment" or "transaction" => _officeScopeService.CanReadOfficeForPayments(record.OfficeCode, record.TenantCode),
+            "inventory-transfer" or "inventorytransfer" => _officeScopeService.CanReadOfficeForDeliveries(record.OfficeCode, record.TenantCode),
+            "rental-management-company" or "rentalmanagementcompany" => _officeScopeService.CanReadOfficeForRentals(record.OfficeCode, record.TenantCode),
+            "rental-billing-profile" or "rentalbillingprofile" => _officeScopeService.CanReadOfficeForRentals(record.OfficeCode, record.TenantCode),
+            "rental-asset" or "rentalasset" => _officeScopeService.CanReadOfficeForRentals(record.OfficeCode, record.TenantCode),
+            "rental-billing-log" or "rentalbillinglog" => _officeScopeService.CanReadOfficeForRentals(record.OfficeCode, record.TenantCode),
+            _ => _officeScopeService.CanReadOffice(record.OfficeCode, record.TenantCode)
+        };
     }
 
     private static bool IsGlobalSettingPurgeRecordKind(string? normalizedKind)
