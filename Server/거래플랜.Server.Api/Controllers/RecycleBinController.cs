@@ -2268,14 +2268,17 @@ public sealed class RecycleBinController : ControllerBase
             return (false, "현재 계정으로 영구삭제할 수 없는 재고이동입니다.");
         }
 
+        var receiveEvidencePath = transfer.ReceiveEvidencePath;
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
         await TouchPurgeRecordsAsync(
         [
             CreatePurgeRecord("inventory-transfer", transfer.Id, transfer.TenantCode, transfer.SourceOfficeCode)
         ], cancellationToken);
-        var receiveEvidencePath = transfer.ReceiveEvidencePath;
         _dbContext.InventoryTransferLines.RemoveRange(transfer.Lines);
         _dbContext.InventoryTransfers.Remove(transfer);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await _inventoryLedgerService.RebuildAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         _fileStorage.DeleteIfExists(receiveEvidencePath);
 

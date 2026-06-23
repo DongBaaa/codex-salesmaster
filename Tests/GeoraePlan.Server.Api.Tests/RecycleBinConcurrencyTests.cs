@@ -2344,6 +2344,92 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PurgeInventoryTransfer_RemovesStaleLedgerEntries()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var itemId = Guid.NewGuid();
+        var transferId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+        dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "재고이동 ledger purge 품목",
+            NameMatchKey = "재고이동ledgerpurge품목",
+            Unit = "개",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 10m
+        });
+        dbContext.InventoryTransfers.Add(new InventoryTransfer
+        {
+            Id = transferId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            TransferNumber = "TR-PURGE-LEDGER-CLEANUP",
+            TransferDate = new DateOnly(2026, 6, 23),
+            TransferStatus = InventoryTransferStatusNormalizer.Pending,
+            IsDeleted = true,
+            Lines =
+            [
+                new InventoryTransferLine
+                {
+                    Id = lineId,
+                    TransferId = transferId,
+                    ItemId = itemId,
+                    ItemNameOriginal = "재고이동 ledger purge 품목",
+                    Unit = "개",
+                    Quantity = 1m
+                }
+            ]
+        });
+        dbContext.InventoryLedgerEntries.Add(new InventoryLedgerEntry
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            SourceType = "InventoryTransfer:Out",
+            SourceDocumentId = transferId,
+            SourceLineId = lineId,
+            QuantityDelta = -1m,
+            OccurredDate = new DateOnly(2026, 6, 23),
+            Note = "stale transfer ledger"
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = transferId,
+                        Kind = "inventory-transfer"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success, item.Message);
+        Assert.False(await dbContext.InventoryTransfers.IgnoreQueryFilters().AnyAsync(current => current.Id == transferId));
+        Assert.False(await dbContext.InventoryLedgerEntries.AnyAsync(entry => entry.SourceDocumentId == transferId));
+    }
+
+    [Fact]
     public async Task PurgeTransaction_DeletesLinkedPaymentAttachmentStorage()
     {
         var currentUser = CreateOfficeOnlyUser();
