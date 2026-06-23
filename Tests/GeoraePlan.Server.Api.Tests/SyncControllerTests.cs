@@ -5312,6 +5312,62 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Pull_OfficeOnlyUser_DoesNotReturnRentalAssignmentHistoryOutsideHistoryScopeEvenWhenAssetIsReadable()
+    {
+        var visibleAsset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            AssetKey = "SYNC-ASSET-HISTORY-SCOPE",
+            ManagementNumber = "SYNC-ASSET-HISTORY-SCOPE"
+        };
+        _dbContext.RentalAssets.Add(visibleAsset);
+        _dbContext.RentalAssetAssignmentHistories.AddRange(
+            new RentalAssetAssignmentHistory
+            {
+                Id = Guid.NewGuid(),
+                AssetId = visibleAsset.Id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                ManagementNumber = "SYNC-HISTORY-VISIBLE",
+                BillingProfileDisplay = "VISIBLE-PROFILE"
+            },
+            new RentalAssetAssignmentHistory
+            {
+                Id = Guid.NewGuid(),
+                AssetId = visibleAsset.Id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementNumber = "SYNC-HISTORY-HIDDEN",
+                BillingProfileDisplay = "HIDDEN-PROFILE"
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu_history_scope_user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+
+        var response = await controller.Pull(0, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPullResponse>(ok.Value);
+
+        Assert.Contains(result.RentalAssets, asset => asset.Id == visibleAsset.Id);
+        Assert.Contains(result.RentalAssetAssignmentHistories, history => history.ManagementNumber == "SYNC-HISTORY-VISIBLE");
+        Assert.DoesNotContain(result.RentalAssetAssignmentHistories, history => history.ManagementNumber == "SYNC-HISTORY-HIDDEN");
+        Assert.DoesNotContain(result.RentalAssetAssignmentHistories, history => history.BillingProfileDisplay == "HIDDEN-PROFILE");
+    }
+
+    [Fact]
     public async Task Push_RejectsRentalBillingLog_WhenProfileIsReadSharedButNotWritable()
     {
         var sharedReadOnlyProfileId = Guid.NewGuid();

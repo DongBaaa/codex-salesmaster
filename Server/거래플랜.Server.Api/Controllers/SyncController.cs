@@ -110,6 +110,8 @@ public sealed class SyncController : ControllerBase
             .ApplyRentalAssetScope(_dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking())
             .Select(asset => asset.Id)
             .ToListAsync(cancellationToken);
+        var readableRentalAssignmentHistories = _officeScopeService
+            .ApplyRentalAssignmentHistoryScope(_dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().AsNoTracking());
 
         var response = new SyncPullResponse
         {
@@ -155,7 +157,7 @@ public sealed class SyncController : ControllerBase
                 .Select(x => x.ToDto()).ToListAsync(cancellationToken),
             RentalAssetAssignmentHistories = readableRentalAssetIds.Count == 0
                 ? []
-                : await _dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().AsNoTracking()
+                : await readableRentalAssignmentHistories
                     .Where(history => history.Revision > sinceRev && readableRentalAssetIds.Contains(history.AssetId))
                     .OrderByDescending(history => history.IsCurrent)
                     .ThenByDescending(history => history.LinkedAtUtc)
