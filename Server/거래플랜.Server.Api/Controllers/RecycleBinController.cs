@@ -1438,7 +1438,18 @@ public sealed class RecycleBinController : ControllerBase
 
         var activeConflict = await FindActiveRentalAssetRestoreConflictAsync(asset, cancellationToken);
         if (activeConflict is not null)
-            return (false, $"같은 렌탈 자산 식별값을 가진 활성 자산이 있어 복원할 수 없습니다. 활성 자산: {BuildRentalAssetConflictDisplay(activeConflict)}");
+        {
+            var message = "같은 렌탈 자산 식별값을 가진 활성 자산이 있어 복원할 수 없습니다.";
+            if (_officeScopeService.CanReadOfficeForRentals(
+                    activeConflict.ResponsibleOfficeCode,
+                    activeConflict.TenantCode,
+                    activeConflict.OfficeCode))
+            {
+                message += $" 활성 자산: {BuildRentalAssetConflictDisplay(activeConflict)}";
+            }
+
+            return (false, message);
+        }
 
         var customerRestored = false;
         if (asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)

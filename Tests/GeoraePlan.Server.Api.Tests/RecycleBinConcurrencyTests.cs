@@ -1946,6 +1946,74 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task RestoreRentalAsset_RejectsHiddenActiveIdentifierConflictWithoutLeakingDetails()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var targetAssetId = Guid.NewGuid();
+        var hiddenAssetId = Guid.NewGuid();
+        dbContext.RentalAssets.AddRange(
+            new RentalAsset
+            {
+                Id = targetAssetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "RESTORE-ASSET-TARGET-001",
+                ManagementId = "RESTORE-HIDDEN-CONFLICT-ID",
+                ManagementNumber = "RESTORE-HIDDEN-CONFLICT-MN",
+                ItemName = "복원 대상 자산",
+                IsDeleted = true
+            },
+            new RentalAsset
+            {
+                Id = hiddenAssetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                ManagementCompanyCode = OfficeCodeCatalog.Yeonsu,
+                AssetKey = "SECRET-HIDDEN-ASSET-KEY",
+                ManagementId = "RESTORE-HIDDEN-CONFLICT-ID",
+                ManagementNumber = "RESTORE-HIDDEN-CONFLICT-MN",
+                ItemName = "권한 외 비밀 자산",
+                IsDeleted = false
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = targetAssetId,
+                        Kind = "rental-asset"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("같은 렌탈 자산 식별값", item.Message);
+        Assert.DoesNotContain("권한 외 비밀 자산", item.Message);
+        Assert.DoesNotContain("SECRET-HIDDEN-ASSET-KEY", item.Message);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.True(await dbContext.RentalAssets.IgnoreQueryFilters()
+            .Where(asset => asset.Id == targetAssetId)
+            .Select(asset => asset.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task PurgeRentalBillingProfile_RejectsWhenLinkedAssetOutsideRentalWriteScope()
     {
         var currentUser = CreateOfficeOnlyUser();

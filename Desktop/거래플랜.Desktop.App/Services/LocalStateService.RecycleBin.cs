@@ -1108,10 +1108,10 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == customerId, ct);
         if (customer is null)
             return OfficeMutationResult.Missing("복원할 거래처를 찾을 수 없습니다.");
-        if (!customer.IsDeleted)
-            return OfficeMutationResult.Ok(customerId, "이미 활성 상태인 거래처입니다.");
         if (!CanAccessCustomer(customer, session))
             return OfficeMutationResult.Denied("권한이 없어 해당 거래처를 복원할 수 없습니다.");
+        if (!customer.IsDeleted)
+            return OfficeMutationResult.Ok(customerId, "이미 활성 상태인 거래처입니다.");
 
         var now = DateTime.UtcNow;
         RestoreCustomerCore(customer, session, now);
@@ -1538,8 +1538,6 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == contractId, ct);
         if (contract is null)
             return OfficeMutationResult.Missing("복원할 계약서를 찾을 수 없습니다.");
-        if (!contract.IsDeleted)
-            return OfficeMutationResult.Ok(contractId, "이미 활성 상태인 계약서입니다.");
 
         var customer = await _db.Customers
             .IgnoreQueryFilters()
@@ -1548,6 +1546,8 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Missing("계약서와 연결된 거래처를 찾을 수 없습니다.");
         if (!CanAccessCustomer(customer, session))
             return OfficeMutationResult.Denied("권한이 없어 해당 계약서를 복원할 수 없습니다.");
+        if (!contract.IsDeleted)
+            return OfficeMutationResult.Ok(contractId, "이미 활성 상태인 계약서입니다.");
 
         var now = DateTime.UtcNow;
         var restoredCustomer = false;
@@ -1754,10 +1754,10 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == invoiceId, ct);
         if (target is null)
             return OfficeMutationResult.Missing("복원할 전표를 찾을 수 없습니다.");
-        if (!target.IsDeleted)
-            return OfficeMutationResult.Ok(invoiceId, "이미 활성 상태인 전표입니다.");
         if (!CanWriteOfficeScope(session, target.ResponsibleOfficeCode, target.OfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 전표를 복원할 수 없습니다.");
+        if (!target.IsDeleted)
+            return OfficeMutationResult.Ok(invoiceId, "이미 활성 상태인 전표입니다.");
 
         var invoiceGroupRestore = await RestoreInvoiceGroupCoreAsync(target, session, ct);
         if (!invoiceGroupRestore.Success)
@@ -1862,6 +1862,14 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == paymentId, ct);
         if (payment is null)
             return OfficeMutationResult.Missing("복원할 수금/지급 기록을 찾을 수 없습니다.");
+
+        var invoice = await _db.Invoices
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == payment.InvoiceId, ct);
+        if (invoice is null)
+            return OfficeMutationResult.Missing("연결된 전표를 찾을 수 없습니다.");
+        if (!CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode, invoice.OfficeCode))
+            return OfficeMutationResult.Denied("권한이 없어 해당 수금/지급 기록을 복원할 수 없습니다.");
         if (!payment.IsDeleted)
             return OfficeMutationResult.Ok(paymentId, "이미 활성 상태인 수금/지급 기록입니다.");
 
@@ -1874,14 +1882,6 @@ public sealed partial class LocalStateService
                 current.LinkedInvoiceId == payment.InvoiceId, ct);
         if (linkedDeletedTransaction is not null)
             return await RestoreTransactionAsync(paymentId, session, ct);
-
-        var invoice = await _db.Invoices
-            .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(current => current.Id == payment.InvoiceId, ct);
-        if (invoice is null)
-            return OfficeMutationResult.Missing("연결된 전표를 찾을 수 없습니다.");
-        if (!CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode, invoice.OfficeCode))
-            return OfficeMutationResult.Denied("권한이 없어 해당 수금/지급 기록을 복원할 수 없습니다.");
 
         var customerRestored = false;
         var invoiceRestored = false;
@@ -1950,10 +1950,10 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == transactionId, ct);
         if (transaction is null)
             return OfficeMutationResult.Missing("복원할 거래내역을 찾을 수 없습니다.");
-        if (!transaction.IsDeleted)
-            return OfficeMutationResult.Ok(transactionId, "이미 활성 상태인 거래내역입니다.");
         if (!CanAccessTransaction(transaction, session))
             return OfficeMutationResult.Denied("권한이 없어 해당 거래내역을 복원할 수 없습니다.");
+        if (!transaction.IsDeleted)
+            return OfficeMutationResult.Ok(transactionId, "이미 활성 상태인 거래내역입니다.");
 
         var now = DateTime.UtcNow;
         var customer = await _db.Customers
@@ -2413,8 +2413,6 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == profileId, ct);
         if (profile is null)
             return OfficeMutationResult.Missing("복원할 렌탈 청구프로필을 찾을 수 없습니다.");
-        if (!profile.IsDeleted)
-            return OfficeMutationResult.Ok(profile.Id, "이미 활성 상태인 렌탈 청구프로필입니다.");
         if (!CanWriteRentalRecycleBinScope(
                 session,
                 profile.TenantCode,
@@ -2422,6 +2420,8 @@ public sealed partial class LocalStateService
                 profile.ResponsibleOfficeCode,
                 profile.ManagementCompanyCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 청구프로필을 복원할 수 없습니다.");
+        if (!profile.IsDeleted)
+            return OfficeMutationResult.Ok(profile.Id, "이미 활성 상태인 렌탈 청구프로필입니다.");
 
         var now = DateTime.UtcNow;
         if (profile.CustomerId.HasValue && profile.CustomerId.Value != Guid.Empty)
@@ -2461,8 +2461,6 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == assetId, ct);
         if (asset is null)
             return OfficeMutationResult.Missing("복원할 렌탈 자산을 찾을 수 없습니다.");
-        if (!asset.IsDeleted)
-            return OfficeMutationResult.Ok(asset.Id, "이미 활성 상태인 렌탈 자산입니다.");
         if (!CanWriteRentalRecycleBinScope(
                 session,
                 asset.TenantCode,
@@ -2470,11 +2468,25 @@ public sealed partial class LocalStateService
                 asset.ResponsibleOfficeCode,
                 asset.ManagementCompanyCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 자산을 복원할 수 없습니다.");
+        if (!asset.IsDeleted)
+            return OfficeMutationResult.Ok(asset.Id, "이미 활성 상태인 렌탈 자산입니다.");
 
         var activeConflict = await FindActiveRentalAssetRestoreConflictAsync(asset, ct);
         if (activeConflict is not null)
-            return OfficeMutationResult.Denied(
-                $"같은 렌탈 자산 식별값을 가진 활성 자산이 있어 복원할 수 없습니다. 활성 자산: {BuildRentalAssetConflictDisplay(activeConflict)}");
+        {
+            var message = "같은 렌탈 자산 식별값을 가진 활성 자산이 있어 복원할 수 없습니다.";
+            if (CanWriteRentalRecycleBinScope(
+                    session,
+                    activeConflict.TenantCode,
+                    activeConflict.OfficeCode,
+                    activeConflict.ResponsibleOfficeCode,
+                    activeConflict.ManagementCompanyCode))
+            {
+                message += $" 활성 자산: {BuildRentalAssetConflictDisplay(activeConflict)}";
+            }
+
+            return OfficeMutationResult.Denied(message);
+        }
 
         var now = DateTime.UtcNow;
         if (asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
@@ -2510,15 +2522,28 @@ public sealed partial class LocalStateService
         LocalRentalAsset target,
         CancellationToken ct)
     {
+        var targetBusinessDatabaseName = ResolveRecycleBinBusinessDatabaseName(
+            target.TenantCode,
+            target.OfficeCode,
+            target.ResponsibleOfficeCode,
+            target.ManagementCompanyCode);
         var candidates = await _db.RentalAssets
             .IgnoreQueryFilters()
             .Where(current => current.Id != target.Id && !current.IsDeleted)
             .ToListAsync(ct);
 
         return candidates.FirstOrDefault(candidate =>
-            RentalAssetRestoreKeysMatch(candidate.ManagementNumber, target.ManagementNumber) ||
-            RentalAssetRestoreKeysMatch(candidate.ManagementId, target.ManagementId) ||
-            RentalAssetRestoreKeysMatch(candidate.AssetKey, target.AssetKey));
+            string.Equals(
+                ResolveRecycleBinBusinessDatabaseName(
+                    candidate.TenantCode,
+                    candidate.OfficeCode,
+                    candidate.ResponsibleOfficeCode,
+                    candidate.ManagementCompanyCode),
+                targetBusinessDatabaseName,
+                StringComparison.OrdinalIgnoreCase) &&
+            (RentalAssetRestoreKeysMatch(candidate.ManagementNumber, target.ManagementNumber) ||
+             RentalAssetRestoreKeysMatch(candidate.ManagementId, target.ManagementId) ||
+             RentalAssetRestoreKeysMatch(candidate.AssetKey, target.AssetKey)));
     }
 
     private static bool RentalAssetRestoreKeysMatch(string? left, string? right)
@@ -2546,14 +2571,14 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == logId, ct);
         if (log is null)
             return OfficeMutationResult.Missing("복원할 렌탈 청구로그를 찾을 수 없습니다.");
-        if (!log.IsDeleted)
-            return OfficeMutationResult.Ok(log.Id, "이미 활성 상태인 렌탈 청구로그입니다.");
         if (!CanWriteRentalRecycleBinScope(
                 session,
                 log.TenantCode,
                 log.OfficeCode,
                 log.ResponsibleOfficeCode))
             return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 청구로그를 복원할 수 없습니다.");
+        if (!log.IsDeleted)
+            return OfficeMutationResult.Ok(log.Id, "이미 활성 상태인 렌탈 청구로그입니다.");
 
         var profile = await _db.RentalBillingProfiles
             .IgnoreQueryFilters()
@@ -2860,10 +2885,10 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == transferId, ct);
         if (transfer is null)
             return OfficeMutationResult.Missing("복원할 재고이동을 찾을 수 없습니다.");
-        if (!transfer.IsDeleted)
-            return OfficeMutationResult.Ok(transfer.Id, "이미 활성 상태인 재고이동입니다.");
         if (!CanMutateInventoryTransferFromRecycleBin(transfer, session, out var scopeMessage))
             return OfficeMutationResult.Denied(scopeMessage);
+        if (!transfer.IsDeleted)
+            return OfficeMutationResult.Ok(transfer.Id, "이미 활성 상태인 재고이동입니다.");
 
         var now = DateTime.UtcNow;
         var activeLines = transfer.Lines

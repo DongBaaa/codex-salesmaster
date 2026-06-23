@@ -289,6 +289,125 @@ public sealed class RecycleBinScopeAndSyncTests
     }
 
     [Fact]
+    public async Task LocalStateService_RestoreActiveOutOfScopeInvoice_IsDeniedBeforeAlreadyActive()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-active-invoice-restore-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var hiddenCustomerId = Guid.NewGuid();
+            var hiddenInvoiceId = Guid.NewGuid();
+            db.Customers.Add(CreateFallbackOfficeCustomer(hiddenCustomerId, TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Yeonsu));
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = hiddenInvoiceId,
+                CustomerId = hiddenCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                InvoiceNumber = "HIDDEN-ACTIVE-RESTORE-001",
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 24),
+                TotalAmount = 1000m,
+                SupplyAmount = 909m,
+                VatAmount = 91m,
+                VersionGroupId = hiddenInvoiceId,
+                VersionNumber = 1,
+                IsLatestVersion = true,
+                IsConfirmed = true,
+                IsDeleted = false,
+                IsDirty = false,
+                Revision = 30
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeUserSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var restore = await service.RestoreRecycleBinEntryAsync(RecycleBinEntityKind.Invoice, hiddenInvoiceId, session);
+
+            Assert.False(restore.Success);
+            Assert.Contains("권한", restore.Message);
+            Assert.DoesNotContain("이미 활성", restore.Message);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalStateService_RestoreRentalAsset_IgnoresActiveNaturalKeyConflictInOtherBusinessDatabase()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-asset-restore-cross-db-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var targetAssetId = Guid.NewGuid();
+            var hiddenAssetId = Guid.NewGuid();
+            db.RentalAssets.AddRange(
+                new LocalRentalAsset
+                {
+                    Id = targetAssetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Shared,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = "USENET|RESTORE-CROSS-DB|001",
+                    ManagementId = "RESTORE-CROSS-DB-ID",
+                    ManagementNumber = "RESTORE-CROSS-DB-MN",
+                    ItemName = "USENET restore target",
+                    IsDeleted = true,
+                    IsDirty = false,
+                    Revision = 31
+                },
+                new LocalRentalAsset
+                {
+                    Id = hiddenAssetId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                    ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                    AssetKey = "ITWORLD|RESTORE-CROSS-DB|001",
+                    ManagementId = "RESTORE-CROSS-DB-ID",
+                    ManagementNumber = "RESTORE-CROSS-DB-MN",
+                    ItemName = "ITWORLD active asset",
+                    IsDeleted = false,
+                    IsDirty = false,
+                    Revision = 32
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var restore = await service.RestoreRecycleBinEntryAsync(RecycleBinEntityKind.RentalAsset, targetAssetId, session);
+
+            Assert.True(restore.Success, restore.Message);
+            Assert.False(await db.RentalAssets.IgnoreQueryFilters()
+                .Where(asset => asset.Id == targetAssetId)
+                .Select(asset => asset.IsDeleted)
+                .SingleAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public void SyncService_GetMatchingIncomingRentalAssetIds_DoesNotMatchAcrossBusinessDatabase()
     {
         var incomingId = Guid.Parse("33333333-3333-3333-3333-333333333333");
