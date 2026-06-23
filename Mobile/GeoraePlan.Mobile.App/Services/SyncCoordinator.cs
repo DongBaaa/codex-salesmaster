@@ -1152,8 +1152,8 @@ public sealed class SyncCoordinator
             case "item":
                 RemoveEntityById(state.SyncedItems, entityId, purgeRevision);
                 RemoveEntityById(state.PendingPush.Items, entityId, purgeRevision);
-                state.SyncedItemWarehouseStocks.RemoveAll(stock => stock.ItemId == entityId);
-                state.PendingPush.ItemWarehouseStocks.RemoveAll(stock => stock.ItemId == entityId);
+                RemoveItemWarehouseStocksForPurgedItem(state.SyncedItemWarehouseStocks, entityId, purgeRevision);
+                RemoveItemWarehouseStocksForPurgedItem(state.PendingPush.ItemWarehouseStocks, entityId, purgeRevision);
                 ClearInvoiceLineItemReferences(state.SyncedInvoices, entityId, purgeRevision);
                 ClearInvoiceLineItemReferences(state.PendingPush.Invoices, entityId, purgeRevision);
                 ClearInventoryTransferLineItemReferences(state.SyncedInventoryTransfers, entityId, purgeRevision);
@@ -1258,6 +1258,19 @@ public sealed class SyncCoordinator
         values.RemoveAll(contract =>
             contract.CustomerId == customerId &&
             !IsEntityNewerThanPurge(contract, purgeRevision));
+    }
+
+    private static void RemoveItemWarehouseStocksForPurgedItem(
+        List<ItemWarehouseStockDto> values,
+        Guid itemId,
+        long purgeRevision)
+    {
+        if (itemId == Guid.Empty)
+            return;
+
+        values.RemoveAll(stock =>
+            stock.ItemId == itemId &&
+            !IsItemWarehouseStockNewerThanPurge(stock, purgeRevision));
     }
 
     private static void ClearRentalBillingProfileReferences(
@@ -1562,6 +1575,9 @@ public sealed class SyncCoordinator
 
     private static bool IsEntityNewerThanPurge(SyncEntityDto entity, long purgeRevision)
         => !entity.IsDeleted && entity.Revision > purgeRevision;
+
+    private static bool IsItemWarehouseStockNewerThanPurge(ItemWarehouseStockDto stock, long purgeRevision)
+        => stock.Revision > purgeRevision;
 
     private static string NormalizePurgeRecordKind(string? kind)
         => (kind ?? string.Empty).Trim().ToLowerInvariant();

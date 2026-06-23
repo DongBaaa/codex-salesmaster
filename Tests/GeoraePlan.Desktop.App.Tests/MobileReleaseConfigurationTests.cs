@@ -2171,8 +2171,8 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("ClearRentalAssignmentHistoryCustomerReferences(state.SyncedRentalAssetAssignmentHistories, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("ClearRentalAssignmentHistoryCustomerReferences(state.PendingPush.RentalAssetAssignmentHistories, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedItems, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("state.SyncedItemWarehouseStocks.RemoveAll(stock => stock.ItemId == entityId);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("state.PendingPush.ItemWarehouseStocks.RemoveAll(stock => stock.ItemId == entityId);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("RemoveItemWarehouseStocksForPurgedItem(state.SyncedItemWarehouseStocks, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("RemoveItemWarehouseStocksForPurgedItem(state.PendingPush.ItemWarehouseStocks, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("ClearInvoiceLineItemReferences(state.SyncedInvoices, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("ClearInventoryTransferLineItemReferences(state.SyncedInventoryTransfers, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("ClearRentalAssetItemReferences(state.SyncedRentalAssets, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
@@ -2231,6 +2231,15 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("value.CustomerId = null;", coordinatorSource, StringComparison.Ordinal);
         Assert.True(CountOccurrences(coordinatorSource, "value.UpdatedAtUtc = DateTime.UtcNow;") >= 5);
         Assert.Contains("value.Id == entityId && IsEntityNewerThanPurge(value, purgeRevision)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("RemoveItemWarehouseStocksForPurgedItem(state.SyncedItemWarehouseStocks, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("RemoveItemWarehouseStocksForPurgedItem(state.PendingPush.ItemWarehouseStocks, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("private static void RemoveItemWarehouseStocksForPurgedItem(", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("stock.ItemId == itemId &&", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("!IsItemWarehouseStockNewerThanPurge(stock, purgeRevision)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("private static bool IsItemWarehouseStockNewerThanPurge(ItemWarehouseStockDto stock, long purgeRevision)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("=> stock.Revision > purgeRevision;", coordinatorSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("state.SyncedItemWarehouseStocks.RemoveAll(stock => stock.ItemId == entityId);", coordinatorSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("state.PendingPush.ItemWarehouseStocks.RemoveAll(stock => stock.ItemId == entityId);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("public Task RemoveCustomerContractsAsync(Guid customerId, CancellationToken ct = default)", contractCacheSource, StringComparison.Ordinal);
         Assert.Contains("public async Task RemoveCustomerAsync(Guid customerId, long purgeRevision, CancellationToken ct = default)", contractCacheSource, StringComparison.Ordinal);
         Assert.Contains("public async Task RemoveContractAsync(Guid contractId, long purgeRevision, CancellationToken ct = default)", contractCacheSource, StringComparison.Ordinal);
