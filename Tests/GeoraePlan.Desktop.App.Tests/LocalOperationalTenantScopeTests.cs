@@ -206,6 +206,127 @@ public sealed class LocalOperationalTenantScopeTests
         }
     }
 
+    [Fact]
+    public async Task RentalViewAllProfileDetail_StaysWithinCurrentTenant()
+    {
+        PrepareAppRoot("georaeplan-rental-profile-tenant-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var usenetProfile = CreateRentalBillingProfile(
+                tenantCode: TenantScopeCatalog.UsenetGroup,
+                officeCode: OfficeCodeCatalog.Usenet,
+                customerName: "USENET 렌탈 거래처",
+                monthlyAmount: 11_000m);
+            var yeonsuProfile = CreateRentalBillingProfile(
+                tenantCode: TenantScopeCatalog.UsenetGroup,
+                officeCode: OfficeCodeCatalog.Yeonsu,
+                customerName: "YEONSU 렌탈 거래처",
+                monthlyAmount: 22_000m);
+            var itworldProfile = CreateRentalBillingProfile(
+                tenantCode: TenantScopeCatalog.Itworld,
+                officeCode: OfficeCodeCatalog.Itworld,
+                customerName: "ITWORLD 렌탈 거래처",
+                monthlyAmount: 33_000m);
+            foreach (var profile in new[] { usenetProfile, yeonsuProfile, itworldProfile })
+                profile.IsDirty = true;
+            db.RentalBillingProfiles.AddRange(usenetProfile, yeonsuProfile, itworldProfile);
+            await db.SaveChangesAsync();
+
+            var viewAllSession = CreateOfficeSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                AppPermissionNames.RentalViewAll);
+            var editAllSession = CreateOfficeSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                AppPermissionNames.RentalEditAll);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), viewAllSession);
+
+            var visibleUsenetProfile = await service.GetRentalBillingProfileAsync(usenetProfile.Id, viewAllSession);
+            var visibleYeonsuProfile = await service.GetRentalBillingProfileAsync(yeonsuProfile.Id, viewAllSession);
+            var hiddenItworldProfile = await service.GetRentalBillingProfileAsync(itworldProfile.Id, viewAllSession);
+            var hiddenItworldSettlement = await service.GetRentalSettlementSummaryAsync(itworldProfile.Id, viewAllSession);
+            var dirtyProfilesForEditAll = await service.GetDirtyRentalBillingProfilesForSyncAsync(editAllSession);
+
+            Assert.NotNull(visibleUsenetProfile);
+            Assert.NotNull(visibleYeonsuProfile);
+            Assert.Null(hiddenItworldProfile);
+            Assert.Equal(0m, hiddenItworldSettlement.BilledAmount);
+            Assert.Contains(dirtyProfilesForEditAll, profile => profile.Id == usenetProfile.Id);
+            Assert.Contains(dirtyProfilesForEditAll, profile => profile.Id == yeonsuProfile.Id);
+            Assert.DoesNotContain(dirtyProfilesForEditAll, profile => profile.Id == itworldProfile.Id);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalEditAllMutations_StayWithinCurrentTenant()
+    {
+        PrepareAppRoot("georaeplan-rental-mutation-tenant-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itworldProfile = CreateRentalBillingProfile(
+                tenantCode: TenantScopeCatalog.Itworld,
+                officeCode: OfficeCodeCatalog.Itworld,
+                customerName: "ITWORLD 렌탈 거래처",
+                monthlyAmount: 33_000m);
+            var itworldAsset = CreateRentalAsset(
+                tenantCode: TenantScopeCatalog.Itworld,
+                officeCode: OfficeCodeCatalog.Itworld,
+                customerName: "ITWORLD 렌탈 거래처");
+            db.RentalBillingProfiles.Add(itworldProfile);
+            db.RentalAssets.Add(itworldAsset);
+            await db.SaveChangesAsync();
+
+            var editAllSession = CreateOfficeSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                AppPermissionNames.RentalEditAll);
+            var service = new RentalStateService(db);
+
+            var profileUpdate = CreateRentalBillingProfile(
+                tenantCode: TenantScopeCatalog.Itworld,
+                officeCode: OfficeCodeCatalog.Itworld,
+                customerName: "ITWORLD 렌탈 거래처 수정",
+                monthlyAmount: 44_000m);
+            profileUpdate.Id = itworldProfile.Id;
+            profileUpdate.ProfileKey = itworldProfile.ProfileKey;
+            var profileResult = await service.SaveBillingProfileAsync(profileUpdate, editAllSession);
+
+            var assetUpdate = CreateRentalAsset(
+                tenantCode: TenantScopeCatalog.Itworld,
+                officeCode: OfficeCodeCatalog.Itworld,
+                customerName: "ITWORLD 렌탈 거래처 수정");
+            assetUpdate.Id = itworldAsset.Id;
+            assetUpdate.AssetKey = itworldAsset.AssetKey;
+            assetUpdate.ManagementId = itworldAsset.ManagementId;
+            assetUpdate.ManagementNumber = itworldAsset.ManagementNumber;
+            var assetResult = await service.SaveAssetAsync(assetUpdate, editAllSession);
+
+            Assert.False(profileResult.Success, profileResult.Message);
+            Assert.False(assetResult.Success, assetResult.Message);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static LocalInvoice CreateInvoice(
         string tenantCode,
         string officeCode,
@@ -223,6 +344,56 @@ public sealed class LocalOperationalTenantScopeTests
             InvoiceDate = new DateOnly(2026, 6, 15),
             VersionGroupId = Guid.NewGuid(),
             IsLatestVersion = true,
+            IsDeleted = false,
+            IsDirty = false
+        };
+
+    private static LocalRentalBillingProfile CreateRentalBillingProfile(
+        string tenantCode,
+        string officeCode,
+        string customerName,
+        decimal monthlyAmount)
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = tenantCode,
+            OfficeCode = officeCode,
+            ResponsibleOfficeCode = officeCode,
+            ManagementCompanyCode = officeCode,
+            ProfileKey = $"TEST-{tenantCode}-{officeCode}-{Guid.NewGuid():N}",
+            CustomerName = customerName,
+            InstallSiteName = customerName,
+            ItemName = "렌탈 장비",
+            MonthlyAmount = monthlyAmount,
+            BillingMethod = "현금",
+            BillingStatus = "청구중",
+            IsActive = true,
+            IsDeleted = false,
+            IsDirty = false
+        };
+
+    private static LocalRentalAsset CreateRentalAsset(
+        string tenantCode,
+        string officeCode,
+        string customerName)
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = tenantCode,
+            OfficeCode = officeCode,
+            ResponsibleOfficeCode = officeCode,
+            ManagementCompanyCode = officeCode,
+            AssetKey = $"TEST-{tenantCode}-{officeCode}-{Guid.NewGuid():N}",
+            ManagementId = $"MID-{Guid.NewGuid():N}",
+            ManagementNumber = $"MN-{Guid.NewGuid():N}",
+            CurrentLocation = customerName,
+            CurrentCustomerName = customerName,
+            CustomerName = customerName,
+            InstallSiteName = customerName,
+            InstallLocation = customerName,
+            ItemName = "렌탈 장비",
+            AssetStatus = "임대진행중",
+            BillingEligibilityStatus = "미확인",
             IsDeleted = false,
             IsDirty = false
         };

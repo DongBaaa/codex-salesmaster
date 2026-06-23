@@ -4557,14 +4557,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var existing = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == profile.Id, ct);
         existing = await ReloadRentalBillingProfileForMutationAsync(existing, ct);
-        if (existing is not null && !CanEditRental(
-                RentalScopeNormalizer.ResolveResponsibleOfficeCode(
-                    existing.TenantCode,
-                    existing.OfficeCode,
-                    existing.ManagementCompanyCode,
-                    existing.ResponsibleOfficeCode,
-                    session.OfficeCode),
-                session))
+        if (existing is not null && !CanEditRentalProfileEntityScope(existing, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구 데이터를 수정할 수 없습니다.");
 
         var customerName = (profile.CustomerName ?? string.Empty).Trim();
@@ -4673,7 +4666,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         profile.RequiresFollowUp = profile.RequiresFollowUp || profile.OutstandingAmount > 0m;
         profile.ResponsibleOfficeCode = officeCode;
         profile.ManagementCompanyCode = profileScope.OwnerOfficeCode;
-        if (!CanEditRental(profile.ResponsibleOfficeCode, session))
+        if (!CanEditRentalProfileEntityScope(profile, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구 데이터를 저장할 수 없습니다.");
 
         var templateItems = GetBillingTemplateItems(profile, Array.Empty<LocalRentalAsset>());
@@ -4722,14 +4715,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         {
             existing = await ReloadRentalBillingProfileForMutationAsync(duplicate, ct);
             profile.Id = duplicate.Id;
-            if (existing is not null && !CanEditRental(
-                    RentalScopeNormalizer.ResolveResponsibleOfficeCode(
-                        existing.TenantCode,
-                        existing.OfficeCode,
-                        existing.ManagementCompanyCode,
-                        existing.ResponsibleOfficeCode,
-                        session.OfficeCode),
-                    session))
+            if (existing is not null && !CanEditRentalProfileEntityScope(existing, session))
                 return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구 데이터를 수정할 수 없습니다.");
         }
         else if (existing is not null && duplicate is not null && duplicate.Id != existing.Id)
@@ -4737,14 +4723,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var now = DateTime.UtcNow;
         existing = await ReloadRentalBillingProfileForMutationAsync(existing, ct);
-        if (existing is not null && !CanEditRental(
-                RentalScopeNormalizer.ResolveResponsibleOfficeCode(
-                    existing.TenantCode,
-                    existing.OfficeCode,
-                    existing.ManagementCompanyCode,
-                    existing.ResponsibleOfficeCode,
-                    session.OfficeCode),
-                session))
+        if (existing is not null && !CanEditRentalProfileEntityScope(existing, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구 데이터를 수정할 수 없습니다.");
         await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, profile, existing, ct);
         if (!LocalEntityConcurrencyGuard.TryPrepareForSave(profile, existing, "렌탈 청구", now, out var conflictMessage))
@@ -6555,14 +6534,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             var existing = await _db.RentalAssets.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(current => current.Id == asset.Id, ct);
             existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
-            if (existing is not null && !CanEditAssetScope(
-                    RentalScopeNormalizer.ResolveResponsibleOfficeCode(
-                        existing.TenantCode,
-                        existing.OfficeCode,
-                        existing.ManagementCompanyCode,
-                        existing.ResponsibleOfficeCode,
-                        session.OfficeCode),
-                    session))
+            if (existing is not null && !CanEditRentalAssetEntityScope(existing, session))
                 return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 수정할 수 없습니다.");
 
             var officeCode = await ResolveRentalOfficeCodeAsync(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode, session.OfficeCode, ct);
@@ -6583,7 +6555,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             }
 
             ApplyAssetOfficeScope(asset, officeCode);
-            if (!CanEditAssetScope(officeCode, session))
+            if (!CanEditRentalAssetEntityScope(asset, session))
                 return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 저장할 수 없습니다.");
             asset.ManagementNumber = string.IsNullOrWhiteSpace(asset.ManagementNumber)
                 ? (existing?.ManagementNumber ?? string.Empty).Trim()
@@ -6653,7 +6625,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     return LocalMutationResult.Denied("일반 사용자는 본인 담당지점 자산만 등록/수정할 수 있습니다.");
                 }
 
-                if (!CanEditAssetScope(officeCode, session))
+                if (!CanEditRentalAssetEntityScope(asset, session))
                     return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 저장할 수 없습니다.");
             }
 
@@ -6678,14 +6650,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
             var now = DateTime.UtcNow;
             existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
-            if (existing is not null && !CanEditAssetScope(
-                    RentalScopeNormalizer.ResolveResponsibleOfficeCode(
-                        existing.TenantCode,
-                        existing.OfficeCode,
-                        existing.ManagementCompanyCode,
-                        existing.ResponsibleOfficeCode,
-                        session.OfficeCode),
-                    session))
+            if (existing is not null && !CanEditRentalAssetEntityScope(existing, session))
                 return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 수정할 수 없습니다.");
             await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, asset, existing, ct);
             if (!LocalEntityConcurrencyGuard.TryPrepareForSave(asset, existing, "렌탈 자산", now, out var conflictMessage))
@@ -8346,6 +8311,71 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return true;
 
         return GetReadableRentalOfficeCodes(session).Contains(NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet));
+    }
+
+    private bool CanEditRentalProfileEntityScope(LocalRentalBillingProfile profile, SessionState session)
+        => CanEditRentalProfiles(session) && CanEditRentalEntityScope(
+            profile.TenantCode,
+            profile.OfficeCode,
+            profile.ManagementCompanyCode,
+            profile.ResponsibleOfficeCode,
+            session,
+            officeCode => CanEditRental(officeCode, session));
+
+    private bool CanEditRentalAssetEntityScope(LocalRentalAsset asset, SessionState session)
+        => CanEditRentalEntityScope(
+            asset.TenantCode,
+            asset.OfficeCode,
+            asset.ManagementCompanyCode,
+            asset.ResponsibleOfficeCode,
+            session,
+            officeCode => CanEditAssetScope(officeCode, session));
+
+    private bool CanEditRentalEntityScope(
+        string? tenantCode,
+        string? officeCode,
+        string? managementCompanyCode,
+        string? responsibleOfficeCode,
+        SessionState session,
+        Func<string, bool> officeWriteCheck)
+    {
+        if (CanAdministrativelyViewAllRental(session) || session.HasGlobalDataScope)
+            return true;
+
+        var entityTenantCode = ResolveRentalEntityTenantCode(tenantCode, officeCode, managementCompanyCode, responsibleOfficeCode, session);
+        if (!string.Equals(entityTenantCode, ResolveCurrentRentalTenantCode(session), StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var resolvedOfficeCode = RentalScopeNormalizer.ResolveResponsibleOfficeCode(
+            tenantCode,
+            officeCode,
+            managementCompanyCode,
+            responsibleOfficeCode,
+            session.OfficeCode);
+        return officeWriteCheck(resolvedOfficeCode);
+    }
+
+    private static string ResolveRentalEntityTenantCode(
+        string? tenantCode,
+        string? officeCode,
+        string? managementCompanyCode,
+        string? responsibleOfficeCode,
+        SessionState session)
+    {
+        if (TenantScopeCatalog.TryNormalizeTenantCode(tenantCode, out var normalizedTenantCode))
+            return normalizedTenantCode;
+
+        var resolvedOfficeCode = RentalScopeNormalizer.ResolveResponsibleOfficeCode(
+            tenantCode,
+            officeCode,
+            managementCompanyCode,
+            responsibleOfficeCode,
+            session.OfficeCode);
+        return TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            null,
+            resolvedOfficeCode,
+            session.TenantCode,
+            session.OfficeCode);
     }
 
     private bool CanEditRental(string? officeCode, SessionState session)

@@ -5582,7 +5582,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	private bool CanAccessRentalProfile(LocalRentalBillingProfile profile, SessionState session)
 	{
-		return session.HasGlobalDataScope || session.HasAssignedPermission("Rental.ViewAll") || session.HasAssignedPermission("Rental.EditAll") || string.Equals(ResolveResponsibleOfficeScopeForAccess(profile.ResponsibleOfficeCode, profile.ManagementCompanyCode), NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet), StringComparison.OrdinalIgnoreCase);
+		return CanReadRentalEntityScope(session, profile.TenantCode, profile.ResponsibleOfficeCode, profile.ManagementCompanyCode);
 	}
 
 	public async Task<List<LocalTransactionAttachment>> GetTransactionAttachmentsAsync(Guid transactionId, SessionState session, CancellationToken ct = default(CancellationToken))
@@ -6762,6 +6762,29 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			}
 		}
 		return false;
+	}
+
+	private static bool CanReadRentalEntityScope(SessionState? session, string? tenantCode, string? responsibleOfficeCode, string? managementCompanyCode = null)
+	{
+		if (session == null || !session.IsLoggedIn)
+		{
+			return false;
+		}
+		if (session.HasGlobalDataScope || CanAdministrativelyViewAllRentalScope(session))
+		{
+			return true;
+		}
+		string entityTenantCode = ResolveRentalEntityTenantCode(tenantCode, managementCompanyCode, responsibleOfficeCode);
+		if (!string.Equals(entityTenantCode, ResolveCurrentTenantCode(session), StringComparison.OrdinalIgnoreCase))
+		{
+			return false;
+		}
+		if (CanViewAllRentalScope(session))
+		{
+			return true;
+		}
+		string officeCode = ResolveResponsibleOfficeScopeForAccess(responsibleOfficeCode, managementCompanyCode);
+		return IsSharedOfficeScope(officeCode) || GetReadableRentalOfficeCodes(session).Contains(officeCode);
 	}
 
 	private static string ResolveRentalEntityTenantCode(string? tenantCode, string? managementCompanyCode, string? responsibleOfficeCode)
