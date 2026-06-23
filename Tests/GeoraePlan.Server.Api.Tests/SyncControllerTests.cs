@@ -8099,6 +8099,204 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_DeleteRentalBillingInvoice_RevertsSettlementAndDeletesLinkedPayments()
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var linkedPaymentAndTransactionId = Guid.NewGuid();
+        var paymentAttachmentId = Guid.NewGuid();
+        const string invoiceNumber = "SYNC-DELETE-RENTAL-INVOICE";
+
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-DELETE-RENTAL-INVOICE-CUSTOMER",
+            NameMatchKey = "SYNCDELETERENTALINVOICECUSTOMER",
+            TradeType = "매출"
+        });
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"sync-delete-rental-invoice-profile-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = "SYNC-DELETE-RENTAL-INVOICE-CUSTOMER",
+            BillingStatus = "완료",
+            SettlementStatus = "입금확인",
+            CompletionStatus = "완료",
+            MonthlyAmount = 100_000m,
+            SettledAmount = 100_000m,
+            OutstandingAmount = 0m,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new SyncRentalBillingRunSnapshot
+                {
+                    RunId = runId,
+                    RunKey = "2026-06",
+                    ScheduledDate = new DateOnly(2026, 6, 25),
+                    PeriodStartDate = new DateOnly(2026, 6, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    PeriodLabel = "2026-06",
+                    Status = "완료",
+                    BilledAmount = 100_000m,
+                    SettledAmount = 100_000m,
+                    SettlementStatus = "입금확인",
+                    SettledDate = new DateOnly(2026, 6, 26)
+                }
+            })
+        });
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = invoiceNumber,
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 25),
+            TotalAmount = 100_000m,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId
+        });
+        _dbContext.InvoiceLines.Add(new InvoiceLine
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoiceId,
+            ItemNameOriginal = "sync rental billing item",
+            Unit = "EA",
+            Quantity = 1m,
+            UnitPrice = 100_000m,
+            LineAmount = 100_000m
+        });
+        _dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = linkedPaymentAndTransactionId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 26),
+            TransactionKind = "렌탈수금",
+            LinkedInvoiceId = invoiceId,
+            LinkedInvoiceNumber = invoiceNumber,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId,
+            BankReceipt = 100_000m,
+            ReceiptTotal = 100_000m,
+            SettlementAmount = 100_000m
+        });
+        _dbContext.Payments.Add(new Payment
+        {
+            Id = linkedPaymentAndTransactionId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 6, 26),
+            Amount = 100_000m,
+            Note = "sync linked rental payment"
+        });
+        _dbContext.PaymentAttachments.Add(new PaymentAttachment
+        {
+            Id = paymentAttachmentId,
+            PaymentId = linkedPaymentAndTransactionId,
+            AttachmentType = "입금증빙",
+            FileName = "sync-rental-payment-receipt.pdf",
+            MimeType = "application/pdf",
+            FileSize = 4,
+            FileHash = "sync-test-hash",
+            UploadedAtUtc = new DateTime(2026, 6, 26, 0, 0, 0, DateTimeKind.Utc),
+            FileContent = [0x25, 0x50, 0x44, 0x46]
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var storedInvoice = await _dbContext.Invoices.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(invoice => invoice.Id == invoiceId);
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-delete-rental-billing-invoice",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customerId,
+                    CustomerName = "SYNC-DELETE-RENTAL-INVOICE-CUSTOMER",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    InvoiceNumber = invoiceNumber,
+                    VersionGroupId = storedInvoice.VersionGroupId,
+                    VersionNumber = storedInvoice.VersionNumber,
+                    IsLatestVersion = storedInvoice.IsLatestVersion,
+                    VoucherType = storedInvoice.VoucherType,
+                    InvoiceDate = storedInvoice.InvoiceDate,
+                    LinkedRentalBillingProfileId = profileId,
+                    LinkedRentalBillingRunId = runId,
+                    ExpectedRevision = storedInvoice.Revision,
+                    IsDeleted = true,
+                    CreatedAtUtc = storedInvoice.CreatedAtUtc,
+                    UpdatedAtUtc = DateTime.UtcNow.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        Assert.True(await _dbContext.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.Id == invoiceId)
+            .Select(invoice => invoice.IsDeleted)
+            .SingleAsync());
+        Assert.False(await _dbContext.InvoiceLines.IgnoreQueryFilters()
+            .AnyAsync(line => line.InvoiceId == invoiceId && !line.IsDeleted));
+        Assert.True(await _dbContext.Payments.IgnoreQueryFilters()
+            .Where(payment => payment.Id == linkedPaymentAndTransactionId)
+            .Select(payment => payment.IsDeleted)
+            .SingleAsync());
+        Assert.True(await _dbContext.PaymentAttachments.IgnoreQueryFilters()
+            .Where(attachment => attachment.Id == paymentAttachmentId)
+            .Select(attachment => attachment.IsDeleted)
+            .SingleAsync());
+
+        var transaction = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == linkedPaymentAndTransactionId);
+        Assert.False(transaction.IsDeleted);
+        Assert.Null(transaction.LinkedInvoiceId);
+        Assert.Equal(string.Empty, transaction.LinkedInvoiceNumber);
+        Assert.Null(transaction.LinkedRentalBillingProfileId);
+        Assert.Null(transaction.LinkedRentalBillingRunId);
+        Assert.Equal(0m, transaction.SettlementAmount);
+        Assert.Equal("일반수금", transaction.TransactionKind);
+
+        var profile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == profileId);
+        Assert.Equal(0m, profile.SettledAmount);
+        Assert.Equal(100_000m, profile.OutstandingAmount);
+        Assert.Equal("미완료", profile.CompletionStatus);
+        var run = Assert.Single(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(profile.BillingRunsJson) ?? []);
+        Assert.Equal(0m, run.SettledAmount);
+        Assert.NotEqual("완료", run.Status);
+        Assert.NotEqual("입금확인", run.SettlementStatus);
+        Assert.Null(run.SettledDate);
+    }
+
+    [Fact]
     public async Task Push_SkipsDeletedTransactionAttachment_WhenTransactionIsAlreadyMissing()
     {
         var request = new SyncPushRequest

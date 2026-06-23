@@ -1023,6 +1023,7 @@ public sealed class SyncController : ControllerBase
     private async Task<List<(Guid ProfileId, Guid? RunId)>> UpsertInvoicesAsync(IEnumerable<InvoiceDto> payload, SyncPushResult result, string deviceId, CancellationToken cancellationToken)
     {
         var rentalSettlementTargets = new List<(Guid ProfileId, Guid? RunId)>();
+        var acceptedDeletedInvoiceIds = new List<Guid>();
         foreach (var dto in payload)
         {
             if (await TryAcceptDuplicateMutationAsync(dto, nameof(Invoice), deviceId, result, cancellationToken))
@@ -1051,6 +1052,8 @@ public sealed class SyncController : ControllerBase
                 ApplyInvoiceLines(entity, dto.Lines ?? []);
                 _dbContext.Invoices.Add(entity);
                 AddRentalSettlementTarget(rentalSettlementTargets, entity.LinkedRentalBillingProfileId, entity.LinkedRentalBillingRunId);
+                if (entity.IsDeleted)
+                    acceptedDeletedInvoiceIds.Add(entity.Id);
                 RegisterProcessedMutation(dto, nameof(Invoice), deviceId);
                 await ResolveHistoricalConflictsAsync(nameof(Invoice), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
                 result.AcceptedCount++;
@@ -1086,6 +1089,8 @@ public sealed class SyncController : ControllerBase
                 result.AssignedInvoiceNumbers[dto.Id] = entity.InvoiceNumber;
             }
             AddRentalSettlementTarget(rentalSettlementTargets, entity.LinkedRentalBillingProfileId, entity.LinkedRentalBillingRunId);
+            if (entity.IsDeleted)
+                acceptedDeletedInvoiceIds.Add(entity.Id);
 
             _dbContext.InvoiceLines.RemoveRange(entity.Lines);
             entity.Lines.Clear();
@@ -1093,6 +1098,18 @@ public sealed class SyncController : ControllerBase
             RegisterProcessedMutation(dto, nameof(Invoice), deviceId);
             await ResolveHistoricalConflictsAsync(nameof(Invoice), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
             result.AcceptedCount++;
+        }
+
+        var distinctDeletedInvoiceIds = acceptedDeletedInvoiceIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (distinctDeletedInvoiceIds.Count > 0)
+        {
+            rentalSettlementTargets.AddRange(await _rentalSettlementRecalculationService
+                .LoadRentalSettlementTargetsForInvoiceDeleteAsync(distinctDeletedInvoiceIds, cancellationToken));
+            await _rentalSettlementRecalculationService.DetachTransactionsFromInvoicesAsync(distinctDeletedInvoiceIds, cancellationToken);
+            await _rentalSettlementRecalculationService.MarkPaymentsDeletedForInvoicesAsync(distinctDeletedInvoiceIds, cancellationToken);
         }
 
         return rentalSettlementTargets.Distinct().ToList();
