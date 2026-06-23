@@ -3571,6 +3571,132 @@ public sealed class RentalBillingDeletionFlowTests
         }
     }
 
+    [Fact]
+    public async Task RegisterBillingSettlement_ItworldLogKeepsProfileScopeAndIsSyncable()
+    {
+        PrepareAppRoot("georaeplan-rental-register-settlement-itworld-log-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "ITWORLD settlement syncable log customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName, OfficeCodeCatalog.Itworld));
+
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            profile.TenantCode = TenantScopeCatalog.Itworld;
+            profile.OfficeCode = OfficeCodeCatalog.Itworld;
+            profile.ManagementCompanyCode = OfficeCodeCatalog.Itworld;
+            profile.ResponsibleOfficeCode = OfficeCodeCatalog.Itworld;
+            db.RentalBillingProfiles.Add(profile);
+
+            var asset = CreateRentalAsset(assetId, customerName, profileId, "청구대상");
+            asset.TenantCode = TenantScopeCatalog.Itworld;
+            asset.OfficeCode = OfficeCodeCatalog.Itworld;
+            asset.ManagementCompanyCode = OfficeCodeCatalog.Itworld;
+            asset.ResponsibleOfficeCode = OfficeCodeCatalog.Itworld;
+            db.RentalAssets.Add(asset);
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeOnlySession(
+                OfficeCodeCatalog.Itworld,
+                AppPermissionNames.RentalProfileEdit,
+                AppPermissionNames.InvoiceEdit,
+                AppPermissionNames.PaymentEdit);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+
+            var start = await rental.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+            Assert.True(start.Success, start.Message);
+
+            var invoice = await db.Invoices.AsNoTracking().SingleAsync(current => current.Id == start.RelatedEntityId);
+            var runId = Assert.IsType<Guid>(invoice.LinkedRentalBillingRunId);
+            var register = await rental.RegisterBillingSettlementAsync(
+                profileId,
+                new DateOnly(2026, 5, 27),
+                invoice.TotalAmount,
+                "ITWORLD settlement syncable log",
+                session,
+                billingRunId: runId);
+            Assert.True(register.Success, register.Message);
+
+            var log = Assert.Single(await db.RentalBillingLogs
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(current => current.BillingProfileId == profileId)
+                .ToListAsync());
+            Assert.Equal(TenantScopeCatalog.Itworld, log.TenantCode);
+            Assert.Equal(OfficeCodeCatalog.Itworld, log.OfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Itworld, log.ResponsibleOfficeCode);
+            Assert.True(log.IsDirty);
+
+            var dirtyLogs = await local.GetDirtyRentalBillingLogsForSyncAsync(session);
+            Assert.Contains(dirtyLogs, current => current.Id == log.Id);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task GetDirtyRentalBillingLogsForSync_LegacyItworldLogWithDefaultTenantStillSyncable()
+    {
+        PrepareAppRoot("georaeplan-rental-legacy-itworld-log-sync-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var profile = CreateBillingProfile(profileId, assetId, "Legacy ITWORLD dirty log customer");
+            profile.TenantCode = TenantScopeCatalog.Itworld;
+            profile.OfficeCode = OfficeCodeCatalog.Itworld;
+            profile.ManagementCompanyCode = OfficeCodeCatalog.Itworld;
+            profile.ResponsibleOfficeCode = OfficeCodeCatalog.Itworld;
+            db.RentalBillingProfiles.Add(profile);
+
+            var logId = Guid.NewGuid();
+            db.RentalBillingLogs.Add(new LocalRentalBillingLog
+            {
+                Id = logId,
+                BillingProfileId = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = string.Empty,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                BillingYearMonth = "2026-05",
+                ScheduledDate = new DateOnly(2026, 5, 25),
+                ProcessedDate = new DateOnly(2026, 5, 27),
+                ProcessedByUsername = "legacy-user",
+                Status = PaymentFlowConstants.SettlementStatusConfirmed,
+                BilledAmount = 100_000m,
+                IsDirty = true,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeOnlySession(OfficeCodeCatalog.Itworld, AppPermissionNames.RentalProfileEdit);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var dirtyLogs = await local.GetDirtyRentalBillingLogsForSyncAsync(session);
+            Assert.Contains(dirtyLogs, current => current.Id == logId);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -3908,6 +4034,9 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     private static SessionState CreateOfficeOnlySession(string officeCode)
+        => CreateOfficeOnlySession(officeCode, Array.Empty<string>());
+
+    private static SessionState CreateOfficeOnlySession(string officeCode, params string[] permissions)
     {
         var session = new SessionState();
         session.SetOfflineSession(new UserSessionDto
@@ -3916,7 +4045,8 @@ public sealed class RentalBillingDeletionFlowTests
             Role = DomainConstants.RoleUser,
             TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, officeCode),
             OfficeCode = officeCode,
-            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = permissions.ToList()
         });
         return session;
     }

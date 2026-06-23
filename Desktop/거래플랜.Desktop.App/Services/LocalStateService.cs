@@ -1365,7 +1365,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		IQueryable<LocalRentalBillingLog> query = (from log in _db.RentalBillingLogs.IgnoreQueryFilters()
 			where log.IsDirty
 			select log).AsNoTracking();
-		return (await query.ToListAsync(ct)).Where((LocalRentalBillingLog log) => CanWriteRentalEntityScope(session, log.TenantCode, log.ResponsibleOfficeCode)).ToList();
+		return (await query.ToListAsync(ct)).Where((LocalRentalBillingLog log) => CanWriteRentalBillingLogScope(session, log)).ToList();
 	}
 
 	public async Task<List<LocalTransaction>> GetDirtyTransactionsForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
@@ -6921,6 +6921,20 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			}
 		}
 		return false;
+	}
+
+	private static bool CanWriteRentalBillingLogScope(SessionState? session, LocalRentalBillingLog log)
+	{
+		var scope = RentalScopeNormalizer.ResolveScope(
+			log.TenantCode,
+			log.OfficeCode,
+			responsibleOfficeCode: log.ResponsibleOfficeCode);
+
+		return CanWriteRentalEntityScope(
+			session,
+			scope.TenantCode,
+			scope.ResponsibleOfficeCode,
+			scope.OwnerOfficeCode);
 	}
 
 	private static bool CanWriteRentalEntityScope(SessionState? session, string? tenantCode, string? responsibleOfficeCode, string? managementCompanyCode = null)

@@ -5351,6 +5351,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             log.IsDirty = true;
             log.IsDeleted = false;
         }
+        ApplyBillingLogScopeFromProfile(log, profile);
 
         profile.IsDirty = true;
         profile.UpdatedAtUtc = now;
@@ -5476,6 +5477,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             if (!log.IsDeleted)
                 deletedLogCount++;
 
+            ApplyBillingLogScopeFromProfile(log, profile);
             log.IsDeleted = true;
             log.IsDirty = true;
             log.UpdatedAtUtc = now;
@@ -5641,6 +5643,19 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (result.NotFound)
             return LocalMutationResult.Missing(message);
         return LocalMutationResult.Denied(message);
+    }
+
+    private static void ApplyBillingLogScopeFromProfile(LocalRentalBillingLog log, LocalRentalBillingProfile profile)
+    {
+        var scope = RentalScopeNormalizer.ResolveScope(
+            profile.TenantCode,
+            profile.OfficeCode,
+            profile.ManagementCompanyCode,
+            profile.ResponsibleOfficeCode);
+
+        log.TenantCode = scope.TenantCode;
+        log.OfficeCode = scope.OwnerOfficeCode;
+        log.ResponsibleOfficeCode = scope.ResponsibleOfficeCode;
     }
 
     private async Task RefreshBillingProfileAfterHistoryDeleteAsync(
@@ -7850,6 +7865,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             log.IsDirty = true;
             log.IsDeleted = false;
         }
+        ApplyBillingLogScopeFromProfile(log, profile);
 
         profile.LastBilledDate = scheduledDate;
         profile.BillingStatus = PaymentFlowConstants.BillingStatusCompleted;
