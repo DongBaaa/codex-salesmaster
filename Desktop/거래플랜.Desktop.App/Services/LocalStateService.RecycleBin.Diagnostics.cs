@@ -733,10 +733,69 @@ public sealed partial class LocalStateService
         if (HasFullAccess(session))
             return true;
 
+        if (!IsInventoryTransferRouteInSessionTenant(transfer, session))
+            return false;
+
         var readableOffices = GetReadableOfficeCodes(session);
         var fromOfficeCode = ResolveOfficeCodeFromWarehouseCode(transfer.FromWarehouseCode);
         var toOfficeCode = ResolveOfficeCodeFromWarehouseCode(transfer.ToWarehouseCode);
         return readableOffices.Contains(fromOfficeCode) || readableOffices.Contains(toOfficeCode);
+    }
+
+    private bool CanMutateInventoryTransferFromRecycleBin(
+        LocalInventoryTransfer transfer,
+        SessionState session,
+        out string message)
+    {
+        if (!CanEditDeliveries(session))
+        {
+            message = "납품/재고이동 편집 권한이 필요합니다.";
+            return false;
+        }
+
+        if (!IsInventoryTransferRouteInSessionTenant(transfer, session))
+        {
+            message = "현재 계정의 업체 범위 밖 재고이동은 휴지통에서 변경할 수 없습니다.";
+            return false;
+        }
+
+        var sourceOfficeCode = ResolveOfficeCodeFromWarehouseCode(transfer.FromWarehouseCode);
+        if (!CanWriteOfficeScope(session, sourceOfficeCode))
+        {
+            message = "출발지 담당자 또는 관리자만 재고이동을 휴지통에서 변경할 수 있습니다.";
+            return false;
+        }
+
+        var normalizedStatus = InventoryTransferStatusNormalizer.Normalize(
+            transfer.TransferStatus,
+            transfer.ReceivedByUsername,
+            transfer.ReceivedAtUtc,
+            transfer.RejectedByUsername,
+            transfer.RejectedAtUtc);
+        if (IsFinalTransferStatus(normalizedStatus))
+        {
+            var targetOfficeCode = ResolveOfficeCodeFromWarehouseCode(transfer.ToWarehouseCode);
+            if (!CanWriteOfficeScope(session, targetOfficeCode))
+            {
+                message = "출발지와 도착지 모두 수정 가능한 사용자만 수령확정 또는 반려된 재고이동을 휴지통에서 변경할 수 있습니다.";
+                return false;
+            }
+        }
+
+        message = string.Empty;
+        return true;
+    }
+
+    private static bool IsInventoryTransferRouteInSessionTenant(LocalInventoryTransfer transfer, SessionState session)
+    {
+        if (HasFullAccess(session))
+            return true;
+
+        var tenantOfficeCodes = GetTenantOfficeCodes(session);
+        var fromOfficeCode = ResolveOfficeCodeFromWarehouseCode(transfer.FromWarehouseCode);
+        var toOfficeCode = ResolveOfficeCodeFromWarehouseCode(transfer.ToWarehouseCode);
+        return tenantOfficeCodes.Contains(fromOfficeCode, StringComparer.OrdinalIgnoreCase) &&
+               tenantOfficeCodes.Contains(toOfficeCode, StringComparer.OrdinalIgnoreCase);
     }
 
     private static bool CanAccessRental(string? officeCode, SessionState session)

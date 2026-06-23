@@ -142,6 +142,220 @@ public sealed class InventoryTransferScopeGuardTests
     }
 
     [Fact]
+    public async Task DeleteInventoryTransfer_DeniesSingleTargetOfficeUserFromDeletingReceivedMove()
+    {
+        using var appRoot = new LocalAppRootScope("georaeplan-transfer-delete-final-scope");
+        await using var db = CreateDbContext(appRoot.DbPath);
+        await db.Database.EnsureDeletedAsync();
+        await db.Database.EnsureCreatedAsync();
+
+        var itemId = Guid.Parse("b4111111-1111-1111-1111-111111111111");
+        var transferId = Guid.Parse("b4222222-2222-2222-2222-222222222222");
+        var lineId = Guid.Parse("b4333333-3333-3333-3333-333333333333");
+        var now = new DateTime(2026, 6, 24, 2, 10, 0, DateTimeKind.Utc);
+        db.Items.Add(CreateStockItem(itemId, "Target denied received delete item"));
+        db.ItemWarehouseStocks.AddRange(
+            new LocalItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 8m,
+                UpdatedAtUtc = now,
+                Revision = 20
+            },
+            new LocalItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                Quantity = 2m,
+                UpdatedAtUtc = now,
+                Revision = 21
+            });
+        db.InventoryTransfers.Add(new LocalInventoryTransfer
+        {
+            Id = transferId,
+            FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            TransferNumber = "TR-RECEIVED-TARGET-DELETE-DENIED",
+            TransferDate = new DateOnly(2026, 6, 24),
+            TransferStatus = InventoryTransferStatusNormalizer.Received,
+            ReceivedByUsername = "yeonsu-target",
+            ReceivedAtUtc = now.AddMinutes(-5),
+            CreatedAtUtc = now.AddHours(-1),
+            UpdatedAtUtc = now,
+            Revision = 40,
+            IsDirty = false,
+            Lines =
+            [
+                new LocalInventoryTransferLine
+                {
+                    Id = lineId,
+                    TransferId = transferId,
+                    ItemId = itemId,
+                    ItemNameOriginal = "Target denied received delete item",
+                    Unit = "EA",
+                    Quantity = 2m,
+                    ReceivedQuantity = 2m
+                }
+            ]
+        });
+        await db.SaveChangesAsync();
+
+        var targetSession = CreateUserSession(
+            TenantScopeCatalog.UsenetGroup,
+            OfficeCodeCatalog.Yeonsu,
+            TenantScopeCatalog.ScopeOfficeOnly,
+            AppPermissionNames.DeliveryEdit);
+        var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), targetSession);
+
+        var result = await service.DeleteInventoryTransferAsync(transferId, targetSession, expectedRevision: 40);
+
+        Assert.False(result.Success);
+        Assert.True(result.PermissionDenied);
+        db.ChangeTracker.Clear();
+        var stored = await db.InventoryTransfers.IgnoreQueryFilters().SingleAsync(transfer => transfer.Id == transferId);
+        Assert.False(stored.IsDeleted);
+        Assert.False(stored.IsDirty);
+        Assert.Equal(8m, await db.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(2m, await db.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.YeonsuMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task RestoreRecycleBinInventoryTransfer_DeniesTargetOfficeUserFromRestoringSourceMove()
+    {
+        using var appRoot = new LocalAppRootScope("georaeplan-transfer-restore-recycle-source-scope");
+        await using var db = CreateDbContext(appRoot.DbPath);
+        await db.Database.EnsureDeletedAsync();
+        await db.Database.EnsureCreatedAsync();
+
+        var itemId = Guid.Parse("b5111111-1111-1111-1111-111111111111");
+        var transferId = Guid.Parse("b5222222-2222-2222-2222-222222222222");
+        var lineId = Guid.Parse("b5333333-3333-3333-3333-333333333333");
+        var now = new DateTime(2026, 6, 24, 2, 20, 0, DateTimeKind.Utc);
+        db.Items.Add(CreateStockItem(itemId, "Target denied restore transfer item"));
+        db.ItemWarehouseStocks.Add(new LocalItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = now,
+            Revision = 20
+        });
+        db.InventoryTransfers.Add(new LocalInventoryTransfer
+        {
+            Id = transferId,
+            FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            TransferNumber = "TR-RESTORE-TARGET-DENIED",
+            TransferDate = new DateOnly(2026, 6, 24),
+            TransferStatus = InventoryTransferStatusNormalizer.Pending,
+            CreatedAtUtc = now.AddHours(-1),
+            UpdatedAtUtc = now,
+            Revision = 50,
+            IsDeleted = true,
+            IsDirty = false,
+            Lines =
+            [
+                new LocalInventoryTransferLine
+                {
+                    Id = lineId,
+                    TransferId = transferId,
+                    ItemId = itemId,
+                    ItemNameOriginal = "Target denied restore transfer item",
+                    Unit = "EA",
+                    Quantity = 2m
+                }
+            ]
+        });
+        await db.SaveChangesAsync();
+
+        var targetSession = CreateUserSession(
+            TenantScopeCatalog.UsenetGroup,
+            OfficeCodeCatalog.Yeonsu,
+            TenantScopeCatalog.ScopeOfficeOnly,
+            AppPermissionNames.DeliveryEdit);
+        var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), targetSession);
+
+        var result = await service.RestoreRecycleBinEntryAsync(
+            RecycleBinEntityKind.InventoryTransfer,
+            transferId,
+            targetSession);
+
+        Assert.False(result.Success);
+        Assert.True(result.PermissionDenied);
+        db.ChangeTracker.Clear();
+        Assert.True((await db.InventoryTransfers.IgnoreQueryFilters().SingleAsync(transfer => transfer.Id == transferId)).IsDeleted);
+        Assert.Equal(10m, await db.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task PermanentlyDeleteRecycleBinInventoryTransfer_DeniesTargetOfficeUserFromPurgingSourceMove()
+    {
+        using var appRoot = new LocalAppRootScope("georaeplan-transfer-purge-recycle-source-scope");
+        await using var db = CreateDbContext(appRoot.DbPath);
+        await db.Database.EnsureDeletedAsync();
+        await db.Database.EnsureCreatedAsync();
+
+        var itemId = Guid.Parse("b6111111-1111-1111-1111-111111111111");
+        var transferId = Guid.Parse("b6222222-2222-2222-2222-222222222222");
+        var lineId = Guid.Parse("b6333333-3333-3333-3333-333333333333");
+        db.Items.Add(CreateStockItem(itemId, "Target denied purge transfer item"));
+        db.InventoryTransfers.Add(new LocalInventoryTransfer
+        {
+            Id = transferId,
+            FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            TransferNumber = "TR-PURGE-TARGET-DENIED",
+            TransferDate = new DateOnly(2026, 6, 24),
+            TransferStatus = InventoryTransferStatusNormalizer.Pending,
+            CreatedAtUtc = DateTime.UtcNow.AddHours(-1),
+            UpdatedAtUtc = DateTime.UtcNow,
+            Revision = 60,
+            IsDeleted = true,
+            IsDirty = false,
+            Lines =
+            [
+                new LocalInventoryTransferLine
+                {
+                    Id = lineId,
+                    TransferId = transferId,
+                    ItemId = itemId,
+                    ItemNameOriginal = "Target denied purge transfer item",
+                    Unit = "EA",
+                    Quantity = 2m
+                }
+            ]
+        });
+        await db.SaveChangesAsync();
+
+        var targetSession = CreateUserSession(
+            TenantScopeCatalog.UsenetGroup,
+            OfficeCodeCatalog.Yeonsu,
+            TenantScopeCatalog.ScopeOfficeOnly,
+            AppPermissionNames.DeliveryEdit);
+        var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), targetSession);
+
+        var result = await service.PermanentlyDeleteRecycleBinEntryAsync(
+            RecycleBinEntityKind.InventoryTransfer,
+            transferId,
+            targetSession);
+
+        Assert.False(result.Success);
+        Assert.True(result.PermissionDenied);
+        Assert.True(await db.InventoryTransfers.IgnoreQueryFilters().AnyAsync(transfer => transfer.Id == transferId));
+        Assert.True(await db.InventoryTransferLines.IgnoreQueryFilters().AnyAsync(line => line.Id == lineId));
+    }
+
+    [Fact]
     public void InventoryTransferViewModel_CanDeleteTransfer_RequiresSourceOfficeForPendingStatus()
     {
         using var appRoot = new LocalAppRootScope("georaeplan-transfer-delete-ui-source-scope");

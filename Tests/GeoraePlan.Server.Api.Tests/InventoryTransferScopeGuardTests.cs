@@ -185,6 +185,129 @@ public sealed class InventoryTransferScopeGuardTests : IDisposable
             .AnyAsync(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.YeonsuMainWarehouse));
     }
 
+    [Fact]
+    public async Task Push_RejectsTargetOfficeDelete_WhenExistingTransferIsReceived()
+    {
+        var itemId = Guid.Parse("f4111111-1111-1111-1111-111111111111");
+        var transferId = Guid.Parse("f4222222-2222-2222-2222-222222222222");
+        var lineId = Guid.Parse("f4333333-3333-3333-3333-333333333333");
+        await SeedReceivedTransferAsync(itemId, transferId, lineId, "Target final delete denied item");
+
+        var targetUser = CreateDeliveryUser("yeonsu-target-transfer-final-delete", OfficeCodeCatalog.Yeonsu);
+        await using var scopedDb = CreateDbContext(targetUser);
+        var controller = CreateController(scopedDb, targetUser);
+        var existing = await scopedDb.InventoryTransfers
+            .IgnoreQueryFilters()
+            .Include(transfer => transfer.Lines)
+            .SingleAsync(transfer => transfer.Id == transferId);
+        var dto = BuildReceiptDto(existing, targetUser.Username, requestedQuantity: 2m);
+        dto.IsDeleted = true;
+        dto.MutationId = $"target-transfer-final-delete:InventoryTransfer:{existing.Id:N}";
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "target-transfer-final-delete",
+            InventoryTransfers = [dto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(InventoryTransfer), StringComparison.Ordinal) &&
+            conflict.Reason.Contains("source office", StringComparison.OrdinalIgnoreCase));
+        scopedDb.ChangeTracker.Clear();
+        var stored = await scopedDb.InventoryTransfers.IgnoreQueryFilters().SingleAsync(transfer => transfer.Id == transferId);
+        Assert.False(stored.IsDeleted);
+        Assert.Equal(8m, await scopedDb.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(2m, await scopedDb.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.YeonsuMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task RecycleBinRestore_RejectsTargetOfficeUserFromRestoringSourceMove()
+    {
+        var itemId = Guid.Parse("f5111111-1111-1111-1111-111111111111");
+        var transferId = Guid.Parse("f5222222-2222-2222-2222-222222222222");
+        var lineId = Guid.Parse("f5333333-3333-3333-3333-333333333333");
+        await SeedDeletedPendingTransferAsync(itemId, transferId, lineId, "Target restore denied item");
+
+        var targetUser = CreateDeliveryUser("yeonsu-target-transfer-restore", OfficeCodeCatalog.Yeonsu);
+        await using var scopedDb = CreateDbContext(targetUser);
+        var controller = CreateRecycleBinController(scopedDb, targetUser);
+        var storedBefore = await scopedDb.InventoryTransfers.IgnoreQueryFilters().SingleAsync(transfer => transfer.Id == transferId);
+
+        var response = await controller.Restore(new RecycleBinMutationRequest
+        {
+            Items =
+            [
+                new RecycleBinMutationTargetDto
+                {
+                    EntityId = transferId,
+                    Kind = "inventory-transfer",
+                    ExpectedRevision = storedBefore.Revision
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("source office", item.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, payload.SucceededCount);
+        scopedDb.ChangeTracker.Clear();
+        Assert.True((await scopedDb.InventoryTransfers.IgnoreQueryFilters().SingleAsync(transfer => transfer.Id == transferId)).IsDeleted);
+        Assert.Equal(10m, await scopedDb.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.False(await scopedDb.InventoryLedgerEntries.AnyAsync(entry => entry.SourceDocumentId == transferId));
+    }
+
+    [Fact]
+    public async Task RecycleBinPurge_RejectsTargetOfficeUserFromPurgingSourceMove()
+    {
+        var itemId = Guid.Parse("f6111111-1111-1111-1111-111111111111");
+        var transferId = Guid.Parse("f6222222-2222-2222-2222-222222222222");
+        var lineId = Guid.Parse("f6333333-3333-3333-3333-333333333333");
+        await SeedDeletedPendingTransferAsync(itemId, transferId, lineId, "Target purge denied item");
+
+        var targetUser = CreateDeliveryUser("yeonsu-target-transfer-purge", OfficeCodeCatalog.Yeonsu);
+        await using var scopedDb = CreateDbContext(targetUser);
+        var controller = CreateRecycleBinController(scopedDb, targetUser);
+        var storedBefore = await scopedDb.InventoryTransfers.IgnoreQueryFilters().SingleAsync(transfer => transfer.Id == transferId);
+
+        var response = await controller.Purge(new RecycleBinMutationRequest
+        {
+            Items =
+            [
+                new RecycleBinMutationTargetDto
+                {
+                    EntityId = transferId,
+                    Kind = "inventory-transfer",
+                    ExpectedRevision = storedBefore.Revision
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("source office", item.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, payload.SucceededCount);
+        scopedDb.ChangeTracker.Clear();
+        Assert.True(await scopedDb.InventoryTransfers.IgnoreQueryFilters().AnyAsync(transfer => transfer.Id == transferId));
+        Assert.True(await scopedDb.InventoryTransferLines.IgnoreQueryFilters().AnyAsync(line => line.Id == lineId));
+    }
+
     private async Task SeedPendingTransferAsync(
         Guid itemId,
         Guid transferId,
@@ -221,6 +344,122 @@ public sealed class InventoryTransferScopeGuardTests : IDisposable
             UpdatedAtUtc = now,
             LastSavedAtUtc = now,
             Revision = 30,
+            Lines =
+            [
+                new InventoryTransferLine
+                {
+                    Id = lineId,
+                    TransferId = transferId,
+                    ItemId = itemId,
+                    ItemNameOriginal = itemName,
+                    Unit = "EA",
+                    Quantity = 2m,
+                    ReceivedQuantity = 2m
+                }
+            ]
+        });
+        await seedDb.SaveChangesAsync();
+    }
+
+    private async Task SeedReceivedTransferAsync(
+        Guid itemId,
+        Guid transferId,
+        Guid lineId,
+        string itemName)
+    {
+        var now = new DateTime(2026, 6, 24, 2, 30, 0, DateTimeKind.Utc);
+        await using var seedDb = CreateDbContext(CreateAdminUser());
+        seedDb.Items.Add(CreateStockItem(itemId, itemName, currentStock: 10m));
+        seedDb.ItemWarehouseStocks.AddRange(
+            new ItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 8m,
+                UpdatedAtUtc = now,
+                Revision = 21
+            },
+            new ItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                Quantity = 2m,
+                UpdatedAtUtc = now,
+                Revision = 22
+            });
+        seedDb.InventoryTransfers.Add(new InventoryTransfer
+        {
+            Id = transferId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TransferNumber = $"TR-RECEIVED-{transferId:N}"[..24],
+            TransferDate = new DateOnly(2026, 6, 24),
+            FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            TransferStatus = InventoryTransferStatusNormalizer.Received,
+            CreatedByUsername = "usenet-source",
+            RequestedByUsername = "usenet-source",
+            RequestedAtUtc = now.AddMinutes(-30),
+            ReceivedByUsername = "yeonsu-target",
+            ReceivedAtUtc = now.AddMinutes(-10),
+            CreatedAtUtc = now.AddMinutes(-30),
+            UpdatedAtUtc = now,
+            LastSavedAtUtc = now,
+            Revision = 40,
+            Lines =
+            [
+                new InventoryTransferLine
+                {
+                    Id = lineId,
+                    TransferId = transferId,
+                    ItemId = itemId,
+                    ItemNameOriginal = itemName,
+                    Unit = "EA",
+                    Quantity = 2m,
+                    ReceivedQuantity = 2m
+                }
+            ]
+        });
+        await seedDb.SaveChangesAsync();
+    }
+
+    private async Task SeedDeletedPendingTransferAsync(
+        Guid itemId,
+        Guid transferId,
+        Guid lineId,
+        string itemName)
+    {
+        var now = new DateTime(2026, 6, 24, 2, 40, 0, DateTimeKind.Utc);
+        await using var seedDb = CreateDbContext(CreateAdminUser());
+        seedDb.Items.Add(CreateStockItem(itemId, itemName, currentStock: 10m));
+        seedDb.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = now,
+            Revision = 23
+        });
+        seedDb.InventoryTransfers.Add(new InventoryTransfer
+        {
+            Id = transferId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TransferNumber = $"TR-DELETED-{transferId:N}"[..24],
+            TransferDate = new DateOnly(2026, 6, 24),
+            FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            TransferStatus = InventoryTransferStatusNormalizer.Pending,
+            CreatedByUsername = "usenet-source",
+            RequestedByUsername = "usenet-source",
+            RequestedAtUtc = now.AddMinutes(-30),
+            CreatedAtUtc = now.AddMinutes(-30),
+            UpdatedAtUtc = now,
+            LastSavedAtUtc = now,
+            Revision = 50,
+            IsDeleted = true,
             Lines =
             [
                 new InventoryTransferLine
@@ -328,6 +567,18 @@ public sealed class InventoryTransferScopeGuardTests : IDisposable
             new InventoryLedgerService(dbContext),
             new InvoiceStockSnapshotService(dbContext, revisionClock),
             new RentalAssignmentHistoryService(dbContext),
+            new RentalSettlementRecalculationService(dbContext));
+    }
+
+    private static RecycleBinController CreateRecycleBinController(AppDbContext dbContext, TestCurrentUserContext currentUser)
+    {
+        var revisionClock = new RevisionClock();
+        return new RecycleBinController(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext),
+            new StubCentralFileStorage(),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, revisionClock),
             new RentalSettlementRecalculationService(dbContext));
     }
 

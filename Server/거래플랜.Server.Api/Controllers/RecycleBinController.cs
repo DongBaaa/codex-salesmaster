@@ -1545,12 +1545,9 @@ public sealed class RecycleBinController : ControllerBase
         var revisionCheck = EnsureRecycleBinMutationRevision(transfer, target);
         if (!revisionCheck.Success)
             return revisionCheck;
-        if (!_officeScopeService.CanWriteInventoryTransferRoute(
-                transfer.SourceOfficeCode,
-                transfer.TargetOfficeCode,
-                transfer.TenantCode))
+        if (!CanMutateInventoryTransferFromRecycleBin(transfer, out var scopeMessage))
         {
-            return (false, "현재 계정으로 복원할 수 없는 재고이동입니다.");
+            return (false, scopeMessage);
         }
 
         var originalTransferDeleted = transfer.IsDeleted;
@@ -2293,12 +2290,9 @@ public sealed class RecycleBinController : ControllerBase
         var revisionCheck = EnsureRecycleBinMutationRevision(transfer, target);
         if (!revisionCheck.Success)
             return revisionCheck;
-        if (!_officeScopeService.CanWriteInventoryTransferRoute(
-                transfer.SourceOfficeCode,
-                transfer.TargetOfficeCode,
-                transfer.TenantCode))
+        if (!CanMutateInventoryTransferFromRecycleBin(transfer, out var scopeMessage))
         {
-            return (false, "현재 계정으로 영구삭제할 수 없는 재고이동입니다.");
+            return (false, scopeMessage);
         }
 
         var receiveEvidencePath = transfer.ReceiveEvidencePath;
@@ -2508,6 +2502,44 @@ public sealed class RecycleBinController : ControllerBase
 
         return (true, string.Empty);
     }
+
+    private bool CanMutateInventoryTransferFromRecycleBin(InventoryTransfer transfer, out string message)
+    {
+        if (!_officeScopeService.CanReadInventoryTransferRoute(
+                transfer.SourceOfficeCode,
+                transfer.TargetOfficeCode,
+                transfer.TenantCode))
+        {
+            message = "Current account cannot access this inventory transfer route.";
+            return false;
+        }
+
+        if (!_officeScopeService.CanWriteOfficeForDeliveries(transfer.SourceOfficeCode, transfer.TenantCode))
+        {
+            message = $"Inventory transfer source office is outside the writable delivery scope: {transfer.SourceOfficeCode}.";
+            return false;
+        }
+
+        var normalizedStatus = InventoryTransferStatusNormalizer.Normalize(
+            transfer.TransferStatus,
+            transfer.ReceivedByUsername,
+            transfer.ReceivedAtUtc,
+            transfer.RejectedByUsername,
+            transfer.RejectedAtUtc);
+        if (IsFinalInventoryTransferStatus(normalizedStatus) &&
+            !_officeScopeService.CanWriteOfficeForDeliveries(transfer.TargetOfficeCode, transfer.TenantCode))
+        {
+            message = $"Inventory transfer target office is outside the writable delivery scope: {transfer.TargetOfficeCode}.";
+            return false;
+        }
+
+        message = string.Empty;
+        return true;
+    }
+
+    private static bool IsFinalInventoryTransferStatus(string? status)
+        => string.Equals(status, InventoryTransferStatusNormalizer.Received, StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(status, InventoryTransferStatusNormalizer.Rejected, StringComparison.OrdinalIgnoreCase);
 
     private (bool Success, string Message) EnsureCanRestoreLinkedCustomer(Customer customer)
         => !customer.IsDeleted || _officeScopeService.CanWriteOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode)

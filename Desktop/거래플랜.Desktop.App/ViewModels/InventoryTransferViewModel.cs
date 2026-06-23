@@ -151,7 +151,8 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             var destinationOfficeCode = ResolveOfficeCodeFromWarehouseCode(ToWarehouseCode);
 
             if (IsFinalTransferStatus)
-                return writableOfficeCodes.Contains(destinationOfficeCode, StringComparer.OrdinalIgnoreCase);
+                return writableOfficeCodes.Contains(sourceOfficeCode, StringComparer.OrdinalIgnoreCase) &&
+                       writableOfficeCodes.Contains(destinationOfficeCode, StringComparer.OrdinalIgnoreCase);
 
             return writableOfficeCodes.Contains(sourceOfficeCode, StringComparer.OrdinalIgnoreCase);
         }

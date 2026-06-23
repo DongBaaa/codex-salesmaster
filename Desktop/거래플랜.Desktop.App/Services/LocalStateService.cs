@@ -6146,9 +6146,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		string sourceOfficeCode = ResolveOfficeCodeFromWarehouseCode(transfer.FromWarehouseCode);
 		string targetOfficeCode = ResolveOfficeCodeFromWarehouseCode(transfer.ToWarehouseCode);
 		string normalizedStatus = InventoryTransferStatusNormalizer.Normalize(transfer.TransferStatus, transfer.ReceivedByUsername, transfer.ReceivedAtUtc, transfer.RejectedByUsername, transfer.RejectedAtUtc);
-		if (normalizedStatus is InventoryTransferStatusNormalizer.Received or InventoryTransferStatusNormalizer.Rejected && !CanWriteOfficeScope(session, targetOfficeCode))
+		if (normalizedStatus is InventoryTransferStatusNormalizer.Received or InventoryTransferStatusNormalizer.Rejected &&
+		    (!CanWriteOfficeScope(session, sourceOfficeCode) || !CanWriteOfficeScope(session, targetOfficeCode)))
 		{
-			return OfficeMutationResult.Denied("도착지 담당자 또는 관리자만 수령확정 또는 반려된 재고이동을 삭제할 수 있습니다.");
+			return OfficeMutationResult.Denied("출발지와 도착지 모두 수정 가능한 사용자만 수령확정 또는 반려된 재고이동을 삭제할 수 있습니다.");
 		}
 		if (normalizedStatus is not (InventoryTransferStatusNormalizer.Received or InventoryTransferStatusNormalizer.Rejected) && !CanWriteOfficeScope(session, sourceOfficeCode))
 		{

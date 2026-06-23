@@ -2862,8 +2862,8 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Missing("복원할 재고이동을 찾을 수 없습니다.");
         if (!transfer.IsDeleted)
             return OfficeMutationResult.Ok(transfer.Id, "이미 활성 상태인 재고이동입니다.");
-        if (!CanAccessInventoryTransferForRecycleBin(transfer, session))
-            return OfficeMutationResult.Denied("권한이 없어 해당 재고이동을 복원할 수 없습니다.");
+        if (!CanMutateInventoryTransferFromRecycleBin(transfer, session, out var scopeMessage))
+            return OfficeMutationResult.Denied(scopeMessage);
 
         var now = DateTime.UtcNow;
         var activeLines = transfer.Lines
@@ -3141,8 +3141,8 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Missing("영구삭제할 재고이동을 찾을 수 없습니다.");
         if (!transfer.IsDeleted)
             return OfficeMutationResult.Denied("활성 상태 재고이동은 휴지통에서 영구삭제할 수 없습니다.");
-        if (!CanAccessInventoryTransferForRecycleBin(transfer, session))
-            return OfficeMutationResult.Denied("권한이 없어 해당 재고이동을 영구삭제할 수 없습니다.");
+        if (!CanMutateInventoryTransferFromRecycleBin(transfer, session, out var scopeMessage))
+            return OfficeMutationResult.Denied(scopeMessage);
 
         var now = DateTime.UtcNow;
         if (!string.IsNullOrWhiteSpace(transfer.ReceiveEvidencePath))

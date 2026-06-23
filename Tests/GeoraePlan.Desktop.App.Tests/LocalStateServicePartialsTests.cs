@@ -6473,7 +6473,7 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
-    public async Task InventoryTransferViewModel_CanDeleteTransfer_RequiresTargetOfficeForFinalStatus()
+    public async Task InventoryTransferViewModel_CanDeleteTransfer_RequiresBothOfficesForFinalStatus()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-transfer-delete-ui-scope-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -6518,7 +6518,23 @@ public sealed class LocalStateServicePartialsTests
                 TransferStatus = InventoryTransferStatusNormalizer.Received
             };
 
-            Assert.True(targetViewModel.CanDeleteTransfer);
+            Assert.False(targetViewModel.CanDeleteTransfer);
+
+            var tenantWideSession = CreateUserSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                TenantScopeCatalog.ScopeTenantAll,
+                AppPermissionNames.DeliveryEdit);
+            var tenantWideService = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), tenantWideSession);
+            var tenantWideViewModel = new InventoryTransferViewModel(tenantWideService, tenantWideSession)
+            {
+                TransferId = Guid.Parse("b7600000-0000-0000-0000-000000000006"),
+                FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                TransferStatus = InventoryTransferStatusNormalizer.Received
+            };
+
+            Assert.True(tenantWideViewModel.CanDeleteTransfer);
         }
         finally
         {

@@ -2692,10 +2692,12 @@ public sealed class SyncController : ControllerBase
         {
             if (existingIsFinal)
             {
-                if (canWriteTarget)
+                if (canWriteSource && canWriteTarget)
                     return true;
 
-                reason = $"Inventory transfer target office is outside the writable delivery scope: {candidateTargetOffice}.";
+                reason = !canWriteSource
+                    ? $"Inventory transfer source office is outside the writable delivery scope: {candidateSourceOffice}."
+                    : $"Inventory transfer target office is outside the writable delivery scope: {candidateTargetOffice}.";
                 return false;
             }
 

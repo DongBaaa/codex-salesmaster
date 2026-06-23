@@ -2502,7 +2502,7 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     [Fact]
     public async Task PurgeInventoryTransfer_DeletesEvidenceStorageOnlyAfterDbCommit()
     {
-        var currentUser = CreateOfficeOnlyUser();
+        var currentUser = CreateAdminUser();
         await using var dbContext = CreateDbContext(currentUser);
 
         var itemId = Guid.NewGuid();
