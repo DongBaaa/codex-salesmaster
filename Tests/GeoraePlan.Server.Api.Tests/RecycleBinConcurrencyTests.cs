@@ -286,6 +286,74 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PurgeCustomer_RejectsWhenHistoricalAssignmentHistoryOutsideRentalWriteScope()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var historyId = Guid.NewGuid();
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "권한 밖 이력 연결 삭제 거래처",
+            NameMatchKey = "권한밖이력연결삭제거래처",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true
+        });
+        dbContext.RentalAssetAssignmentHistories.Add(new RentalAssetAssignmentHistory
+        {
+            Id = historyId,
+            AssetId = Guid.NewGuid(),
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            CustomerName = "권한 밖 이력 연결 삭제 거래처",
+            InstallLocation = "권한 밖 설치처",
+            ItemName = "권한 밖 설치 품목",
+            ManagementNumber = "HISTORY-CUSTOMER-PURGE-HIDDEN-001",
+            IsCurrent = false,
+            IsDeleted = false
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = customerId,
+                        Kind = "customer"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var result = Assert.Single(payload.Results);
+        Assert.False(result.Success);
+        Assert.Contains("임대이력", result.Message);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.True(await dbContext.Customers.IgnoreQueryFilters().AnyAsync(current => current.Id == customerId));
+        Assert.Equal(
+            customerId,
+            await dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                .Where(current => current.Id == historyId)
+                .Select(current => current.CustomerId)
+                .SingleAsync());
+    }
+
+    [Fact]
     public async Task PurgeItem_RejectsRemainingInvoiceLineReference()
     {
         var currentUser = CreateAdminUser();

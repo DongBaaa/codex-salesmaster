@@ -1682,6 +1682,9 @@ public sealed class RecycleBinController : ControllerBase
             .IgnoreQueryFilters()
             .Where(current => current.CustomerId == customerId)
             .ToListAsync(cancellationToken);
+        if (assignmentHistories.Any(history => !_officeScopeService.CanWriteOfficeForRentals(history.ResponsibleOfficeCode, history.TenantCode, history.OfficeCode)))
+            return (false, "현재 계정으로 연결된 렌탈 임대이력을 변경할 수 없어 거래처를 영구삭제할 수 없습니다.");
+
         foreach (var history in assignmentHistories)
             history.CustomerId = null;
 
