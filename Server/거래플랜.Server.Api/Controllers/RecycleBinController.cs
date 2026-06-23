@@ -1184,6 +1184,14 @@ public sealed class RecycleBinController : ControllerBase
                 if (transaction.CustomerId != linkedInvoiceCustomer.Id)
                     transaction.CustomerId = linkedInvoiceCustomer.Id;
                 customer = linkedInvoiceCustomer;
+
+                if (linkedInvoice.LinkedRentalBillingProfileId is Guid invoiceRentalProfileId && invoiceRentalProfileId != Guid.Empty)
+                {
+                    transaction.LinkedRentalBillingProfileId = invoiceRentalProfileId;
+                    transaction.LinkedRentalBillingRunId = linkedInvoice.LinkedRentalBillingRunId;
+                    if (!string.Equals(transaction.TransactionKind, "렌탈수금", StringComparison.OrdinalIgnoreCase))
+                        transaction.TransactionKind = "렌탈수금";
+                }
             }
         }
 
@@ -1227,6 +1235,7 @@ public sealed class RecycleBinController : ControllerBase
         if (linkedTransaction is null)
             return (true, false, false, false, null, null, string.Empty);
 
+        var transactionRelinked = false;
         if (linkedTransaction.LinkedInvoiceId != payment.InvoiceId)
         {
             if (linkedTransaction.LinkedInvoiceId.HasValue && linkedTransaction.LinkedInvoiceId.Value != Guid.Empty)
@@ -1234,7 +1243,7 @@ public sealed class RecycleBinController : ControllerBase
 
             linkedTransaction.LinkedInvoiceId = payment.InvoiceId;
             linkedTransaction.LinkedInvoiceNumber = invoice.InvoiceNumber;
-            linkedTransaction.SettlementAmount = payment.Amount;
+            transactionRelinked = true;
             if (invoice.LinkedRentalBillingProfileId is Guid invoiceRentalProfileId && invoiceRentalProfileId != Guid.Empty)
             {
                 linkedTransaction.LinkedRentalBillingProfileId = invoiceRentalProfileId;
@@ -1250,10 +1259,31 @@ public sealed class RecycleBinController : ControllerBase
                 linkedTransaction.TransactionKind = "전표수금";
             }
         }
+        if (linkedTransaction.SettlementAmount != payment.Amount)
+        {
+            linkedTransaction.SettlementAmount = payment.Amount;
+            transactionRelinked = true;
+        }
+        if (invoice.LinkedRentalBillingProfileId is Guid linkedInvoiceRentalProfileId && linkedInvoiceRentalProfileId != Guid.Empty)
+        {
+            if (linkedTransaction.LinkedRentalBillingProfileId != linkedInvoiceRentalProfileId)
+            {
+                linkedTransaction.LinkedRentalBillingProfileId = linkedInvoiceRentalProfileId;
+                transactionRelinked = true;
+            }
+            if (linkedTransaction.LinkedRentalBillingRunId != invoice.LinkedRentalBillingRunId)
+            {
+                linkedTransaction.LinkedRentalBillingRunId = invoice.LinkedRentalBillingRunId;
+                transactionRelinked = true;
+            }
+            if (!string.Equals(linkedTransaction.TransactionKind, "렌탈수금", StringComparison.OrdinalIgnoreCase))
+            {
+                linkedTransaction.TransactionKind = "렌탈수금";
+                transactionRelinked = true;
+            }
+        }
         if (!_officeScopeService.CanWriteOfficeForPayments(linkedTransaction.ResponsibleOfficeCode, linkedTransaction.TenantCode, linkedTransaction.OfficeCode))
             return (false, false, false, false, null, null, "현재 계정으로 연동 거래내역을 복원할 수 없습니다.");
-        var transactionRelinked = linkedTransaction.LinkedInvoiceId == payment.InvoiceId &&
-                                  linkedTransaction.SettlementAmount == payment.Amount;
         if (linkedTransaction.CustomerId != invoice.CustomerId)
         {
             linkedTransaction.CustomerId = invoice.CustomerId;

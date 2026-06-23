@@ -1998,6 +1998,38 @@ public sealed partial class LocalStateService
                     .IgnoreQueryFilters()
                     .FirstOrDefaultAsync(current => current.Id == transaction.LinkedInvoiceId.Value, ct);
             }
+
+            if (linkedInvoice is not null)
+            {
+                var linkedInvoiceCustomer = await _db.Customers
+                    .IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(current => current.Id == linkedInvoice.CustomerId, ct);
+                if (linkedInvoiceCustomer is null)
+                    return OfficeMutationResult.Missing("연결 전표의 거래처를 찾을 수 없습니다.");
+                if (!CanWriteOfficeScope(session, linkedInvoiceCustomer.ResponsibleOfficeCode, linkedInvoiceCustomer.OfficeCode))
+                    return OfficeMutationResult.Denied("권한이 없어 연결 전표의 거래처를 복원할 수 없습니다.");
+                if (linkedInvoiceCustomer.IsDeleted)
+                {
+                    RestoreCustomerCore(linkedInvoiceCustomer, session, now);
+                    AddRestoreAudit(nameof(LocalCustomer), linkedInvoiceCustomer.Id, new
+                    {
+                        linkedInvoiceCustomer.NameOriginal,
+                        Reason = "TransactionRestoreLinkedInvoice"
+                    }, session, now);
+                    customerRestored = true;
+                }
+                if (transaction.CustomerId != linkedInvoiceCustomer.Id)
+                    transaction.CustomerId = linkedInvoiceCustomer.Id;
+                customer = linkedInvoiceCustomer;
+
+                if (linkedInvoice.LinkedRentalBillingProfileId is Guid invoiceRentalProfileId && invoiceRentalProfileId != Guid.Empty)
+                {
+                    transaction.LinkedRentalBillingProfileId = invoiceRentalProfileId;
+                    transaction.LinkedRentalBillingRunId = linkedInvoice.LinkedRentalBillingRunId;
+                    if (!PaymentFlowConstants.IsRentalSettlementKind(transaction.TransactionKind))
+                        transaction.TransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt;
+                }
+            }
         }
 
         RestoreEntity(transaction, now);
@@ -2222,6 +2254,12 @@ public sealed partial class LocalStateService
                 if (linkedTransaction.SettlementAmount != payment.Amount)
                 {
                     linkedTransaction.SettlementAmount = payment.Amount;
+                    transactionRelinked = true;
+                }
+
+                if (linkedTransaction.CustomerId != invoice.CustomerId)
+                {
+                    linkedTransaction.CustomerId = invoice.CustomerId;
                     transactionRelinked = true;
                 }
 

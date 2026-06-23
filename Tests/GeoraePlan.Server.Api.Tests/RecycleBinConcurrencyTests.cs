@@ -1539,6 +1539,158 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task RestoreTransaction_AlignsRentalLinkToLinkedInvoice()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = CreateScopedCustomer("restore transaction rental customer", OfficeCodeCatalog.Usenet);
+        var invoiceProfileId = Guid.NewGuid();
+        var wrongProfileId = Guid.NewGuid();
+        var invoiceRunId = Guid.NewGuid();
+        var wrongRunId = Guid.NewGuid();
+        var invoice = CreateScopedInvoice(customer.Id, OfficeCodeCatalog.Usenet, "INV-TX-RESTORE-RENTAL-RELINK");
+        invoice.LinkedRentalBillingProfileId = invoiceProfileId;
+        invoice.LinkedRentalBillingRunId = invoiceRunId;
+        var transaction = new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 23),
+            TransactionKind = "렌탈수금",
+            LinkedInvoiceId = invoice.Id,
+            LinkedInvoiceNumber = invoice.InvoiceNumber,
+            LinkedRentalBillingProfileId = wrongProfileId,
+            LinkedRentalBillingRunId = wrongRunId,
+            ReceiptTotal = 40_000m,
+            BankReceipt = 40_000m,
+            SettlementAmount = 40_000m,
+            IsDeleted = true
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.RentalBillingProfiles.Add(CreateRentalProfile(invoiceProfileId, customer.Id, "restore transaction invoice profile", invoiceRunId));
+        dbContext.RentalBillingProfiles.Add(CreateRentalProfile(wrongProfileId, customer.Id, "restore transaction wrong profile", wrongRunId));
+        dbContext.Invoices.Add(invoice);
+        dbContext.Transactions.Add(transaction);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = transaction.Id,
+                        Kind = "transaction"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success);
+
+        dbContext.ChangeTracker.Clear();
+        var restoredTransaction = await dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == transaction.Id);
+        Assert.False(restoredTransaction.IsDeleted);
+        Assert.Equal(invoice.Id, restoredTransaction.LinkedInvoiceId);
+        Assert.Equal(invoiceProfileId, restoredTransaction.LinkedRentalBillingProfileId);
+        Assert.Equal(invoiceRunId, restoredTransaction.LinkedRentalBillingRunId);
+    }
+
+    [Fact]
+    public async Task RestorePayment_AlignsLinkedTransactionRentalLinkToInvoice()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = CreateScopedCustomer("restore payment rental customer", OfficeCodeCatalog.Usenet);
+        var invoiceProfileId = Guid.NewGuid();
+        var wrongProfileId = Guid.NewGuid();
+        var invoiceRunId = Guid.NewGuid();
+        var wrongRunId = Guid.NewGuid();
+        var invoice = CreateScopedInvoice(customer.Id, OfficeCodeCatalog.Usenet, "INV-PAY-RESTORE-RENTAL-RELINK");
+        invoice.LinkedRentalBillingProfileId = invoiceProfileId;
+        invoice.LinkedRentalBillingRunId = invoiceRunId;
+        var paymentId = Guid.NewGuid();
+        var payment = new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 23),
+            Amount = 40_000m,
+            IsDeleted = true
+        };
+        var linkedTransaction = new TransactionRecord
+        {
+            Id = paymentId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 23),
+            TransactionKind = "렌탈수금",
+            LinkedInvoiceId = invoice.Id,
+            LinkedInvoiceNumber = invoice.InvoiceNumber,
+            LinkedRentalBillingProfileId = wrongProfileId,
+            LinkedRentalBillingRunId = wrongRunId,
+            ReceiptTotal = 40_000m,
+            BankReceipt = 40_000m,
+            SettlementAmount = 40_000m,
+            IsDeleted = true
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.RentalBillingProfiles.Add(CreateRentalProfile(invoiceProfileId, customer.Id, "restore payment invoice profile", invoiceRunId));
+        dbContext.RentalBillingProfiles.Add(CreateRentalProfile(wrongProfileId, customer.Id, "restore payment wrong profile", wrongRunId));
+        dbContext.Invoices.Add(invoice);
+        dbContext.Payments.Add(payment);
+        dbContext.Transactions.Add(linkedTransaction);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = payment.Id,
+                        Kind = "payment"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success);
+
+        dbContext.ChangeTracker.Clear();
+        var restoredPayment = await dbContext.Payments.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == payment.Id);
+        var restoredTransaction = await dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == linkedTransaction.Id);
+        Assert.False(restoredPayment.IsDeleted);
+        Assert.False(restoredTransaction.IsDeleted);
+        Assert.Equal(invoice.Id, restoredTransaction.LinkedInvoiceId);
+        Assert.Equal(invoiceProfileId, restoredTransaction.LinkedRentalBillingProfileId);
+        Assert.Equal(invoiceRunId, restoredTransaction.LinkedRentalBillingRunId);
+    }
+
+    [Fact]
     public async Task RestoreTransaction_RestoresDeletedTransactionAttachments()
     {
         var currentUser = CreateOfficeOnlyUser();
@@ -4039,6 +4191,39 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
             ReceiptTotal = 1000m,
             SettlementAmount = 1000m,
             IsDeleted = true
+        };
+
+    private static RentalBillingProfile CreateRentalProfile(Guid profileId, Guid customerId, string customerName, Guid runId)
+        => new()
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"recycle-profile-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = customerName,
+            BillingStatus = "청구중",
+            SettlementStatus = "미입금",
+            CompletionStatus = "미완료",
+            MonthlyAmount = 100_000m,
+            OutstandingAmount = 100_000m,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new ServerRentalBillingRunSnapshot
+                {
+                    RunId = runId,
+                    RunKey = "2026-06",
+                    ScheduledDate = new DateOnly(2026, 6, 23),
+                    PeriodStartDate = new DateOnly(2026, 6, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    PeriodLabel = "2026-06",
+                    Status = "청구중",
+                    BilledAmount = 100_000m,
+                    SettlementStatus = "미입금"
+                }
+            })
         };
 
     private static string BuildBillingTemplateJson(Guid assetId)
