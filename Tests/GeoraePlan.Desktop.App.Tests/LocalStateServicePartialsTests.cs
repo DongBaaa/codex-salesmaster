@@ -5334,6 +5334,185 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task LocalStateService_ApplyServerPurgePayment_CleansStaleLinkedTransactionAndAttachment()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-payment-purge-stale-transaction-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var customerId = Guid.Parse("b8720000-0000-0000-0000-000000000001");
+            var invoiceId = Guid.Parse("b8720000-0000-0000-0000-000000000002");
+            var paymentId = Guid.Parse("b8720000-0000-0000-0000-000000000003");
+            var attachmentId = Guid.Parse("b8720000-0000-0000-0000-000000000004");
+            var attachmentDirectory = Path.Combine(tempRoot, "payment-purge-attachments");
+            Directory.CreateDirectory(attachmentDirectory);
+            var attachmentFile = Path.Combine(attachmentDirectory, "payment-purge-stale-transaction.txt");
+            await File.WriteAllTextAsync(attachmentFile, "payment purge stale transaction evidence");
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "수금 purge stale 거래처",
+                NameMatchKey = "수금purgestale거래처"
+            });
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = invoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 23)
+            });
+            db.Payments.Add(new LocalPayment
+            {
+                Id = paymentId,
+                InvoiceId = invoiceId,
+                PaymentDate = new DateOnly(2026, 6, 23),
+                Amount = 1000m,
+                IsDeleted = true
+            });
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = paymentId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 23),
+                TransactionKind = PaymentFlowConstants.TransactionKindInvoiceReceipt,
+                LinkedInvoiceId = invoiceId,
+                LinkedInvoiceNumber = "PAY-PURGE-STALE-TX",
+                ReceiptTotal = 1000m,
+                SettlementAmount = 1000m,
+                IsDeleted = true
+            });
+            db.TransactionAttachments.Add(new LocalTransactionAttachment
+            {
+                Id = attachmentId,
+                TransactionId = paymentId,
+                AttachmentType = "증빙",
+                FileName = Path.GetFileName(attachmentFile),
+                StoredFileName = Path.GetFileName(attachmentFile),
+                StoredPath = attachmentFile,
+                FileSize = new FileInfo(attachmentFile).Length,
+                UploadedAtUtc = DateTime.UtcNow,
+                IsDeleted = true
+            });
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            var purgeResult = await service.ApplyServerPurgeRecycleBinEntryAsync(
+                RecycleBinEntityKind.Payment,
+                paymentId);
+
+            Assert.True(purgeResult.Success, purgeResult.Message);
+            db.ChangeTracker.Clear();
+
+            Assert.False(await db.Payments.IgnoreQueryFilters().AnyAsync(payment => payment.Id == paymentId));
+            Assert.False(await db.Transactions.IgnoreQueryFilters().AnyAsync(transaction => transaction.Id == paymentId));
+            Assert.False(await db.TransactionAttachments.IgnoreQueryFilters().AnyAsync(attachment => attachment.TransactionId == paymentId));
+            Assert.False(File.Exists(attachmentFile));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalStateService_ApplyServerPurgePayment_CleansStaleTransactionEvenWhenPaymentAlreadyMissing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-payment-purge-missing-payment-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var customerId = Guid.Parse("b8730000-0000-0000-0000-000000000001");
+            var paymentId = Guid.Parse("b8730000-0000-0000-0000-000000000002");
+            var attachmentId = Guid.Parse("b8730000-0000-0000-0000-000000000003");
+            var attachmentDirectory = Path.Combine(tempRoot, "payment-purge-missing-payment");
+            Directory.CreateDirectory(attachmentDirectory);
+            var attachmentFile = Path.Combine(attachmentDirectory, "payment-purge-missing-payment.txt");
+            await File.WriteAllTextAsync(attachmentFile, "payment purge missing payment evidence");
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "수금 purge missing 거래처",
+                NameMatchKey = "수금purgemissing거래처"
+            });
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = paymentId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 23),
+                TransactionKind = PaymentFlowConstants.TransactionKindInvoiceReceipt,
+                ReceiptTotal = 1000m,
+                SettlementAmount = 1000m,
+                IsDeleted = true
+            });
+            db.TransactionAttachments.Add(new LocalTransactionAttachment
+            {
+                Id = attachmentId,
+                TransactionId = paymentId,
+                AttachmentType = "증빙",
+                FileName = Path.GetFileName(attachmentFile),
+                StoredFileName = Path.GetFileName(attachmentFile),
+                StoredPath = attachmentFile,
+                FileSize = new FileInfo(attachmentFile).Length,
+                UploadedAtUtc = DateTime.UtcNow,
+                IsDeleted = true
+            });
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            var purgeResult = await service.ApplyServerPurgeRecycleBinEntryAsync(
+                RecycleBinEntityKind.Payment,
+                paymentId);
+
+            Assert.True(purgeResult.Success, purgeResult.Message);
+            db.ChangeTracker.Clear();
+
+            Assert.False(await db.Transactions.IgnoreQueryFilters().AnyAsync(transaction => transaction.Id == paymentId));
+            Assert.False(await db.TransactionAttachments.IgnoreQueryFilters().AnyAsync(attachment => attachment.TransactionId == paymentId));
+            Assert.False(File.Exists(attachmentFile));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task LocalStateService_ApplyServerPurgeTransaction_CleansLinkedPaymentAndAttachmentWhenTransactionAlreadyMissing()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-transaction-purge-orphans-{Guid.NewGuid():N}");

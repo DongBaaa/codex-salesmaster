@@ -1330,21 +1330,45 @@ public sealed partial class LocalStateService
         var payment = await _db.Payments
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == paymentId, ct);
-        if (payment is null)
-            return OfficeMutationResult.Ok(paymentId, "수금/지급 서버 영구삭제 상태가 이미 로컬에 반영되어 있습니다.");
-
-        var activeLinkedTransaction = await _db.Transactions
+        var sameIdTransaction = await _db.Transactions
             .IgnoreQueryFilters()
-            .AsNoTracking()
-            .FirstOrDefaultAsync(current =>
-                current.Id == paymentId &&
-                !current.IsDeleted &&
-                current.LinkedInvoiceId == payment.InvoiceId, ct);
-        if (activeLinkedTransaction is not null)
+            .FirstOrDefaultAsync(current => current.Id == paymentId, ct);
+        if (sameIdTransaction is { IsDeleted: false })
             return OfficeMutationResult.Ok(paymentId, "활성 거래내역에서 생성된 전표 수금/지급 기록이어서 서버 영구삭제 반영을 보류했습니다.");
 
-        _db.Payments.Remove(payment);
+        var transactionAttachments = await _db.TransactionAttachments
+            .IgnoreQueryFilters()
+            .Where(current => current.TransactionId == paymentId)
+            .ToListAsync(ct);
+        if (payment is null && sameIdTransaction is null && transactionAttachments.Count == 0)
+            return OfficeMutationResult.Ok(paymentId, "수금/지급 서버 영구삭제 상태가 이미 로컬에 반영되어 있습니다.");
+
+        Guid? rentalBillingProfileId = sameIdTransaction?.LinkedRentalBillingProfileId;
+        Guid? rentalBillingRunId = sameIdTransaction?.LinkedRentalBillingRunId;
+        if ((!rentalBillingProfileId.HasValue || rentalBillingProfileId.Value == Guid.Empty) &&
+            payment is not null)
+        {
+            var linkedInvoice = await _db.Invoices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .FirstOrDefaultAsync(current => current.Id == payment.InvoiceId, ct);
+            rentalBillingProfileId = linkedInvoice?.LinkedRentalBillingProfileId;
+            rentalBillingRunId = linkedInvoice?.LinkedRentalBillingRunId;
+        }
+
+        if (payment is not null)
+            _db.Payments.Remove(payment);
+        _db.TransactionAttachments.RemoveRange(transactionAttachments);
+        if (sameIdTransaction is not null)
+            _db.Transactions.Remove(sameIdTransaction);
         await _db.SaveChangesAsync(ct);
+
+        if (rentalBillingProfileId.HasValue && rentalBillingProfileId.Value != Guid.Empty)
+            await RecalculateRentalSettlementAsync(rentalBillingProfileId.Value, rentalBillingRunId, ct);
+
+        foreach (var attachment in transactionAttachments)
+            TryDeleteAttachmentFile(attachment);
+
         return OfficeMutationResult.Ok(paymentId, "수금/지급 서버 영구삭제를 로컬에 반영했습니다.");
     }
 

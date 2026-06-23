@@ -2077,6 +2077,12 @@ public sealed class MobileReleaseConfigurationTests
             "Controllers",
             "RecycleBinController.cs"));
 
+        var paymentPurgeCaseStart = coordinatorSource.IndexOf("case \"payment\":", StringComparison.Ordinal);
+        var paymentPurgeCaseEnd = coordinatorSource.IndexOf("case \"transaction\":", paymentPurgeCaseStart, StringComparison.Ordinal);
+        Assert.True(paymentPurgeCaseStart >= 0, "모바일 payment purge case를 찾을 수 없습니다.");
+        Assert.True(paymentPurgeCaseEnd > paymentPurgeCaseStart, "모바일 payment purge case 범위를 찾을 수 없습니다.");
+        var paymentPurgeCaseSource = coordinatorSource.Substring(paymentPurgeCaseStart, paymentPurgeCaseEnd - paymentPurgeCaseStart);
+
         Assert.Contains("public List<RecycleBinPurgeRecordDto> PurgeRecords { get; set; } = new();", contractsSource, StringComparison.Ordinal);
         Assert.Contains("\"contract\" => await PurgeContractAsync(target, cancellationToken)", recycleBinControllerSource, StringComparison.Ordinal);
         Assert.Contains("CreatePurgeRecord(\"contract\", contract.Id", recycleBinControllerSource, StringComparison.Ordinal);
@@ -2130,7 +2136,10 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("state.SyncedTransactions.RemoveAll(transaction => transaction.LinkedInvoiceId == entityId", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedPayments, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("state.PendingPaymentAttachments.RemoveAll(attachment => attachment.PaymentId == entityId);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("RemoveEntityById(state.SyncedTransactions, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("RemoveEntityById(state.SyncedTransactions, entityId, purgeRevision);", paymentPurgeCaseSource, StringComparison.Ordinal);
+        Assert.Contains("RemoveEntityById(state.PendingPush.Transactions, entityId, purgeRevision);", paymentPurgeCaseSource, StringComparison.Ordinal);
+        Assert.Contains("state.SyncedTransactionAttachments.RemoveAll(attachment => attachment.TransactionId == entityId", paymentPurgeCaseSource, StringComparison.Ordinal);
+        Assert.Contains("state.PendingPush.TransactionAttachments.RemoveAll(attachment => attachment.TransactionId == entityId", paymentPurgeCaseSource, StringComparison.Ordinal);
         Assert.Contains("var transactionRemovedPaymentIds = new HashSet<Guid>();", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemovePaymentForPurgedTransaction(state.SyncedPayments, entityId, purgeRevision, transactionRemovedPaymentIds);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemovePaymentForPurgedTransaction(state.PendingPush.Payments, entityId, purgeRevision, transactionRemovedPaymentIds);", coordinatorSource, StringComparison.Ordinal);

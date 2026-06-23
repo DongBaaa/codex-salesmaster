@@ -1117,6 +1117,10 @@ public sealed class SyncCoordinator
                 RemoveEntityById(state.SyncedPayments, entityId, purgeRevision);
                 RemoveEntityById(state.PendingPush.Payments, entityId, purgeRevision);
                 state.PendingPaymentAttachments.RemoveAll(attachment => attachment.PaymentId == entityId);
+                RemoveEntityById(state.SyncedTransactions, entityId, purgeRevision);
+                RemoveEntityById(state.PendingPush.Transactions, entityId, purgeRevision);
+                state.SyncedTransactionAttachments.RemoveAll(attachment => attachment.TransactionId == entityId && !IsEntityNewerThanPurge(attachment, purgeRevision));
+                state.PendingPush.TransactionAttachments.RemoveAll(attachment => attachment.TransactionId == entityId && !IsEntityNewerThanPurge(attachment, purgeRevision));
                 break;
             case "transaction":
                 RemoveEntityById(state.SyncedTransactions, entityId, purgeRevision);
