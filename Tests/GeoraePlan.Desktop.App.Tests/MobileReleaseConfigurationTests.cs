@@ -2135,9 +2135,14 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("if (value.BillingProfileId == profileId)", coordinatorSource, StringComparison.Ordinal);
         Assert.DoesNotContain("value.BillingProfileId == profileId && !IsEntityNewerThanPurge(value, purgeRevision)", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedRentalAssets, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("RemoveIncludedAssetIdFromBillingTemplates(state.SyncedRentalBillingProfiles, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("RemoveIncludedAssetIdFromBillingTemplates(state.PendingPush.RentalBillingProfiles, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("state.SyncedRentalAssetAssignmentHistories.RemoveAll(history => history.AssetId == entityId", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedRentalBillingLogs, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("private static void RemoveEntityById<T>(List<T> values, Guid entityId, long purgeRevision)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("private static void RemoveIncludedAssetIdFromBillingTemplates(", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("JsonNode.Parse(templateJson ?? \"[]\")", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("if (IsEntityNewerThanPurge(value, purgeRevision))", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("private static void ClearRentalAssignmentHistoryCustomerReferences(", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("if (value.CustomerId == customerId)", coordinatorSource, StringComparison.Ordinal);
         Assert.DoesNotContain("value.CustomerId == customerId && !IsEntityNewerThanPurge(value, purgeRevision)", coordinatorSource, StringComparison.Ordinal);

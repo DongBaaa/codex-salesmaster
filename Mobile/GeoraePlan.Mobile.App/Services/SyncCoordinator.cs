@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using GeoraePlan.Mobile.App.Models;
 using 거래플랜.Shared.Contracts;
 
@@ -1138,6 +1139,8 @@ public sealed class SyncCoordinator
             case "rental-asset":
                 RemoveEntityById(state.SyncedRentalAssets, entityId, purgeRevision);
                 RemoveEntityById(state.PendingPush.RentalAssets, entityId, purgeRevision);
+                RemoveIncludedAssetIdFromBillingTemplates(state.SyncedRentalBillingProfiles, entityId, purgeRevision);
+                RemoveIncludedAssetIdFromBillingTemplates(state.PendingPush.RentalBillingProfiles, entityId, purgeRevision);
                 state.SyncedRentalAssetAssignmentHistories.RemoveAll(history => history.AssetId == entityId && !IsEntityNewerThanPurge(history, purgeRevision));
                 state.PendingPush.RentalAssetAssignmentHistories.RemoveAll(history => history.AssetId == entityId && !IsEntityNewerThanPurge(history, purgeRevision));
                 break;
@@ -1192,6 +1195,74 @@ public sealed class SyncCoordinator
             if (value.CustomerId == customerId)
                 value.CustomerId = null;
         }
+    }
+
+    private static void RemoveIncludedAssetIdFromBillingTemplates(
+        List<RentalBillingProfileDto> values,
+        Guid assetId,
+        long purgeRevision)
+    {
+        if (assetId == Guid.Empty)
+            return;
+
+        foreach (var value in values)
+        {
+            if (IsEntityNewerThanPurge(value, purgeRevision))
+                continue;
+
+            var normalizedJson = RemoveIncludedAssetId(value.BillingTemplateJson, assetId);
+            if (string.Equals(normalizedJson, value.BillingTemplateJson, StringComparison.Ordinal))
+                continue;
+
+            value.BillingTemplateJson = normalizedJson;
+            value.UpdatedAtUtc = DateTime.UtcNow;
+        }
+    }
+
+    private static string RemoveIncludedAssetId(string? templateJson, Guid assetId)
+    {
+        if (assetId == Guid.Empty)
+            return templateJson ?? "[]";
+
+        try
+        {
+            var root = JsonNode.Parse(templateJson ?? "[]");
+            if (root is not JsonArray items)
+                return templateJson ?? "[]";
+
+            foreach (var item in items.OfType<JsonObject>())
+            {
+                if (item["IncludedAssetIds"] is not JsonArray includedAssetIds)
+                    continue;
+
+                for (var index = includedAssetIds.Count - 1; index >= 0; index--)
+                {
+                    if (IsMatchingJsonGuid(includedAssetIds[index], assetId))
+                        includedAssetIds.RemoveAt(index);
+                }
+            }
+
+            return items.ToJsonString();
+        }
+        catch
+        {
+            return templateJson ?? "[]";
+        }
+    }
+
+    private static bool IsMatchingJsonGuid(JsonNode? value, Guid expected)
+    {
+        if (value is not JsonValue jsonValue)
+            return false;
+
+        if (jsonValue.TryGetValue<Guid>(out var guid))
+            return guid == expected;
+
+        if (jsonValue.TryGetValue<string>(out var text) &&
+            Guid.TryParse(text, out var parsed))
+            return parsed == expected;
+
+        return false;
     }
 
     private static bool IsEntityNewerThanPurge(SyncEntityDto entity, long purgeRevision)

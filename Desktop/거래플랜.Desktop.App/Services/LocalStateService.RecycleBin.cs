@@ -2426,13 +2426,22 @@ public sealed partial class LocalStateService
         var profile = await _db.RentalBillingProfiles
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == profileId, ct);
-        if (profile is null)
-            return OfficeMutationResult.Ok(profileId, "렌탈 청구프로필 서버 영구삭제 상태가 이미 반영되어 있습니다.");
 
         var linkedAssets = await _db.RentalAssets
             .IgnoreQueryFilters()
             .Where(current => current.BillingProfileId == profileId)
             .ToListAsync(ct);
+        var logs = await _db.RentalBillingLogs
+            .IgnoreQueryFilters()
+            .Where(current => current.BillingProfileId == profileId)
+            .ToListAsync(ct);
+        var assignmentHistories = await _db.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .Where(current => current.BillingProfileId == profileId)
+            .ToListAsync(ct);
+        if (profile is null && linkedAssets.Count == 0 && logs.Count == 0 && assignmentHistories.Count == 0)
+            return OfficeMutationResult.Ok(profileId, "렌탈 청구프로필 서버 영구삭제 상태가 이미 반영되어 있습니다.");
+
         foreach (var asset in linkedAssets)
         {
             asset.BillingProfileId = null;
@@ -2443,14 +2452,6 @@ public sealed partial class LocalStateService
             asset.UpdatedAtUtc = DateTime.UtcNow;
         }
 
-        var logs = await _db.RentalBillingLogs
-            .IgnoreQueryFilters()
-            .Where(current => current.BillingProfileId == profileId)
-            .ToListAsync(ct);
-        var assignmentHistories = await _db.RentalAssetAssignmentHistories
-            .IgnoreQueryFilters()
-            .Where(current => current.BillingProfileId == profileId)
-            .ToListAsync(ct);
         var now = DateTime.UtcNow;
         foreach (var history in assignmentHistories)
         {
@@ -2460,7 +2461,8 @@ public sealed partial class LocalStateService
         }
 
         _db.RentalBillingLogs.RemoveRange(logs);
-        _db.RentalBillingProfiles.Remove(profile);
+        if (profile is not null)
+            _db.RentalBillingProfiles.Remove(profile);
         await _db.SaveChangesAsync(ct);
         return OfficeMutationResult.Ok(profileId, "렌탈 청구프로필 서버 영구삭제를 로컬에 반영했습니다.");
     }
@@ -2472,10 +2474,15 @@ public sealed partial class LocalStateService
         var asset = await _db.RentalAssets
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == assetId, ct);
-        if (asset is null)
-            return OfficeMutationResult.Ok(assetId, "렌탈 자산 서버 영구삭제 상태가 이미 반영되어 있습니다.");
 
         var profiles = await GetBillingProfilesContainingAssetIdAsync(assetId, ct);
+        var assignmentHistories = await _db.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .Where(current => current.AssetId == assetId)
+            .ToListAsync(ct);
+        if (asset is null && profiles.Count == 0 && assignmentHistories.Count == 0)
+            return OfficeMutationResult.Ok(assetId, "렌탈 자산 서버 영구삭제 상태가 이미 반영되어 있습니다.");
+
         foreach (var profile in profiles)
         {
             var normalizedJson = RemoveIncludedAssetId(profile.BillingTemplateJson, assetId);
@@ -2487,13 +2494,9 @@ public sealed partial class LocalStateService
             profile.UpdatedAtUtc = DateTime.UtcNow;
         }
 
-        var assignmentHistories = await _db.RentalAssetAssignmentHistories
-            .IgnoreQueryFilters()
-            .Where(current => current.AssetId == assetId)
-            .ToListAsync(ct);
-
         _db.RentalAssetAssignmentHistories.RemoveRange(assignmentHistories);
-        _db.RentalAssets.Remove(asset);
+        if (asset is not null)
+            _db.RentalAssets.Remove(asset);
         await _db.SaveChangesAsync(ct);
         return OfficeMutationResult.Ok(assetId, "렌탈 자산 서버 영구삭제를 로컬에 반영했습니다.");
     }

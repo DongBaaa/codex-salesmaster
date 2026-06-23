@@ -5169,6 +5169,173 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task LocalStateService_ApplyServerPurgeRentalBillingProfile_CleansOrphanedChildrenWhenProfileAlreadyMissing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-profile-purge-orphans-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var profileId = Guid.Parse("b8100000-0000-0000-0000-000000000001");
+            var assetId = Guid.Parse("b8200000-0000-0000-0000-000000000001");
+            var logId = Guid.Parse("b8300000-0000-0000-0000-000000000001");
+            var historyId = Guid.Parse("b8400000-0000-0000-0000-000000000001");
+
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                BillingProfileId = profileId,
+                AssetKey = "USENET|PURGE-ORPHAN|A4-MFP",
+                CustomerName = "청구프로필 purge 고객",
+                CurrentCustomerName = "청구프로필 purge 고객",
+                ItemName = "A4-MFP",
+                ManagementNumber = "PURGE-ORPHAN-001",
+                AssetStatus = "임대",
+                BillingEligibilityStatus = "청구대상",
+                IsDirty = true
+            });
+            db.RentalBillingLogs.Add(new LocalRentalBillingLog
+            {
+                Id = logId,
+                BillingProfileId = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                BillingYearMonth = "2026-06",
+                ScheduledDate = new DateOnly(2026, 6, 25),
+                Status = "예정",
+                BilledAmount = 10000m,
+                IsDirty = true
+            });
+            db.RentalAssetAssignmentHistories.Add(new LocalRentalAssetAssignmentHistory
+            {
+                Id = historyId,
+                AssetId = assetId,
+                BillingProfileId = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "청구프로필 purge 고객",
+                BillingProfileDisplay = "누락된 프로필",
+                ItemName = "A4-MFP",
+                ManagementNumber = "PURGE-ORPHAN-001",
+                IsDirty = true
+            });
+            await db.SaveChangesAsync();
+
+            var purgeResult = await service.ApplyServerPurgeRecycleBinEntryAsync(
+                RecycleBinEntityKind.RentalBillingProfile,
+                profileId);
+
+            Assert.True(purgeResult.Success, purgeResult.Message);
+            db.ChangeTracker.Clear();
+
+            var asset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(current => current.Id == assetId);
+            Assert.Null(asset.BillingProfileId);
+            Assert.Equal("미확인", asset.BillingEligibilityStatus);
+            Assert.False(asset.IsDirty);
+            Assert.False(await db.RentalBillingLogs.IgnoreQueryFilters().AnyAsync(current => current.Id == logId));
+            var history = await db.RentalAssetAssignmentHistories.IgnoreQueryFilters().SingleAsync(current => current.Id == historyId);
+            Assert.Null(history.BillingProfileId);
+            Assert.False(history.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalStateService_ApplyServerPurgeRentalAsset_CleansTemplateAndHistoryWhenAssetAlreadyMissing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-asset-purge-orphans-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var assetId = Guid.Parse("b8500000-0000-0000-0000-000000000001");
+            var profileId = Guid.Parse("b8600000-0000-0000-0000-000000000001");
+            var historyId = Guid.Parse("b8700000-0000-0000-0000-000000000001");
+
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "자산 purge 고객",
+                ItemName = "A4-MFP",
+                BillingType = "묶음",
+                BillingAdvanceMode = "후불",
+                BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                {
+                    new()
+                    {
+                        DisplayItemName = "A4-MFP",
+                        BillingLineMode = "묶음",
+                        Quantity = 1m,
+                        UnitPrice = 10000m,
+                        Amount = 10000m,
+                        IncludedAssetIds = [assetId]
+                    }
+                }),
+                IsDirty = true
+            });
+            db.RentalAssetAssignmentHistories.Add(new LocalRentalAssetAssignmentHistory
+            {
+                Id = historyId,
+                AssetId = assetId,
+                BillingProfileId = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "자산 purge 고객",
+                BillingProfileDisplay = "자산 purge 프로필",
+                ItemName = "A4-MFP",
+                ManagementNumber = "PURGE-ASSET-001",
+                IsDirty = true
+            });
+            await db.SaveChangesAsync();
+
+            var purgeResult = await service.ApplyServerPurgeRecycleBinEntryAsync(
+                RecycleBinEntityKind.RentalAsset,
+                assetId);
+
+            Assert.True(purgeResult.Success, purgeResult.Message);
+            db.ChangeTracker.Clear();
+
+            var profile = await db.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(current => current.Id == profileId);
+            var items = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(profile.BillingTemplateJson) ?? [];
+            Assert.DoesNotContain(items.SelectMany(item => item.IncludedAssetIds), id => id == assetId);
+            Assert.False(profile.IsDirty);
+            Assert.False(await db.RentalAssetAssignmentHistories.IgnoreQueryFilters().AnyAsync(current => current.Id == historyId));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task InventoryTransferViewModel_CanDeleteTransfer_RequiresTargetOfficeForFinalStatus()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-transfer-delete-ui-scope-{Guid.NewGuid():N}");
