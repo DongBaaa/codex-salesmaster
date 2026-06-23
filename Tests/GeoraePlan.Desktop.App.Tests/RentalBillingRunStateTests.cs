@@ -735,6 +735,11 @@ public sealed class RentalBillingRunStateTests
                 billingRunId: firstRunId);
             Assert.True(completed.Success, completed.Message);
 
+            var completedProfile = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(current => current.Id == profileId);
+            Assert.Equal(new DateOnly(2026, 5, 26), completedProfile.LastSettledDate);
+            var completedRun = DeserializeRuns(completedProfile.BillingRunsJson).Single(run => run.RunId == firstRunId);
+            Assert.Equal(new DateOnly(2026, 5, 26), completedRun.SettledDate);
+
             var second = await service.StartBillingAsync(profileId, new DateOnly(2026, 6, 25), session);
             Assert.True(second.Success, second.Message);
             var secondInvoice = await db.Invoices.AsNoTracking().SingleAsync(current => current.Id == second.RelatedEntityId);

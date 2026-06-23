@@ -7828,6 +7828,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var remainingAmount = Math.Max(0m, billedAmount - settledAmountForCompletion);
         if (remainingAmount > 0m)
             return LocalMutationResult.Denied($"미수금 {remainingAmount:N0}원이 남아 있어 완납 처리할 수 없습니다. 먼저 '입금 등록'으로 수금을 완료하세요.");
+        var lastSettledDateForCompletion = settledAmountForCompletion > 0m
+            ? await GetRentalBillingRunLastSettledDateAsync(
+                billingProfileId,
+                currentRun?.RunId,
+                ct)
+            : null;
 
         var billingYearMonth = $"{scheduledDate.Year:0000}-{scheduledDate.Month:00}";
         var log = await _db.RentalBillingLogs.IgnoreQueryFilters()
@@ -7873,13 +7879,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
         profile.SettledAmount = settledAmountForCompletion;
         profile.OutstandingAmount = 0m;
         profile.SettlementStatus = PaymentFlowConstants.SettlementStatusConfirmed;
+        profile.LastSettledDate = lastSettledDateForCompletion;
         profile.RequiresFollowUp = false;
         if (currentRun is not null)
         {
             currentRun.BilledAmount = billedAmount;
             currentRun.SettledAmount = settledAmountForCompletion;
             currentRun.SettlementStatus = profile.SettlementStatus;
-            currentRun.SettledDate = profile.LastSettledDate;
+            currentRun.SettledDate = lastSettledDateForCompletion;
             currentRun.Status = profile.BillingStatus;
             currentRun.Note = (note ?? string.Empty).Trim();
             UpsertBillingRun(profile, currentRun);
