@@ -116,8 +116,7 @@ public sealed class UpdatesController : ControllerBase
 
         if (!string.IsNullOrWhiteSpace(packageUrl) &&
             Uri.TryCreate(packageUrl, UriKind.Absolute, out var absolutePackageUri) &&
-            (string.Equals(absolutePackageUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
-             string.Equals(absolutePackageUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+            IsAllowedAbsolutePackageUri(absolutePackageUri, platform))
         {
             package.PackageUrl = packageUrl;
             return;
@@ -128,6 +127,18 @@ public sealed class UpdatesController : ControllerBase
 
         var encodedFileName = Uri.EscapeDataString(package.FileName);
         package.PackageUrl = $"{Request.Scheme}://{Request.Host}/updates/download/{platform}/{encodedFileName}";
+    }
+
+    private bool IsAllowedAbsolutePackageUri(Uri packageUri, string platform)
+    {
+        if (!string.Equals(packageUri.Scheme, Request.Scheme, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!string.Equals(packageUri.Authority, Request.Host.Value, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var expectedPathPrefix = $"/updates/download/{platform}/";
+        return packageUri.AbsolutePath.StartsWith(expectedPathPrefix, StringComparison.OrdinalIgnoreCase);
     }
 
     private string GetStorageRoot()
