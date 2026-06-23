@@ -688,6 +688,318 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task InvoicesController_Update_RejectsProtectedInvoiceSameIdLineMutation_WhenPaymentExists()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "DIRECT-PAID-INVOICE-CUSTOMER",
+            NameMatchKey = "DIRECTPAIDINVOICECUSTOMER",
+            TradeType = "Sales"
+        };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "DIRECT-PAID-INVOICE-ITEM",
+            NameMatchKey = "DIRECTPAIDINVOICEITEM",
+            TrackingType = ItemTrackingTypes.NonStock
+        };
+        var invoiceId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+        dbContext.Customers.Add(customer);
+        dbContext.Items.Add(item);
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "DIRECT-PAID-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 24),
+            TotalAmount = 100m,
+            SupplyAmount = 91m,
+            VatAmount = 9m
+        });
+        dbContext.InvoiceLines.Add(new InvoiceLine
+        {
+            Id = lineId,
+            InvoiceId = invoiceId,
+            ItemId = item.Id,
+            ItemNameOriginal = item.NameOriginal,
+            ItemTrackingType = ItemTrackingTypes.NonStock,
+            Unit = "EA",
+            Quantity = 1m,
+            UnitPrice = 100m,
+            LineAmount = 100m
+        });
+        dbContext.Payments.Add(new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 6, 25),
+            Amount = 100m,
+            Note = "paid before direct API edit"
+        });
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Include(row => row.Customer)
+            .Include(row => row.Lines)
+            .SingleAsync(row => row.Id == invoiceId);
+        var dto = stored.ToDto();
+        dto.ExpectedRevision = stored.Revision;
+        dto.Lines.Single().UnitPrice = 200m;
+        dto.Lines.Single().LineAmount = 200m;
+        dto.TotalAmount = 200m;
+        dto.SupplyAmount = 182m;
+        dto.VatAmount = 18m;
+
+        var controller = new InvoicesController(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
+
+        var response = await controller.Update(invoiceId, dto, CancellationToken.None);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(response.Result);
+        var payload = Assert.IsType<ExpectedRevisionConflictResponse>(conflict.Value);
+        Assert.Equal(nameof(Invoice), payload.EntityName);
+        Assert.Contains("same invoice id", payload.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(100m, await dbContext.Invoices.IgnoreQueryFilters()
+            .Where(row => row.Id == invoiceId)
+            .Select(row => row.TotalAmount)
+            .SingleAsync());
+        Assert.Equal(100m, await dbContext.InvoiceLines.IgnoreQueryFilters()
+            .Where(row => row.Id == lineId)
+            .Select(row => row.LineAmount)
+            .SingleAsync());
+        Assert.Equal(100m, await dbContext.Payments.IgnoreQueryFilters()
+            .Where(row => row.InvoiceId == invoiceId && !row.IsDeleted)
+            .Select(row => row.Amount)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task InvoicesController_Update_RejectsProtectedInvoiceSameIdLineMutation_WhenLinkedTransactionExists()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "DIRECT-TRANSACTION-INVOICE-CUSTOMER",
+            NameMatchKey = "DIRECTTRANSACTIONINVOICECUSTOMER",
+            TradeType = "Sales"
+        };
+        var invoiceId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "DIRECT-TRX-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 24),
+            TotalAmount = 100m,
+            SupplyAmount = 91m,
+            VatAmount = 9m
+        });
+        dbContext.InvoiceLines.Add(new InvoiceLine
+        {
+            Id = lineId,
+            InvoiceId = invoiceId,
+            ItemNameOriginal = "transaction line",
+            ItemTrackingType = ItemTrackingTypes.NonStock,
+            Unit = "EA",
+            Quantity = 1m,
+            UnitPrice = 100m,
+            LineAmount = 100m
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 25),
+            TransactionKind = "direct invoice receipt",
+            LinkedInvoiceId = invoiceId,
+            LinkedInvoiceNumber = "DIRECT-TRX-001",
+            BankReceipt = 100m,
+            ReceiptTotal = 100m,
+            SettlementAmount = 100m
+        });
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Include(row => row.Customer)
+            .Include(row => row.Lines)
+            .SingleAsync(row => row.Id == invoiceId);
+        var dto = stored.ToDto();
+        dto.ExpectedRevision = stored.Revision;
+        dto.Lines.Single().UnitPrice = 200m;
+        dto.Lines.Single().LineAmount = 200m;
+        dto.TotalAmount = 200m;
+        dto.SupplyAmount = 182m;
+        dto.VatAmount = 18m;
+
+        var controller = new InvoicesController(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
+
+        var response = await controller.Update(invoiceId, dto, CancellationToken.None);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(response.Result);
+        var payload = Assert.IsType<ExpectedRevisionConflictResponse>(conflict.Value);
+        Assert.Equal(nameof(Invoice), payload.EntityName);
+        Assert.Contains("same invoice id", payload.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(100m, await dbContext.Invoices.IgnoreQueryFilters()
+            .Where(row => row.Id == invoiceId)
+            .Select(row => row.TotalAmount)
+            .SingleAsync());
+        Assert.Equal(100m, await dbContext.InvoiceLines.IgnoreQueryFilters()
+            .Where(row => row.Id == lineId)
+            .Select(row => row.LineAmount)
+            .SingleAsync());
+        Assert.Equal(100m, await dbContext.Transactions.IgnoreQueryFilters()
+            .Where(row => row.LinkedInvoiceId == invoiceId && !row.IsDeleted)
+            .Select(row => row.SettlementAmount)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task InvoicesController_Update_AllowsProtectedInvoiceMetadataOnlyChange_WhenPaymentExists()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "DIRECT-PAID-METADATA-CUSTOMER",
+            NameMatchKey = "DIRECTPAIDMETADATACUSTOMER",
+            TradeType = "Sales"
+        };
+        var invoiceId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "DIRECT-PAID-META-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 24),
+            TotalAmount = 100m,
+            SupplyAmount = 91m,
+            VatAmount = 9m,
+            Memo = "before"
+        });
+        dbContext.InvoiceLines.Add(new InvoiceLine
+        {
+            Id = lineId,
+            InvoiceId = invoiceId,
+            ItemNameOriginal = "metadata line",
+            ItemTrackingType = ItemTrackingTypes.NonStock,
+            Unit = "EA",
+            Quantity = 1m,
+            UnitPrice = 100m,
+            LineAmount = 100m
+        });
+        dbContext.Payments.Add(new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 6, 25),
+            Amount = 100m,
+            Note = "paid before metadata edit"
+        });
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Include(row => row.Customer)
+            .Include(row => row.Lines)
+            .SingleAsync(row => row.Id == invoiceId);
+        var dto = stored.ToDto();
+        dto.ExpectedRevision = stored.Revision;
+        dto.Memo = "memo-only direct API edit";
+
+        var controller = new InvoicesController(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
+
+        var saved = AssertOk(await controller.Update(invoiceId, dto, CancellationToken.None));
+
+        Assert.Equal("memo-only direct API edit", saved.Memo);
+        Assert.Equal(100m, await dbContext.Invoices.IgnoreQueryFilters()
+            .Where(row => row.Id == invoiceId)
+            .Select(row => row.TotalAmount)
+            .SingleAsync());
+        Assert.Equal(100m, await dbContext.InvoiceLines.IgnoreQueryFilters()
+            .Where(row => row.Id == lineId)
+            .Select(row => row.LineAmount)
+            .SingleAsync());
+        Assert.Equal(100m, await dbContext.Payments.IgnoreQueryFilters()
+            .Where(row => row.InvoiceId == invoiceId && !row.IsDeleted)
+            .Select(row => row.Amount)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task InvoicesController_Update_ForbidsTenantOfficeMismatchedExistingInvoice_ForOfficeScopedUser()
     {
         var currentUser = new TestCurrentUserContext

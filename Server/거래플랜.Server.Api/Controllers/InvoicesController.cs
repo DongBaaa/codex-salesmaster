@@ -181,6 +181,25 @@ public sealed class InvoicesController : ControllerBase
         if (await ValidateLinkedRentalBillingProfileScopeAsync(dto, cancellationToken) is { } rentalProfileScopeError)
             return rentalProfileScopeError;
 
+        if (await InvoiceStructuralMutationGuard.ShouldProtectExistingInvoiceFromSameIdStructuralMutationAsync(
+                _dbContext,
+                entity,
+                dto,
+                cancellationToken,
+                protectRentalLinks: false,
+                allowSameRentalTargetTransactions: true) &&
+            InvoiceStructuralMutationGuard.HasSameIdInvoiceStructuralMutation(entity, dto))
+        {
+            return Conflict(new ExpectedRevisionConflictResponse
+            {
+                EntityName = nameof(Invoice),
+                EntityId = entity.Id,
+                ExpectedRevision = dto.ExpectedRevision > 0 ? dto.ExpectedRevision : dto.Revision,
+                CurrentRevision = entity.Revision,
+                Reason = "A paid, rental-linked, or versioned invoice cannot be structurally changed with the same invoice id. Save it as a new invoice version."
+            });
+        }
+
         var previousRentalTarget = new Invoice
         {
             LinkedRentalBillingProfileId = entity.LinkedRentalBillingProfileId,
