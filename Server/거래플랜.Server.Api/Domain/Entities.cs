@@ -563,6 +563,7 @@ public sealed class RecycleBinPurgeRecord : TrackedEntity
     public Guid EntityId { get; set; }
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = OfficeCodeCatalog.Shared;
+    public string SourceOfficeCode { get; set; } = string.Empty;
+    public string TargetOfficeCode { get; set; } = string.Empty;
     public DateTime PurgedAtUtc { get; set; } = DateTime.UtcNow;
 }
-

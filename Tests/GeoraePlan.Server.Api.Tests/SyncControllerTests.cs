@@ -5786,6 +5786,71 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Pull_OfficeOnlyDeliveryUser_DoesNotReturnSharedInventoryTransferPurgeRecordWithoutReadableRoute()
+    {
+        var hiddenLegacyTransferPurgeId = Guid.NewGuid();
+        var hiddenRouteTransferPurgeId = Guid.NewGuid();
+        var visibleTransferPurgeId = Guid.NewGuid();
+
+        _dbContext.RecycleBinPurgeRecords.AddRange(
+            new RecycleBinPurgeRecord
+            {
+                Id = Guid.NewGuid(),
+                Kind = "inventory-transfer",
+                EntityId = hiddenLegacyTransferPurgeId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                Revision = 10,
+                PurgedAtUtc = new DateTime(2026, 6, 24, 0, 0, 0, DateTimeKind.Utc)
+            },
+            new RecycleBinPurgeRecord
+            {
+                Id = Guid.NewGuid(),
+                Kind = "inventory-transfer",
+                EntityId = hiddenRouteTransferPurgeId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                TargetOfficeCode = OfficeCodeCatalog.Usenet,
+                Revision = 11,
+                PurgedAtUtc = new DateTime(2026, 6, 24, 0, 1, 0, DateTimeKind.Utc)
+            },
+            new RecycleBinPurgeRecord
+            {
+                Id = Guid.NewGuid(),
+                Kind = "inventory-transfer",
+                EntityId = visibleTransferPurgeId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                Revision = 12,
+                PurgedAtUtc = new DateTime(2026, 6, 24, 0, 2, 0, DateTimeKind.Utc)
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu_inventory_purge_scope_user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+
+        var response = await controller.Pull(0, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPullResponse>(ok.Value);
+
+        Assert.DoesNotContain(result.PurgeRecords, record => record.EntityId == hiddenLegacyTransferPurgeId);
+        Assert.DoesNotContain(result.PurgeRecords, record => record.EntityId == hiddenRouteTransferPurgeId);
+        var visibleRecord = Assert.Single(result.PurgeRecords, record => record.EntityId == visibleTransferPurgeId);
+        Assert.Equal(OfficeCodeCatalog.Usenet, visibleRecord.SourceOfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, visibleRecord.TargetOfficeCode);
+    }
+
+    [Fact]
     public async Task Pull_OfficeOnlyUser_DoesNotReturnRentalAssignmentHistoryOutsideHistoryScopeEvenWhenAssetIsReadable()
     {
         var visibleAsset = new RentalAsset

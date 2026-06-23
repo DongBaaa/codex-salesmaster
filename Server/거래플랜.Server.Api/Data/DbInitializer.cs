@@ -2731,6 +2731,8 @@ public static partial class DbInitializer
                         "EntityId" TEXT NOT NULL,
                         "TenantCode" TEXT NOT NULL,
                         "OfficeCode" TEXT NOT NULL,
+                        "SourceOfficeCode" TEXT NOT NULL DEFAULT '',
+                        "TargetOfficeCode" TEXT NOT NULL DEFAULT '',
                         "PurgedAtUtc" TEXT NOT NULL
                     );
                     """,
@@ -2750,6 +2752,8 @@ public static partial class DbInitializer
                         "EntityId" uuid NOT NULL,
                         "TenantCode" text NOT NULL,
                         "OfficeCode" text NOT NULL,
+                        "SourceOfficeCode" text NOT NULL DEFAULT '',
+                        "TargetOfficeCode" text NOT NULL DEFAULT '',
                         "PurgedAtUtc" timestamp with time zone NOT NULL
                     );
                     """,
@@ -2761,11 +2765,16 @@ public static partial class DbInitializer
             TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
 
+        await EnsureColumnAsync(dbContext, "RecycleBinPurgeRecords", "SourceOfficeCode", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RecycleBinPurgeRecords", "TargetOfficeCode", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+
         foreach (var sql in new[]
                  {
                      "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RecycleBinPurgeRecords_Kind_EntityId\" ON \"RecycleBinPurgeRecords\" (\"Kind\", \"EntityId\");",
                      "CREATE INDEX IF NOT EXISTS \"IX_RecycleBinPurgeRecords_TenantCode\" ON \"RecycleBinPurgeRecords\" (\"TenantCode\");",
-                     "CREATE INDEX IF NOT EXISTS \"IX_RecycleBinPurgeRecords_OfficeCode\" ON \"RecycleBinPurgeRecords\" (\"OfficeCode\");"
+                     "CREATE INDEX IF NOT EXISTS \"IX_RecycleBinPurgeRecords_OfficeCode\" ON \"RecycleBinPurgeRecords\" (\"OfficeCode\");",
+                     "CREATE INDEX IF NOT EXISTS \"IX_RecycleBinPurgeRecords_SourceOfficeCode\" ON \"RecycleBinPurgeRecords\" (\"SourceOfficeCode\");",
+                     "CREATE INDEX IF NOT EXISTS \"IX_RecycleBinPurgeRecords_TargetOfficeCode\" ON \"RecycleBinPurgeRecords\" (\"TargetOfficeCode\");"
                  })
         {
             try

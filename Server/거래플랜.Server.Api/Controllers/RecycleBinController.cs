@@ -2357,7 +2357,14 @@ public sealed class RecycleBinController : ControllerBase
         await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
         await TouchPurgeRecordsAsync(
         [
-            CreatePurgeRecord("inventory-transfer", transfer.Id, transfer.TenantCode, OfficeCodeCatalog.Shared, transfer.SourceOfficeCode)
+            CreatePurgeRecord(
+                "inventory-transfer",
+                transfer.Id,
+                transfer.TenantCode,
+                OfficeCodeCatalog.Shared,
+                transfer.SourceOfficeCode,
+                transfer.SourceOfficeCode,
+                transfer.TargetOfficeCode)
         ], cancellationToken);
         _dbContext.InventoryTransferLines.RemoveRange(transfer.Lines);
         _dbContext.InventoryTransfers.Remove(transfer);
@@ -2823,7 +2830,9 @@ public sealed class RecycleBinController : ControllerBase
         Guid entityId,
         string? tenantCode,
         string? officeCode,
-        string? fallbackOfficeCode = null)
+        string? fallbackOfficeCode = null,
+        string? sourceOfficeCode = null,
+        string? targetOfficeCode = null)
     {
         var resolvedOfficeCode = ResolvePurgeRecordOfficeCode(officeCode, fallbackOfficeCode);
         return new RecycleBinPurgeRecordDto
@@ -2837,10 +2846,17 @@ public sealed class RecycleBinController : ControllerBase
                 TenantScopeCatalog.UsenetGroup,
                 resolvedOfficeCode),
             OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(resolvedOfficeCode, OfficeCodeCatalog.Shared),
+            SourceOfficeCode = NormalizeOptionalPurgeOfficeCode(sourceOfficeCode),
+            TargetOfficeCode = NormalizeOptionalPurgeOfficeCode(targetOfficeCode),
             PurgedAtUtc = DateTime.UtcNow,
             IsDeleted = false
         };
     }
+
+    private static string NormalizeOptionalPurgeOfficeCode(string? officeCode)
+        => OfficeCodeCatalog.TryNormalizeOfficeCode(officeCode, out var normalizedOfficeCode)
+            ? normalizedOfficeCode
+            : string.Empty;
 
     private static string ResolvePurgeRecordOfficeCode(string? officeCode, string? fallbackOfficeCode)
     {

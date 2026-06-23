@@ -480,9 +480,11 @@ public sealed class InventoryTransferScopeGuardTests : IDisposable
 
         var ok = Assert.IsType<OkObjectResult>(pullResponse.Result);
         var payload = Assert.IsType<SyncPullResponse>(ok.Value);
-        Assert.Contains(payload.PurgeRecords, record =>
+        var purgeRecord = Assert.Single(payload.PurgeRecords, record =>
             string.Equals(record.Kind, "inventory-transfer", StringComparison.OrdinalIgnoreCase) &&
             record.EntityId == transferId);
+        Assert.Equal(OfficeCodeCatalog.Usenet, purgeRecord.SourceOfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, purgeRecord.TargetOfficeCode);
         Assert.DoesNotContain(payload.InventoryTransfers, transfer => transfer.Id == transferId);
     }
 

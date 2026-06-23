@@ -1142,6 +1142,8 @@ public static class DtoMappings
             EntityId = entity.EntityId,
             TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(entity.TenantCode, entity.OfficeCode),
             OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode),
+            SourceOfficeCode = NormalizeOptionalOfficeCode(entity.SourceOfficeCode),
+            TargetOfficeCode = NormalizeOptionalOfficeCode(entity.TargetOfficeCode),
             PurgedAtUtc = entity.PurgedAtUtc
         };
 
@@ -1158,9 +1160,16 @@ public static class DtoMappings
             entity.OfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(dto.OfficeCode, entity.OfficeCode);
         else if (string.IsNullOrWhiteSpace(entity.OfficeCode))
             entity.OfficeCode = OfficeCodeCatalog.Shared;
+        entity.SourceOfficeCode = NormalizeOptionalOfficeCode(dto.SourceOfficeCode);
+        entity.TargetOfficeCode = NormalizeOptionalOfficeCode(dto.TargetOfficeCode);
         entity.PurgedAtUtc = NormalizeUtc(dto.PurgedAtUtc);
         entity.IsDeleted = false;
     }
+
+    private static string NormalizeOptionalOfficeCode(string? value)
+        => OfficeCodeCatalog.TryNormalizeOfficeCode(value, out var normalized)
+            ? normalized
+            : string.Empty;
 
     public static PaymentDto ToDto(this Payment entity) =>
         new()

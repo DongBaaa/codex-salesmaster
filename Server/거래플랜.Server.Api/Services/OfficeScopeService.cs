@@ -657,6 +657,34 @@ public sealed class OfficeScopeService
                CanReadOfficeForDeliveries(targetOfficeCode, tenantCode);
     }
 
+    public bool CanReadInventoryTransferPurgeRecord(
+        string? sourceOfficeCode,
+        string? targetOfficeCode,
+        string? tenantCode,
+        string? fallbackOfficeCode = null)
+    {
+        if (HasGlobalDataScope)
+            return true;
+
+        var hasSource = OfficeCodeCatalog.TryNormalizeOfficeCode(sourceOfficeCode, out var normalizedSource);
+        var hasTarget = OfficeCodeCatalog.TryNormalizeOfficeCode(targetOfficeCode, out var normalizedTarget);
+        if (hasSource && hasTarget)
+            return CanReadInventoryTransferRoute(normalizedSource, normalizedTarget, tenantCode);
+
+        if (!string.Equals(
+                TenantScopeCatalog.NormalizeTenantCodeOrDefault(tenantCode),
+                CurrentTenantCode,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (OfficeCodeCatalog.IsSharedOfficeCode(fallbackOfficeCode))
+            return HasDeliveryWideReadScope;
+
+        return CanReadOfficeForDeliveries(fallbackOfficeCode, tenantCode);
+    }
+
     public bool CanWriteInventoryTransferRoute(string? sourceOfficeCode, string? targetOfficeCode, string? tenantCode)
     {
         if (HasGlobalDataScope)

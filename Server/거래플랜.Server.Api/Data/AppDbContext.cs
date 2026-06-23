@@ -200,6 +200,8 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<RecycleBinPurgeRecord>().HasIndex(x => new { x.Kind, x.EntityId }).IsUnique();
         modelBuilder.Entity<RecycleBinPurgeRecord>().HasIndex(x => x.TenantCode);
         modelBuilder.Entity<RecycleBinPurgeRecord>().HasIndex(x => x.OfficeCode);
+        modelBuilder.Entity<RecycleBinPurgeRecord>().HasIndex(x => x.SourceOfficeCode);
+        modelBuilder.Entity<RecycleBinPurgeRecord>().HasIndex(x => x.TargetOfficeCode);
         modelBuilder.Entity<ProcessedSyncMutation>().HasIndex(x => x.MutationId).IsUnique();
         modelBuilder.Entity<InventoryLedgerEntry>().HasIndex(x => new { x.ItemId, x.OccurredDate });
         modelBuilder.Entity<InventoryLedgerEntry>().HasIndex(x => x.WarehouseCode);

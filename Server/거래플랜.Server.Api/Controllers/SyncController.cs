@@ -6532,7 +6532,11 @@ public sealed class SyncController : ControllerBase
             "company-profile" or "companyprofile" => _officeScopeService.CanReadOfficeForCompanyProfiles(record.OfficeCode),
             "invoice" => _officeScopeService.CanReadOfficeForSyncInvoices(record.OfficeCode, record.TenantCode),
             "payment" or "transaction" => _officeScopeService.CanReadOfficeForPayments(record.OfficeCode, record.TenantCode),
-            "inventory-transfer" or "inventorytransfer" => _officeScopeService.CanReadOfficeForDeliveries(record.OfficeCode, record.TenantCode),
+            "inventory-transfer" or "inventorytransfer" => _officeScopeService.CanReadInventoryTransferPurgeRecord(
+                record.SourceOfficeCode,
+                record.TargetOfficeCode,
+                record.TenantCode,
+                record.OfficeCode),
             "rental-management-company" or "rentalmanagementcompany" => _officeScopeService.CanReadOfficeForRentals(record.OfficeCode, record.TenantCode),
             "rental-billing-profile" or "rentalbillingprofile" => _officeScopeService.CanReadOfficeForRentals(record.OfficeCode, record.TenantCode),
             "rental-asset" or "rentalasset" => _officeScopeService.CanReadOfficeForRentals(record.OfficeCode, record.TenantCode),
