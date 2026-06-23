@@ -1987,11 +1987,14 @@ public sealed class RecycleBinController : ControllerBase
             return CreatePurgeRecord("payment", payment.Id, paymentInvoice.TenantCode, paymentInvoice.ResponsibleOfficeCode, paymentInvoice.OfficeCode);
         }));
 
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
         await TouchPurgeRecordsAsync(purgeRecords, cancellationToken);
         _dbContext.PaymentAttachments.RemoveRange(paymentAttachments);
         _dbContext.Payments.RemoveRange(deletedPayments);
         _dbContext.Invoices.RemoveRange(invoiceGroup);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await _inventoryLedgerService.RebuildAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
         foreach (var attachmentPath in paymentAttachmentPaths)
             _fileStorage.DeleteIfExists(attachmentPath);

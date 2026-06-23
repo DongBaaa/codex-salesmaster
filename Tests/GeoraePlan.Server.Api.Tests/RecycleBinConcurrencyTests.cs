@@ -1200,6 +1200,94 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PurgeInvoice_RemovesStaleLedgerEntries()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var itemId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+        var customer = CreateScopedCustomer("전표 ledger purge 거래처", OfficeCodeCatalog.Usenet);
+        customer.Id = customerId;
+        var invoice = CreateScopedInvoice(customerId, OfficeCodeCatalog.Usenet, "INV-PURGE-LEDGER-CLEANUP");
+        invoice.Id = invoiceId;
+        invoice.VersionGroupId = invoiceId;
+        invoice.VersionNumber = 1;
+        invoice.IsLatestVersion = true;
+        invoice.IsDeleted = true;
+        invoice.SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse;
+        invoice.VoucherType = VoucherType.Sales;
+        invoice.Lines.Add(new InvoiceLine
+        {
+            Id = lineId,
+            InvoiceId = invoiceId,
+            ItemId = itemId,
+            ItemNameOriginal = "전표 ledger purge 품목",
+            Unit = "개",
+            Quantity = 1m,
+            UnitPrice = 1000m,
+            LineAmount = 1000m,
+            ItemTrackingType = ItemTrackingTypes.Stock,
+            OrderIndex = 1,
+            IsDeleted = true
+        });
+        dbContext.Customers.Add(customer);
+        dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "전표 ledger purge 품목",
+            NameMatchKey = "전표ledgerpurge품목",
+            Unit = "개",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 10m
+        });
+        dbContext.Invoices.Add(invoice);
+        dbContext.InventoryLedgerEntries.Add(new InventoryLedgerEntry
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            SourceType = "Invoice:Sales",
+            SourceDocumentId = invoiceId,
+            SourceLineId = lineId,
+            QuantityDelta = -1m,
+            OccurredDate = invoice.InvoiceDate,
+            Note = "stale invoice ledger"
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = invoiceId,
+                        Kind = "invoice"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success, item.Message);
+        Assert.False(await dbContext.Invoices.IgnoreQueryFilters().AnyAsync(current => current.Id == invoiceId));
+        Assert.False(await dbContext.InventoryLedgerEntries.AnyAsync(entry => entry.SourceDocumentId == invoiceId));
+    }
+
+    [Fact]
     public async Task RestorePayment_RejectsLinkedDeletedCustomerOutsideCustomerWriteScope()
     {
         var currentUser = CreateOfficeOnlyUser();
