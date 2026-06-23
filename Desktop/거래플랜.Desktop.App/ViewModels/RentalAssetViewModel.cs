@@ -49,9 +49,20 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private string _statusMessage = "렌탈 자산을 불러오는 중입니다.";
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanAddAssignmentHistory))]
+    [NotifyPropertyChangedFor(nameof(CanEditAssignmentHistory))]
+    [NotifyPropertyChangedFor(nameof(CanDeleteAssignmentHistory))]
+    [NotifyCanExecuteChangedFor(nameof(AddAssignmentHistoryCommand))]
+    [NotifyCanExecuteChangedFor(nameof(EditAssignmentHistoryCommand))]
+    [NotifyCanExecuteChangedFor(nameof(DeleteAssignmentHistoryCommand))]
     [NotifyCanExecuteChangedFor(nameof(ReplaceRentalEquipmentCommand))]
     private RentalAssetViewRow? _selectedRow;
-    [ObservableProperty] private RentalAssetAssignmentHistoryViewItem? _selectedAssignmentHistory;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanEditAssignmentHistory))]
+    [NotifyPropertyChangedFor(nameof(CanDeleteAssignmentHistory))]
+    [NotifyCanExecuteChangedFor(nameof(EditAssignmentHistoryCommand))]
+    [NotifyCanExecuteChangedFor(nameof(DeleteAssignmentHistoryCommand))]
+    private RentalAssetAssignmentHistoryViewItem? _selectedAssignmentHistory;
 
     [ObservableProperty] private Guid _editId = Guid.NewGuid();
     [ObservableProperty] private Guid? _editCustomerId;
@@ -110,6 +121,11 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                                       SelectedRow.HasFullDetail &&
                                       CanEditCurrentSelection &&
                                       HasReplaceableRentalAssignment(SelectedRow.Source);
+    public bool CanAddAssignmentHistory => SelectedRow is not null &&
+                                           SelectedRow.HasFullDetail &&
+                                           CanEditCurrentSelection;
+    public bool CanEditAssignmentHistory => CanAddAssignmentHistory && SelectedAssignmentHistory is not null;
+    public bool CanDeleteAssignmentHistory => CanEditAssignmentHistory;
     public bool IsNewAsset => SelectedRow is null;
     public bool IsNonOperatingAssetStatus => RentalAssetStatusRules.IsNonOperating(EditAssetStatus);
     public bool CanEditAssignmentFields => !IsNonOperatingAssetStatus;
@@ -777,7 +793,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         StatusMessage = "렌탈계약서 작성창을 열었습니다.";
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanAddAssignmentHistory))]
     private async Task AddAssignmentHistoryAsync()
     {
         if (SelectedRow is null)
@@ -786,7 +802,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             return;
         }
 
-        var request = await _rental.CreateAssetAssignmentHistoryEditRequestAsync(SelectedRow.Source.Id);
+        var request = await _rental.CreateAssetAssignmentHistoryEditRequestAsync(SelectedRow.Source.Id, _session);
         if (request is null)
         {
             StatusMessage = "임대이력 추가 정보를 만들 수 없습니다.";
@@ -799,7 +815,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         await SaveAssignmentHistoryRequestAsync(request);
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanEditAssignmentHistory))]
     private async Task EditAssignmentHistoryAsync()
     {
         if (SelectedRow is null || SelectedAssignmentHistory is null)
@@ -810,6 +826,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
         var request = await _rental.CreateAssetAssignmentHistoryEditRequestAsync(
             SelectedRow.Source.Id,
+            _session,
             SelectedAssignmentHistory.HistoryId);
         if (request is null)
         {
@@ -823,7 +840,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         await SaveAssignmentHistoryRequestAsync(request);
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanDeleteAssignmentHistory))]
     private async Task DeleteAssignmentHistoryAsync()
     {
         if (SelectedAssignmentHistory is null)
@@ -1059,7 +1076,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 return;
             }
 
-            var histories = await _rental.GetAssetAssignmentHistoriesAsync(assetId, AssignmentHistoryDisplayLimit, ct);
+            var histories = await _rental.GetAssetAssignmentHistoriesAsync(assetId, AssignmentHistoryDisplayLimit, _session, ct);
             ct.ThrowIfCancellationRequested();
             if (SelectedRow?.Source.Id != assetId)
                 return;

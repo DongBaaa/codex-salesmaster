@@ -451,7 +451,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 return;
             }
 
-            var histories = await _rental.GetAssetAssignmentHistoriesAsync(assetId, AssignmentHistoryDisplayLimit, ct);
+            var histories = await _rental.GetAssetAssignmentHistoriesAsync(assetId, AssignmentHistoryDisplayLimit, _session, ct);
             ct.ThrowIfCancellationRequested();
             if (SelectedIncludedAsset?.AssetId != assetId)
                 return;
@@ -1604,7 +1604,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return;
         }
 
-        var request = await _rental.CreateAssetAssignmentHistoryEditRequestAsync(SelectedIncludedAsset.AssetId);
+        var request = await _rental.CreateAssetAssignmentHistoryEditRequestAsync(SelectedIncludedAsset.AssetId, _session);
         if (request is null)
         {
             StatusMessage = "임대이력 추가 정보를 만들 수 없습니다.";
@@ -1628,6 +1628,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         var request = await _rental.CreateAssetAssignmentHistoryEditRequestAsync(
             SelectedIncludedAsset.AssetId,
+            _session,
             SelectedIncludedAssetAssignmentHistory.HistoryId);
         if (request is null)
         {

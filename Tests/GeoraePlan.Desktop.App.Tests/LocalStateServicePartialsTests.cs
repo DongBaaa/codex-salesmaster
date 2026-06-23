@@ -2714,7 +2714,7 @@ public sealed class LocalStateServicePartialsTests
             Assert.Equal(profileId, history.BillingProfileId);
             Assert.NotNull(history.UnlinkedAtUtc);
 
-            var rows = await new RentalStateService(db).GetAssetAssignmentHistoriesAsync(assetId);
+            var rows = await new RentalStateService(db).GetAssetAssignmentHistoriesAsync(assetId, CreateAdminSession());
             var row = Assert.Single(rows);
             Assert.False(row.IsCurrent);
             Assert.Equal("Customer A", row.CustomerName);

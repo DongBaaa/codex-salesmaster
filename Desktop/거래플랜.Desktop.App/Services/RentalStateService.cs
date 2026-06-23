@@ -6222,15 +6222,24 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
     public Task<IReadOnlyList<RentalAssetAssignmentHistoryViewItem>> GetAssetAssignmentHistoriesAsync(
         Guid assetId,
+        SessionState session,
         CancellationToken ct = default)
-        => GetAssetAssignmentHistoriesAsync(assetId, maxDisplayRows: 0, ct);
+        => GetAssetAssignmentHistoriesAsync(assetId, maxDisplayRows: 0, session, ct);
 
     public async Task<IReadOnlyList<RentalAssetAssignmentHistoryViewItem>> GetAssetAssignmentHistoriesAsync(
         Guid assetId,
         int maxDisplayRows,
+        SessionState session,
         CancellationToken ct = default)
     {
-        if (assetId == Guid.Empty)
+        if (assetId == Guid.Empty || !CanViewAllAssetScope(session))
+            return [];
+
+        var asset = await SelectAssignmentHistoryFallbackAssetProjection(_db.RentalAssets
+            .AsNoTracking()
+            .Where(current => current.Id == assetId))
+            .FirstOrDefaultAsync(ct);
+        if (asset is null)
             return [];
 
         IQueryable<LocalRentalAssetAssignmentHistory> query = _db.RentalAssetAssignmentHistories
@@ -6253,12 +6262,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Select(history => history.BillingProfileId!.Value)
             .Distinct()
             .ToList();
-        var profileDisplayLookup = await GetBillingProfileDisplayTextMapAsync(profileIds, ct);
-        var asset = await SelectAssignmentHistoryFallbackAssetProjection(_db.RentalAssets
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(current => current.Id == assetId))
-            .FirstOrDefaultAsync(ct);
+        var profileDisplayLookup = await GetBillingProfileDisplayTextMapAsync(profileIds, session, ct);
 
         IEnumerable<LocalRentalAssetAssignmentHistory> displayHistories = histories
             .GroupBy(BuildAssignmentHistoryLogicalKey)
@@ -6319,6 +6323,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
     private async Task<Dictionary<Guid, string>> GetBillingProfileDisplayTextMapAsync(
         IEnumerable<Guid> profileIds,
+        SessionState session,
         CancellationToken ct)
     {
         var ids = profileIds
@@ -6333,9 +6338,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         {
             ct.ThrowIfCancellationRequested();
             var scopedBatchIds = batchIds;
-            var profiles = await _db.RentalBillingProfiles
-                .IgnoreQueryFilters()
-                .AsNoTracking()
+            var profiles = await ApplyBillingScope(_db.RentalBillingProfiles.AsNoTracking(), session)
                 .Where(profile => scopedBatchIds.Contains(profile.Id))
                 .Select(profile => new
                 {
@@ -6363,6 +6366,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
     public async Task<RentalAssetAssignmentHistoryEditRequest?> CreateAssetAssignmentHistoryEditRequestAsync(
         Guid assetId,
+        SessionState session,
         Guid? historyId = null,
         CancellationToken ct = default)
     {
@@ -6374,6 +6378,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .AsNoTracking()
             .FirstOrDefaultAsync(current => current.Id == assetId, ct);
         if (asset is null)
+            return null;
+
+        if (!CanEditRentalAssetEntityScope(asset, session))
             return null;
 
         if (historyId.HasValue && historyId.Value != Guid.Empty)
@@ -7491,8 +7498,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var billingProfileDisplay = RentalCatalogValueNormalizer.NormalizeDisplayText(FirstNonEmpty(
             history.BillingProfileDisplay,
-            profileDisplay,
-            history.BillingProfileId?.ToString("D")));
+            profileDisplay));
         var linkedAtUtc = NormalizeHistoryUtc(history.LinkedAtUtc);
         var unlinkedAtUtc = history.UnlinkedAtUtc.HasValue ? NormalizeHistoryUtc(history.UnlinkedAtUtc.Value) : (DateTime?)null;
         var responsibleOfficeCode = string.IsNullOrWhiteSpace(history.ResponsibleOfficeCode)

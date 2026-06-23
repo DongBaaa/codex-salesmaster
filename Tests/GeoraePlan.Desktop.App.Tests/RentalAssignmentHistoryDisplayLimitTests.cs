@@ -85,7 +85,7 @@ public sealed class RentalAssignmentHistoryDisplayLimitTests
             }
             await db.SaveChangesAsync();
 
-            var rows = await new RentalStateService(db).GetAssetAssignmentHistoriesAsync(assetId, 300);
+            var rows = await new RentalStateService(db).GetAssetAssignmentHistoriesAsync(assetId, 300, CreateOfficeSession(OfficeCodeCatalog.Usenet));
 
             Assert.Equal(300, rows.Count);
             Assert.Equal("history-000", rows[0].ChangeReason);
@@ -169,11 +169,139 @@ public sealed class RentalAssignmentHistoryDisplayLimitTests
             }
             await db.SaveChangesAsync();
 
-            var rows = await new RentalStateService(db).GetAssetAssignmentHistoriesAsync(assetId, 300);
+            var rows = await new RentalStateService(db).GetAssetAssignmentHistoriesAsync(assetId, 300, CreateOfficeSession(OfficeCodeCatalog.Usenet));
 
             Assert.Equal(300, rows.Count);
             Assert.Equal("Profile Customer 0000 · Plan 0000", rows[0].BillingProfileDisplay);
             Assert.Equal("Profile Customer 0299 · Plan 0299", rows[^1].BillingProfileDisplay);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalStateService_GetAssetAssignmentHistoriesAsync_DoesNotResolveOutOfScopeBillingProfileDisplay()
+    {
+        PrepareAppRoot("georaeplan-rental-assignment-history-profile-display-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var assetId = Guid.Parse("33333333-3333-3333-3333-333333333333");
+            var hiddenProfileId = Guid.Parse("33333333-aaaa-aaaa-aaaa-333333333333");
+            var now = new DateTime(2026, 6, 24, 0, 0, 0, DateTimeKind.Utc);
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "TEST:ASSIGNMENT-HISTORY-PROFILE-SCOPE",
+                ManagementNumber = "AH-SCOPE-001",
+                ItemName = "Scoped Printer",
+                MachineNumber = "AH-SCOPE-SN-001",
+                CustomerName = "Visible Customer",
+                CurrentCustomerName = "Visible Customer",
+                InstallLocation = "Visible Office",
+                AssetStatus = "Rental",
+                BillingEligibilityStatus = "Billable",
+                IsDeleted = false
+            });
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = hiddenProfileId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                ProfileKey = "HIDDEN-HISTORY-PROFILE",
+                CustomerName = "Hidden Profile Customer",
+                ItemName = "Hidden Plan",
+                MonthlyAmount = 100_000m,
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            });
+            db.RentalAssetAssignmentHistories.Add(new LocalRentalAssetAssignmentHistory
+            {
+                Id = Guid.Parse("33333333-bbbb-bbbb-bbbb-333333333333"),
+                AssetId = assetId,
+                BillingProfileId = hiddenProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                IsCurrent = true,
+                LinkedAtUtc = now,
+                CustomerName = "Visible Customer",
+                InstallLocation = "Visible Office",
+                ItemName = "Scoped Printer",
+                MachineNumber = "AH-SCOPE-SN-001",
+                ManagementNumber = "AH-SCOPE-001",
+                ChangeReason = "profile-scope-check",
+                UpdatedAtUtc = now
+            });
+            await db.SaveChangesAsync();
+
+            var rows = await new RentalStateService(db).GetAssetAssignmentHistoriesAsync(assetId, 300, CreateOfficeSession(OfficeCodeCatalog.Usenet));
+
+            var row = Assert.Single(rows);
+            Assert.Equal(string.Empty, row.BillingProfileDisplay);
+            Assert.DoesNotContain("Hidden Profile Customer", row.BillingProfileDisplay, StringComparison.Ordinal);
+            Assert.DoesNotContain(hiddenProfileId.ToString("D"), row.BillingProfileDisplay, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalStateService_CreateAssetAssignmentHistoryEditRequestAsync_ReturnsNullOutsideWritableAssetScope()
+    {
+        PrepareAppRoot("georaeplan-rental-assignment-history-edit-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var assetId = Guid.Parse("44444444-4444-4444-4444-444444444444");
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                AssetKey = "TEST:ASSIGNMENT-HISTORY-EDIT-SCOPE",
+                ManagementNumber = "AH-EDIT-SCOPE-001",
+                ItemName = "Itworld Printer",
+                MachineNumber = "AH-EDIT-SCOPE-SN-001",
+                CustomerName = "Itworld Customer",
+                CurrentCustomerName = "Itworld Customer",
+                InstallLocation = "Itworld Office",
+                AssetStatus = "Rental",
+                BillingEligibilityStatus = "Billable",
+                IsDeleted = false
+            });
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var blockedRequest = await service.CreateAssetAssignmentHistoryEditRequestAsync(assetId, CreateOfficeSession(OfficeCodeCatalog.Usenet));
+            var allowedRequest = await service.CreateAssetAssignmentHistoryEditRequestAsync(assetId, CreateOfficeSession(OfficeCodeCatalog.Itworld));
+
+            Assert.Null(blockedRequest);
+            Assert.NotNull(allowedRequest);
+            Assert.Equal(assetId, allowedRequest!.AssetId);
         }
         finally
         {
@@ -211,5 +339,21 @@ public sealed class RentalAssignmentHistoryDisplayLimitTests
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
         Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+    }
+
+    private static SessionState CreateOfficeSession(string officeCode)
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            UserId = Guid.NewGuid(),
+            Username = $"assignment-history-{officeCode.ToLowerInvariant()}",
+            Role = DomainConstants.RoleUser,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, officeCode),
+            OfficeCode = officeCode,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = []
+        });
+        return session;
     }
 }
