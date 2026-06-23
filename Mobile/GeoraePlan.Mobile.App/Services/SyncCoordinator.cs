@@ -1110,8 +1110,11 @@ public sealed class SyncCoordinator
                 RemovePaymentsForPurgedInvoice(state.SyncedPayments, entityId, purgeRevision, removedPaymentIds);
                 RemovePaymentsForPurgedInvoice(state.PendingPush.Payments, entityId, purgeRevision, removedPaymentIds);
                 state.PendingPaymentAttachments.RemoveAll(attachment => removedPaymentIds.Contains(attachment.PaymentId));
-                state.SyncedTransactions.RemoveAll(transaction => transaction.LinkedInvoiceId == entityId && !IsEntityNewerThanPurge(transaction, purgeRevision));
-                state.PendingPush.Transactions.RemoveAll(transaction => transaction.LinkedInvoiceId == entityId && !IsEntityNewerThanPurge(transaction, purgeRevision));
+                var removedTransactionIds = new HashSet<Guid>();
+                RemoveTransactionsForPurgedInvoice(state.SyncedTransactions, entityId, purgeRevision, removedTransactionIds);
+                RemoveTransactionsForPurgedInvoice(state.PendingPush.Transactions, entityId, purgeRevision, removedTransactionIds);
+                state.SyncedTransactionAttachments.RemoveAll(attachment => removedTransactionIds.Contains(attachment.TransactionId) && !IsEntityNewerThanPurge(attachment, purgeRevision));
+                state.PendingPush.TransactionAttachments.RemoveAll(attachment => removedTransactionIds.Contains(attachment.TransactionId) && !IsEntityNewerThanPurge(attachment, purgeRevision));
                 break;
             case "payment":
                 RemoveEntityById(state.SyncedPayments, entityId, purgeRevision);
@@ -1257,6 +1260,28 @@ public sealed class SyncCoordinator
             removedPaymentIds.Add(paymentId);
 
         values.RemoveAll(payment => matchingIds.Contains(payment.Id));
+    }
+
+    private static void RemoveTransactionsForPurgedInvoice(
+        List<TransactionDto> values,
+        Guid invoiceId,
+        long purgeRevision,
+        ISet<Guid> removedTransactionIds)
+    {
+        if (invoiceId == Guid.Empty)
+            return;
+
+        var matchingIds = values
+            .Where(transaction => transaction.LinkedInvoiceId == invoiceId && !IsEntityNewerThanPurge(transaction, purgeRevision))
+            .Select(transaction => transaction.Id)
+            .ToHashSet();
+        if (matchingIds.Count == 0)
+            return;
+
+        foreach (var transactionId in matchingIds)
+            removedTransactionIds.Add(transactionId);
+
+        values.RemoveAll(transaction => matchingIds.Contains(transaction.Id));
     }
 
     private static void ClearInvoiceLineItemReferences(

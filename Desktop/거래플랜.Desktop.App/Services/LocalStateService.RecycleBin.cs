@@ -1292,6 +1292,22 @@ public sealed partial class LocalStateService
             .IgnoreQueryFilters()
             .Where(current => invoiceIds.Contains(current.InvoiceId))
             .ToListAsync(ct);
+        var staleLinkedTransactions = await _db.Transactions
+            .IgnoreQueryFilters()
+            .Where(current => current.LinkedInvoiceId.HasValue &&
+                              invoiceIds.Contains(current.LinkedInvoiceId.Value) &&
+                              current.IsDeleted)
+            .ToListAsync(ct);
+        var staleLinkedTransactionIds = staleLinkedTransactions
+            .Select(current => current.Id)
+            .Distinct()
+            .ToList();
+        var staleLinkedTransactionAttachments = staleLinkedTransactionIds.Count == 0
+            ? new List<LocalTransactionAttachment>()
+            : await _db.TransactionAttachments
+                .IgnoreQueryFilters()
+                .Where(current => staleLinkedTransactionIds.Contains(current.TransactionId))
+                .ToListAsync(ct);
         var invoiceLines = await _db.InvoiceLines
             .IgnoreQueryFilters()
             .Where(current => invoiceIds.Contains(current.InvoiceId))
@@ -1308,6 +1324,8 @@ public sealed partial class LocalStateService
                                       (current.LastInvoiceId.HasValue && invoiceIds.Contains(current.LastInvoiceId.Value)), ct);
         if (groupInvoices.Count == 0 &&
             linkedPayments.Count == 0 &&
+            staleLinkedTransactions.Count == 0 &&
+            staleLinkedTransactionAttachments.Count == 0 &&
             invoiceLines.Count == 0 &&
             !hasInventoryResidue)
         {
@@ -1315,11 +1333,16 @@ public sealed partial class LocalStateService
         }
 
         _db.Payments.RemoveRange(linkedPayments);
+        _db.TransactionAttachments.RemoveRange(staleLinkedTransactionAttachments);
+        _db.Transactions.RemoveRange(staleLinkedTransactions);
         _db.InvoiceLines.RemoveRange(invoiceLines);
         _db.Invoices.RemoveRange(groupInvoices);
         await _db.SaveChangesAsync(ct);
 
         await RebuildInventorySnapshotsAsync(CreateServerPurgeInvoiceSaveContext(), ct);
+        foreach (var attachment in staleLinkedTransactionAttachments)
+            TryDeleteAttachmentFile(attachment);
+
         return OfficeMutationResult.Ok(invoiceId, "전표 서버 영구삭제를 로컬에 반영했습니다.");
     }
 
