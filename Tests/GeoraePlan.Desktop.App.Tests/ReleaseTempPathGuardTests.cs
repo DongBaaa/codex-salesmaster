@@ -305,6 +305,30 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public void LinuxPcReleaseChecksDiskFreeSpaceAfterPruneBeforeUpload()
+    {
+        var source = ReadRepositoryFile(
+            "tools",
+            "linux",
+            "Publish-GeoraeplanLinuxPcRelease.ps1");
+
+        Assert.Contains("[int64]$MinimumLinuxFreeBytes", source, StringComparison.Ordinal);
+        Assert.Contains("function Invoke-LinuxPcDiskPreflight", source, StringComparison.Ordinal);
+        Assert.Contains("$minimumFreeKilobytes = [int64][Math]::Ceiling($MinimumFreeBytes / 1024.0)", source, StringComparison.Ordinal);
+        Assert.Contains("df -Pk \"`$path\"", source, StringComparison.Ordinal);
+        Assert.Contains("minimum_kb=$minimumFreeKilobytes", source, StringComparison.Ordinal);
+        Assert.Contains("if [ \"`$available_kb\" -lt \"`$minimum_kb\" ]; then", source, StringComparison.Ordinal);
+        Assert.Contains("linux_pc_disk_preflight_ok", source, StringComparison.Ordinal);
+        Assert.Contains("Linux PC free disk space is below the required threshold", source, StringComparison.Ordinal);
+        AssertInOrder(
+            source,
+            "Invoke-LinuxPcRemotePrune -Config $linuxConfig -RelativePath 'app/backups'",
+            "Invoke-LinuxPcRemotePrune -Config $linuxConfig -RelativePath 'releases'",
+            "Invoke-LinuxPcDiskPreflight -Config $linuxConfig -Path $linuxConfig.RemoteRoot -MinimumFreeBytes $MinimumLinuxFreeBytes -Label 'pre-upload'",
+            "Write-Host \"linux_pc_upload_start");
+    }
+
+    [Fact]
     public void FullReleaseForwardsExplicitRentalTemplateRiskAcceptanceToLinuxDeploy()
     {
         var source = ReadRepositoryFile(

@@ -12,6 +12,7 @@ param(
     [string]$LinuxRemoteRoot = '/srv/georaeplan',
     [string]$LinuxRemoteOpsPath = '/srv/georaeplan/ops',
     [int]$KeepReleaseCount = 2,
+    [int64]$MinimumLinuxFreeBytes = 2147483648,
     [switch]$SkipConfigSync,
     [switch]$AllowLegacyLiveMirror,
     [switch]$AllowScheduledApplyTrigger,
@@ -394,6 +395,48 @@ echo "pruned label=`$label root=`$real_root total=`$total keep=`$keep removed=`$
     ($result.StdOut -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { Write-Host "linux_pc_remote_prune $_" }
 }
 
+function Invoke-LinuxPcDiskPreflight {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][int64]$MinimumFreeBytes,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if ($MinimumFreeBytes -le 0) {
+        Write-Host "linux_pc_disk_preflight_skipped label=$Label minimum_bytes=$MinimumFreeBytes"
+        return
+    }
+
+    $minimumFreeKilobytes = [int64][Math]::Ceiling($MinimumFreeBytes / 1024.0)
+    $quotedPath = Convert-ToSingleQuotedShellLiteral -Value $Path
+    $quotedLabel = Convert-ToSingleQuotedShellLiteral -Value $Label
+    $remoteCommand = @"
+set -e
+set -o pipefail
+path=$quotedPath
+minimum_kb=$minimumFreeKilobytes
+label=$quotedLabel
+if [ ! -e "`$path" ]; then
+  echo "disk preflight path does not exist: `$path" >&2
+  exit 98
+fi
+available_kb=`$(df -Pk "`$path" | awk 'NR==2 {print `$4}')
+if [ -z "`$available_kb" ]; then
+  echo "disk preflight could not read available space for `$path" >&2
+  exit 98
+fi
+if [ "`$available_kb" -lt "`$minimum_kb" ]; then
+  echo "Linux PC free disk space is below the required threshold: label=`$label path=`$path available_kb=`$available_kb minimum_kb=`$minimum_kb" >&2
+  exit 98
+fi
+echo "disk_preflight_ok label=`$label path=`$path available_kb=`$available_kb minimum_kb=`$minimum_kb"
+"@
+
+    $result = Invoke-SshCommand -Config $Config -Command $remoteCommand -BatchMode
+    ($result.StdOut -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { Write-Host "linux_pc_disk_preflight_ok $_" }
+}
+
 function Invoke-ReleaseOperationalGate {
     param(
         [Parameter(Mandatory = $true)][string]$Phase,
@@ -673,11 +716,15 @@ try {
         Invoke-LinuxPcRemotePrune -Config $linuxConfig -RelativePath 'releases' -Pattern '*' -KeepCount $KeepReleaseCount -Label 'releases'
     }
 
+    Invoke-LinuxPcDiskPreflight -Config $linuxConfig -Path $linuxConfig.RemoteRoot -MinimumFreeBytes $MinimumLinuxFreeBytes -Label 'pre-upload'
+
     Write-Host "linux_pc_upload_start release_id=$ReleaseId remote_path=$remoteReleaseRoot"
     Invoke-SshTarUpload -SourceDirectory $tempPublishRoot -RemoteDirectory $remoteReleaseRoot -Config $linuxConfig
     Write-Host "linux_pc_upload_done release_id=$ReleaseId remote_path=$remoteReleaseRoot"
 
     if ($MirrorToLive) {
+        Invoke-LinuxPcDiskPreflight -Config $linuxConfig -Path $linuxConfig.RemoteRoot -MinimumFreeBytes $MinimumLinuxFreeBytes -Label 'pre-apply'
+
         Write-Host "linux_pc_apply_release_mode=ssh host=$($linuxConfig.Host) user=$($linuxConfig.User) port=$($linuxConfig.Port)"
         $quotedOps = Convert-ToSingleQuotedShellLiteral -Value $linuxConfig.RemoteOpsPath
         $quotedReleaseId = Convert-ToSingleQuotedShellLiteral -Value $ReleaseId
