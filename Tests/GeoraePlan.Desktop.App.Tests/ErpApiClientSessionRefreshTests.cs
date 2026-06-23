@@ -77,6 +77,37 @@ public sealed class ErpApiClientSessionRefreshTests
     }
 
     [Fact]
+    public async Task GetSyncStatusAsync_ClearsSessionWhenUnauthorizedRefreshIsRejected()
+    {
+        var session = new SessionState();
+        session.SetSession("blocked-token", CreateAdminUser(), DateTime.UtcNow.AddDays(1));
+
+        var handler = new RejectedRefreshHandler();
+        var api = new ErpApiClient(new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://localhost/")
+        }, session);
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => api.GetSyncStatusAsync());
+
+        Assert.Equal(HttpStatusCode.Unauthorized, exception.StatusCode);
+        Assert.False(session.IsLoggedIn);
+        Assert.Null(session.Token);
+        Assert.Collection(
+            handler.Requests,
+            request =>
+            {
+                Assert.Equal("/sync/status", request.Path);
+                Assert.Equal("blocked-token", request.BearerToken);
+            },
+            request =>
+            {
+                Assert.Equal("/auth/refresh", request.Path);
+                Assert.Equal("blocked-token", request.BearerToken);
+            });
+    }
+
+    [Fact]
     public async Task PushAsync_ForbiddenMessagePayload_ThrowsReadablePermissionMessageWithoutRetry()
     {
         const string permissionMessage = "현재 계정 권한으로 서버 동기화 반영이 허용되지 않는 변경이 포함되어 있습니다: 전표";
@@ -224,6 +255,22 @@ public sealed class ErpApiClientSessionRefreshTests
         {
             Content = JsonContent.Create(payload)
         };
+    }
+
+    private sealed class RejectedRefreshHandler : HttpMessageHandler
+    {
+        public List<RequestSnapshot> Requests { get; } = new();
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            Requests.Add(new RequestSnapshot(path, request.Headers.Authorization?.Parameter));
+
+            if (path is "/sync/status" or "/auth/refresh")
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized));
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        }
     }
 
     private sealed class ErrorResponseHandler : HttpMessageHandler

@@ -761,7 +761,7 @@ public sealed class ErpApiClient
                 return true;
             }
 
-            MarkSessionRefreshFailure("401 응답 후 로그인 세션 갱신 실패: 다시 로그인이 필요합니다.");
+            ClearSessionAfterRejectedRefresh("401 응답 후 로그인 세션 갱신이 서버에서 거부되어 다시 로그인이 필요합니다.");
             return false;
         }
         catch (Exception ex)
@@ -792,6 +792,18 @@ public sealed class ErpApiClient
     {
         _lastSessionRefreshFailureAtUtc = DateTime.UtcNow;
         AppLogger.Warn("AUTH", message);
+    }
+
+    private void ClearSessionAfterRejectedRefresh(string message)
+    {
+        var username = _session.User?.Username;
+        _lastSessionRefreshFailureAtUtc = DateTime.MinValue;
+        _session.Clear();
+        AppLogger.Warn(
+            "AUTH",
+            string.IsNullOrWhiteSpace(username)
+                ? $"{message} 기존 로그인 세션을 해제했습니다."
+                : $"{message} 기존 로그인 세션을 해제했습니다. 사용자: {username}");
     }
 
     private string FormatTokenExpiryForLog()
