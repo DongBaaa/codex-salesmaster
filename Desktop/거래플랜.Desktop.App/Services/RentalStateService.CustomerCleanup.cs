@@ -37,20 +37,26 @@ public sealed partial class RentalStateService
             throw new InvalidOperationException("권한이 없어 렌탈 거래처명 정리를 실행할 수 없습니다.");
 
         var offices = await GetOfficeMapAsync(ct);
-        var customers = await BuildRentalCleanupCustomerQuery(session)
+        var customers = await BuildRentalCleanupWritableCustomerQuery(session)
             .OrderBy(customer => customer.NameOriginal)
             .ToListAsync(ct);
         var customerById = customers.ToDictionary(customer => customer.Id);
-        var profiles = await ApplyBillingScope(_db.RentalBillingProfiles.IgnoreQueryFilters(), session)
+        var visibleProfiles = await ApplyBillingScope(_db.RentalBillingProfiles.IgnoreQueryFilters(), session)
             .Where(profile => !profile.IsDeleted)
             .OrderBy(profile => profile.CustomerName)
             .ThenBy(profile => profile.InstallSiteName)
             .ToListAsync(ct);
-        var assets = await ApplyAssetScope(_db.RentalAssets.IgnoreQueryFilters(), session)
+        var visibleAssets = await ApplyAssetScope(_db.RentalAssets.IgnoreQueryFilters(), session)
             .Where(asset => !asset.IsDeleted)
             .OrderBy(asset => asset.CurrentCustomerName)
             .ThenBy(asset => asset.ManagementNumber)
             .ToListAsync(ct);
+        var profiles = visibleProfiles
+            .Where(profile => CanNormalizeRentalProfileEntityScope(profile, session))
+            .ToList();
+        var assets = visibleAssets
+            .Where(asset => CanNormalizeRentalAssetEntityScope(asset, session))
+            .ToList();
 
         await NormalizeAssetCustomerDisplayNamesAsync(assets, ct);
         var reviewRows = BuildRentalCustomerLinkCleanupRows(profiles, assets, customers, offices);
@@ -403,6 +409,51 @@ public sealed partial class RentalStateService
         return query.Where(customer =>
             customer.TenantCode == currentTenantCode &&
             readableOfficeCodes.Contains(customer.ResponsibleOfficeCode));
+    }
+
+    private IQueryable<LocalCustomer> BuildRentalCleanupWritableCustomerQuery(SessionState session)
+    {
+        var query = _db.Customers.AsNoTracking().Where(customer => !customer.IsDeleted);
+        if (CanAdministrativelyViewAllRental(session))
+            return query;
+
+        var currentTenantCode = ResolveCurrentRentalTenantCode(session);
+        if (CanEditAllRental(session))
+            return query.Where(customer => customer.TenantCode == currentTenantCode);
+
+        var writableOfficeCodes = GetWritableRentalOfficeCodes(session);
+        return query.Where(customer =>
+            customer.TenantCode == currentTenantCode &&
+            (writableOfficeCodes.Contains(customer.ResponsibleOfficeCode) ||
+             writableOfficeCodes.Contains(customer.OfficeCode)));
+    }
+
+    private bool CanNormalizeRentalProfileEntityScope(LocalRentalBillingProfile profile, SessionState session)
+        => CanEditRentalSettings(session) && CanEditRentalEntityScope(
+            profile.TenantCode,
+            profile.OfficeCode,
+            profile.ManagementCompanyCode,
+            profile.ResponsibleOfficeCode,
+            session,
+            officeCode => CanNormalizeRentalOfficeScope(officeCode, session));
+
+    private bool CanNormalizeRentalAssetEntityScope(LocalRentalAsset asset, SessionState session)
+        => CanEditRentalSettings(session) && CanEditRentalEntityScope(
+            asset.TenantCode,
+            asset.OfficeCode,
+            asset.ManagementCompanyCode,
+            asset.ResponsibleOfficeCode,
+            session,
+            officeCode => CanNormalizeRentalOfficeScope(officeCode, session));
+
+    private bool CanNormalizeRentalOfficeScope(string? officeCode, SessionState session)
+    {
+        if (!CanEditRentalSettings(session))
+            return false;
+        if (CanEditAllRental(session) || session.HasGlobalDataScope)
+            return true;
+
+        return GetWritableRentalOfficeCodes(session).Contains(NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet));
     }
 
     private static LocalCustomer? ResolveRentalCleanupCustomer(
