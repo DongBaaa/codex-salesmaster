@@ -91,11 +91,18 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         get => _voucherType;
         set
         {
-            var normalized = value == VoucherType.Purchase ? VoucherType.Purchase : VoucherType.Sales;
+            var normalized = value switch
+            {
+                VoucherType.Purchase => VoucherType.Purchase,
+                VoucherType.Procurement => VoucherType.Procurement,
+                _ => VoucherType.Sales
+            };
             if (!SetProperty(ref _voucherType, normalized))
                 return;
 
             OnPropertyChanged(nameof(IsPurchaseDocument));
+            OnPropertyChanged(nameof(IsProcurementDocument));
+            OnPropertyChanged(nameof(IsPurchaseLikeDocument));
             OnPropertyChanged(nameof(IsSalesDocument));
             OnPropertyChanged(nameof(PageTitleText));
             OnPropertyChanged(nameof(DocumentKindText));
@@ -313,25 +320,47 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     public bool IsCategoryChooserVisible => IsCategoryChooserExpanded;
     public bool HasSelectedItem => SelectedItem is not null;
     public bool IsPurchaseDocument => VoucherType == VoucherType.Purchase;
+    public bool IsProcurementDocument => VoucherType == VoucherType.Procurement;
+    public bool IsPurchaseLikeDocument => MobileVoucherTypeRules.IsPaymentVoucher(VoucherType);
     public bool IsSalesDocument => VoucherType == VoucherType.Sales;
     public bool HasVisibleRecentItems => VisibleRecentItems.Count > 0;
     public bool HasItemSearchResults => ItemSearchResults.Count > 0;
     public bool CanChooseInvoiceOffice => InvoiceOfficeOptions.Count > 1;
     public bool CanChooseSourceWarehouse => SourceWarehouseOptions.Count > 1;
-    public string PageTitleText => IsEditMode
-        ? IsPurchaseDocument ? "구매(매입) 전표 수정" : "판매(매출) 전표 수정"
-        : IsPurchaseDocument ? "구매(매입) 작성" : "판매(매출) 작성";
-    public string DocumentKindText => IsPurchaseDocument ? "구매(매입)" : "판매(매출)";
-    public string CustomerSearchSectionTitle => IsPurchaseDocument ? "1단계 · 거래처 찾기" : "1단계 · 고객/거래처 찾기";
-    public string CustomerNameLabelText => IsPurchaseDocument ? "거래처" : "고객/거래처";
-    public string WarehouseLabelText => IsPurchaseDocument ? "입고창고" : "출고창고";
+    public string PageTitleText => (IsEditMode, VoucherType) switch
+    {
+        (true, VoucherType.Purchase) => "구매(매입) 전표 수정",
+        (true, VoucherType.Procurement) => "발주 전표 수정",
+        (false, VoucherType.Purchase) => "구매(매입) 작성",
+        (false, VoucherType.Procurement) => "발주 작성",
+        _ => IsEditMode ? "판매(매출) 전표 수정" : "판매(매출) 작성"
+    };
+    public string DocumentKindText => VoucherType switch
+    {
+        VoucherType.Purchase => "구매(매입)",
+        VoucherType.Procurement => "발주",
+        _ => "판매(매출)"
+    };
+    public string CustomerSearchSectionTitle => IsPurchaseLikeDocument ? "1단계 · 거래처 찾기" : "1단계 · 고객/거래처 찾기";
+    public string CustomerNameLabelText => IsPurchaseLikeDocument ? "거래처" : "고객/거래처";
+    public string WarehouseLabelText => IsPurchaseLikeDocument ? "입고창고" : "출고창고";
     public string WarehousePickerTitleText => $"{WarehouseLabelText} 선택";
-    public string DocumentSaveSectionTitle => IsEditMode
-        ? IsPurchaseDocument ? "마지막 단계 · 구매 전표 수정 저장" : "마지막 단계 · 판매 전표 수정 저장"
-        : IsPurchaseDocument ? "마지막 단계 · 구매 전표 저장" : "마지막 단계 · 판매 전표 저장";
-    public string SaveButtonText => IsEditMode
-        ? IsPurchaseDocument ? "구매 전표 수정 저장" : "판매 전표 수정 저장"
-        : IsPurchaseDocument ? "구매 전표 저장" : "판매 전표 저장";
+    public string DocumentSaveSectionTitle => (IsEditMode, VoucherType) switch
+    {
+        (true, VoucherType.Purchase) => "마지막 단계 · 구매 전표 수정 저장",
+        (true, VoucherType.Procurement) => "마지막 단계 · 발주 전표 수정 저장",
+        (false, VoucherType.Purchase) => "마지막 단계 · 구매 전표 저장",
+        (false, VoucherType.Procurement) => "마지막 단계 · 발주 전표 저장",
+        _ => IsEditMode ? "마지막 단계 · 판매 전표 수정 저장" : "마지막 단계 · 판매 전표 저장"
+    };
+    public string SaveButtonText => (IsEditMode, VoucherType) switch
+    {
+        (true, VoucherType.Purchase) => "구매 전표 수정 저장",
+        (true, VoucherType.Procurement) => "발주 전표 수정 저장",
+        (false, VoucherType.Purchase) => "구매 전표 저장",
+        (false, VoucherType.Procurement) => "발주 전표 저장",
+        _ => IsEditMode ? "판매 전표 수정 저장" : "판매 전표 저장"
+    };
     public string SelectedInvoiceOfficeCode => SelectedInvoiceOffice?.Code ?? _sessionOfficeCode;
     public string SelectedSourceWarehouseCode => SelectedSourceWarehouse?.Code ?? OfficeCodeCatalog.GetMainWarehouseCode(SelectedInvoiceOfficeCode);
     public string SelectedInvoiceOfficeSummary => SelectedInvoiceOffice is null
@@ -363,7 +392,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     public string SelectedItemIdentitySummary => BuildItemIdentitySummary(SelectedItem);
     public string SelectedItemPriceSummary => SelectedItem is null
         ? "단가 정보 없음"
-        : IsPurchaseDocument
+        : IsPurchaseLikeDocument
             ? $"매입 기준 {SelectedItem.PurchasePrice:N0}원 / 판매 {SelectedItem.SalePrice:N0}원 / 소매 {SelectedItem.RetailPrice:N0}원"
             : $"판매 기준 {ResolveDefaultUnitPrice(SelectedItem):N0}원 / 매입 {SelectedItem.PurchasePrice:N0}원 / 소매 {SelectedItem.RetailPrice:N0}원";
     public string SelectedItemMemo => SelectedItem is null
@@ -395,7 +424,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     public AsyncCommand ExportPdfCommand { get; }
 
     public void ConfigureVoucherType(VoucherType voucherType)
-        => VoucherType = voucherType == VoucherType.Purchase ? VoucherType.Purchase : VoucherType.Sales;
+        => VoucherType = voucherType;
 
     public async Task LoadExistingInvoiceAsync(InvoiceDto invoice)
     {
@@ -1082,7 +1111,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             ResponsibleOfficeCode = SelectedInvoiceOfficeCode,
             InvoiceNumber = _editingInvoice?.InvoiceNumber ?? string.Empty,
             LocalTempNumber = string.IsNullOrWhiteSpace(_editingInvoice?.LocalTempNumber)
-                ? $"M-{(IsPurchaseDocument ? "P" : "S")}-{DateTime.Now:yyyyMMdd-HHmmss}"
+                ? $"M-{(IsPurchaseLikeDocument ? "P" : "S")}-{DateTime.Now:yyyyMMdd-HHmmss}"
                 : _editingInvoice!.LocalTempNumber,
             LinkedRentalBillingProfileId = _editingInvoice?.LinkedRentalBillingProfileId,
             LinkedRentalBillingRunId = _editingInvoice?.LinkedRentalBillingRunId,
@@ -1755,7 +1784,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     }
 
     private decimal ResolveDefaultUnitPrice(ItemDto item)
-        => IsPurchaseDocument
+        => IsPurchaseLikeDocument
             ? item.PurchasePrice
             : MobilePriceSourceResolver.ResolveSalesUnitPrice(item, SelectedCustomer?.PriceGrade, _priceGradeSourceMap);
 

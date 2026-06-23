@@ -10,6 +10,9 @@ public static class MobileVoucherTypeRules
     public static bool IsPaymentVoucher(VoucherType? voucherType)
         => voucherType.HasValue && IsPaymentVoucher(voucherType.Value);
 
+    public static bool CanEditInInvoiceDraft(VoucherType voucherType)
+        => voucherType is VoucherType.Sales or VoucherType.Purchase or VoucherType.Procurement;
+
     public static string GetInvoiceKindLabel(VoucherType voucherType)
         => voucherType switch
         {

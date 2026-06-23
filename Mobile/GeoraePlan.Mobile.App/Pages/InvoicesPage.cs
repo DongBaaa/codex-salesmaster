@@ -1,3 +1,4 @@
+using GeoraePlan.Mobile.App.Models;
 using GeoraePlan.Mobile.App.Services;
 using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
@@ -272,7 +273,18 @@ public sealed class InvoicesPage : ContentPage
                 async () =>
                 {
                     if (_viewModel.SelectedInvoice is not null)
+                    {
+                        if (!MobileVoucherTypeRules.CanEditInInvoiceDraft(_viewModel.SelectedInvoice.VoucherType))
+                        {
+                            await DisplayAlert(
+                                "전표 수정 안내",
+                                "모바일에서는 판매/구매/발주 전표만 수정할 수 있습니다. 이 전표는 PC에서 수정하세요.",
+                                "확인");
+                            return;
+                        }
+
                         await Shell.Current.Navigation.PushAsync(new InvoiceDraftPage(_viewModel.SelectedInvoice));
+                    }
                 },
                 "전표 작업");
 

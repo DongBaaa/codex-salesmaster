@@ -421,6 +421,45 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void MobileInvoiceDraft_PreservesProcurementVoucherWhenEditing()
+    {
+        var root = FindRepositoryRoot();
+        var voucherRulesSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Models",
+            "MobileVoucherTypeRules.cs"));
+        var invoiceDraftSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "InvoiceDraftViewModel.cs"));
+        var invoicesPageSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Pages",
+            "InvoicesPage.cs"));
+
+        Assert.Contains("voucherType is VoucherType.Sales or VoucherType.Purchase or VoucherType.Procurement", voucherRulesSource, StringComparison.Ordinal);
+        Assert.Contains("VoucherType.Procurement => VoucherType.Procurement", invoiceDraftSource, StringComparison.Ordinal);
+        Assert.Contains("public bool IsProcurementDocument => VoucherType == VoucherType.Procurement;", invoiceDraftSource, StringComparison.Ordinal);
+        Assert.Contains("public bool IsPurchaseLikeDocument => MobileVoucherTypeRules.IsPaymentVoucher(VoucherType);", invoiceDraftSource, StringComparison.Ordinal);
+        Assert.Contains("DocumentKindText => VoucherType switch", invoiceDraftSource, StringComparison.Ordinal);
+        Assert.Contains("VoucherType.Procurement => \"발주\"", invoiceDraftSource, StringComparison.Ordinal);
+        Assert.Contains("CustomerNameLabelText => IsPurchaseLikeDocument ? \"거래처\" : \"고객/거래처\";", invoiceDraftSource, StringComparison.Ordinal);
+        Assert.Contains("WarehouseLabelText => IsPurchaseLikeDocument ? \"입고창고\" : \"출고창고\";", invoiceDraftSource, StringComparison.Ordinal);
+        Assert.Contains("? $\"M-{(IsPurchaseLikeDocument ? \"P\" : \"S\")}-{DateTime.Now:yyyyMMdd-HHmmss}\"", invoiceDraftSource, StringComparison.Ordinal);
+        Assert.Contains("VoucherType = this.VoucherType,", invoiceDraftSource, StringComparison.Ordinal);
+        Assert.Contains("PurchaseReceivingRequired = IsPurchaseDocument,", invoiceDraftSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("voucherType == VoucherType.Purchase ? VoucherType.Purchase : VoucherType.Sales", invoiceDraftSource, StringComparison.Ordinal);
+        Assert.Contains("MobileVoucherTypeRules.CanEditInInvoiceDraft(_viewModel.SelectedInvoice.VoucherType)", invoicesPageSource, StringComparison.Ordinal);
+        Assert.Contains("모바일에서는 판매/구매/발주 전표만 수정할 수 있습니다.", invoicesPageSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MobileCoreMutationDrafts_RequireServerEditPermissionsBeforeEntryAndSave()
     {
         var root = FindRepositoryRoot();
