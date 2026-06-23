@@ -184,6 +184,59 @@ public sealed class RentalBillingRunStateTests
         }
     }
 
+    [Fact]
+    public async Task StartBilling_RejectsBundleTemplateWithZeroMonthlyAmount()
+    {
+        PrepareAppRoot("georaeplan-rental-bundle-zero-amount-guard");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Zero bundle amount customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
+
+            var profile = CreateBillingProfile(profileId, assetId, customerName, customerId);
+            profile.BillingType = "\uBB36\uC74C";
+            profile.MonthlyAmount = 0m;
+            profile.BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    DisplayItemName = "Zero bundle rental fee",
+                    BillingLineMode = "\uBB36\uC74C",
+                    RepresentativeAssetId = assetId,
+                    Quantity = 1m,
+                    UnitPrice = 0m,
+                    Amount = 0m,
+                    IncludedAssetIds = [assetId]
+                }
+            });
+            db.RentalBillingProfiles.Add(profile);
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+
+            var result = await service.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+
+            Assert.False(result.Success);
+            Assert.False(await db.Invoices.IgnoreQueryFilters()
+                .AnyAsync(current => current.LinkedRentalBillingProfileId == profileId));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     [Theory]
     [InlineData("개별", "묶음", "개별")]
     [InlineData("묶음", "개별", "묶음")]

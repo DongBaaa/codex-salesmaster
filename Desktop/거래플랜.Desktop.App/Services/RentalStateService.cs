@@ -9714,6 +9714,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 }
 
                 var monthlyAmount = ResolveTemplateMonthlyAmount(templateItem);
+                if (monthlyAmount <= 0m)
+                {
+                    return (false,
+                        $"청구항목 '{templateItem.DisplayItemName}'의 월 청구금액이 없어 판매전표를 만들 수 없습니다.",
+                        new List<LocalInvoiceLine>());
+                }
+
                 foreach (var billingMonth in billingMonths)
                 {
                     var specification = ResolveBundleInvoiceSpecification(templateItem, representativeAsset, templateAssets);
