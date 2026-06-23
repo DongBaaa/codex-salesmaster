@@ -109,9 +109,27 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("Environment.SetEnvironmentVariable(\"TMP\", resolvedPath);", desktopInstallerSource, StringComparison.Ordinal);
         AssertInOrder(
             desktopInstallerSource,
+            "if ([string]::IsNullOrWhiteSpace($ProjectRoot))",
+            "$ProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path",
+            "$tempInitializer = Join-Path $ProjectRoot 'tools\\common\\Initialize-GeoraePlanTemp.ps1'",
+            "$stagingRoot = Join-Path ([System.IO.Path]::GetPathRoot($ProjectRoot)) 'GeoraePlanInstallerBuild'");
+        AssertInOrder(
+            desktopInstallerSource,
             "Environment.GetEnvironmentVariable(TempRootOverrideEnvironmentKey)",
             "Path.Combine(\"D:\\\\\", \"거래플랜\", \"temp\")",
             "Path.GetTempPath()");
+
+        var desktopZipInstallerSource = ReadRepositoryFile(
+            "tools",
+            "release",
+            "Build-GeoraePlanDesktopInstaller.ps1");
+
+        AssertInOrder(
+            desktopZipInstallerSource,
+            "if ([string]::IsNullOrWhiteSpace($ProjectRoot))",
+            "$ProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path",
+            "$tempInitializer = Join-Path $ProjectRoot 'tools\\common\\Initialize-GeoraePlanTemp.ps1'",
+            "& powershell -ExecutionPolicy Bypass -File $nativeInstallerScript -ProjectRoot $ProjectRoot");
 
         var androidBuildSource = ReadRepositoryFile(
             "tools",
@@ -126,6 +144,18 @@ public sealed class ReleaseTempPathGuardTests
             "$tempInitializer = Join-Path $ProjectRoot 'tools\\common\\Initialize-GeoraePlanTemp.ps1'",
             "$resolvedDotNetPath = Get-ResolvedDotNetPath -ProjectRoot $ProjectRoot -RequestedPath $DotNetPath",
             "& $resolvedDotNetPath @arguments");
+
+        var fullReleaseSource = ReadRepositoryFile(
+            "tools",
+            "release",
+            "Publish-GeoraePlanFullRelease.ps1");
+
+        AssertInOrder(
+            fullReleaseSource,
+            "if ([string]::IsNullOrWhiteSpace($ProjectRoot))",
+            "$ProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path",
+            "$tempInitializer = Join-Path $ProjectRoot 'tools\\common\\Initialize-GeoraePlanTemp.ps1'",
+            "& powershell -NoProfile -ExecutionPolicy Bypass -File $desktopScript -ProjectRoot $ProjectRoot");
     }
 
     [Fact]
