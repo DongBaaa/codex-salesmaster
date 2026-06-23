@@ -1876,6 +1876,82 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task RestoreTransaction_RejectsWhenLinkedInvoiceRentalProfileOutsideWritableScope()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = CreateScopedCustomer("restore transaction hidden rental profile customer", OfficeCodeCatalog.Usenet);
+        var hiddenProfileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var invoice = CreateScopedInvoice(customer.Id, OfficeCodeCatalog.Usenet, "INV-TX-RESTORE-HIDDEN-RENTAL");
+        invoice.LinkedRentalBillingProfileId = hiddenProfileId;
+        invoice.LinkedRentalBillingRunId = runId;
+        var transaction = new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 23),
+            TransactionKind = "전표수금",
+            LinkedInvoiceId = invoice.Id,
+            LinkedInvoiceNumber = invoice.InvoiceNumber,
+            ReceiptTotal = 40_000m,
+            BankReceipt = 40_000m,
+            SettlementAmount = 40_000m,
+            IsDeleted = true
+        };
+        var hiddenProfile = CreateRentalProfile(hiddenProfileId, customer.Id, "restore transaction hidden profile", runId);
+        hiddenProfile.OfficeCode = OfficeCodeCatalog.Shared;
+        hiddenProfile.ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu;
+        hiddenProfile.SettledAmount = 0m;
+        hiddenProfile.OutstandingAmount = 100_000m;
+        hiddenProfile.SettlementStatus = "보존";
+        dbContext.Customers.Add(customer);
+        dbContext.RentalBillingProfiles.Add(hiddenProfile);
+        dbContext.Invoices.Add(invoice);
+        dbContext.Transactions.Add(transaction);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = transaction.Id,
+                        Kind = "transaction"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("렌탈 청구프로필", item.Message);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        var storedTransaction = await dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == transaction.Id);
+        Assert.True(storedTransaction.IsDeleted);
+        Assert.Null(storedTransaction.LinkedRentalBillingProfileId);
+        Assert.Null(storedTransaction.LinkedRentalBillingRunId);
+        var storedProfile = await dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == hiddenProfileId);
+        Assert.Equal("보존", storedProfile.SettlementStatus);
+        Assert.Equal(0m, storedProfile.SettledAmount);
+    }
+
+    [Fact]
     public async Task RestorePayment_AlignsLinkedTransactionRentalLinkToInvoice()
     {
         var currentUser = CreateAdminUser();
@@ -1956,6 +2032,154 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         Assert.Equal(invoice.Id, restoredTransaction.LinkedInvoiceId);
         Assert.Equal(invoiceProfileId, restoredTransaction.LinkedRentalBillingProfileId);
         Assert.Equal(invoiceRunId, restoredTransaction.LinkedRentalBillingRunId);
+    }
+
+    [Fact]
+    public async Task RestorePayment_RejectsWhenInvoiceRentalProfileOutsideWritableScope()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = CreateScopedCustomer("restore payment hidden rental profile customer", OfficeCodeCatalog.Usenet);
+        var hiddenProfileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var invoice = CreateScopedInvoice(customer.Id, OfficeCodeCatalog.Usenet, "INV-PAY-RESTORE-HIDDEN-RENTAL");
+        invoice.LinkedRentalBillingProfileId = hiddenProfileId;
+        invoice.LinkedRentalBillingRunId = runId;
+        var paymentId = Guid.NewGuid();
+        var payment = new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 23),
+            Amount = 40_000m,
+            IsDeleted = true
+        };
+        var linkedTransaction = new TransactionRecord
+        {
+            Id = paymentId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 23),
+            TransactionKind = "전표수금",
+            LinkedInvoiceId = invoice.Id,
+            LinkedInvoiceNumber = invoice.InvoiceNumber,
+            ReceiptTotal = 40_000m,
+            BankReceipt = 40_000m,
+            SettlementAmount = 40_000m,
+            IsDeleted = true
+        };
+        var hiddenProfile = CreateRentalProfile(hiddenProfileId, customer.Id, "restore payment hidden profile", runId);
+        hiddenProfile.OfficeCode = OfficeCodeCatalog.Shared;
+        hiddenProfile.ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu;
+        hiddenProfile.SettledAmount = 0m;
+        hiddenProfile.OutstandingAmount = 100_000m;
+        hiddenProfile.SettlementStatus = "보존";
+        dbContext.Customers.Add(customer);
+        dbContext.RentalBillingProfiles.Add(hiddenProfile);
+        dbContext.Invoices.Add(invoice);
+        dbContext.Payments.Add(payment);
+        dbContext.Transactions.Add(linkedTransaction);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = payment.Id,
+                        Kind = "payment"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("렌탈 청구프로필", item.Message);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.True(await dbContext.Payments.IgnoreQueryFilters()
+            .Where(current => current.Id == paymentId)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+        var storedTransaction = await dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == linkedTransaction.Id);
+        Assert.True(storedTransaction.IsDeleted);
+        Assert.Null(storedTransaction.LinkedRentalBillingProfileId);
+        Assert.Null(storedTransaction.LinkedRentalBillingRunId);
+        var storedProfile = await dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == hiddenProfileId);
+        Assert.Equal("보존", storedProfile.SettlementStatus);
+        Assert.Equal(0m, storedProfile.SettledAmount);
+    }
+
+    [Fact]
+    public async Task RestoreInvoice_RejectsWhenRentalProfileOutsideWritableScope()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = CreateScopedCustomer("restore invoice hidden rental profile customer", OfficeCodeCatalog.Usenet);
+        var hiddenProfileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var invoice = CreateScopedInvoice(customer.Id, OfficeCodeCatalog.Usenet, "INV-RESTORE-HIDDEN-RENTAL");
+        invoice.LinkedRentalBillingProfileId = hiddenProfileId;
+        invoice.LinkedRentalBillingRunId = runId;
+        invoice.IsDeleted = true;
+        var hiddenProfile = CreateRentalProfile(hiddenProfileId, customer.Id, "restore invoice hidden profile", runId);
+        hiddenProfile.OfficeCode = OfficeCodeCatalog.Shared;
+        hiddenProfile.ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu;
+        hiddenProfile.SettledAmount = 0m;
+        hiddenProfile.OutstandingAmount = 100_000m;
+        hiddenProfile.SettlementStatus = "보존";
+        dbContext.Customers.Add(customer);
+        dbContext.RentalBillingProfiles.Add(hiddenProfile);
+        dbContext.Invoices.Add(invoice);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = invoice.Id,
+                        Kind = "invoice"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("렌탈 청구프로필", item.Message);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.True(await dbContext.Invoices.IgnoreQueryFilters()
+            .Where(current => current.Id == invoice.Id)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+        var storedProfile = await dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == hiddenProfileId);
+        Assert.Equal("보존", storedProfile.SettlementStatus);
+        Assert.Equal(0m, storedProfile.SettledAmount);
     }
 
     [Fact]

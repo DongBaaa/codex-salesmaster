@@ -992,6 +992,12 @@ public sealed class RecycleBinController : ControllerBase
         if (!revisionCheck.Success)
             return revisionCheck;
 
+        var invoiceRentalProfileScopeCheck = await EnsureCanWriteRentalSettlementProfileAsync(
+            invoice.LinkedRentalBillingProfileId,
+            cancellationToken);
+        if (!invoiceRentalProfileScopeCheck.Success)
+            return (false, invoiceRentalProfileScopeCheck.Message);
+
         var invoiceGroupRestore = await RestoreInvoiceGroupAsync(invoice, customer, cancellationToken);
         if (!invoiceGroupRestore.Success)
             return (false, invoiceGroupRestore.Message);
@@ -1073,6 +1079,12 @@ public sealed class RecycleBinController : ControllerBase
         if (!revisionCheck.Success)
             return revisionCheck;
 
+        var invoiceRentalProfileScopeCheck = await EnsureCanWriteRentalSettlementProfileAsync(
+            invoice.LinkedRentalBillingProfileId,
+            cancellationToken);
+        if (!invoiceRentalProfileScopeCheck.Success)
+            return (false, invoiceRentalProfileScopeCheck.Message);
+
         var customerRestored = false;
         var invoiceRestored = false;
         var shouldRebuildInventoryLedger = false;
@@ -1141,6 +1153,12 @@ public sealed class RecycleBinController : ControllerBase
         if (customer is null)
             return (false, "연결된 거래처를 찾을 수 없습니다.");
 
+        var transactionRentalProfileScopeCheck = await EnsureCanWriteRentalSettlementProfileAsync(
+            transaction.LinkedRentalBillingProfileId,
+            cancellationToken);
+        if (!transactionRentalProfileScopeCheck.Success)
+            return (false, transactionRentalProfileScopeCheck.Message);
+
         var customerRestored = false;
         var invoiceRestored = false;
         var shouldRebuildInventoryLedger = false;
@@ -1154,6 +1172,12 @@ public sealed class RecycleBinController : ControllerBase
             {
                 if (!_officeScopeService.CanWriteOfficeForInvoices(linkedInvoice.ResponsibleOfficeCode, linkedInvoice.TenantCode, linkedInvoice.OfficeCode))
                     return (false, "현재 계정으로 연결 전표를 복원할 수 없습니다.");
+
+                var linkedInvoiceRentalProfileScopeCheck = await EnsureCanWriteRentalSettlementProfileAsync(
+                    linkedInvoice.LinkedRentalBillingProfileId,
+                    cancellationToken);
+                if (!linkedInvoiceRentalProfileScopeCheck.Success)
+                    return (false, linkedInvoiceRentalProfileScopeCheck.Message);
 
                 var linkedInvoiceCustomer = await _dbContext.Customers
                     .IgnoreQueryFilters()
@@ -1234,6 +1258,18 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == payment.Id, cancellationToken);
         if (linkedTransaction is null)
             return (true, false, false, false, null, null, string.Empty);
+
+        var invoiceRentalProfileScopeCheck = await EnsureCanWriteRentalSettlementProfileAsync(
+            invoice.LinkedRentalBillingProfileId,
+            cancellationToken);
+        if (!invoiceRentalProfileScopeCheck.Success)
+            return (false, false, false, false, null, null, invoiceRentalProfileScopeCheck.Message);
+
+        var transactionRentalProfileScopeCheck = await EnsureCanWriteRentalSettlementProfileAsync(
+            linkedTransaction.LinkedRentalBillingProfileId,
+            cancellationToken);
+        if (!transactionRentalProfileScopeCheck.Success)
+            return (false, false, false, false, null, null, transactionRentalProfileScopeCheck.Message);
 
         var transactionRelinked = false;
         if (linkedTransaction.LinkedInvoiceId != payment.InvoiceId)
@@ -2389,6 +2425,10 @@ public sealed class RecycleBinController : ControllerBase
         if (!invoiceGroupScopeCheck.Success)
             return (false, false, invoiceGroupScopeCheck.Message);
 
+        var rentalProfileScopeCheck = await EnsureCanWriteRentalSettlementProfilesAsync(invoiceGroup, cancellationToken);
+        if (!rentalProfileScopeCheck.Success)
+            return (false, false, rentalProfileScopeCheck.Message);
+
         var lineItemScopeCheck = await EnsureCanReadInvoiceGroupLineItemsAsync(invoiceGroup, cancellationToken);
         if (!lineItemScopeCheck.Success)
             return (false, false, lineItemScopeCheck.Message);
@@ -2567,6 +2607,46 @@ public sealed class RecycleBinController : ControllerBase
         => !customer.IsDeleted || _officeScopeService.CanWriteOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode)
             ? (true, string.Empty)
             : (false, "현재 계정으로 연결된 거래처를 복원할 수 없습니다.");
+
+    private async Task<(bool Success, string Message)> EnsureCanWriteRentalSettlementProfilesAsync(
+        IEnumerable<Invoice> invoices,
+        CancellationToken cancellationToken)
+    {
+        var profileIds = (invoices ?? Enumerable.Empty<Invoice>())
+            .Select(invoice => invoice.LinkedRentalBillingProfileId)
+            .Where(profileId => profileId.HasValue && profileId.Value != Guid.Empty)
+            .Select(profileId => profileId!.Value)
+            .Distinct()
+            .ToList();
+
+        foreach (var profileId in profileIds)
+        {
+            var check = await EnsureCanWriteRentalSettlementProfileAsync(profileId, cancellationToken);
+            if (!check.Success)
+                return check;
+        }
+
+        return (true, string.Empty);
+    }
+
+    private async Task<(bool Success, string Message)> EnsureCanWriteRentalSettlementProfileAsync(
+        Guid? profileId,
+        CancellationToken cancellationToken)
+    {
+        if (!profileId.HasValue || profileId.Value == Guid.Empty)
+            return (true, string.Empty);
+
+        var profile = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(current => current.Id == profileId.Value, cancellationToken);
+        if (profile is null || profile.IsDeleted)
+            return (false, "연결된 렌탈 청구프로필을 찾을 수 없어 복원할 수 없습니다.");
+
+        return _officeScopeService.CanWriteOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode, profile.OfficeCode)
+            ? (true, string.Empty)
+            : (false, "현재 계정으로 연결된 렌탈 청구프로필을 변경할 수 없어 복원할 수 없습니다.");
+    }
 
     private static (bool Success, string Message) EnsureRecycleBinMutationRevision(
         TrackedEntity entity,
