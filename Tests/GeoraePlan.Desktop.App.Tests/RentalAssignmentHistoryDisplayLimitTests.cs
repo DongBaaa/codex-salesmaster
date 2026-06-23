@@ -310,6 +310,179 @@ public sealed class RentalAssignmentHistoryDisplayLimitTests
         }
     }
 
+    [Fact]
+    public async Task RentalStateService_CreateAssetAssignmentHistoryEditRequestAsync_DoesNotResolveHiddenBillingProfileDisplay()
+    {
+        PrepareAppRoot("georaeplan-rental-assignment-history-edit-hidden-profile-display");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var assetId = Guid.Parse("55555555-5555-5555-5555-555555555555");
+            var hiddenProfileId = Guid.Parse("55555555-aaaa-aaaa-aaaa-555555555555");
+            var now = new DateTime(2026, 6, 24, 0, 0, 0, DateTimeKind.Utc);
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = hiddenProfileId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                ProfileKey = "HIDDEN-EDIT-PROFILE",
+                CustomerName = "Hidden Edit Customer",
+                ItemName = "Hidden Edit Plan",
+                MonthlyAmount = 100_000m,
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            });
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                BillingProfileId = hiddenProfileId,
+                LastBillingProfileId = hiddenProfileId,
+                LastBillingProfileDisplay = "Hidden Snapshot Customer · Hidden Snapshot Plan",
+                AssetKey = "TEST:ASSIGNMENT-HISTORY-EDIT-HIDDEN-PROFILE",
+                ManagementNumber = "AH-EDIT-HIDDEN-001",
+                ItemName = "Usenet Printer",
+                MachineNumber = "AH-EDIT-HIDDEN-SN-001",
+                CustomerName = "Usenet Customer",
+                CurrentCustomerName = "Usenet Customer",
+                InstallLocation = "Usenet Office",
+                AssetStatus = "Rental",
+                BillingEligibilityStatus = "Billable",
+                IsDeleted = false
+            });
+            await db.SaveChangesAsync();
+
+            var request = await new RentalStateService(db)
+                .CreateAssetAssignmentHistoryEditRequestAsync(assetId, CreateOfficeSession(OfficeCodeCatalog.Usenet));
+
+            Assert.NotNull(request);
+            Assert.Equal(string.Empty, request!.BillingProfileDisplay);
+            Assert.DoesNotContain("Hidden", request.BillingProfileDisplay, StringComparison.Ordinal);
+            Assert.DoesNotContain(hiddenProfileId.ToString("D"), request.BillingProfileDisplay, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalStateService_SaveAssetAsync_DoesNotDirtyHiddenBillingProfileOrPersistHiddenHistoryDisplay()
+    {
+        PrepareAppRoot("georaeplan-rental-assignment-history-save-hidden-profile-display");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var assetId = Guid.Parse("66666666-6666-6666-6666-666666666666");
+            var hiddenProfileId = Guid.Parse("66666666-aaaa-aaaa-aaaa-666666666666");
+            var now = new DateTime(2026, 6, 24, 0, 0, 0, DateTimeKind.Utc);
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = hiddenProfileId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                ProfileKey = "HIDDEN-SAVE-PROFILE",
+                CustomerName = "Hidden Save Customer",
+                ItemName = "Hidden Save Plan",
+                BillingTemplateJson = "[]",
+                MonthlyAmount = 100_000m,
+                IsActive = true,
+                IsDeleted = false,
+                IsDirty = false,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            });
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                BillingProfileId = hiddenProfileId,
+                CustomerName = "Usenet Customer",
+                CurrentCustomerName = "Usenet Customer",
+                InstallLocation = "Usenet Office",
+                InstallSiteName = "Usenet Customer",
+                AssetKey = "TEST:ASSIGNMENT-HISTORY-SAVE-HIDDEN-PROFILE",
+                ManagementNumber = "AH-SAVE-HIDDEN-001",
+                ManagementId = "AH-SAVE-HIDDEN-ID-001",
+                ItemName = "Usenet Printer",
+                MachineNumber = "AH-SAVE-HIDDEN-SN-001",
+                AssetStatus = "Rental",
+                BillingEligibilityStatus = "Billable",
+                MonthlyFee = 77_000m,
+                IsDeleted = false,
+                IsDirty = false,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            });
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            var saveCandidate = new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                BillingProfileId = hiddenProfileId,
+                CustomerName = "Usenet Customer",
+                CurrentCustomerName = "Usenet Customer",
+                InstallLocation = "Usenet Office",
+                InstallSiteName = "Usenet Customer",
+                ManagementNumber = "AH-SAVE-HIDDEN-001",
+                ManagementId = "AH-SAVE-HIDDEN-ID-001",
+                ItemName = "Usenet Printer",
+                MachineNumber = "AH-SAVE-HIDDEN-SN-001",
+                AssetStatus = "Rental",
+                BillingEligibilityStatus = "Billable",
+                MonthlyFee = 88_000m,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            };
+
+            var result = await new RentalStateService(db)
+                .SaveAssetAsync(saveCandidate, CreateOfficeSession(OfficeCodeCatalog.Usenet));
+            Assert.True(result.Success, result.Message);
+
+            db.ChangeTracker.Clear();
+            var hiddenProfile = await db.RentalBillingProfiles.IgnoreQueryFilters()
+                .SingleAsync(profile => profile.Id == hiddenProfileId);
+            var history = await db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                .SingleAsync(current => current.AssetId == assetId);
+
+            Assert.False(hiddenProfile.IsDirty);
+            Assert.Equal(string.Empty, history.BillingProfileDisplay);
+            Assert.DoesNotContain("Hidden Save Customer", history.BillingProfileDisplay, StringComparison.Ordinal);
+            Assert.DoesNotContain(hiddenProfileId.ToString("D"), history.BillingProfileDisplay, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static List<RentalAssetAssignmentHistoryViewItem> CreateRows(int count)
         => Enumerable.Range(0, count)
             .Select(index => new RentalAssetAssignmentHistoryViewItem

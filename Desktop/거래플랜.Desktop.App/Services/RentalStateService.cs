@@ -4758,7 +4758,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         await _db.SaveChangesAsync(ct);
-        await SyncBillingProfileAssetsAsync(profile, templateItems, assetLinkEdits, ct);
+        await SyncBillingProfileAssetsAsync(profile, templateItems, assetLinkEdits, session, ct);
         return LocalMutationResult.Ok(profile.Id, "렌탈 청구 프로필을 저장했습니다.");
     }
 
@@ -4800,7 +4800,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         foreach (var asset in linkedAssets)
         {
             var previousBillingProfileId = asset.BillingProfileId;
-            await ApplyAssignmentClearedSnapshotAsync(asset, previousBillingProfileId, now, ct);
+            await ApplyAssignmentClearedSnapshotAsync(asset, previousBillingProfileId, now, session, ct);
             asset.BillingEligibilityStatus = BillingEligibilityExcluded;
             asset.BillingExclusionReason = BillingProfileDeleteExclusionReason;
             asset.IsDirty = true;
@@ -4811,7 +4811,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         profile.IsDirty = true;
         profile.UpdatedAtUtc = now;
         await _db.SaveChangesAsync(ct);
-        await RefreshLocalRentalAssetAssignmentHistoriesAsync(linkedAssets.Select(asset => asset.Id), now, "청구 프로필 삭제", ct);
+        await RefreshLocalRentalAssetAssignmentHistoriesAsync(linkedAssets.Select(asset => asset.Id), now, "청구 프로필 삭제", session, ct);
         return LocalMutationResult.Ok(profileId, "렌탈 청구 프로필을 삭제했습니다.");
     }
 
@@ -4940,7 +4940,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 profile.BillingTemplateJson = serializedTemplateItems;
                 profile.MonthlyAmount = templateItems.Sum(ResolveTemplateMonthlyAmount);
                 profile.ItemName = BuildProfileItemName(profile, templateItems);
-                await SyncBillingProfileAssetsAsync(profile, templateItems, null, ct);
+                await SyncBillingProfileAssetsAsync(profile, templateItems, null, session, ct);
             }
 
             var officeCode = NormalizeOfficeCode(profile.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
@@ -6425,7 +6425,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             UnlinkedAtLocal = DateTime.Today,
             CustomerName = customerName,
             InstallLocation = installLocation,
-            BillingProfileDisplay = await ResolveLastBillingProfileDisplayAsync(asset.BillingProfileId, asset, ct),
+            BillingProfileDisplay = await ResolveLastBillingProfileDisplayAsync(asset.BillingProfileId, asset, session, ct),
             ItemName = asset.ItemName,
             MachineNumber = asset.MachineNumber,
             ManagementNumber = asset.ManagementNumber,
@@ -6608,7 +6608,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             asset.InstallLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallLocation);
             asset.DepositText = (asset.DepositText ?? string.Empty).Trim();
             asset.AssetStatus = ResolveAssetStatus(asset.AssetStatus, asset.CurrentLocation, asset.DisposalDate);
-            await ApplyNonOperatingAssetStateRulesAsync(asset, existing, ct);
+            await ApplyNonOperatingAssetStateRulesAsync(asset, existing, session, ct);
             asset.BillingEligibilityStatus = string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus)
                 ? GetDefaultBillingEligibilityStatus(asset)
                 : asset.BillingEligibilityStatus.Trim();
@@ -6693,8 +6693,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             }
 
             await _db.SaveChangesAsync(ct);
-            await SyncLinkedBillingProfileMonthlyFeeFromAssetAsync(asset.Id, ct);
-            await RefreshLocalRentalAssetAssignmentHistoriesAsync([asset.Id], DateTime.UtcNow, "자산 저장", ct);
+            await SyncLinkedBillingProfileMonthlyFeeFromAssetAsync(asset.Id, session, ct);
+            await RefreshLocalRentalAssetAssignmentHistoriesAsync([asset.Id], DateTime.UtcNow, "자산 저장", session, ct);
             return LocalMutationResult.Ok(asset.Id, "렌탈 자산을 저장했습니다.");
         }
         finally
@@ -6824,7 +6824,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             var originalLabel = BuildRentalEquipmentReplacementAssetLabel(original);
             var replacementLabel = BuildRentalEquipmentReplacementAssetLabel(replacement);
 
-            await ApplyAssignmentClearedSnapshotAsync(original, previousBillingProfileId, replacementUtc, ct);
+            await ApplyAssignmentClearedSnapshotAsync(original, previousBillingProfileId, replacementUtc, session, ct);
             original.CustomerName = string.Empty;
             original.CurrentCustomerName = string.Empty;
             original.InstallLocation = string.Empty;
@@ -6906,8 +6906,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
             await _db.SaveChangesAsync(ct);
             if (profile is not null)
-                await SyncLinkedBillingProfileMonthlyFeeFromAssetAsync(replacement.Id, ct);
-            await RefreshLocalRentalAssetAssignmentHistoriesAsync([original.Id, replacement.Id], replacementUtc, changeReason, ct);
+                await SyncLinkedBillingProfileMonthlyFeeFromAssetAsync(replacement.Id, session, ct);
+            await RefreshLocalRentalAssetAssignmentHistoriesAsync([original.Id, replacement.Id], replacementUtc, changeReason, session, ct);
             await tx.CommitAsync(ct);
 
             return LocalMutationResult.Ok(
@@ -7062,6 +7062,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         IEnumerable<Guid> assetIds,
         DateTime nowUtc,
         string reason,
+        SessionState? session,
         CancellationToken ct)
     {
         var targetAssetIds = assetIds
@@ -7113,7 +7114,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     hasChanges |= CloseAssignmentHistory(stale, asset.LastAssignmentClearedAtUtc ?? nowUtc, reason, nowUtc, asset);
 
                 if (currentRows.Count == 0)
-                    hasChanges |= await EnsureEndedHistoryFromClearedSnapshotAsync(asset, histories, nowUtc, reason, ct);
+                    hasChanges |= await EnsureEndedHistoryFromClearedSnapshotAsync(asset, histories, nowUtc, reason, session, ct);
 
                 continue;
             }
@@ -7123,7 +7124,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
             if (matchingCurrent is not null)
             {
-                hasChanges |= await PopulateAssignmentHistorySnapshotAsync(matchingCurrent, asset, desiredCustomerName, desiredInstallLocation, reason, nowUtc, ct);
+                hasChanges |= await PopulateAssignmentHistorySnapshotAsync(matchingCurrent, asset, desiredCustomerName, desiredInstallLocation, reason, nowUtc, session, ct);
                 continue;
             }
 
@@ -7153,6 +7154,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     desiredInstallLocation,
                     reason,
                     nowUtc,
+                    session,
                     ct);
                 continue;
             }
@@ -7173,7 +7175,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 UpdatedAtUtc = nowUtc,
                 ChangeReason = reason
             };
-            await PopulateAssignmentHistorySnapshotAsync(newHistory, asset, desiredCustomerName, desiredInstallLocation, reason, nowUtc, ct);
+            await PopulateAssignmentHistorySnapshotAsync(newHistory, asset, desiredCustomerName, desiredInstallLocation, reason, nowUtc, session, ct);
             _db.RentalAssetAssignmentHistories.Add(newHistory);
             histories.Add(newHistory);
             hasChanges = true;
@@ -7257,6 +7259,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         string installLocation,
         string reason,
         DateTime nowUtc,
+        SessionState? session,
         CancellationToken ct)
     {
         var changed = false;
@@ -7267,7 +7270,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         changed |= SetIfDifferent(value => history.ResponsibleOfficeCode = value, history.ResponsibleOfficeCode, asset.ResponsibleOfficeCode);
         changed |= SetIfDifferent(value => history.CustomerName = value, history.CustomerName, customerName);
         changed |= SetIfDifferent(value => history.InstallLocation = value, history.InstallLocation, installLocation);
-        changed |= SetIfDifferent(value => history.BillingProfileDisplay = value, history.BillingProfileDisplay, await ResolveLastBillingProfileDisplayAsync(asset.BillingProfileId, asset, ct));
+        changed |= SetIfDifferent(value => history.BillingProfileDisplay = value, history.BillingProfileDisplay, await ResolveLastBillingProfileDisplayAsync(asset.BillingProfileId, asset, session, ct));
         changed |= SetIfDifferent(value => history.ItemName = value, history.ItemName, asset.ItemName);
         changed |= SetIfDifferent(value => history.MachineNumber = value, history.MachineNumber, asset.MachineNumber);
         changed |= SetIfDifferent(value => history.ManagementNumber = value, history.ManagementNumber, asset.ManagementNumber);
@@ -7288,6 +7291,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         List<LocalRentalAssetAssignmentHistory> histories,
         DateTime nowUtc,
         string reason,
+        SessionState? session,
         CancellationToken ct)
     {
         var unlinkedAtUtc = NormalizeHistoryUtc(asset.LastAssignmentClearedAtUtc ?? nowUtc);
@@ -7341,6 +7345,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 unlinkedAtUtc,
                 reason,
                 nowUtc,
+                session,
                 ct);
         }
 
@@ -7354,9 +7359,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             ResponsibleOfficeCode = asset.ResponsibleOfficeCode,
             CustomerName = customerName,
             InstallLocation = installLocation,
-            BillingProfileDisplay = string.IsNullOrWhiteSpace(asset.LastBillingProfileDisplay)
-                ? await ResolveLastBillingProfileDisplayAsync(billingProfileId, asset, ct)
-                : asset.LastBillingProfileDisplay,
+            BillingProfileDisplay = await ResolveLastBillingProfileDisplayAsync(billingProfileId, asset, session, ct),
             ItemName = asset.ItemName,
             MachineNumber = asset.MachineNumber,
             ManagementNumber = asset.ManagementNumber,
@@ -7385,11 +7388,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
         DateTime unlinkedAtUtc,
         string reason,
         DateTime nowUtc,
+        SessionState? session,
         CancellationToken ct)
     {
-        var billingProfileDisplay = string.IsNullOrWhiteSpace(asset.LastBillingProfileDisplay)
-            ? await ResolveLastBillingProfileDisplayAsync(billingProfileId, asset, ct)
-            : asset.LastBillingProfileDisplay;
+        var billingProfileDisplay = await ResolveLastBillingProfileDisplayAsync(billingProfileId, asset, session, ct);
 
         var changed = false;
         changed |= SetIfDifferent(value => history.AssetId = value, history.AssetId, asset.Id);
@@ -7447,6 +7449,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         LocalRentalAsset asset,
         Guid? previousBillingProfileId,
         DateTime clearedAtUtc,
+        SessionState? session,
         CancellationToken ct)
     {
         var snapshotCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(FirstNonEmpty(
@@ -7466,7 +7469,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             asset.LastCustomerName = snapshotCustomerName;
             asset.LastInstallLocation = snapshotInstallLocation;
             asset.LastBillingProfileId = snapshotBillingProfileId;
-            asset.LastBillingProfileDisplay = await ResolveLastBillingProfileDisplayAsync(snapshotBillingProfileId, asset, ct);
+            asset.LastBillingProfileDisplay = await ResolveLastBillingProfileDisplayAsync(snapshotBillingProfileId, asset, session, ct);
             asset.LastAssignmentClearedAtUtc = NormalizeHistoryUtc(clearedAtUtc);
         }
 
@@ -7629,7 +7632,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         asset.IsDirty = true;
         asset.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
-        await RefreshLocalRentalAssetAssignmentHistoriesAsync([assetId], DateTime.UtcNow, "자산 삭제", ct);
+        await RefreshLocalRentalAssetAssignmentHistoriesAsync([assetId], DateTime.UtcNow, "자산 삭제", session, ct);
         return LocalMutationResult.Ok(assetId, "렌탈 자산을 삭제했습니다.");
     }
 
@@ -10523,6 +10526,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private async Task ApplyNonOperatingAssetStateRulesAsync(
         LocalRentalAsset asset,
         LocalRentalAsset? existing,
+        SessionState? session,
         CancellationToken ct)
     {
         if (!RentalAssetStatusRules.IsNonOperating(asset.AssetStatus))
@@ -10551,7 +10555,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             asset.LastCustomerName = snapshotCustomerName;
             asset.LastInstallLocation = snapshotInstallLocation;
             asset.LastBillingProfileId = snapshotBillingProfileId;
-            asset.LastBillingProfileDisplay = await ResolveLastBillingProfileDisplayAsync(snapshotBillingProfileId, existing, ct);
+            asset.LastBillingProfileDisplay = await ResolveLastBillingProfileDisplayAsync(snapshotBillingProfileId, existing, session, ct);
             asset.LastAssignmentClearedAtUtc = DateTime.UtcNow;
         }
         else
@@ -10592,9 +10596,22 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private async Task<string> ResolveLastBillingProfileDisplayAsync(
         Guid? billingProfileId,
         LocalRentalAsset? existing,
+        SessionState? session,
         CancellationToken ct)
     {
         if (!billingProfileId.HasValue || billingProfileId.Value == Guid.Empty)
+            return string.Empty;
+
+        var profileQuery = _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking();
+        if (session is not null)
+            profileQuery = ApplyBillingScope(profileQuery, session);
+
+        var profile = await profileQuery
+            .FirstOrDefaultAsync(current => current.Id == billingProfileId.Value, ct);
+
+        if (profile is null)
             return string.Empty;
 
         if (existing is not null &&
@@ -10603,14 +10620,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
         {
             return RentalCatalogValueNormalizer.NormalizeDisplayText(existing.LastBillingProfileDisplay);
         }
-
-        var profile = await _db.RentalBillingProfiles
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .FirstOrDefaultAsync(current => current.Id == billingProfileId.Value, ct);
-
-        if (profile is null)
-            return billingProfileId.Value.ToString("D");
 
         var customerName = RentalCatalogValueNormalizer.NormalizeDisplayText(profile.CustomerName);
         var itemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(profile.ItemName);
@@ -10621,7 +10630,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (!string.IsNullOrWhiteSpace(itemName))
             return itemName;
 
-        return billingProfileId.Value.ToString("D");
+        return string.Empty;
     }
 
     private static string FirstNonEmpty(params string?[] values)
@@ -10668,6 +10677,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
     private async Task SyncLinkedBillingProfileMonthlyFeeFromAssetAsync(
         Guid assetId,
+        SessionState session,
         CancellationToken ct)
     {
         if (assetId == Guid.Empty)
@@ -10684,9 +10694,16 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return;
         }
 
-        var profile = await _db.RentalBillingProfiles
+        var profile = await ApplyBillingScope(_db.RentalBillingProfiles
             .IgnoreQueryFilters()
+            .AsNoTracking(), session)
             .FirstOrDefaultAsync(current => current.Id == asset.BillingProfileId.Value && !current.IsDeleted, ct);
+        if (profile is null || !RentalAssetCanTransferToBillingProfileScope(asset, profile.TenantCode))
+            return;
+
+        profile = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == profile.Id && !current.IsDeleted, ct);
         if (profile is null)
             return;
 
@@ -10890,6 +10907,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         LocalRentalBillingProfile profile,
         IReadOnlyList<RentalBillingTemplateItemModel> templateItems,
         IReadOnlyList<RentalBillingAssetLinkEdit>? assetLinkEdits,
+        SessionState? session,
         CancellationToken ct)
     {
         var includedAssetIds = templateItems
@@ -10966,7 +10984,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             {
                 if (asset.BillingProfileId == profile.Id)
                 {
-                    await ApplyAssignmentClearedSnapshotAsync(asset, previousBillingProfileId, now, ct);
+                    await ApplyAssignmentClearedSnapshotAsync(asset, previousBillingProfileId, now, session, ct);
                     asset.BillingEligibilityStatus = RentalAssetStatusRules.IsNonOperating(asset.AssetStatus)
                         ? BillingEligibilityExcluded
                         : BillingEligibilityUnconfirmed;
@@ -11041,7 +11059,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             }
             else if (asset.BillingProfileId == profile.Id)
             {
-                await ApplyAssignmentClearedSnapshotAsync(asset, previousBillingProfileId, now, ct);
+                await ApplyAssignmentClearedSnapshotAsync(asset, previousBillingProfileId, now, session, ct);
                 asset.BillingEligibilityStatus = RentalAssetStatusRules.IsNonOperating(asset.AssetStatus)
                     ? BillingEligibilityExcluded
                     : BillingEligibilityUnconfirmed;
@@ -11080,7 +11098,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         await _db.SaveChangesAsync(ct);
-        await RefreshLocalRentalAssetAssignmentHistoriesAsync(touchedAssetIds, now, "청구 연결 변경", ct);
+        await RefreshLocalRentalAssetAssignmentHistoriesAsync(touchedAssetIds, now, "청구 연결 변경", session, ct);
     }
 
     private static IQueryable<LocalRentalAsset>? BuildBillingCandidateCustomerMatchQuery(
