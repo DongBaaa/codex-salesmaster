@@ -4585,6 +4585,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 profile.CustomerName,
                 profile.BusinessNumber,
                 ct,
+                preferredOfficeCode: officeCode,
                 preferredTenantCode: profile.TenantCode);
 
         var linkedCustomer = await GetRentalLinkedCustomerAsync(profile.CustomerId, ct);
@@ -4593,8 +4594,15 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 linkedCustomer,
                 profile.TenantCode,
                 customer => customer.TenantCode);
+        var linkedCustomerOfficeMismatch = linkedCustomer is not null &&
+            !MatchesPreferredCustomerOffice(
+                linkedCustomer,
+                officeCode,
+                customer => customer.OfficeCode,
+                customer => customer.ResponsibleOfficeCode);
         if (linkedCustomer is not null &&
             (linkedCustomerTenantMismatch ||
+             linkedCustomerOfficeMismatch ||
              (!string.IsNullOrWhiteSpace(profile.CustomerName) &&
               !CustomerMatchesAnyCandidateName(
                   linkedCustomer,
@@ -4622,8 +4630,15 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     linkedCustomer,
                     profile.TenantCode,
                     customer => customer.TenantCode);
+            linkedCustomerOfficeMismatch = linkedCustomer is not null &&
+                !MatchesPreferredCustomerOffice(
+                    linkedCustomer,
+                    officeCode,
+                    customer => customer.OfficeCode,
+                    customer => customer.ResponsibleOfficeCode);
             if (linkedCustomer is not null &&
                 (linkedCustomerTenantMismatch ||
+                 linkedCustomerOfficeMismatch ||
                  !CustomerMatchesAnyCandidateName(
                      linkedCustomer,
                      BuildWorkbookCustomerNameCandidates(profile.CustomerName).ToList(),
@@ -4903,6 +4918,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     profile.CustomerName,
                     profile.BusinessNumber,
                     ct,
+                    preferredOfficeCode: profile.ResponsibleOfficeCode,
                     preferredTenantCode: profile.TenantCode);
             if (!customerId.HasValue || customerId.Value == Guid.Empty)
                 return LocalMutationResult.Denied("렌탈 청구 전표를 만들 거래처를 찾을 수 없습니다.");
