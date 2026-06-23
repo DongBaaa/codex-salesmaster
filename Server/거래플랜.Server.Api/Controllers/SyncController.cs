@@ -1986,6 +1986,24 @@ public sealed class SyncController : ControllerBase
                 }
             }
 
+            if (!dto.IsDeleted &&
+                dto.LinkedRentalBillingProfileId.HasValue &&
+                dto.LinkedRentalBillingProfileId.Value != Guid.Empty &&
+                dto.SettlementAmount <= 0m)
+            {
+                dto.LinkedRentalBillingProfileId = null;
+                dto.LinkedRentalBillingRunId = null;
+                if (string.Equals(dto.TransactionKind, "렌탈수금", StringComparison.OrdinalIgnoreCase))
+                    dto.TransactionKind = "일반수금";
+                profile = null;
+                AddNotice(
+                    result,
+                    nameof(TransactionRecord),
+                    dto.Id,
+                    "transaction-rental-zero-link-cleared",
+                    $"수금/지급 '{dto.Id:D}'은(는) 정산금액이 0원이라 렌탈 청구 연결을 해제하고 일반 수금 기준으로 보정했습니다.");
+            }
+
             var customer = await _dbContext.Customers.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.CustomerId, cancellationToken);
             if (dto.CustomerId == Guid.Empty || customer is null || customer.IsDeleted)
