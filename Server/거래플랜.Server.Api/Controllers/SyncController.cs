@@ -1960,6 +1960,7 @@ public sealed class SyncController : ControllerBase
             var originalTransactionKind = dto.TransactionKind;
             var originalLinkedInvoiceId = dto.LinkedInvoiceId;
             var originalLinkedRentalBillingProfileId = dto.LinkedRentalBillingProfileId;
+            var originalLinkedRentalBillingRunId = dto.LinkedRentalBillingRunId;
             var originalCustomerId = dto.CustomerId;
             var existing = await _dbContext.Transactions.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
@@ -2047,6 +2048,16 @@ public sealed class SyncController : ControllerBase
                             $"Transaction amount exceeds current outstanding balance. outstanding={outstandingAmount:N0}, amount={transactionSettlementAmount:N0}.", result);
                         continue;
                     }
+                }
+
+                if (invoice is not null &&
+                    invoice.LinkedRentalBillingProfileId.HasValue &&
+                    invoice.LinkedRentalBillingProfileId.Value != Guid.Empty)
+                {
+                    if (dto.LinkedRentalBillingProfileId != invoice.LinkedRentalBillingProfileId)
+                        dto.LinkedRentalBillingProfileId = invoice.LinkedRentalBillingProfileId;
+                    if (dto.LinkedRentalBillingRunId != invoice.LinkedRentalBillingRunId)
+                        dto.LinkedRentalBillingRunId = invoice.LinkedRentalBillingRunId;
                 }
             }
 
@@ -2146,6 +2157,23 @@ public sealed class SyncController : ControllerBase
                 }
             }
 
+            if (invoice?.Customer is not null &&
+                !invoice.Customer.IsDeleted &&
+                dto.CustomerId != invoice.Customer.Id)
+            {
+                customer = invoice.Customer;
+                dto.CustomerId = customer.Id;
+                if (originalCustomerId != customer.Id)
+                {
+                    AddNotice(
+                        result,
+                        nameof(TransactionRecord),
+                        dto.Id,
+                        "transaction-customer-relinked",
+                        $"수금/지급 '{dto.Id:D}'의 거래처를 연결 전표 기준으로 다시 맞췄습니다.");
+                }
+            }
+
             if (!_officeScopeService.CanWriteOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode))
             {
                 if (dto.IsDeleted &&
@@ -2194,7 +2222,8 @@ public sealed class SyncController : ControllerBase
                     $"수금/지급 '{dto.Id:D}'의 연결 전표 값이 서버 기준으로 조정되었습니다.");
             }
 
-            if (originalLinkedRentalBillingProfileId != dto.LinkedRentalBillingProfileId)
+            if (originalLinkedRentalBillingProfileId != dto.LinkedRentalBillingProfileId ||
+                originalLinkedRentalBillingRunId != dto.LinkedRentalBillingRunId)
             {
                 AddNotice(
                     result,

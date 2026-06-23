@@ -7513,6 +7513,219 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RelinksTransactionExistingCustomerToLinkedInvoiceCustomer()
+    {
+        var wrongCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "WRONG-TX-CUSTOMER",
+            NameMatchKey = "WRONGTXCUSTOMER",
+            TradeType = "매출"
+        };
+        var invoiceCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "INVOICE-TX-CUSTOMER",
+            NameMatchKey = "INVOICETXCUSTOMER",
+            TradeType = "매출"
+        };
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = invoiceCustomer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 23),
+            TotalAmount = 8000m,
+            SupplyAmount = 8000m
+        };
+        _dbContext.Customers.AddRange(wrongCustomer, invoiceCustomer);
+        _dbContext.Invoices.Add(invoice);
+        await _dbContext.SaveChangesAsync();
+
+        var transactionId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-transaction-existing-customer-relink",
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = transactionId,
+                    CustomerId = wrongCustomer.Id,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 6, 23),
+                    TransactionKind = "전표수금",
+                    LinkedInvoiceId = invoice.Id,
+                    LinkedInvoiceNumber = "INV-TX-CUSTOMER-RELINK",
+                    BankReceipt = 4000m,
+                    ReceiptTotal = 4000m,
+                    SettlementAmount = 4000m,
+                    CreatedAtUtc = new DateTime(2026, 6, 23, 1, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 23, 1, 1, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Contains(result.Notices, notice =>
+            notice.Code == "transaction-customer-relinked" &&
+            notice.EntityId == transactionId.ToString("D"));
+        var storedTransaction = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == transactionId);
+        Assert.Equal(invoiceCustomer.Id, storedTransaction.CustomerId);
+        Assert.Equal(invoice.Id, storedTransaction.LinkedInvoiceId);
+    }
+
+    [Fact]
+    public async Task Push_AlignsTransactionRentalLinkToLinkedInvoice()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-RENTAL-LINK-CUSTOMER",
+            NameMatchKey = "SYNCRENTALLINKCUSTOMER",
+            TradeType = "매출"
+        };
+        var invoiceProfileId = Guid.NewGuid();
+        var wrongProfileId = Guid.NewGuid();
+        var invoiceRunId = Guid.NewGuid();
+        var wrongRunId = Guid.NewGuid();
+        _dbContext.Customers.Add(customer);
+        _dbContext.RentalBillingProfiles.AddRange(
+            new RentalBillingProfile
+            {
+                Id = invoiceProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = $"sync-transaction-invoice-profile-{invoiceProfileId:N}",
+                CustomerId = customer.Id,
+                CustomerName = customer.NameOriginal,
+                BillingStatus = "청구중",
+                SettlementStatus = "미입금",
+                CompletionStatus = "미완료",
+                MonthlyAmount = 100_000m,
+                OutstandingAmount = 100_000m,
+                BillingRunsJson = JsonSerializer.Serialize(new[]
+                {
+                    new SyncRentalBillingRunSnapshot
+                    {
+                        RunId = invoiceRunId,
+                        RunKey = "2026-06",
+                        PeriodLabel = "2026-06",
+                        BilledAmount = 100_000m,
+                        SettlementStatus = "미입금"
+                    }
+                })
+            },
+            new RentalBillingProfile
+            {
+                Id = wrongProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = $"sync-transaction-wrong-profile-{wrongProfileId:N}",
+                CustomerId = customer.Id,
+                CustomerName = customer.NameOriginal,
+                BillingStatus = "청구중",
+                SettlementStatus = "미입금",
+                CompletionStatus = "미완료",
+                MonthlyAmount = 100_000m,
+                OutstandingAmount = 100_000m,
+                BillingRunsJson = JsonSerializer.Serialize(new[]
+                {
+                    new SyncRentalBillingRunSnapshot
+                    {
+                        RunId = wrongRunId,
+                        RunKey = "2026-05",
+                        PeriodLabel = "2026-05",
+                        BilledAmount = 100_000m,
+                        SettlementStatus = "미입금"
+                    }
+                })
+            });
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 23),
+            InvoiceNumber = "SYNC-TX-RENTAL-LINK",
+            TotalAmount = 100_000m,
+            SupplyAmount = 100_000m,
+            LinkedRentalBillingProfileId = invoiceProfileId,
+            LinkedRentalBillingRunId = invoiceRunId
+        };
+        _dbContext.Invoices.Add(invoice);
+        await _dbContext.SaveChangesAsync();
+
+        var transactionId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-transaction-rental-link-align",
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = transactionId,
+                    CustomerId = customer.Id,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 6, 23),
+                    TransactionKind = "렌탈수금",
+                    LinkedInvoiceId = invoice.Id,
+                    LinkedInvoiceNumber = invoice.InvoiceNumber,
+                    LinkedRentalBillingProfileId = wrongProfileId,
+                    LinkedRentalBillingRunId = wrongRunId,
+                    BankReceipt = 40_000m,
+                    ReceiptTotal = 40_000m,
+                    SettlementAmount = 40_000m,
+                    CreatedAtUtc = new DateTime(2026, 6, 23, 2, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 23, 2, 1, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Contains(result.Notices, notice =>
+            notice.Code == "transaction-rental-link-updated" &&
+            notice.EntityId == transactionId.ToString("D"));
+        var storedTransaction = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == transactionId);
+        Assert.Equal(invoice.Id, storedTransaction.LinkedInvoiceId);
+        Assert.Equal(invoiceProfileId, storedTransaction.LinkedRentalBillingProfileId);
+        Assert.Equal(invoiceRunId, storedTransaction.LinkedRentalBillingRunId);
+    }
+
+    [Fact]
     public async Task Push_AllowsPaymentReferencingInvoiceCreatedInSameBatch()
     {
         var customer = new Customer

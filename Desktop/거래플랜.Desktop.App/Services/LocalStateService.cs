@@ -4732,21 +4732,35 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return OfficeMutationResult.Denied("권한이 없어 수금/지급을 저장할 수 없습니다.");
 		}
 		string requestedTransactionKind = transaction.TransactionKind;
+		Guid requestedCustomerId = transaction.CustomerId;
 		string requestedResponsibleOfficeCode = transaction.ResponsibleOfficeCode;
 		decimal requestedSettlementAmount = transaction.SettlementAmount;
 		Guid? requestedLinkedInvoiceId = transaction.LinkedInvoiceId;
 		Guid? requestedLinkedRentalProfileId = transaction.LinkedRentalBillingProfileId;
 		Guid? requestedLinkedRentalRunId = transaction.LinkedRentalBillingRunId;
 		List<string> warnings = new List<string>();
+		bool hasLinkedInvoiceRequest = transaction.LinkedInvoiceId.HasValue && transaction.LinkedInvoiceId.Value != Guid.Empty;
 		var customer = await _db.Customers.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync((LocalCustomer current) => current.Id == transaction.CustomerId, ct);
+		string customerOfficeCode = string.Empty;
 		if (customer == null)
 		{
-			return OfficeMutationResult.Missing("거래처를 찾을 수 없습니다.");
+			if (!hasLinkedInvoiceRequest)
+			{
+				return OfficeMutationResult.Missing("거래처를 찾을 수 없습니다.");
+			}
 		}
-		string customerOfficeCode = ResolveResponsibleOfficeScopeForAccess(customer.ResponsibleOfficeCode, customer.OfficeCode);
-		if (!CanWriteCustomerScope(session, customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode))
+		else
 		{
-			return OfficeMutationResult.Denied("권한이 없어 해당 거래처의 수금/지급을 저장할 수 없습니다.");
+			customerOfficeCode = ResolveResponsibleOfficeScopeForAccess(customer.ResponsibleOfficeCode, customer.OfficeCode);
+			if (!CanWriteCustomerScope(session, customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode))
+			{
+				if (!hasLinkedInvoiceRequest)
+				{
+					return OfficeMutationResult.Denied("권한이 없어 해당 거래처의 수금/지급을 저장할 수 없습니다.");
+				}
+				customer = null;
+				customerOfficeCode = string.Empty;
+			}
 		}
 		var existing = await _db.Transactions.IgnoreQueryFilters().FirstOrDefaultAsync((LocalTransaction current) => current.Id == transaction.Id, ct);
 		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
@@ -4770,6 +4784,21 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			{
 				return OfficeMutationResult.Denied("권한이 없어 해당 전표 결제를 처리할 수 없습니다.");
 			}
+			if (linkedInvoice.CustomerId != Guid.Empty && (customer == null || linkedInvoice.CustomerId != transaction.CustomerId))
+			{
+				var linkedInvoiceCustomer = await _db.Customers.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync((LocalCustomer current) => current.Id == linkedInvoice.CustomerId, ct);
+				if (linkedInvoiceCustomer == null)
+				{
+					return OfficeMutationResult.Missing("연결 전표의 거래처를 찾을 수 없습니다.");
+				}
+				if (!CanWriteCustomerScope(session, linkedInvoiceCustomer.ResponsibleOfficeCode, linkedInvoiceCustomer.TenantCode, linkedInvoiceCustomer.OfficeCode))
+				{
+					return OfficeMutationResult.Denied("권한이 없어 연결 전표 거래처의 수금/지급을 저장할 수 없습니다.");
+				}
+				transaction.CustomerId = linkedInvoice.CustomerId;
+				customer = linkedInvoiceCustomer;
+				customerOfficeCode = ResolveResponsibleOfficeScopeForAccess(customer.ResponsibleOfficeCode, customer.OfficeCode);
+			}
 			transaction.LinkedInvoiceNumber = (string.IsNullOrWhiteSpace(linkedInvoice.InvoiceNumber) ? linkedInvoice.LocalTempNumber : linkedInvoice.InvoiceNumber);
 			VoucherType voucherType = linkedInvoice.VoucherType;
 			bool flag = (uint)(voucherType - 1) <= 1u;
@@ -4778,13 +4807,11 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			if (linkedInvoice.LinkedRentalBillingProfileId.HasValue &&
 			    linkedInvoice.LinkedRentalBillingProfileId.Value != Guid.Empty)
 			{
-				if (!transaction.LinkedRentalBillingProfileId.HasValue ||
-				    transaction.LinkedRentalBillingProfileId.Value == Guid.Empty)
+				if (transaction.LinkedRentalBillingProfileId != linkedInvoice.LinkedRentalBillingProfileId)
 				{
 					transaction.LinkedRentalBillingProfileId = linkedInvoice.LinkedRentalBillingProfileId;
 				}
-				if (!transaction.LinkedRentalBillingRunId.HasValue ||
-				    transaction.LinkedRentalBillingRunId.Value == Guid.Empty)
+				if (transaction.LinkedRentalBillingRunId != linkedInvoice.LinkedRentalBillingRunId)
 				{
 					transaction.LinkedRentalBillingRunId = linkedInvoice.LinkedRentalBillingRunId;
 				}
@@ -4840,6 +4867,14 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			transaction.LinkedRentalBillingProfileId = null;
 			transaction.LinkedRentalBillingRunId = null;
+		}
+		if (customer == null)
+		{
+			return OfficeMutationResult.Missing("거래처를 찾을 수 없습니다.");
+		}
+		if (string.IsNullOrWhiteSpace(customerOfficeCode))
+		{
+			customerOfficeCode = ResolveResponsibleOfficeScopeForAccess(customer.ResponsibleOfficeCode, customer.OfficeCode);
 		}
 		string derivedResponsibleOfficeCode = linkedInvoice?.ResponsibleOfficeCode ?? linkedRentalProfile?.ResponsibleOfficeCode ?? linkedRentalProfile?.ManagementCompanyCode ?? customerOfficeCode ?? existing?.ResponsibleOfficeCode ?? transaction.ResponsibleOfficeCode;
 		transaction.ResponsibleOfficeCode = NormalizeOfficeScope(derivedResponsibleOfficeCode, customerOfficeCode);
@@ -5032,6 +5067,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		if (requestedLinkedInvoiceId != transaction.LinkedInvoiceId)
 		{
 			warnings.Add("연결 전표 값을 저장 규칙에 맞게 다시 정리했습니다.");
+		}
+		if (requestedCustomerId != transaction.CustomerId)
+		{
+			warnings.Add("거래처를 연결 전표 기준으로 다시 맞췄습니다.");
 		}
 		if (requestedLinkedRentalProfileId != transaction.LinkedRentalBillingProfileId || requestedLinkedRentalRunId != transaction.LinkedRentalBillingRunId)
 		{
