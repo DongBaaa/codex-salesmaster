@@ -539,12 +539,13 @@ public sealed class SyncController : ControllerBase
                 await UpsertEntitiesAsync(validRentalBillingLogs, _dbContext.RentalBillingLogs,
                     (e, d) => e.Apply(d), d => new RentalBillingLog { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
                 var validPayments = await FilterValidPaymentsAsync(request.Payments ?? [], result, cancellationToken);
-                var paymentRentalSettlementTargets =
-                    await LoadRentalSettlementTargetsForPaymentsAsync(validPayments, cancellationToken);
-                await UpsertEntitiesAsync(validPayments, _dbContext.Payments,
+                var acceptedPayments = await UpsertEntitiesAsync(validPayments, _dbContext.Payments,
                     (e, d) => e.Apply(d), d => new Payment { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+                var paymentRentalSettlementTargets =
+                    await LoadRentalSettlementTargetsForPaymentsAsync(acceptedPayments, cancellationToken);
+                await SoftDeletePaymentAttachmentsForDeletedPaymentsAsync(acceptedPayments, cancellationToken);
                 var paymentLinkedTransactionSettlementTargets =
-                    await CascadeDeletedPaymentsToLinkedTransactionsAsync(validPayments, cancellationToken);
+                    await CascadeDeletedPaymentsToLinkedTransactionsAsync(acceptedPayments, cancellationToken);
 
                 await _dbContext.SaveChangesAsync(cancellationToken);
                 var rentalSettlementTargets = invoiceRentalSettlementTargets
@@ -657,7 +658,7 @@ public sealed class SyncController : ControllerBase
         result.AcceptedRevisions.AddRange(rows);
     }
 
-    private async Task UpsertEntitiesAsync<TEntity, TDto>(
+    private async Task<List<TDto>> UpsertEntitiesAsync<TEntity, TDto>(
         IEnumerable<TDto> payload, DbSet<TEntity> dbSet,
         Action<TEntity, TDto> apply, Func<TDto, TEntity> create,
         SyncPushResult result, string deviceId, CancellationToken cancellationToken)
@@ -665,10 +666,14 @@ public sealed class SyncController : ControllerBase
         where TDto : SyncEntityDto
     {
         var entityName = typeof(TEntity).Name;
+        var accepted = new List<TDto>();
         foreach (var dto in payload)
         {
             if (await TryAcceptDuplicateMutationAsync(dto, entityName, deviceId, result, cancellationToken))
+            {
+                accepted.Add(dto);
                 continue;
+            }
 
             var entity = await dbSet.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
             if (entity is null)
@@ -678,6 +683,7 @@ public sealed class SyncController : ControllerBase
                 dbSet.Add(newEntity);
                 RegisterProcessedMutation(dto, entityName, deviceId);
                 await ResolveHistoricalConflictsAsync(entityName, newEntity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
+                accepted.Add(dto);
                 result.AcceptedCount++;
                 continue;
             }
@@ -697,8 +703,11 @@ public sealed class SyncController : ControllerBase
             apply(entity, dto);
             RegisterProcessedMutation(dto, entityName, deviceId);
             await ResolveHistoricalConflictsAsync(entityName, entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
+            accepted.Add(dto);
             result.AcceptedCount++;
         }
+
+        return accepted;
     }
 
     private async Task UpsertPriceGradeOptionsAsync(
@@ -1229,6 +1238,26 @@ public sealed class SyncController : ControllerBase
         }
 
         return targets.Distinct().ToList();
+    }
+
+    private async Task SoftDeletePaymentAttachmentsForDeletedPaymentsAsync(
+        IEnumerable<PaymentDto> payload,
+        CancellationToken cancellationToken)
+    {
+        var deletedPaymentIds = (payload ?? Enumerable.Empty<PaymentDto>())
+            .Where(payment => payment.IsDeleted && payment.Id != Guid.Empty)
+            .Select(payment => payment.Id)
+            .Distinct()
+            .ToList();
+        if (deletedPaymentIds.Count == 0)
+            return;
+
+        var attachments = await _dbContext.PaymentAttachments.IgnoreQueryFilters()
+            .Where(attachment => deletedPaymentIds.Contains(attachment.PaymentId) && !attachment.IsDeleted)
+            .ToListAsync(cancellationToken);
+
+        foreach (var attachment in attachments)
+            attachment.IsDeleted = true;
     }
 
     private static void AddRentalSettlementTarget(List<(Guid ProfileId, Guid? RunId)> targets, Guid? profileId, Guid? runId)

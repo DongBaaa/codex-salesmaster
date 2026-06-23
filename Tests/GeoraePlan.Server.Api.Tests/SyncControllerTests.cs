@@ -6822,6 +6822,216 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_DeletePayment_SoftDeletesPaymentAttachments()
+    {
+        var paymentId = Guid.NewGuid();
+        var attachmentId = Guid.NewGuid();
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-PAYMENT-ATTACHMENT-DELETE-CUSTOMER",
+            NameMatchKey = "SYNCPAYMENTATTACHMENTDELETECUSTOMER",
+            TradeType = "매출"
+        };
+        var invoiceId = Guid.NewGuid();
+        _dbContext.Customers.Add(customer);
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-PAYMENT-ATTACHMENT-DELETE",
+            InvoiceDate = new DateOnly(2026, 6, 23),
+            VoucherType = VoucherType.Sales,
+            TotalAmount = 8000m,
+            SupplyAmount = 7273m,
+            VatAmount = 727m
+        });
+        _dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 6, 23),
+            Amount = 8000m,
+            Note = "payment with attachment",
+            CreatedAtUtc = new DateTime(2026, 6, 23, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 23, 0, 0, 0, DateTimeKind.Utc)
+        });
+        _dbContext.PaymentAttachments.Add(new PaymentAttachment
+        {
+            Id = attachmentId,
+            PaymentId = paymentId,
+            FileName = "payment-delete-evidence.pdf",
+            MimeType = "application/pdf",
+            FileSize = 1234,
+            StoragePath = "payment/payment-delete-evidence.pdf",
+            FileContent = [1, 2, 3]
+        });
+        await _dbContext.SaveChangesAsync();
+        var storedPayment = await _dbContext.Payments.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(payment => payment.Id == paymentId);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-payment-attachment-delete",
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = paymentId,
+                    InvoiceId = invoiceId,
+                    PaymentDate = new DateOnly(2026, 6, 23),
+                    Amount = 8000m,
+                    Note = "payment delete with attachment",
+                    IsDeleted = true,
+                    ExpectedRevision = storedPayment.Revision,
+                    CreatedAtUtc = storedPayment.CreatedAtUtc,
+                    UpdatedAtUtc = DateTime.UtcNow.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        Assert.True(await _dbContext.Payments.IgnoreQueryFilters()
+            .Where(payment => payment.Id == paymentId)
+            .Select(payment => payment.IsDeleted)
+            .SingleAsync());
+        Assert.True(await _dbContext.PaymentAttachments.IgnoreQueryFilters()
+            .Where(attachment => attachment.Id == attachmentId)
+            .Select(attachment => attachment.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_StalePaymentDelete_DoesNotCascadeLinkedTransactionOrAttachments()
+    {
+        var paymentId = Guid.NewGuid();
+        var transactionAttachmentId = Guid.NewGuid();
+        var paymentAttachmentId = Guid.NewGuid();
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-STALE-PAYMENT-DELETE-CUSTOMER",
+            NameMatchKey = "SYNCSTALEPAYMENTDELETECUSTOMER",
+            TradeType = "매출"
+        };
+        var invoiceId = Guid.NewGuid();
+        _dbContext.Customers.Add(customer);
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-STALE-PAYMENT-DELETE",
+            InvoiceDate = new DateOnly(2026, 6, 24),
+            VoucherType = VoucherType.Sales,
+            TotalAmount = 9000m,
+            SupplyAmount = 8182m,
+            VatAmount = 818m
+        });
+        _dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 6, 24),
+            Amount = 9000m,
+            Note = "server newer payment",
+            CreatedAtUtc = new DateTime(2026, 6, 24, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 24, 0, 0, 0, DateTimeKind.Utc)
+        });
+        _dbContext.PaymentAttachments.Add(new PaymentAttachment
+        {
+            Id = paymentAttachmentId,
+            PaymentId = paymentId,
+            FileName = "stale-payment-delete-evidence.pdf",
+            MimeType = "application/pdf",
+            FileSize = 100,
+            StoragePath = "payment/stale-payment-delete-evidence.pdf",
+            FileContent = [4, 5, 6]
+        });
+        _dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = paymentId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 24),
+            TransactionKind = "전표수금",
+            LinkedInvoiceId = invoiceId,
+            LinkedInvoiceNumber = "SYNC-STALE-PAYMENT-DELETE",
+            ReceiptTotal = 9000m,
+            SettlementAmount = 9000m
+        });
+        _dbContext.TransactionAttachments.Add(new TransactionAttachment
+        {
+            Id = transactionAttachmentId,
+            TransactionId = paymentId,
+            FileName = "stale-payment-delete-transaction.pdf",
+            StoragePath = "transaction/stale-payment-delete-transaction.pdf"
+        });
+        await _dbContext.SaveChangesAsync();
+        var storedPayment = await _dbContext.Payments.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(payment => payment.Id == paymentId);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-stale-payment-delete",
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = paymentId,
+                    InvoiceId = invoiceId,
+                    PaymentDate = new DateOnly(2026, 6, 24),
+                    Amount = 9000m,
+                    Note = "stale delete",
+                    IsDeleted = true,
+                    ExpectedRevision = storedPayment.Revision + 1,
+                    CreatedAtUtc = storedPayment.CreatedAtUtc,
+                    UpdatedAtUtc = DateTime.UtcNow.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.ConflictCount);
+
+        Assert.False(await _dbContext.Payments.IgnoreQueryFilters()
+            .Where(payment => payment.Id == paymentId)
+            .Select(payment => payment.IsDeleted)
+            .SingleAsync());
+        Assert.False(await _dbContext.PaymentAttachments.IgnoreQueryFilters()
+            .Where(attachment => attachment.Id == paymentAttachmentId)
+            .Select(attachment => attachment.IsDeleted)
+            .SingleAsync());
+        Assert.False(await _dbContext.Transactions.IgnoreQueryFilters()
+            .Where(transaction => transaction.Id == paymentId)
+            .Select(transaction => transaction.IsDeleted)
+            .SingleAsync());
+        Assert.False(await _dbContext.TransactionAttachments.IgnoreQueryFilters()
+            .Where(attachment => attachment.Id == transactionAttachmentId)
+            .Select(attachment => attachment.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task Push_DeleteDerivedLinkedPayment_DeletesSourceTransactionAndRevertsRentalSettlement()
     {
         var customerId = Guid.NewGuid();
