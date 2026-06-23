@@ -784,6 +784,27 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void MobileImmediatePaymentConflict_QueuesAttachmentsForRetryBeforeReturning()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "SyncCoordinator.cs"));
+        var normalizedSource = source.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains("private static void QueuePaymentAttachmentsForRetry(", source, StringComparison.Ordinal);
+        Assert.Contains("QueuePaymentAttachmentsForRetry(state, payment.Id, attachmentList);", source, StringComparison.Ordinal);
+        Assert.Contains("QueuePaymentAttachmentsForRetry(state, paymentId, attachmentList);", source, StringComparison.Ordinal);
+        Assert.Contains("state.PendingPaymentAttachments.RemoveAll(x => x.LocalId == attachment.LocalId);", source, StringComparison.Ordinal);
+        Assert.Contains("state.PendingPaymentAttachments.Add(attachment);", source, StringComparison.Ordinal);
+        Assert.Matches(
+            "if \\(result\\.ConflictCount > 0\\)\\n\\s*\\{\\n\\s*QueuePaymentAttachmentsForRetry\\(state, payment\\.Id, attachmentList\\);\\n\\s*QueueUnacceptedLinkedPaymentConflict\\(state\\.PendingPush, payment, linkedTransaction, result\\.AcceptedRevisions\\);",
+            normalizedSource);
+    }
+
+    [Fact]
     public void AndroidSyncStateStore_TreatsSettingPendingMutationsAsLegacyPayload()
     {
         var root = FindRepositoryRoot();

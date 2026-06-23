@@ -245,6 +245,7 @@ public sealed class SyncCoordinator
                     state.LastRevision = Math.Max(state.LastRevision, result.CurrentServerRevision);
                     if (result.ConflictCount > 0)
                     {
+                        QueuePaymentAttachmentsForRetry(state, payment.Id, attachmentList);
                         QueueUnacceptedLinkedPaymentConflict(state.PendingPush, payment, linkedTransaction, result.AcceptedRevisions);
                         await MarkPushConflictAndRefreshAsync(state, result, ct);
                         await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
@@ -299,12 +300,7 @@ public sealed class SyncCoordinator
                 state.PendingPush.Payments.Add(payment);
                 if (linkedTransaction is not null)
                     state.PendingPush.Transactions.Add(linkedTransaction);
-                foreach (var attachment in attachmentList)
-                {
-                    attachment.PaymentId = payment.Id;
-                    state.PendingPaymentAttachments.RemoveAll(x => x.LocalId == attachment.LocalId);
-                    state.PendingPaymentAttachments.Add(attachment);
-                }
+                QueuePaymentAttachmentsForRetry(state, payment.Id, attachmentList);
 
                 MarkFailure(state, ex);
             }
@@ -429,13 +425,21 @@ public sealed class SyncCoordinator
         var attachmentList = attachments.ToList();
         return await MutateStoredStateAsync(state =>
         {
-            foreach (var attachment in attachmentList)
-            {
-                attachment.PaymentId = paymentId;
-                state.PendingPaymentAttachments.RemoveAll(x => x.LocalId == attachment.LocalId);
-                state.PendingPaymentAttachments.Add(attachment);
-            }
+            QueuePaymentAttachmentsForRetry(state, paymentId, attachmentList);
         }, ct);
+    }
+
+    private static void QueuePaymentAttachmentsForRetry(
+        MobileSyncState state,
+        Guid paymentId,
+        IEnumerable<PendingPaymentAttachmentRecord> attachments)
+    {
+        foreach (var attachment in attachments)
+        {
+            attachment.PaymentId = paymentId;
+            state.PendingPaymentAttachments.RemoveAll(x => x.LocalId == attachment.LocalId);
+            state.PendingPaymentAttachments.Add(attachment);
+        }
     }
 
     private async Task<MobileSyncState> MutateStoredStateAsync(Action<MobileSyncState> mutate, CancellationToken ct)
