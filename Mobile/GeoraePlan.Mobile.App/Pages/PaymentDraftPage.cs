@@ -151,7 +151,7 @@ public sealed class PaymentDraftPage : ContentPage
                 {
                     GeoraePlanTheme.CreateCard(
                         CreateBoundSectionTitle(nameof(PaymentDraftViewModel.PageTitleText)),
-                        GeoraePlanTheme.CreateBodyText("판매 전표는 수금, 구매 전표는 지급으로 자동 구분해 저장합니다."),
+                        GeoraePlanTheme.CreateBodyText("판매 전표는 수금, 구매·발주 전표는 지급으로 자동 구분해 저장합니다."),
                         GeoraePlanTheme.CreateSectionTitle("전표", 14),
                         invoicePicker,
                         selectedInvoiceSummary,
@@ -227,7 +227,7 @@ await _viewModel.LoadAsync();
             if (value is not InvoiceDto invoice)
                 return string.Empty;
 
-            var kind = invoice.VoucherType == VoucherType.Purchase ? "구매" : "판매";
+            var kind = MobileVoucherTypeRules.GetInvoiceKindLabel(invoice.VoucherType);
             var number = string.IsNullOrWhiteSpace(invoice.InvoiceNumber)
                 ? string.IsNullOrWhiteSpace(invoice.LocalTempNumber) ? "전표번호 미부여" : invoice.LocalTempNumber
                 : invoice.InvoiceNumber;

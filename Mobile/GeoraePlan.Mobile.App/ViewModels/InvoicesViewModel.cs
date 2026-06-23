@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using GeoraePlan.Mobile.App.Models;
 using 거래플랜.Shared.Contracts;
 using GeoraePlan.Mobile.App.Services;
 
@@ -84,7 +85,7 @@ public sealed class InvoicesViewModel : ObservableObject
                 return "정산 정보 없음";
 
             var paid = SelectedInvoice.Payments.Sum(payment => payment.Amount);
-            var isPurchase = SelectedInvoice.VoucherType == VoucherType.Purchase;
+            var isPurchase = MobileVoucherTypeRules.IsPaymentVoucher(SelectedInvoice.VoucherType);
             if (SelectedInvoice.Payments.Count == 0)
             {
                 var missingLabel = isPurchase ? "미지급금" : "미수금";
@@ -265,9 +266,9 @@ public sealed class InvoiceListItem
         {
             var paidAmount = Invoice.Payments?.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount) ?? 0m;
             if (paidAmount <= 0m)
-                return Invoice.VoucherType == VoucherType.Purchase ? "지급 없음" : "수금 없음";
+                return MobileVoucherTypeRules.IsPaymentVoucher(Invoice.VoucherType) ? "지급 없음" : "수금 없음";
 
-            return Invoice.VoucherType == VoucherType.Purchase
+            return MobileVoucherTypeRules.IsPaymentVoucher(Invoice.VoucherType)
                 ? $"지급 {paidAmount:N0}원"
                 : $"수금 {paidAmount:N0}원";
         }

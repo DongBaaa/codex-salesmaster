@@ -365,6 +365,62 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void MobilePaymentAndInvoiceDisplay_TreatsProcurementAsPaymentVoucher()
+    {
+        var root = FindRepositoryRoot();
+        var voucherRulesSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Models",
+            "MobileVoucherTypeRules.cs"));
+        var paymentDraftSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "PaymentDraftViewModel.cs"));
+        var invoicesViewModelSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "InvoicesViewModel.cs"));
+        var paymentHistorySource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Models",
+            "CustomerPaymentHistoryRow.cs"));
+        var paymentDraftPageSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Pages",
+            "PaymentDraftPage.cs"));
+        var pdfExportSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "MobileInvoicePdfExportService.cs"));
+
+        Assert.Contains(
+            "voucherType is VoucherType.Purchase or VoucherType.Procurement",
+            voucherRulesSource,
+            StringComparison.Ordinal);
+        Assert.Contains("MobileVoucherTypeRules.IsPaymentVoucher(SelectedInvoice?.VoucherType)", paymentDraftSource, StringComparison.Ordinal);
+        Assert.Contains("MobileVoucherTypeRules.IsPaymentVoucher(SelectedInvoice.VoucherType)", paymentDraftSource, StringComparison.Ordinal);
+        Assert.Contains("MobileVoucherTypeRules.IsPaymentVoucher(VoucherType)", paymentHistorySource, StringComparison.Ordinal);
+        Assert.Contains("MobileVoucherTypeRules.IsPaymentVoucher(SelectedInvoice.VoucherType)", invoicesViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("MobileVoucherTypeRules.IsPaymentVoucher(Invoice.VoucherType)", invoicesViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("MobileVoucherTypeRules.GetInvoiceKindLabel(invoice.VoucherType)", paymentDraftPageSource, StringComparison.Ordinal);
+        Assert.Contains("판매 전표는 수금, 구매·발주 전표는 지급으로 자동 구분해 저장합니다.", paymentDraftPageSource, StringComparison.Ordinal);
+        Assert.Contains("MobileVoucherTypeRules.GetPortableFileKind(invoice.VoucherType)", pdfExportSource, StringComparison.Ordinal);
+        Assert.Contains("MobileVoucherTypeRules.GetDocumentKindLabel(invoice.VoucherType)", pdfExportSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MobileCoreMutationDrafts_RequireServerEditPermissionsBeforeEntryAndSave()
     {
         var root = FindRepositoryRoot();

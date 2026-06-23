@@ -23,7 +23,7 @@ public sealed class MobileInvoicePdfExportService
         var root = Path.Combine(FileSystem.AppDataDirectory, "invoice-pdf");
         Directory.CreateDirectory(root);
 
-        var kind = invoice.VoucherType == VoucherType.Purchase ? "purchase-invoice" : "sales-invoice";
+        var kind = MobileVoucherTypeRules.GetPortableFileKind(invoice.VoucherType);
         var customer = SanitizePortableFileName(invoice.CustomerName);
         var fileName = string.IsNullOrWhiteSpace(customer)
             ? $"{DateTime.Now:yyyyMMdd-HHmmss}_{kind}.pdf"
@@ -64,7 +64,7 @@ public sealed class MobileInvoicePdfExportService
     {
         var content = new PdfPageContent(title);
         var y = 790;
-        var documentKind = invoice.VoucherType == VoucherType.Purchase ? "구매(매입)" : "판매(매출)";
+        var documentKind = MobileVoucherTypeRules.GetDocumentKindLabel(invoice.VoucherType);
         var number = string.IsNullOrWhiteSpace(invoice.InvoiceNumber)
             ? string.IsNullOrWhiteSpace(invoice.LocalTempNumber) ? "-" : invoice.LocalTempNumber
             : invoice.InvoiceNumber;

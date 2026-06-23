@@ -111,12 +111,12 @@ public sealed class PaymentDraftViewModel : ObservableObject
         ? "첨부 없음"
         : $"첨부 {Attachments.Count:N0}건";
 
-    public string PaymentActionText => SelectedInvoice?.VoucherType == VoucherType.Purchase ? "지급" : "수금";
+    public string PaymentActionText => MobileVoucherTypeRules.IsPaymentVoucher(SelectedInvoice?.VoucherType) ? "지급" : "수금";
     public string PageTitleText => SelectedInvoice is null ? "수금/지급 입력" : $"{PaymentActionText} 입력";
     public string AmountPlaceholderText => SelectedInvoice is null ? "수금/지급 금액" : $"{PaymentActionText} 금액";
     public string PaymentDateLabelText => SelectedInvoice is null ? "수금/지급일자" : $"{PaymentActionText}일자";
-    public string PaymentMethodLabelText => SelectedInvoice?.VoucherType == VoucherType.Purchase ? "지급방식" : "수금방식";
-    public string PaymentMethodHelpText => SelectedInvoice?.VoucherType == VoucherType.Purchase
+    public string PaymentMethodLabelText => MobileVoucherTypeRules.IsPaymentVoucher(SelectedInvoice?.VoucherType) ? "지급방식" : "수금방식";
+    public string PaymentMethodHelpText => MobileVoucherTypeRules.IsPaymentVoucher(SelectedInvoice?.VoucherType)
         ? "PC 구매 전표와 동일하게 지급 금액 칸에 반영됩니다."
         : "PC 판매 전표와 동일하게 수금 금액 칸에 반영됩니다.";
     public string SaveButtonText => SelectedInvoice is null ? "마지막 단계 · 수금/지급 저장" : $"마지막 단계 · {PaymentActionText} 저장";
@@ -129,9 +129,10 @@ public sealed class PaymentDraftViewModel : ObservableObject
             if (SelectedInvoice is null)
                 return "전표를 먼저 선택하세요.";
 
-            var kind = SelectedInvoice.VoucherType == VoucherType.Purchase ? "구매(매입)" : "판매(매출)";
+            var isPaymentVoucher = MobileVoucherTypeRules.IsPaymentVoucher(SelectedInvoice.VoucherType);
+            var kind = MobileVoucherTypeRules.GetDocumentKindLabel(SelectedInvoice.VoucherType);
             var paid = SelectedInvoice.Payments?.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount) ?? 0m;
-            var outstandingLabel = SelectedInvoice.VoucherType == VoucherType.Purchase ? "미지급금" : "미수금";
+            var outstandingLabel = isPaymentVoucher ? "미지급금" : "미수금";
             return $"{kind} · {SelectedInvoice.CustomerName} · 합계 {SelectedInvoice.TotalAmount:N0}원 · {outstandingLabel} {Math.Max(0m, SelectedInvoice.TotalAmount - paid):N0}원";
         }
     }
@@ -672,7 +673,7 @@ public sealed class PaymentDraftViewModel : ObservableObject
     private void RefreshPaymentMethodOptions()
     {
         var preferredBucket = SelectedPaymentMethod?.BucketKey;
-        var isPurchase = SelectedInvoice?.VoucherType == VoucherType.Purchase;
+        var isPurchase = MobileVoucherTypeRules.IsPaymentVoucher(SelectedInvoice?.VoucherType);
         PaymentMethodOptions.Clear();
         foreach (var option in MobilePaymentMethodOption.CreateOptions(isPurchase))
             PaymentMethodOptions.Add(option);
