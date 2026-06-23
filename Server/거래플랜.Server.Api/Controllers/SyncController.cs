@@ -441,12 +441,12 @@ public sealed class SyncController : ControllerBase
             if (validCustomers.Count > 0)
                 await _dbContext.SaveChangesAsync(cancellationToken);
             var validCustomerContracts = await FilterValidCustomerContractsAsync(request.CustomerContracts ?? [], result, cancellationToken);
-            await UpsertEntitiesAsync(validCustomerContracts, _dbContext.CustomerContracts,
+            var acceptedCustomerContracts = await UpsertEntitiesAsync(validCustomerContracts, _dbContext.CustomerContracts,
                 (e, d) => e.Apply(d), d => new CustomerContract { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
             if (validCustomerContracts.Count > 0)
             {
                 await _dbContext.SaveChangesAsync(cancellationToken);
-                await PersistCustomerContractsToStorageAsync(validCustomerContracts, cancellationToken);
+                await PersistCustomerContractsToStorageAsync(acceptedCustomerContracts, cancellationToken);
                 await _dbContext.SaveChangesAsync(cancellationToken);
             }
             var scopedItems = await PrepareScopedItemsAsync(request.Items ?? [], result, cancellationToken);
@@ -494,12 +494,12 @@ public sealed class SyncController : ControllerBase
             if (validTransactions.Count > 0)
                 await _dbContext.SaveChangesAsync(cancellationToken);
             var validTransactionAttachments = await FilterValidTransactionAttachmentsAsync(request.TransactionAttachments ?? [], result, cancellationToken);
-            await UpsertEntitiesAsync(validTransactionAttachments, _dbContext.TransactionAttachments,
+            var acceptedTransactionAttachments = await UpsertEntitiesAsync(validTransactionAttachments, _dbContext.TransactionAttachments,
                 (e, d) => e.Apply(d), d => new TransactionAttachment { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
             if (validTransactionAttachments.Count > 0)
             {
                 await _dbContext.SaveChangesAsync(cancellationToken);
-                await PersistTransactionAttachmentsToStorageAsync(validTransactionAttachments, cancellationToken);
+                await PersistTransactionAttachmentsToStorageAsync(acceptedTransactionAttachments, cancellationToken);
                 await _dbContext.SaveChangesAsync(cancellationToken);
             }
             var scopedInventoryTransfers = await PrepareScopedInventoryTransfersAsync(request.InventoryTransfers ?? [], result, cancellationToken);
@@ -678,7 +678,6 @@ public sealed class SyncController : ControllerBase
         {
             if (await TryAcceptDuplicateMutationAsync(dto, entityName, deviceId, result, cancellationToken))
             {
-                accepted.Add(dto);
                 continue;
             }
 

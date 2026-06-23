@@ -5347,6 +5347,183 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_DoesNotPersistCustomerContractFile_WhenContractUpdateIsRejected()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "CONTRACT-FILE-REJECTED-CUSTOMER",
+            NameMatchKey = "CONTRACTFILEREJECTEDCUSTOMER",
+            TradeType = "Sales"
+        };
+        var contract = new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            ContractType = "거래계약서",
+            FileName = "existing-contract.pdf",
+            MimeType = "application/pdf",
+            FileSize = 4,
+            FileHash = "OLD-HASH",
+            Description = "server current",
+            StoragePath = "customer-contracts/existing-contract.pdf",
+            FileContent = [0x25, 0x50, 0x44, 0x46]
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.CustomerContracts.Add(contract);
+        await _dbContext.SaveChangesAsync();
+
+        var storedBefore = await _dbContext.CustomerContracts.IgnoreQueryFilters().FirstAsync(current => current.Id == contract.Id);
+        var rejectedPdfBytes = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D, 0x31, 0x2E, 0x37 };
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-contract-file-rejected",
+            CustomerContracts =
+            [
+                new CustomerContractDto
+                {
+                    Id = contract.Id,
+                    CustomerId = customer.Id,
+                    ContractType = "거래계약서",
+                    FileName = "rejected-contract.pdf",
+                    MimeType = "application/pdf",
+                    FileSize = rejectedPdfBytes.LongLength,
+                    FileHash = ComputeTestSha256Hex(rejectedPdfBytes),
+                    Description = "rejected update should not store file",
+                    ExpectedRevision = storedBefore.Revision + 1,
+                    Revision = storedBefore.Revision,
+                    UploadedAtUtc = new DateTime(2026, 6, 29, 0, 1, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = storedBefore.CreatedAtUtc,
+                    UpdatedAtUtc = storedBefore.UpdatedAtUtc.AddMinutes(1),
+                    FileContent = rejectedPdfBytes
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(CustomerContract) &&
+            conflict.Reason.Contains("Expected revision mismatch", StringComparison.Ordinal));
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.CustomerContracts.IgnoreQueryFilters().SingleAsync(current => current.Id == contract.Id);
+        Assert.Equal("server current", stored.Description);
+        Assert.Equal("existing-contract.pdf", stored.FileName);
+        Assert.Equal("customer-contracts/existing-contract.pdf", stored.StoragePath);
+        Assert.Equal([0x25, 0x50, 0x44, 0x46], stored.FileContent);
+        Assert.Equal("OLD-HASH", stored.FileHash);
+        Assert.Equal(4, stored.FileSize);
+    }
+
+    [Fact]
+    public async Task Push_DoesNotPersistCustomerContractFile_WhenMutationIsDuplicate()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "CONTRACT-FILE-DUPLICATE-CUSTOMER",
+            NameMatchKey = "CONTRACTFILEDUPLICATECUSTOMER",
+            TradeType = "Sales"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var fileStorage = new RecordingCentralFileStorage();
+        var controller = CreateController(_dbContext, new TestCurrentUserContext
+        {
+            Username = "admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        }, fileStorage);
+
+        var contractId = Guid.NewGuid();
+        var mutationId = $"device-contract-file-duplicate:CustomerContract:{contractId:N}:1";
+        var firstBytes = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D, 0x31 };
+        var firstResponse = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-contract-file-duplicate",
+            CustomerContracts =
+            [
+                new CustomerContractDto
+                {
+                    Id = contractId,
+                    CustomerId = customer.Id,
+                    ContractType = "거래계약서",
+                    FileName = "first-contract.pdf",
+                    MimeType = "application/pdf",
+                    FileSize = firstBytes.LongLength,
+                    FileHash = ComputeTestSha256Hex(firstBytes),
+                    Description = "first accepted file",
+                    MutationId = mutationId,
+                    MutationCreatedAtUtc = new DateTime(2026, 6, 29, 0, 0, 0, DateTimeKind.Utc),
+                    UploadedAtUtc = new DateTime(2026, 6, 29, 0, 1, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = new DateTime(2026, 6, 29, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 29, 0, 1, 0, DateTimeKind.Utc),
+                    FileContent = firstBytes
+                }
+            ]
+        }, CancellationToken.None);
+        var firstOk = Assert.IsType<OkObjectResult>(firstResponse.Result);
+        var firstResult = Assert.IsType<SyncPushResult>(firstOk.Value);
+        Assert.Equal(0, firstResult.ConflictCount);
+        Assert.Single(fileStorage.SaveCalls);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedBeforeReplay = await _dbContext.CustomerContracts.IgnoreQueryFilters().SingleAsync(current => current.Id == contractId);
+        var originalStoragePath = storedBeforeReplay.StoragePath;
+        var originalFileHash = storedBeforeReplay.FileHash;
+
+        var replayBytes = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D, 0x32 };
+        var replayResponse = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-contract-file-duplicate",
+            CustomerContracts =
+            [
+                new CustomerContractDto
+                {
+                    Id = contractId,
+                    CustomerId = customer.Id,
+                    ContractType = "거래계약서",
+                    FileName = "tampered-contract.pdf",
+                    MimeType = "application/pdf",
+                    FileSize = replayBytes.LongLength,
+                    FileHash = ComputeTestSha256Hex(replayBytes),
+                    Description = "duplicate mutation must not rewrite file",
+                    MutationId = mutationId,
+                    MutationCreatedAtUtc = new DateTime(2026, 6, 29, 0, 0, 0, DateTimeKind.Utc),
+                    UploadedAtUtc = new DateTime(2026, 6, 29, 0, 2, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = storedBeforeReplay.CreatedAtUtc,
+                    UpdatedAtUtc = storedBeforeReplay.UpdatedAtUtc.AddMinutes(1),
+                    FileContent = replayBytes
+                }
+            ]
+        }, CancellationToken.None);
+
+        var replayOk = Assert.IsType<OkObjectResult>(replayResponse.Result);
+        var replayResult = Assert.IsType<SyncPushResult>(replayOk.Value);
+
+        Assert.Equal(1, replayResult.DuplicateMutationCount);
+        Assert.Single(fileStorage.SaveCalls);
+        _dbContext.ChangeTracker.Clear();
+        var storedAfterReplay = await _dbContext.CustomerContracts.IgnoreQueryFilters().SingleAsync(current => current.Id == contractId);
+        Assert.Equal("first accepted file", storedAfterReplay.Description);
+        Assert.Equal("first-contract.pdf", storedAfterReplay.FileName);
+        Assert.Equal(originalStoragePath, storedAfterReplay.StoragePath);
+        Assert.Equal(originalFileHash, storedAfterReplay.FileHash);
+    }
+
+    [Fact]
     public async Task Push_DowngradesNewCustomerContractMetadataOnlyPdf_ToDraftNotice()
     {
         var customer = new Customer
@@ -9302,6 +9479,100 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_DoesNotPersistTransactionAttachmentFile_WhenAttachmentUpdateIsRejected()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "TRANSACTION-ATTACHMENT-REJECTED-CUSTOMER",
+            NameMatchKey = "TRANSACTIONATTACHMENTREJECTEDCUSTOMER",
+            TradeType = "Sales"
+        };
+        var transaction = new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 29),
+            TransactionKind = "일반수금",
+            CashReceipt = 1000m,
+            ReceiptTotal = 1000m,
+            SettlementAmount = 1000m,
+            CreatedAtUtc = new DateTime(2026, 6, 29, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 29, 0, 0, 0, DateTimeKind.Utc)
+        };
+        var attachment = new TransactionAttachment
+        {
+            Id = Guid.NewGuid(),
+            TransactionId = transaction.Id,
+            AttachmentType = "기타",
+            FileName = "existing-receipt.pdf",
+            MimeType = "application/pdf",
+            FileSize = 4,
+            FileHash = "OLD-HASH",
+            Description = "server current",
+            UploadedByUsername = "admin",
+            UploadedAtUtc = new DateTime(2026, 6, 29, 0, 0, 0, DateTimeKind.Utc),
+            StoragePath = "transaction-attachments/existing-receipt.pdf",
+            FileContent = [0x25, 0x50, 0x44, 0x46]
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.Transactions.Add(transaction);
+        _dbContext.TransactionAttachments.Add(attachment);
+        await _dbContext.SaveChangesAsync();
+
+        var storedBefore = await _dbContext.TransactionAttachments.IgnoreQueryFilters().FirstAsync(current => current.Id == attachment.Id);
+        var rejectedPdfBytes = TestPdfBytes();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-transaction-attachment-file-rejected",
+            TransactionAttachments =
+            [
+                new TransactionAttachmentDto
+                {
+                    Id = attachment.Id,
+                    TransactionId = transaction.Id,
+                    AttachmentType = "기타",
+                    FileName = "rejected-receipt.pdf",
+                    MimeType = "application/pdf",
+                    FileSize = rejectedPdfBytes.LongLength,
+                    FileHash = ComputeTestSha256Hex(rejectedPdfBytes),
+                    Description = "rejected update should not store file",
+                    ExpectedRevision = storedBefore.Revision + 1,
+                    Revision = storedBefore.Revision,
+                    UploadedByUsername = "admin",
+                    UploadedAtUtc = new DateTime(2026, 6, 29, 0, 1, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = storedBefore.CreatedAtUtc,
+                    UpdatedAtUtc = storedBefore.UpdatedAtUtc.AddMinutes(1),
+                    FileContent = rejectedPdfBytes
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(TransactionAttachment) &&
+            conflict.Reason.Contains("Expected revision mismatch", StringComparison.Ordinal));
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.TransactionAttachments.IgnoreQueryFilters().SingleAsync(current => current.Id == attachment.Id);
+        Assert.Equal("server current", stored.Description);
+        Assert.Equal("existing-receipt.pdf", stored.FileName);
+        Assert.Equal("transaction-attachments/existing-receipt.pdf", stored.StoragePath);
+        Assert.Equal([0x25, 0x50, 0x44, 0x46], stored.FileContent);
+        Assert.Equal("OLD-HASH", stored.FileHash);
+        Assert.Equal(4, stored.FileSize);
+    }
+
+    [Fact]
     public async Task Push_RejectsExistingTransactionAttachment_WhenExistingTransactionIsOutOfScope()
     {
         var visibleCustomer = new Customer
@@ -10321,6 +10592,25 @@ public sealed class SyncControllerTests : IDisposable
 
         public Task<string> SaveBytesAsync(string area, string ownerId, Guid fileId, string fileName, byte[] content, CancellationToken cancellationToken = default)
             => Task.FromResult(Path.Combine(RootPath, fileName));
+
+        public byte[] ReadBytes(string? storedPath, byte[]? fallback = null)
+            => fallback ?? [];
+
+        public void DeleteIfExists(string? storedPath)
+        {
+        }
+    }
+
+    private sealed class RecordingCentralFileStorage : ICentralFileStorage
+    {
+        public string RootPath => Path.GetTempPath();
+        public List<(string Area, string OwnerId, Guid FileId, string FileName, byte[] Content)> SaveCalls { get; } = [];
+
+        public Task<string> SaveBytesAsync(string area, string ownerId, Guid fileId, string fileName, byte[] content, CancellationToken cancellationToken = default)
+        {
+            SaveCalls.Add((area, ownerId, fileId, fileName, content.ToArray()));
+            return Task.FromResult(Path.Combine(RootPath, area, ownerId, fileId.ToString("N"), fileName));
+        }
 
         public byte[] ReadBytes(string? storedPath, byte[]? fallback = null)
             => fallback ?? [];
