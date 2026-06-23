@@ -1216,6 +1216,77 @@ public sealed class DataIntegrityIssueServicePerformanceTests
     }
 
     [Fact]
+    public async Task ScanAsync_FindsDeletedRentalInvoiceWithActiveDirectPayment()
+    {
+        PrepareAppRoot("georaeplan-integrity-deleted-rental-invoice-active-payment");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var profileId = Guid.NewGuid();
+            var runId = Guid.NewGuid();
+            var invoiceId = Guid.NewGuid();
+            var paymentId = Guid.NewGuid();
+
+            db.Customers.Add(CreateCustomer(customerId, OfficeCodeCatalog.Usenet, "Deleted invoice active payment customer"));
+            db.RentalBillingProfiles.Add(CreateProfile(profileId, 9302, OfficeCodeCatalog.Usenet, customerId, "Deleted invoice active payment customer"));
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = invoiceId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerId = customerId,
+                InvoiceNumber = "LOCAL-RENTAL-DELETED-ACTIVE-PAYMENT-001",
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 20),
+                TotalAmount = 120_000m,
+                SupplyAmount = 109_091m,
+                VatAmount = 10_909m,
+                VatMode = InvoiceVatModes.Included,
+                IsLatestVersion = true,
+                IsDeleted = true,
+                LinkedRentalBillingProfileId = profileId,
+                LinkedRentalBillingRunId = runId,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            db.Payments.Add(new LocalPayment
+            {
+                Id = paymentId,
+                InvoiceId = invoiceId,
+                PaymentDate = new DateOnly(2026, 6, 21),
+                Amount = 120_000m,
+                Note = "active direct payment remains after rental invoice deletion",
+                IsDeleted = false,
+                IsDirty = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateAdminSession());
+            var issue = Assert.Single(result.Issues, current =>
+                current.Code == DataIntegrityIssueCodes.RentalDeletedInvoiceActivePayment);
+
+            Assert.Equal(paymentId, issue.EntityId);
+            Assert.Equal("Error", issue.Severity);
+            Assert.Equal(DataIntegrityDirectActionKind.OpenPaymentForInvoice, issue.DirectActionKind);
+            Assert.Contains(invoiceId.ToString("D"), issue.ReviewInfo, StringComparison.Ordinal);
+            Assert.Contains(paymentId.ToString("D"), issue.ReviewInfo, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ScanAsync_FindsRemainingChildRowsWhoseParentRowsAreHardMissing()
     {
         PrepareAppRoot("georaeplan-integrity-remaining-child-parent-missing");
