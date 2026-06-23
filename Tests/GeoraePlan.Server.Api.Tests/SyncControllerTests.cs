@@ -156,6 +156,145 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_AcceptsTransaction_WhenPaymentSharingAllowsWriteWithoutCustomerWrite()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu-payment-user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.PaymentEdit]
+        };
+
+        await using var dbContext = CreateDbContext(currentUser);
+        dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        {
+            Id = Guid.NewGuid(),
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ShareCustomers = false,
+            ShareItems = false,
+            ShareInvoices = false,
+            SharePayments = true,
+            ShareContracts = false,
+            ShareReports = false,
+            ShareRentals = false,
+            ShareDeliveries = false,
+            AllowTargetWrite = true,
+            IsActive = true
+        });
+
+        var customerId = Guid.NewGuid();
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "payments-only shared customer",
+            NameMatchKey = "PAYMENTSONLYSHAREDCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = false
+        });
+        await dbContext.SaveChangesAsync();
+
+        var transactionId = Guid.NewGuid();
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "payments-only-sharing-device",
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = transactionId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 6, 23),
+                    TransactionKind = "일반수금",
+                    BankReceipt = 50_000m,
+                    ReceiptTotal = 50_000m,
+                    SettlementAmount = 50_000m
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Empty(payload.Conflicts);
+        Assert.Equal(1, payload.AcceptedCount);
+
+        var stored = await dbContext.Transactions.AsNoTracking().SingleAsync(transaction => transaction.Id == transactionId);
+        Assert.Equal(OfficeCodeCatalog.Usenet, stored.ResponsibleOfficeCode);
+        Assert.Equal(50_000m, stored.ReceiptTotal);
+    }
+
+    [Fact]
+    public async Task Push_RejectsTransaction_WhenPaymentScopeWouldUseDifferentTenantCustomer()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-payment-user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.PaymentEdit]
+        };
+
+        await using var dbContext = CreateDbContext(currentUser);
+        var customerId = Guid.NewGuid();
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "different tenant customer",
+            NameMatchKey = "DIFFERENTTENANTCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = false
+        });
+        await dbContext.SaveChangesAsync();
+
+        var transactionId = Guid.NewGuid();
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "cross-tenant-payment-device",
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = transactionId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 6, 23),
+                    TransactionKind = "일반수금",
+                    BankReceipt = 50_000m,
+                    ReceiptTotal = 50_000m,
+                    SettlementAmount = 50_000m
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<SyncPushResult>(ok.Value);
+        var conflict = Assert.Single(payload.Conflicts);
+        Assert.Equal(nameof(TransactionRecord), conflict.EntityName);
+        Assert.Equal(transactionId.ToString("D"), conflict.EntityId);
+        Assert.Equal(0, payload.AcceptedCount);
+
+        Assert.False(await dbContext.Transactions.AsNoTracking().AnyAsync(transaction => transaction.Id == transactionId));
+    }
+
+    [Fact]
     public async Task Pull_ReturnsGlobalSettingPurgeRecords_ForDifferentTenantUser()
     {
         var currentUser = new TestCurrentUserContext

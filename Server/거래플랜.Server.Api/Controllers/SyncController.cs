@@ -2322,7 +2322,39 @@ public sealed class SyncController : ControllerBase
                 }
             }
 
-            if (!_officeScopeService.CanWriteOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode))
+            var resolvedResponsibleOfficeCode = _officeScopeService.ResolvePaymentResponsibleScopeForCreate(
+                dto.ResponsibleOfficeCode,
+                customer.ResponsibleOfficeCode);
+            var resolvedOfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
+                dto.OfficeCode,
+                resolvedResponsibleOfficeCode,
+                customer.OfficeCode);
+            var resolvedTenantCode = _officeScopeService.ResolveTenantForCreate(
+                dto.TenantCode,
+                resolvedOfficeCode,
+                customer.TenantCode,
+                customer.OfficeCode);
+
+            var canWriteReferencedCustomer = _officeScopeService.CanWriteOfficeForCustomers(
+                customer.ResponsibleOfficeCode,
+                customer.TenantCode,
+                customer.OfficeCode);
+            var referencedCustomerTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                customer.TenantCode,
+                customer.ResponsibleOfficeCode,
+                customer.TenantCode,
+                customer.OfficeCode);
+            var referencedCustomerResponsibleOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
+                customer.ResponsibleOfficeCode,
+                customer.OfficeCode);
+            var normalizedResolvedResponsibleOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
+                resolvedResponsibleOfficeCode,
+                resolvedOfficeCode);
+            var canUseCustomerForWritablePaymentScope =
+                string.Equals(referencedCustomerTenantCode, _officeScopeService.CurrentTenantCode, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(referencedCustomerResponsibleOfficeCode, normalizedResolvedResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase) &&
+                _officeScopeService.CanWriteOfficeForPayments(resolvedResponsibleOfficeCode, resolvedTenantCode, resolvedOfficeCode);
+            if (!canWriteReferencedCustomer && !canUseCustomerForWritablePaymentScope)
             {
                 if (dto.IsDeleted &&
                     existing is not null &&
@@ -2337,18 +2369,9 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            dto.ResponsibleOfficeCode = _officeScopeService.ResolvePaymentResponsibleScopeForCreate(
-                dto.ResponsibleOfficeCode,
-                customer.ResponsibleOfficeCode);
-            dto.OfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
-                dto.OfficeCode,
-                dto.ResponsibleOfficeCode,
-                customer.OfficeCode);
-            dto.TenantCode = _officeScopeService.ResolveTenantForCreate(
-                dto.TenantCode,
-                dto.OfficeCode,
-                customer.TenantCode,
-                customer.OfficeCode);
+            dto.ResponsibleOfficeCode = resolvedResponsibleOfficeCode;
+            dto.OfficeCode = resolvedOfficeCode;
+            dto.TenantCode = resolvedTenantCode;
 
             if (!string.Equals(originalTransactionKind, dto.TransactionKind, StringComparison.OrdinalIgnoreCase))
             {
