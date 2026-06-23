@@ -203,6 +203,19 @@ public sealed partial class RentalStateService
         if (executableEntries.Count == 0)
             return result;
 
+        var existingAssetIds = executableEntries
+            .Select(entry => entry.ExistingAssetId)
+            .Where(id => id.HasValue && id.Value != Guid.Empty)
+            .Select(id => id!.Value)
+            .Distinct()
+            .ToList();
+        var existingAssetsById = existingAssetIds.Count == 0
+            ? new Dictionary<Guid, LocalRentalAsset>()
+            : await _db.RentalAssets.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(asset => existingAssetIds.Contains(asset.Id))
+                .ToDictionaryAsync(asset => asset.Id, ct);
+
         var storedCredentialOffices = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (_local is not null)
         {
@@ -215,21 +228,29 @@ public sealed partial class RentalStateService
         }
 
         foreach (var officeGroup in executableEntries
-                     .Select(entry => NormalizeOfficeCode(context.RowsByRowNumber[entry.RowNumber].OfficeCode, session.OfficeCode))
-                     .Where(officeCode => !string.IsNullOrWhiteSpace(officeCode))
-                     .GroupBy(officeCode => officeCode, StringComparer.OrdinalIgnoreCase)
+                     .Where(entry => context.RowsByRowNumber.ContainsKey(entry.RowNumber))
+                     .GroupBy(
+                         entry => NormalizeOfficeCode(context.RowsByRowNumber[entry.RowNumber].OfficeCode, session.OfficeCode),
+                         StringComparer.OrdinalIgnoreCase)
+                     .Where(group => !string.IsNullOrWhiteSpace(group.Key))
                      .OrderByDescending(group => group.Count())
                      .ThenBy(group => group.Key, StringComparer.OrdinalIgnoreCase))
         {
             var officeCode = officeGroup.Key;
-            var writableInCurrentSession = CanEditAssetScope(officeCode, session);
+            var groupEntries = officeGroup.ToList();
+            var writableInCurrentSession = groupEntries.All(entry =>
+                CanEditWorkbookRebuildEntryScope(
+                    entry,
+                    context.RowsByRowNumber[entry.RowNumber],
+                    existingAssetsById,
+                    session));
             var hasStoredCredential = writableInCurrentSession || storedCredentialOffices.Contains(officeCode);
             var issue = new RentalWorkbookScopeIssue
             {
                 OfficeCode = officeCode,
                 OfficeDisplayName = OfficeCodeCatalog.GetOfficeDisplayName(officeCode),
                 TenantDisplayName = TenantScopeCatalog.GetTenantDisplayName(TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, officeCode)),
-                RowCount = officeGroup.Count(),
+                RowCount = groupEntries.Count,
                 WritableInCurrentSession = writableInCurrentSession,
                 HasStoredCredential = hasStoredCredential,
                 ResolutionHint = BuildWorkbookScopeResolutionHint(
@@ -253,6 +274,34 @@ public sealed partial class RentalStateService
                              + "이(가) 저장 계정 없이 남아 있어 반영 후 dirty가 누적됩니다. "
                              + "환경설정 > 동기화에서 해당 지점 계정을 먼저 저장한 뒤 다시 실행하세요.";
         return result;
+    }
+
+    private bool CanEditWorkbookRebuildEntryScope(
+        RentalWorkbookAuditEntry entry,
+        WorkbookRentalAssetRow row,
+        IReadOnlyDictionary<Guid, LocalRentalAsset> existingAssetsById,
+        SessionState session)
+    {
+        if (entry.ExistingAssetId is Guid existingAssetId &&
+            existingAssetId != Guid.Empty &&
+            existingAssetsById.TryGetValue(existingAssetId, out var existingAsset))
+        {
+            return CanEditRentalAssetEntityScope(existingAsset, session);
+        }
+
+        var officeCode = NormalizeOfficeCode(row.OfficeCode, session.OfficeCode);
+        var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            null,
+            officeCode,
+            session.TenantCode,
+            session.OfficeCode);
+        return CanEditRentalEntityScope(
+            tenantCode,
+            officeCode,
+            officeCode,
+            officeCode,
+            session,
+            resolvedOfficeCode => CanEditAssetScope(resolvedOfficeCode, session));
     }
 
     private async Task<WorkbookAuditContext> BuildWorkbookAuditContextAsync(string path, CancellationToken ct)

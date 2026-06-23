@@ -7877,6 +7877,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                         NormalizeBillingMethod(GetCellString(row, headerMap, "청구방식").Trim()));
                     var existing = await _db.RentalBillingProfiles.IgnoreQueryFilters()
                         .FirstOrDefaultAsync(current => current.ProfileKey == profileKey, ct);
+                    if (existing is not null && !CanImportRentalProfileEntityScope(existing, session))
+                        throw new InvalidOperationException("권한이 없어 해당 렌탈 청구 프로필을 가져올 수 없습니다.");
 
                     var profile = existing ?? new LocalRentalBillingProfile
                     {
@@ -7938,6 +7940,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     profile.IsDeleted = false;
                     profile.UpdatedAtUtc = DateTime.UtcNow;
                     profile.IsDirty = true;
+                    if (!CanImportRentalProfileEntityScope(profile, session))
+                        throw new InvalidOperationException("권한이 없어 해당 렌탈 청구 프로필을 가져올 수 없습니다.");
 
                     if (existing is null)
                     {
@@ -8295,6 +8299,25 @@ WHERE ""AssignedUsername"" <> '';", ct);
             asset.ResponsibleOfficeCode,
             session,
             officeCode => CanEditAssetScope(officeCode, session));
+
+    private bool CanImportRentalProfileEntityScope(LocalRentalBillingProfile profile, SessionState session)
+        => CanImportRental(session) && CanEditRentalEntityScope(
+            profile.TenantCode,
+            profile.OfficeCode,
+            profile.ManagementCompanyCode,
+            profile.ResponsibleOfficeCode,
+            session,
+            officeCode => CanImportRentalOfficeScope(officeCode, session));
+
+    private bool CanImportRentalOfficeScope(string? officeCode, SessionState session)
+    {
+        if (!CanImportRental(session))
+            return false;
+        if (CanEditAllRental(session) || session.HasGlobalDataScope)
+            return true;
+
+        return GetWritableRentalOfficeCodes(session).Contains(NormalizeOfficeCode(officeCode, DomainConstants.OfficeUsenet));
+    }
 
     private bool CanEditRentalEntityScope(
         string? tenantCode,
