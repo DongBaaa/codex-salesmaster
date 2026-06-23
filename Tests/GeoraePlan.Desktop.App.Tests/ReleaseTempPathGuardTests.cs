@@ -329,6 +329,22 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public void PreLiveVerificationUsesLinuxPcUpdateManifestStepLabels()
+    {
+        var source = ReadRepositoryFile(
+            "tools",
+            "verification",
+            "Invoke-GeoraePlanPreLiveVerification.ps1");
+
+        Assert.Contains("function Invoke-LinuxPcUpdateManifestCheck", source, StringComparison.Ordinal);
+        Assert.Contains("SkipLinuxPcUpdateManifestCheck", source, StringComparison.Ordinal);
+        Assert.Contains("Invoke-Step -Name 'linux-pc-update-manifest-check'", source, StringComparison.Ordinal);
+        Assert.Contains("Add-StepResult -Name 'linux-pc-update-manifest-check' -Passed $true -Detail 'SKIP'", source, StringComparison.Ordinal);
+        Assert.Contains("Linux PC update manifest 확인", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("nas-update-manifest-check", source, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void FullReleaseForwardsExplicitRentalTemplateRiskAcceptanceToLinuxDeploy()
     {
         var source = ReadRepositoryFile(

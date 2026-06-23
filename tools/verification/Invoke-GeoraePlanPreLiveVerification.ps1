@@ -1443,12 +1443,12 @@ else {
 }
 
 if (-not $SkipLinuxPcUpdateManifestCheck) {
-    Invoke-Step -Name 'nas-update-manifest-check' -Script {
+    Invoke-Step -Name 'linux-pc-update-manifest-check' -Script {
         Invoke-LinuxPcUpdateManifestCheck -LinuxPcRoot $LinuxPcRoot -Channel $UpdateChannel
     }
 }
 else {
-    Add-StepResult -Name 'nas-update-manifest-check' -Passed $true -Detail 'SKIP'
+    Add-StepResult -Name 'linux-pc-update-manifest-check' -Passed $true -Detail 'SKIP'
 }
 
 if (-not $SkipUpdateHttpRouteCheck) {
