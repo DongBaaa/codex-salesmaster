@@ -1381,7 +1381,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return await query.ToListAsync(ct);
 		}
-		return (await query.ToListAsync(ct)).Where((LocalTransaction transaction) => CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode, transaction.OfficeCode)).ToList();
+		return (await query.ToListAsync(ct)).Where((LocalTransaction transaction) => CanWriteOperationalScope(session, transaction.TenantCode, transaction.ResponsibleOfficeCode, transaction.OfficeCode)).ToList();
 	}
 
 	public async Task<List<LocalTransactionAttachment>> GetDirtyTransactionAttachmentsForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
@@ -1404,7 +1404,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		Dictionary<Guid, LocalTransaction> transactions = await (from transaction in _db.Transactions.IgnoreQueryFilters()
 			where transactionIds.Contains(transaction.Id)
 			select transaction).AsNoTracking().ToDictionaryAsync((LocalTransaction transaction) => transaction.Id, ct);
-		return dirtyAttachments.Where((LocalTransactionAttachment attachment) => transactions.TryGetValue(attachment.TransactionId, out var transaction) && CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode, transaction.OfficeCode)).ToList();
+		return dirtyAttachments.Where((LocalTransactionAttachment attachment) => transactions.TryGetValue(attachment.TransactionId, out var transaction) && CanWriteOperationalScope(session, transaction.TenantCode, transaction.ResponsibleOfficeCode, transaction.OfficeCode)).ToList();
 	}
 
 	public async Task<List<LocalPayment>> GetDirtyPaymentsForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
@@ -1427,7 +1427,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		Dictionary<Guid, LocalInvoice> invoices = await (from invoice in _db.Invoices.IgnoreQueryFilters()
 			where invoiceIds.Contains(invoice.Id)
 			select invoice).AsNoTracking().ToDictionaryAsync((LocalInvoice invoice) => invoice.Id, ct);
-		return dirtyPayments.Where((LocalPayment payment) => !invoices.TryGetValue(payment.InvoiceId, out var invoice) || CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode, invoice.OfficeCode)).ToList();
+		return dirtyPayments.Where((LocalPayment payment) => !invoices.TryGetValue(payment.InvoiceId, out var invoice) || CanWriteOperationalScope(session, invoice.TenantCode, invoice.ResponsibleOfficeCode, invoice.OfficeCode)).ToList();
 	}
 
 	public async Task<List<LocalInvoice>> GetDirtyInvoicesForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
@@ -1443,7 +1443,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return await query.ToListAsync(ct);
 		}
-		return (await query.ToListAsync(ct)).Where((LocalInvoice invoice) => CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode, invoice.OfficeCode)).ToList();
+		return (await query.ToListAsync(ct)).Where((LocalInvoice invoice) => CanWriteOperationalScope(session, invoice.TenantCode, invoice.ResponsibleOfficeCode, invoice.OfficeCode)).ToList();
 	}
 
 	public async Task<List<LocalInventoryTransfer>> GetDirtyInventoryTransfersForSyncAsync(SessionState session, CancellationToken ct = default(CancellationToken))
@@ -1494,7 +1494,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		foreach (LocalInvoice invoice in dirtyInvoices)
 		{
 			result.ScannedCount++;
-			if (!CanWriteAllScopedData(session) && !CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode, invoice.OfficeCode))
+			if (!CanWriteAllScopedData(session) && !CanWriteOperationalScope(session, invoice.TenantCode, invoice.ResponsibleOfficeCode, invoice.OfficeCode))
 			{
 				result.SkippedOutOfScopeCount++;
 			}
@@ -1554,7 +1554,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			result.ScannedCount++;
 			if (transactions.TryGetValue(attachment.TransactionId, out var transaction) && !transaction.IsDeleted)
 			{
-				if (!CanWriteAllScopedData(session) && !CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode, transaction.OfficeCode))
+				if (!CanWriteAllScopedData(session) && !CanWriteOperationalScope(session, transaction.TenantCode, transaction.ResponsibleOfficeCode, transaction.OfficeCode))
 				{
 					result.SkippedOutOfScopeCount++;
 				}
@@ -1708,7 +1708,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		Dictionary<Guid, LocalInvoice> invoices = dictionary;
 		if (!CanWriteAllScopedData(session))
 		{
-			dirtyPayments = dirtyPayments.Where((LocalPayment localPayment) => !invoices.TryGetValue(localPayment.InvoiceId, out var invoice) || CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode, invoice.OfficeCode)).ToList();
+			dirtyPayments = dirtyPayments.Where((LocalPayment localPayment) => !invoices.TryGetValue(localPayment.InvoiceId, out var invoice) || CanWriteOperationalScope(session, invoice.TenantCode, invoice.ResponsibleOfficeCode, invoice.OfficeCode)).ToList();
 		}
 		if (dirtyPayments.Count == 0)
 		{
@@ -2422,8 +2422,78 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public Task<List<LocalInvoice>> GetYeonsuDeliveryInvoicesAsync(DateOnly? from, DateOnly? to, Guid? customerId, string? warehouseCode, string? responsibleOfficeCode, SessionState session, CancellationToken ct = default(CancellationToken))
 	{
-		string responsibleOfficeCode2 = ((session.HasGlobalDataScope || CanViewAllDeliveryScope(session)) ? NormalizeOfficeScope(responsibleOfficeCode, string.Empty) : NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeYeonsu));
-		return GetYeonsuDeliveryInvoicesAsync(from, to, customerId, warehouseCode, responsibleOfficeCode2, ct);
+		if (session.HasGlobalDataScope)
+		{
+			string responsibleOfficeCode2 = NormalizeOfficeScope(responsibleOfficeCode, string.Empty);
+			return GetYeonsuDeliveryInvoicesAsync(from, to, customerId, warehouseCode, responsibleOfficeCode2, ct);
+		}
+
+		string currentTenantCode = ResolveCurrentTenantCode(session);
+		if (CanViewAllDeliveryScope(session))
+		{
+			List<string> tenantOfficeCodes = GetTenantOfficeCodes(session);
+			string requestedOfficeCode = NormalizeOfficeScope(responsibleOfficeCode, string.Empty);
+			if (!string.IsNullOrWhiteSpace(requestedOfficeCode) && !IsSharedOfficeScope(requestedOfficeCode))
+			{
+				if (!tenantOfficeCodes.Contains(requestedOfficeCode, StringComparer.OrdinalIgnoreCase))
+				{
+					return Task.FromResult(new List<LocalInvoice>());
+				}
+				return GetDeliveryInvoicesForTenantOfficeScopeAsync(from, to, customerId, warehouseCode, new[] { requestedOfficeCode }, currentTenantCode, ct);
+			}
+
+			return GetDeliveryInvoicesForTenantOfficeScopeAsync(from, to, customerId, warehouseCode, tenantOfficeCodes, currentTenantCode, ct);
+		}
+
+		string ownOfficeCode = NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeYeonsu);
+		return GetDeliveryInvoicesForTenantOfficeScopeAsync(from, to, customerId, warehouseCode, new[] { ownOfficeCode }, currentTenantCode, ct);
+	}
+
+	private async Task<List<LocalInvoice>> GetDeliveryInvoicesForTenantOfficeScopeAsync(DateOnly? from, DateOnly? to, Guid? customerId, string? warehouseCode, IReadOnlyCollection<string> officeCodes, string tenantCode, CancellationToken ct)
+	{
+		List<string> normalizedOfficeCodes = officeCodes
+			.Select((string officeCode) => NormalizeOfficeCode(officeCode, DomainConstants.OfficeYeonsu))
+			.Where((string officeCode) => !string.IsNullOrWhiteSpace(officeCode))
+			.Distinct<string>(StringComparer.OrdinalIgnoreCase)
+			.ToList();
+		if (normalizedOfficeCodes.Count == 0)
+		{
+			return new List<LocalInvoice>();
+		}
+
+		string normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(tenantCode);
+		IQueryable<LocalInvoice> query = from invoice in _db.Invoices.Include((LocalInvoice invoice) => invoice.Lines.Where((LocalInvoiceLine line) => !line.IsDeleted)).Include((LocalInvoice invoice) => invoice.Payments.Where((LocalPayment payment) => !payment.IsDeleted)).AsSplitQuery().AsNoTracking()
+			where !invoice.IsDeleted && invoice.IsLatestVersion && invoice.IsConfirmed && (int)invoice.VoucherType == 0
+			where invoice.TenantCode == normalizedTenantCode &&
+			      ((invoice.ResponsibleOfficeCode == OfficeCodeCatalog.Shared &&
+			        (invoice.OfficeCode == OfficeCodeCatalog.Shared ||
+			         invoice.OfficeCode == null ||
+			         invoice.OfficeCode == string.Empty ||
+			         normalizedOfficeCodes.Contains(invoice.OfficeCode))) ||
+			       normalizedOfficeCodes.Contains(invoice.ResponsibleOfficeCode) ||
+			       ((invoice.ResponsibleOfficeCode == null || invoice.ResponsibleOfficeCode == string.Empty) &&
+			        normalizedOfficeCodes.Contains(invoice.OfficeCode)))
+			select invoice;
+		if (from.HasValue)
+		{
+			query = query.Where((LocalInvoice invoice) => invoice.InvoiceDate >= ((DateOnly?)from).Value);
+		}
+		if (to.HasValue)
+		{
+			query = query.Where((LocalInvoice invoice) => invoice.InvoiceDate <= ((DateOnly?)to).Value);
+		}
+		if (customerId.HasValue)
+		{
+			query = query.Where((LocalInvoice invoice) => invoice.CustomerId == ((Guid?)customerId).Value);
+		}
+		string normalizedWarehouseCode = (warehouseCode ?? string.Empty).Trim().ToUpperInvariant();
+		if (!string.IsNullOrWhiteSpace(normalizedWarehouseCode))
+		{
+			query = query.Where((LocalInvoice invoice) => invoice.SourceWarehouseCode == normalizedWarehouseCode);
+		}
+		return await (from invoice in query
+			orderby invoice.InvoiceDate descending, invoice.LastSavedAtUtc descending, invoice.UpdatedAtUtc descending
+			select invoice).ToListAsync(ct);
 	}
 
 	public async Task<List<LocalInvoice>> GetSalesPurchaseLedgerInvoicesAsync(DateOnly? from = null, DateOnly? to = null, Guid? customerId = null, string? warehouseCode = null, string? responsibleOfficeCode = null, CancellationToken ct = default(CancellationToken))
@@ -2962,7 +3032,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Missing("전표를 찾을 수 없습니다.");
 		}
-		if (!CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode, invoice.OfficeCode))
+		if (!CanWriteOperationalScope(session, invoice.TenantCode, invoice.ResponsibleOfficeCode, invoice.OfficeCode))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 전표 수금/지급을 저장할 수 없습니다.");
 		}
@@ -2974,7 +3044,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			existingInvoice = existing.Invoice
 			                  ?? await _db.Invoices.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync((LocalInvoice current) => current.Id == existing.InvoiceId, ct);
 		}
-		if (existingInvoice != null && !CanWriteOfficeScope(session, existingInvoice.ResponsibleOfficeCode, existingInvoice.OfficeCode))
+		if (existingInvoice != null && !CanWriteOperationalScope(session, existingInvoice.TenantCode, existingInvoice.ResponsibleOfficeCode, existingInvoice.OfficeCode))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 전표 수금/지급을 저장할 수 없습니다.");
 		}
@@ -4651,13 +4721,13 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return OfficeMutationResult.Missing("거래처를 찾을 수 없습니다.");
 		}
 		string customerOfficeCode = ResolveResponsibleOfficeScopeForAccess(customer.ResponsibleOfficeCode, customer.OfficeCode);
-		if (!CanWriteOfficeScope(session, customerOfficeCode))
+		if (!CanWriteCustomerScope(session, customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 거래처의 수금/지급을 저장할 수 없습니다.");
 		}
 		var existing = await _db.Transactions.IgnoreQueryFilters().FirstOrDefaultAsync((LocalTransaction current) => current.Id == transaction.Id, ct);
 		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
-		if (existing != null && !CanWriteOfficeScope(session, existing.ResponsibleOfficeCode, customerOfficeCode))
+		if (existing != null && !CanWriteOperationalScope(session, existing.TenantCode, existing.ResponsibleOfficeCode, existing.OfficeCode))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 거래처의 수금/지급을 저장할 수 없습니다.");
 		}
@@ -4673,7 +4743,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			{
 				return OfficeMutationResult.Missing("연결할 전표를 찾을 수 없습니다.");
 			}
-			if (!CanWriteOfficeScope(session, linkedInvoice.ResponsibleOfficeCode, customerOfficeCode))
+			if (!CanWriteOperationalScope(session, linkedInvoice.TenantCode, linkedInvoice.ResponsibleOfficeCode, linkedInvoice.OfficeCode))
 			{
 				return OfficeMutationResult.Denied("권한이 없어 해당 전표 결제를 처리할 수 없습니다.");
 			}
@@ -4710,7 +4780,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			{
 				return OfficeMutationResult.Missing("연결할 렌탈 청구 대상을 찾을 수 없습니다.");
 			}
-			if (!CanWriteOfficeScope(session, linkedRentalProfile.ResponsibleOfficeCode, linkedRentalProfile.ManagementCompanyCode))
+			if (!CanWriteRentalEntityScope(session, linkedRentalProfile.TenantCode, linkedRentalProfile.ResponsibleOfficeCode, linkedRentalProfile.ManagementCompanyCode))
 			{
 				return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 청구 결제를 처리할 수 없습니다.");
 			}
@@ -4726,7 +4796,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 					ct);
 				if (linkedInvoice != null)
 				{
-					if (!CanWriteOfficeScope(session, linkedInvoice.ResponsibleOfficeCode, customerOfficeCode))
+					if (!CanWriteOperationalScope(session, linkedInvoice.TenantCode, linkedInvoice.ResponsibleOfficeCode, linkedInvoice.OfficeCode))
 					{
 						return OfficeMutationResult.Denied("권한이 없어 해당 렌탈 청구 전표 결제를 처리할 수 없습니다.");
 					}
@@ -4757,7 +4827,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			transaction.OfficeCode,
 			customer.TenantCode,
 			transaction.ResponsibleOfficeCode);
-		if (!CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode, customerOfficeCode))
+		if (!CanWriteOperationalScope(session, transaction.TenantCode, transaction.ResponsibleOfficeCode, transaction.OfficeCode))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 거래처의 수금/지급을 저장할 수 없습니다.");
 		}
@@ -4892,7 +4962,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			}
 		}
 		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
-		if (existing != null && !CanWriteOfficeScope(session, existing.ResponsibleOfficeCode, customerOfficeCode))
+		if (existing != null && !CanWriteOperationalScope(session, existing.TenantCode, existing.ResponsibleOfficeCode, existing.OfficeCode))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 거래처의 수금/지급을 저장할 수 없습니다.");
 		}
@@ -4965,7 +5035,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 		var transactionCustomer = await _db.Customers.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync((LocalCustomer current) => current.Id == transaction.CustomerId, ct);
 		string transactionFallbackOfficeCode = ResolveResponsibleOfficeScopeForAccess(transactionCustomer?.ResponsibleOfficeCode, transactionCustomer?.OfficeCode ?? transaction.OfficeCode);
-		if (!CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode, transactionFallbackOfficeCode))
+		if (!CanWriteOperationalScope(session, transaction.TenantCode, transaction.ResponsibleOfficeCode, transactionFallbackOfficeCode))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 수금/지급 내역을 삭제할 수 없습니다.");
 		}
@@ -5547,7 +5617,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Missing("수금/지급 내역을 찾을 수 없습니다.");
 		}
-		if (!CanWriteOfficeScope(session, transaction.ResponsibleOfficeCode, transaction.OfficeCode))
+		if (!CanWriteOperationalScope(session, transaction.TenantCode, transaction.ResponsibleOfficeCode, transaction.OfficeCode))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 거래의 증빙을 저장할 수 없습니다.");
 		}
@@ -6554,6 +6624,44 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			.ToList();
 	}
 
+	private static string ResolveOperationalEntityTenantCode(string? tenantCode, string? responsibleOfficeCode, string? fallbackOfficeCode, SessionState? session = null)
+	{
+		if (TenantScopeCatalog.TryNormalizeTenantCode(tenantCode, out string normalizedTenantCode))
+		{
+			return normalizedTenantCode;
+		}
+		string resolvedOfficeCode = ResolveResponsibleOfficeScopeForAccess(responsibleOfficeCode, fallbackOfficeCode);
+		string? officeCodeForTenant = IsSharedOfficeScope(resolvedOfficeCode) ? fallbackOfficeCode : resolvedOfficeCode;
+		return TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, officeCodeForTenant, session?.TenantCode, session?.OfficeCode);
+	}
+
+	private static bool IsOperationalEntityInCurrentTenant(SessionState? session, string? tenantCode, string? responsibleOfficeCode, string? fallbackOfficeCode = null)
+	{
+		if (session == null || !session.IsLoggedIn)
+		{
+			return false;
+		}
+		string entityTenantCode = ResolveOperationalEntityTenantCode(tenantCode, responsibleOfficeCode, fallbackOfficeCode, session);
+		return string.Equals(entityTenantCode, ResolveCurrentTenantCode(session), StringComparison.OrdinalIgnoreCase);
+	}
+
+	private static bool CanWriteOperationalScope(SessionState? session, string? tenantCode, string? responsibleOfficeCode, string? fallbackOfficeCode = null)
+	{
+		if (session == null || !session.IsLoggedIn)
+		{
+			return false;
+		}
+		if (CanWriteAllScopedData(session))
+		{
+			return true;
+		}
+		if (!IsOperationalEntityInCurrentTenant(session, tenantCode, responsibleOfficeCode, fallbackOfficeCode))
+		{
+			return false;
+		}
+		return CanWriteOfficeScope(session, responsibleOfficeCode, fallbackOfficeCode);
+	}
+
 	private static bool CanWriteOfficeScope(SessionState? session, string? officeCode, string? fallbackOfficeCode = null)
 	{
 		if (session == null || !session.IsLoggedIn)
@@ -6758,6 +6866,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return true;
 		}
+		if (!IsOperationalEntityInCurrentTenant(session, invoice.TenantCode, invoice.ResponsibleOfficeCode, invoice.OfficeCode))
+		{
+			return false;
+		}
 		string officeCode = ResolveResponsibleOfficeScopeForAccess(invoice.ResponsibleOfficeCode, invoice.OfficeCode);
 		if (IsSharedOfficeScope(officeCode))
 		{
@@ -6775,6 +6887,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		if (HasFullAccess(session))
 		{
 			return true;
+		}
+		if (!IsOperationalEntityInCurrentTenant(session, transaction.TenantCode, transaction.ResponsibleOfficeCode, transaction.OfficeCode))
+		{
+			return false;
 		}
 		string officeCode = ResolveResponsibleOfficeScopeForAccess(transaction.ResponsibleOfficeCode, transaction.OfficeCode);
 		if (IsSharedOfficeScope(officeCode))

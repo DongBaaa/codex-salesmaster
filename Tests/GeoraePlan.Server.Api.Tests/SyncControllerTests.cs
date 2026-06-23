@@ -5258,7 +5258,7 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task Pull_IncludesCrossTenantDeliveryData_ForUserWithDeliveryViewAll()
+    public async Task Pull_DeliveryViewAll_KeepsInvoiceSyncWithinCurrentTenant()
     {
         var usenetCustomer = new Customer
         {
@@ -5268,6 +5268,16 @@ public sealed class SyncControllerTests : IDisposable
             ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
             NameOriginal = "유즈넷 납품처",
             NameMatchKey = "유즈넷납품처",
+            TradeType = "매출"
+        };
+        var yeonsuCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "연수 납품처",
+            NameMatchKey = "연수납품처",
             TradeType = "매출"
         };
         var itworldCustomer = new Customer
@@ -5280,7 +5290,7 @@ public sealed class SyncControllerTests : IDisposable
             NameMatchKey = "아이티월드납품처",
             TradeType = "매출"
         };
-        _dbContext.Customers.AddRange(usenetCustomer, itworldCustomer);
+        _dbContext.Customers.AddRange(usenetCustomer, yeonsuCustomer, itworldCustomer);
 
         _dbContext.Invoices.AddRange(
             new Invoice
@@ -5288,6 +5298,7 @@ public sealed class SyncControllerTests : IDisposable
                 Id = Guid.NewGuid(),
                 TenantCode = TenantScopeCatalog.UsenetGroup,
                 OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
                 CustomerId = usenetCustomer.Id,
                 VoucherType = VoucherType.Sales,
                 InvoiceNumber = "US-DEL-1",
@@ -5296,8 +5307,20 @@ public sealed class SyncControllerTests : IDisposable
             new Invoice
             {
                 Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                CustomerId = yeonsuCustomer.Id,
+                VoucherType = VoucherType.Sales,
+                InvoiceNumber = "YS-DEL-1",
+                InvoiceDate = new DateOnly(2026, 3, 27)
+            },
+            new Invoice
+            {
+                Id = Guid.NewGuid(),
                 TenantCode = TenantScopeCatalog.Itworld,
                 OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
                 CustomerId = itworldCustomer.Id,
                 VoucherType = VoucherType.Sales,
                 InvoiceNumber = "IT-DEL-1",
@@ -5307,10 +5330,10 @@ public sealed class SyncControllerTests : IDisposable
 
         var currentUser = new TestCurrentUserContext
         {
-            Username = "itworld_user",
-            TenantCode = TenantScopeCatalog.Itworld,
-            OfficeCode = OfficeCodeCatalog.Itworld,
-            ScopeType = TenantScopeCatalog.ScopeTenantAll,
+            Username = "usenet_delivery_viewer",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
             Permissions = [거래플랜.Server.Api.Security.PermissionNames.DeliveryViewAll]
         };
         await using var scopedDb = CreateDbContext(currentUser);
@@ -5320,10 +5343,12 @@ public sealed class SyncControllerTests : IDisposable
         var ok = Assert.IsType<OkObjectResult>(response.Result);
         var result = Assert.IsType<SyncPullResponse>(ok.Value);
 
-        Assert.DoesNotContain(result.Customers, customer => customer.Id == usenetCustomer.Id);
-        Assert.Contains(result.Customers, customer => customer.Id == itworldCustomer.Id);
+        Assert.Contains(result.Customers, customer => customer.Id == usenetCustomer.Id);
+        Assert.DoesNotContain(result.Customers, customer => customer.Id == yeonsuCustomer.Id);
+        Assert.DoesNotContain(result.Customers, customer => customer.Id == itworldCustomer.Id);
         Assert.Contains(result.Invoices, invoice => invoice.InvoiceNumber == "US-DEL-1");
-        Assert.Contains(result.Invoices, invoice => invoice.InvoiceNumber == "IT-DEL-1");
+        Assert.Contains(result.Invoices, invoice => invoice.InvoiceNumber == "YS-DEL-1");
+        Assert.DoesNotContain(result.Invoices, invoice => invoice.InvoiceNumber == "IT-DEL-1");
     }
 
     [Fact]

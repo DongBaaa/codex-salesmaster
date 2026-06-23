@@ -341,8 +341,24 @@ public sealed class OfficeScopeService
 
     public IQueryable<Invoice> ApplySyncInvoiceScope(IQueryable<Invoice> query)
     {
-        if (HasGlobalDataScope || HasDeliveryWideReadScope)
+        if (HasGlobalDataScope)
             return query;
+
+        if (HasDeliveryWideReadScope)
+        {
+            var tenantCode = CurrentTenantCode;
+            var tenantOffices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode);
+            return query.Where(entity =>
+                entity.TenantCode == tenantCode &&
+                ((entity.ResponsibleOfficeCode == OfficeCodeCatalog.Shared &&
+                  (entity.OfficeCode == OfficeCodeCatalog.Shared ||
+                   entity.OfficeCode == null ||
+                   entity.OfficeCode == string.Empty ||
+                   tenantOffices.Contains(entity.OfficeCode))) ||
+                 tenantOffices.Contains(entity.ResponsibleOfficeCode) ||
+                 ((entity.ResponsibleOfficeCode == null || entity.ResponsibleOfficeCode == string.Empty) &&
+                  tenantOffices.Contains(entity.OfficeCode))));
+        }
 
         return ApplyInvoiceScope(query);
     }
