@@ -7123,6 +7123,145 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_PaymentOnlyUpdate_SynchronizesExistingLinkedTransaction()
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-PAYMENT-ONLY-TX-CUSTOMER",
+            NameMatchKey = "SYNCPAYMENTONLYTXCUSTOMER",
+            TradeType = "매출"
+        });
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"payment-only-tx-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = "SYNC-PAYMENT-ONLY-TX-CUSTOMER",
+            BillingStatus = "청구중",
+            SettlementStatus = "부분입금",
+            CompletionStatus = "미완료",
+            MonthlyAmount = 100_000m,
+            SettledAmount = 30_000m,
+            OutstandingAmount = 70_000m,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new SyncRentalBillingRunSnapshot
+                {
+                    RunId = runId,
+                    RunKey = "2026-06",
+                    ScheduledDate = new DateOnly(2026, 6, 25),
+                    PeriodStartDate = new DateOnly(2026, 6, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    PeriodLabel = "2026-06",
+                    Status = "청구중",
+                    BilledAmount = 100_000m,
+                    SettledAmount = 30_000m,
+                    SettlementStatus = "부분입금"
+                }
+            })
+        });
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-PAYMENT-ONLY-TX-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 25),
+            TotalAmount = 100_000m,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId
+        });
+        _dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 6, 26),
+            Amount = 30_000m,
+            Note = "before payment-only update"
+        });
+        _dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = paymentId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 26),
+            TransactionKind = "렌탈수금",
+            LinkedInvoiceId = invoiceId,
+            LinkedInvoiceNumber = "SYNC-PAYMENT-ONLY-TX-001",
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId,
+            ReceiptTotal = 30_000m,
+            BankReceipt = 30_000m,
+            SettlementAmount = 30_000m,
+            Note = "linked transaction before payment-only update"
+        });
+        await _dbContext.SaveChangesAsync();
+        var storedPayment = await _dbContext.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(payment => payment.Id == paymentId);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-payment-only-updates-linked-transaction",
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = paymentId,
+                    InvoiceId = invoiceId,
+                    PaymentDate = new DateOnly(2026, 6, 27),
+                    Amount = 70_000m,
+                    Note = "payment-only update should update transaction",
+                    ExpectedRevision = storedPayment.Revision,
+                    CreatedAtUtc = new DateTime(2026, 6, 27, 1, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 27, 1, 1, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        var updatedPayment = await _dbContext.Payments.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(payment => payment.Id == paymentId);
+        var updatedTransaction = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == paymentId);
+        Assert.Equal(70_000m, updatedPayment.Amount);
+        Assert.Equal(new DateOnly(2026, 6, 27), updatedTransaction.TransactionDate);
+        Assert.Equal(invoiceId, updatedTransaction.LinkedInvoiceId);
+        Assert.Equal(profileId, updatedTransaction.LinkedRentalBillingProfileId);
+        Assert.Equal(runId, updatedTransaction.LinkedRentalBillingRunId);
+        Assert.Equal(70_000m, updatedTransaction.SettlementAmount);
+        Assert.Equal(70_000m, updatedTransaction.ReceiptTotal);
+        Assert.Equal(70_000m, updatedTransaction.BankReceipt);
+    }
+
+    [Fact]
     public async Task Push_RejectsTransactionUpdate_WhenExistingRentalSettlementProfileIsOutsideWritableScope()
     {
         var currentUser = new TestCurrentUserContext
@@ -8638,6 +8777,25 @@ public sealed class SyncControllerTests : IDisposable
             CreatedAtUtc = new DateTime(2026, 6, 26, 0, 0, 0, DateTimeKind.Utc),
             UpdatedAtUtc = new DateTime(2026, 6, 26, 0, 0, 0, DateTimeKind.Utc)
         });
+        _dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = paymentId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 26),
+            TransactionKind = "렌탈수금",
+            LinkedInvoiceId = firstInvoiceId,
+            LinkedInvoiceNumber = "SYNC-PAYMENT-RELINK-FIRST",
+            LinkedRentalBillingProfileId = firstProfileId,
+            LinkedRentalBillingRunId = firstRunId,
+            ReceiptTotal = 40_000m,
+            BankReceipt = 40_000m,
+            SettlementAmount = 40_000m,
+            CreatedAtUtc = new DateTime(2026, 6, 26, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 26, 0, 0, 0, DateTimeKind.Utc)
+        });
         await _dbContext.SaveChangesAsync();
         var storedPayment = await _dbContext.Payments.IgnoreQueryFilters()
             .AsNoTracking()
@@ -8670,6 +8828,18 @@ public sealed class SyncControllerTests : IDisposable
             .Where(payment => payment.Id == paymentId)
             .Select(payment => payment.InvoiceId)
             .SingleAsync());
+
+        var relinkedTransaction = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == paymentId);
+        Assert.Equal(new DateOnly(2026, 7, 26), relinkedTransaction.TransactionDate);
+        Assert.Equal(secondInvoiceId, relinkedTransaction.LinkedInvoiceId);
+        Assert.Equal("SYNC-PAYMENT-RELINK-SECOND", relinkedTransaction.LinkedInvoiceNumber);
+        Assert.Equal(secondProfileId, relinkedTransaction.LinkedRentalBillingProfileId);
+        Assert.Equal(secondRunId, relinkedTransaction.LinkedRentalBillingRunId);
+        Assert.Equal(40_000m, relinkedTransaction.SettlementAmount);
+        Assert.Equal(40_000m, relinkedTransaction.ReceiptTotal);
+        Assert.Equal(40_000m, relinkedTransaction.BankReceipt);
 
         var firstProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
             .AsNoTracking()

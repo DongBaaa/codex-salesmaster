@@ -554,6 +554,8 @@ public sealed class SyncController : ControllerBase
                 var paymentRentalSettlementTargets =
                     await LoadRentalSettlementTargetsForPaymentsAsync(acceptedPayments, cancellationToken);
                 await SoftDeletePaymentAttachmentsForDeletedPaymentsAsync(acceptedPayments, cancellationToken);
+                var paymentLinkedTransactionSyncTargets =
+                    await SynchronizeAcceptedPaymentsToLinkedTransactionsAsync(acceptedPayments, cancellationToken);
                 var paymentLinkedTransactionSettlementTargets =
                     await CascadeDeletedPaymentsToLinkedTransactionsAsync(acceptedPayments, cancellationToken);
 
@@ -561,6 +563,7 @@ public sealed class SyncController : ControllerBase
                 var rentalSettlementTargets = invoiceRentalSettlementTargets
                     .Concat(transactionRentalSettlementTargets)
                     .Concat(paymentRentalSettlementTargets)
+                    .Concat(paymentLinkedTransactionSyncTargets)
                     .Concat(paymentLinkedTransactionSettlementTargets)
                     .Distinct()
                     .ToList();
@@ -1249,6 +1252,151 @@ public sealed class SyncController : ControllerBase
             .Select(target => (target.ProfileId, target.RunId))
             .Distinct()
             .ToList();
+    }
+
+    private async Task<List<(Guid ProfileId, Guid? RunId)>> SynchronizeAcceptedPaymentsToLinkedTransactionsAsync(
+        IEnumerable<PaymentDto> payload,
+        CancellationToken cancellationToken)
+    {
+        var payments = (payload ?? Enumerable.Empty<PaymentDto>())
+            .Where(payment => !payment.IsDeleted &&
+                              payment.Id != Guid.Empty &&
+                              payment.InvoiceId != Guid.Empty)
+            .GroupBy(payment => payment.Id)
+            .Select(group => group.Last())
+            .ToList();
+        if (payments.Count == 0)
+            return [];
+
+        var paymentById = payments.ToDictionary(payment => payment.Id);
+        var paymentIds = paymentById.Keys.ToList();
+        var transactions = await _dbContext.Transactions.IgnoreQueryFilters()
+            .Where(transaction => !transaction.IsDeleted && paymentIds.Contains(transaction.Id))
+            .ToListAsync(cancellationToken);
+        if (transactions.Count == 0)
+            return [];
+
+        var invoiceIds = payments
+            .Select(payment => payment.InvoiceId)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        var invoicesById = await _dbContext.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoiceIds.Contains(invoice.Id) && !invoice.IsDeleted)
+            .ToDictionaryAsync(invoice => invoice.Id, cancellationToken);
+
+        var targets = new List<(Guid ProfileId, Guid? RunId)>();
+        foreach (var transaction in transactions)
+        {
+            if (!paymentById.TryGetValue(transaction.Id, out var payment) ||
+                !invoicesById.TryGetValue(payment.InvoiceId, out var invoice))
+            {
+                continue;
+            }
+
+            AddRentalSettlementTarget(targets, transaction.LinkedRentalBillingProfileId, transaction.LinkedRentalBillingRunId);
+            SynchronizeLinkedTransactionFromPayment(transaction, payment, invoice);
+            AddRentalSettlementTarget(targets, transaction.LinkedRentalBillingProfileId, transaction.LinkedRentalBillingRunId);
+        }
+
+        return targets.Distinct().ToList();
+    }
+
+    private static void SynchronizeLinkedTransactionFromPayment(
+        TransactionRecord transaction,
+        PaymentDto payment,
+        Invoice invoice)
+    {
+        transaction.CustomerId = invoice.CustomerId;
+        transaction.TenantCode = invoice.TenantCode;
+        transaction.OfficeCode = invoice.OfficeCode;
+        transaction.ResponsibleOfficeCode = invoice.ResponsibleOfficeCode;
+        transaction.TransactionDate = payment.PaymentDate;
+        transaction.LinkedInvoiceId = payment.InvoiceId;
+        transaction.LinkedInvoiceNumber = ResolveInvoiceDisplayNumber(invoice);
+        transaction.LinkedRentalBillingProfileId = invoice.LinkedRentalBillingProfileId;
+        transaction.LinkedRentalBillingRunId = invoice.LinkedRentalBillingRunId;
+        transaction.SettlementAmount = payment.Amount;
+        transaction.TransactionKind = ResolveLinkedTransactionKind(invoice);
+        ApplyLinkedTransactionTotals(transaction, payment.Amount, IsPaymentVoucher(invoice.VoucherType));
+    }
+
+    private static string ResolveInvoiceDisplayNumber(Invoice invoice)
+        => string.IsNullOrWhiteSpace(invoice.InvoiceNumber)
+            ? invoice.LocalTempNumber
+            : invoice.InvoiceNumber;
+
+    private static string ResolveLinkedTransactionKind(Invoice invoice)
+    {
+        if (invoice.LinkedRentalBillingProfileId is Guid rentalProfileId && rentalProfileId != Guid.Empty)
+            return "렌탈수금";
+
+        return IsPaymentVoucher(invoice.VoucherType)
+            ? "전표지급"
+            : "전표수금";
+    }
+
+    private static bool IsPaymentVoucher(VoucherType voucherType)
+        => voucherType is VoucherType.Purchase or VoucherType.Procurement;
+
+    private static void ApplyLinkedTransactionTotals(
+        TransactionRecord transaction,
+        decimal amount,
+        bool isPayment)
+    {
+        if (isPayment)
+        {
+            transaction.CashReceipt = 0m;
+            transaction.CardReceipt = 0m;
+            transaction.BankReceipt = 0m;
+            transaction.DiscountApplied = 0m;
+            transaction.ReceiptTotal = 0m;
+            transaction.PaymentTotal = amount;
+            ApplySinglePaymentChannel(transaction, amount);
+            return;
+        }
+
+        transaction.CashPayment = 0m;
+        transaction.CardPayment = 0m;
+        transaction.BankPayment = 0m;
+        transaction.DiscountReceived = 0m;
+        transaction.PaymentTotal = 0m;
+        transaction.ReceiptTotal = amount;
+        ApplySingleReceiptChannel(transaction, amount);
+    }
+
+    private static void ApplySingleReceiptChannel(TransactionRecord transaction, decimal amount)
+    {
+        var useCash = transaction.CashReceipt != 0m &&
+                      transaction.CardReceipt == 0m &&
+                      transaction.BankReceipt == 0m &&
+                      transaction.DiscountApplied == 0m;
+        var useCard = transaction.CardReceipt != 0m &&
+                      transaction.CashReceipt == 0m &&
+                      transaction.BankReceipt == 0m &&
+                      transaction.DiscountApplied == 0m;
+
+        transaction.CashReceipt = useCash ? amount : 0m;
+        transaction.CardReceipt = useCard ? amount : 0m;
+        transaction.BankReceipt = !useCash && !useCard ? amount : 0m;
+        transaction.DiscountApplied = 0m;
+    }
+
+    private static void ApplySinglePaymentChannel(TransactionRecord transaction, decimal amount)
+    {
+        var useCash = transaction.CashPayment != 0m &&
+                      transaction.CardPayment == 0m &&
+                      transaction.BankPayment == 0m &&
+                      transaction.DiscountReceived == 0m;
+        var useCard = transaction.CardPayment != 0m &&
+                      transaction.CashPayment == 0m &&
+                      transaction.BankPayment == 0m &&
+                      transaction.DiscountReceived == 0m;
+
+        transaction.CashPayment = useCash ? amount : 0m;
+        transaction.CardPayment = useCard ? amount : 0m;
+        transaction.BankPayment = !useCash && !useCard ? amount : 0m;
+        transaction.DiscountReceived = 0m;
     }
 
     private async Task<List<(Guid ProfileId, Guid? RunId)>> CascadeDeletedPaymentsToLinkedTransactionsAsync(
@@ -4969,6 +5117,52 @@ public sealed class SyncController : ControllerBase
         return valid;
     }
 
+    private async Task<bool> ValidateCompatibleLinkedTransactionForPaymentAsync(
+        PaymentDto dto,
+        Payment? existing,
+        Guid targetInvoiceId,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        if (dto.Id == Guid.Empty)
+            return true;
+
+        var linkedTransaction = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(transaction => !transaction.IsDeleted && transaction.Id == dto.Id, cancellationToken);
+        if (linkedTransaction is null)
+            return true;
+
+        if (!_officeScopeService.CanWriteOfficeForPayments(
+                linkedTransaction.ResponsibleOfficeCode,
+                linkedTransaction.TenantCode,
+                linkedTransaction.OfficeCode))
+        {
+            AddClientConflict(dto, nameof(Payment),
+                $"Linked transaction is outside the writable office scope: {linkedTransaction.Id}.", result);
+            return false;
+        }
+
+        if (!linkedTransaction.LinkedInvoiceId.HasValue ||
+            linkedTransaction.LinkedInvoiceId.Value == Guid.Empty)
+        {
+            AddClientConflict(dto, nameof(Payment),
+                $"Linked transaction does not point to a payment invoice: {linkedTransaction.Id}.", result);
+            return false;
+        }
+
+        var linkedInvoiceId = linkedTransaction.LinkedInvoiceId.Value;
+        if (linkedInvoiceId == targetInvoiceId)
+            return true;
+
+        if (existing is not null && linkedInvoiceId == existing.InvoiceId)
+            return true;
+
+        AddClientConflict(dto, nameof(Payment),
+            $"Linked transaction invoice does not match the payment invoice: {linkedInvoiceId}.", result);
+        return false;
+    }
+
     private async Task<List<PaymentDto>> FilterValidPaymentsAsync(
         IEnumerable<PaymentDto> payload, SyncPushResult result, CancellationToken cancellationToken)
     {
@@ -5001,6 +5195,16 @@ public sealed class SyncController : ControllerBase
                 {
                     dto.IsDeleted = true;
                     dto.InvoiceId = existing.InvoiceId;
+                    if (!await ValidateCompatibleLinkedTransactionForPaymentAsync(
+                            dto,
+                            existing,
+                            existing.InvoiceId,
+                            result,
+                            cancellationToken))
+                    {
+                        continue;
+                    }
+
                     valid.Add(dto);
                     continue;
                 }
@@ -5048,31 +5252,14 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            if (dto.IsDeleted && existing is not null)
+            if (!await ValidateCompatibleLinkedTransactionForPaymentAsync(
+                    dto,
+                    existing,
+                    dto.InvoiceId,
+                    result,
+                    cancellationToken))
             {
-                var linkedTransaction = await _dbContext.Transactions.IgnoreQueryFilters()
-                    .AsNoTracking()
-                    .FirstOrDefaultAsync(transaction => !transaction.IsDeleted && transaction.Id == dto.Id, cancellationToken);
-                if (linkedTransaction is not null)
-                {
-                    if (linkedTransaction.LinkedInvoiceId.HasValue &&
-                        linkedTransaction.LinkedInvoiceId.Value != existing.InvoiceId)
-                    {
-                        AddClientConflict(dto, nameof(Payment),
-                            $"Linked transaction invoice does not match the payment invoice: {linkedTransaction.LinkedInvoiceId.Value}.", result);
-                        continue;
-                    }
-
-                    if (!_officeScopeService.CanWriteOfficeForPayments(
-                            linkedTransaction.ResponsibleOfficeCode,
-                            linkedTransaction.TenantCode,
-                            linkedTransaction.OfficeCode))
-                    {
-                        AddClientConflict(dto, nameof(Payment),
-                            $"Linked transaction is outside the writable office scope: {linkedTransaction.Id}.", result);
-                        continue;
-                    }
-                }
+                continue;
             }
 
             if (!dto.IsDeleted)
