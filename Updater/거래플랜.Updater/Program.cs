@@ -106,6 +106,7 @@ internal static class Program
 
         SetStage(window, "무결성 확인 중", "다운로드한 파일의 SHA256을 검증하고 있습니다.");
         await VerifySha256Async(packagePath, options.Sha256);
+        VerifyExpectedPackageFileSize(packagePath, options.FileSize);
 
         SetStage(window, "프로그램 종료 대기 중", "현재 실행 중인 거래플랜을 종료하고 있습니다.");
         await WaitForProcessExitAsync(options.ProcessId);
@@ -320,6 +321,21 @@ internal static class Program
             throw new InvalidOperationException("다운로드한 업데이트 패키지의 SHA256 검증에 실패했습니다.");
 
         TryLog($"SHA256 verified {actual}");
+    }
+
+    private static void VerifyExpectedPackageFileSize(string filePath, long expectedFileSize)
+    {
+        if (expectedFileSize <= 0)
+            return;
+
+        var actualFileSize = new FileInfo(filePath).Length;
+        if (actualFileSize != expectedFileSize)
+        {
+            throw new InvalidOperationException(
+                $"업데이트 패키지 크기가 manifest와 일치하지 않습니다. 기록 {expectedFileSize:N0}바이트, 실제 {actualFileSize:N0}바이트입니다.");
+        }
+
+        TryLog($"FILESIZE verified {actualFileSize}");
     }
 
     private static async Task WaitForProcessExitAsync(int processId)

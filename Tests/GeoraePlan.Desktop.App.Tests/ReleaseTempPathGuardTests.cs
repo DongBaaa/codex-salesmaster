@@ -39,6 +39,42 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public void DesktopUpdater_VerifiesManifestFileSizeBeforeMarkingPackageReadyOrApplyingIt()
+    {
+        var serviceSource = ReadRepositoryFile(
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Services",
+            "DesktopAppUpdateService.cs");
+        var updaterSource = ReadRepositoryFile(
+            "Updater",
+            "거래플랜.Updater",
+            "Program.cs");
+
+        Assert.Contains("VerifyExpectedPackageFileSize(targetPath, package.FileSize);", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("VerifyExpectedPackageFileSize(temporaryPath, package.FileSize);", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("private static void VerifyExpectedPackageFileSize(string filePath, long expectedFileSize)", serviceSource, StringComparison.Ordinal);
+        AssertInOrder(
+            serviceSource,
+            "await VerifySha256Async(temporaryPath, package.Sha256, ct);",
+            "VerifyExpectedPackageFileSize(temporaryPath, package.FileSize);",
+            "File.Move(temporaryPath, targetPath, overwrite: true);");
+        AssertInOrder(
+            serviceSource,
+            "if (File.Exists(targetPath) && await TryVerifySha256Async(targetPath, package.Sha256, ct))",
+            "VerifyExpectedPackageFileSize(targetPath, package.FileSize);",
+            "return new DesktopPreparedUpdatePackage");
+
+        Assert.Contains("VerifyExpectedPackageFileSize(packagePath, options.FileSize);", updaterSource, StringComparison.Ordinal);
+        Assert.Contains("private static void VerifyExpectedPackageFileSize(string filePath, long expectedFileSize)", updaterSource, StringComparison.Ordinal);
+        AssertInOrder(
+            updaterSource,
+            "await VerifySha256Async(packagePath, options.Sha256);",
+            "VerifyExpectedPackageFileSize(packagePath, options.FileSize);",
+            "await WaitForProcessExitAsync(options.ProcessId);");
+    }
+
+    [Fact]
     public void ReleasePackagingScripts_PreferProjectOrDDriveTempBeforeSystemTempFallback()
     {
         var initializeTempSource = ReadRepositoryFile(

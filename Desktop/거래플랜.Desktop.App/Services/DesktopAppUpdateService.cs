@@ -271,6 +271,7 @@ public sealed class DesktopAppUpdateService
         {
             if (File.Exists(targetPath) && await TryVerifySha256Async(targetPath, package.Sha256, ct))
             {
+                VerifyExpectedPackageFileSize(targetPath, package.FileSize);
                 var existingInfo = new FileInfo(targetPath);
                 TryCleanupPackageTemporaryFiles(packageDirectory, safePackageFileName);
                 progress?.Report(new DesktopUpdateDownloadProgress(existingInfo.Length, existingInfo.Length));
@@ -332,6 +333,7 @@ public sealed class DesktopAppUpdateService
                 await destination.FlushAsync(ct);
                 progress?.Report(new DesktopUpdateDownloadProgress(downloadedBytes, totalBytes));
                 await VerifySha256Async(temporaryPath, package.Sha256, ct);
+                VerifyExpectedPackageFileSize(temporaryPath, package.FileSize);
 
                 File.Move(temporaryPath, targetPath, overwrite: true);
                 TryCleanupPackageTemporaryFiles(packageDirectory, safePackageFileName);
@@ -546,6 +548,19 @@ public sealed class DesktopAppUpdateService
         var actual = Convert.ToHexString(hash);
         if (!string.Equals(actual, sha256.Trim(), StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("업데이트 패키지 SHA256 검증에 실패했습니다.");
+    }
+
+    private static void VerifyExpectedPackageFileSize(string filePath, long expectedFileSize)
+    {
+        if (expectedFileSize <= 0)
+            return;
+
+        var actualFileSize = new FileInfo(filePath).Length;
+        if (actualFileSize != expectedFileSize)
+        {
+            throw new InvalidOperationException(
+                $"업데이트 패키지 크기가 manifest와 일치하지 않습니다. 기록 {expectedFileSize:N0}바이트, 실제 {actualFileSize:N0}바이트입니다.");
+        }
     }
 
     private static string? ResolveUpdaterPath()
