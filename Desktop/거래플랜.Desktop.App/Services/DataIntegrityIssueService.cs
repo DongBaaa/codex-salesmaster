@@ -2631,15 +2631,24 @@ public sealed class DataIntegrityIssueService
                     TransactionLinkedInvoiceId = transaction == null ? (Guid?)null : transaction.LinkedInvoiceId,
                     TransactionSettlementAmount = transaction == null ? (decimal?)null : transaction.SettlementAmount,
                     TransactionTenantCode = transaction == null ? null : transaction.TenantCode,
-                    TransactionOfficeCode = transaction == null ? null : transaction.ResponsibleOfficeCode
+                    TransactionOfficeCode = transaction == null ? null : transaction.OfficeCode,
+                    TransactionResponsibleOfficeCode = transaction == null ? null : transaction.ResponsibleOfficeCode
                 })
             .ToListAsync(ct);
 
         var issues = new List<DataIntegrityIssueDetail>();
-        foreach (var row in rows.Where(row =>
-                     IsInSessionScope(row.TenantCode, row.ResponsibleOfficeCode, session) ||
-                     (row.TransactionId.HasValue && IsInSessionScope(row.TransactionTenantCode, row.TransactionOfficeCode, session))))
+        foreach (var row in rows)
         {
+            var invoiceScope = ResolveEntityOfficeScope(row.TenantCode, row.OfficeCode, row.ResponsibleOfficeCode);
+            var transactionScope = row.TransactionId.HasValue
+                ? ResolveEntityOfficeScope(row.TransactionTenantCode, row.TransactionOfficeCode, row.TransactionResponsibleOfficeCode)
+                : (TenantCode: string.Empty, OfficeCode: string.Empty);
+            if (!IsInSessionScope(invoiceScope.TenantCode, invoiceScope.OfficeCode, session) &&
+                (!row.TransactionId.HasValue || !IsInSessionScope(transactionScope.TenantCode, transactionScope.OfficeCode, session)))
+            {
+                continue;
+            }
+
             var invoiceNumber = NormalizeDisplay(
                 !string.IsNullOrWhiteSpace(row.InvoiceNumber) ? row.InvoiceNumber : row.LocalTempNumber,
                 row.InvoiceId.ToString("N"));
@@ -2655,7 +2664,7 @@ public sealed class DataIntegrityIssueService
                 DataIntegrityIssueCodes.RentalDeletedInvoiceActivePayment,
                 entityType: "렌탈 전표/수금",
                 entityId: row.PaymentId,
-                officeCode: row.ResponsibleOfficeCode,
+                officeCode: invoiceScope.OfficeCode,
                 currentValue: $"삭제 전표 {invoiceNumber} / 활성 수금 {row.PaymentAmount:N0} / 거래 {transactionState}",
                 expectedValue: "삭제 전표에 연결된 수금/지급도 삭제",
                 message: $"{row.InvoiceDate:yyyy-MM-dd} 삭제된 렌탈 전표 {invoiceNumber}에 활성 수금/지급 {row.PaymentAmount:N0}원이 남아 있습니다.",
@@ -2668,6 +2677,10 @@ public sealed class DataIntegrityIssueService
                     row.TransactionId.HasValue ? $"TransactionId {row.TransactionId.Value:D}" : "TransactionId 없음",
                     row.LinkedRentalBillingProfileId.HasValue ? $"InvoiceProfile {row.LinkedRentalBillingProfileId.Value:D}" : "InvoiceProfile 없음",
                     row.LinkedRentalBillingRunId.HasValue ? $"InvoiceRun {row.LinkedRentalBillingRunId.Value:D}" : "InvoiceRun 없음",
+                    $"InvoiceScopeTenant {invoiceScope.TenantCode}",
+                    $"InvoiceScopeOffice {invoiceScope.OfficeCode}",
+                    row.TransactionId.HasValue ? $"TransactionScopeTenant {transactionScope.TenantCode}" : "TransactionScopeTenant 없음",
+                    row.TransactionId.HasValue ? $"TransactionScopeOffice {transactionScope.OfficeCode}" : "TransactionScopeOffice 없음",
                     $"TransactionLinkedInvoiceId {transactionLinkText}",
                     row.TransactionSettlementAmount.HasValue ? $"TransactionSettlementAmount {row.TransactionSettlementAmount.Value:N0}" : "TransactionSettlementAmount 없음",
                     string.IsNullOrWhiteSpace(row.Note) ? "Note -" : $"Note {row.Note}"
@@ -3313,6 +3326,36 @@ public sealed class DataIntegrityIssueService
             invoice.TenantCode,
             scopeOfficeCode,
             invoice.TenantCode,
+            scopeOfficeCode);
+        return (scopeTenantCode, scopeOfficeCode);
+    }
+
+    private static (string TenantCode, string OfficeCode) ResolveEntityOfficeScope(
+        string? tenantCode,
+        string? ownerOfficeCode,
+        string? responsibleOfficeCode)
+    {
+        string scopeOfficeCode;
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(responsibleOfficeCode, out var normalizedResponsibleOfficeCode))
+        {
+            scopeOfficeCode = normalizedResponsibleOfficeCode;
+        }
+        else if (OfficeCodeCatalog.TryNormalizeOfficeCode(ownerOfficeCode, out var normalizedOwnerOfficeCode))
+        {
+            scopeOfficeCode = normalizedOwnerOfficeCode;
+        }
+        else
+        {
+            scopeOfficeCode = TenantScopeCatalog.TryNormalizeTenantCode(tenantCode, out var normalizedTenantCode) &&
+                              string.Equals(normalizedTenantCode, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase)
+                ? OfficeCodeCatalog.Itworld
+                : OfficeCodeCatalog.Usenet;
+        }
+
+        var scopeTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            tenantCode,
+            scopeOfficeCode,
+            tenantCode,
             scopeOfficeCode);
         return (scopeTenantCode, scopeOfficeCode);
     }
