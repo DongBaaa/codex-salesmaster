@@ -2247,6 +2247,84 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task InvoicesController_Delete_ForbidsLinkedPayments_WhenPaymentEditMissing()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "invoice-only-delete",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = new[] { PermissionNames.InvoiceEdit }
+        };
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "DIRECT-INVOICE-DELETE-PAYMENT-PERM-CUSTOMER",
+            NameMatchKey = "DIRECTINVOICEDELETEPAYMENTPERMCUSTOMER",
+            TradeType = "Sales"
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "DIRECT-INVOICE-DELETE-PAYMENT-PERM",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 24),
+            TotalAmount = 100_000m,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m
+        });
+        dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 6, 25),
+            Amount = 40_000m,
+            Note = "direct delete linked payment"
+        });
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Invoices.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == invoiceId);
+        var controller = new InvoicesController(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
+            new RentalSettlementRecalculationService(dbContext));
+
+        var response = await controller.Delete(stored.Id, stored.Revision, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(response);
+        Assert.False(await dbContext.Invoices.IgnoreQueryFilters()
+            .Where(row => row.Id == invoiceId)
+            .Select(row => row.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.Payments.IgnoreQueryFilters()
+            .Where(row => row.Id == paymentId)
+            .Select(row => row.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task InvoicesController_Delete_RentalBillingInvoice_RevertsSettlementAndDeletesLinkedPayments()
     {
         var currentUser = CreateAdminUser();

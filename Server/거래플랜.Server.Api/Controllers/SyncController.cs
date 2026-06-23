@@ -4898,6 +4898,8 @@ public sealed class SyncController : ControllerBase
             var existing = await _dbContext.Invoices.IgnoreQueryFilters()
                 .Include(x => x.Customer)
                 .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
+            if (!await ValidateInvoiceDeletePaymentSideEffectPermissionAsync(dto, existing, result, cancellationToken))
+                continue;
 
             var customer = dto.CustomerId == Guid.Empty
                 ? null
@@ -5104,6 +5106,47 @@ public sealed class SyncController : ControllerBase
         }
 
         return valid;
+    }
+
+    private async Task<bool> ValidateInvoiceDeletePaymentSideEffectPermissionAsync(
+        InvoiceDto dto,
+        Invoice? existing,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        if (!dto.IsDeleted || existing is null || HasPermission(PermissionNames.PaymentEdit))
+            return true;
+
+        if (!await HasActivePaymentSideEffectsForInvoiceDeleteAsync([existing.Id], cancellationToken))
+            return true;
+
+        AddClientConflict(
+            dto,
+            nameof(Invoice),
+            "Deleting an invoice with linked payment/transaction records requires Payment.Edit permission.",
+            result);
+        return false;
+    }
+
+    private async Task<bool> HasActivePaymentSideEffectsForInvoiceDeleteAsync(
+        IReadOnlyCollection<Guid> invoiceIds,
+        CancellationToken cancellationToken)
+    {
+        if (invoiceIds.Count == 0)
+            return false;
+
+        if (await _dbContext.Payments.IgnoreQueryFilters()
+                .AnyAsync(payment => !payment.IsDeleted && invoiceIds.Contains(payment.InvoiceId), cancellationToken))
+        {
+            return true;
+        }
+
+        return await _dbContext.Transactions.IgnoreQueryFilters()
+            .AnyAsync(transaction =>
+                    !transaction.IsDeleted &&
+                    transaction.LinkedInvoiceId.HasValue &&
+                    invoiceIds.Contains(transaction.LinkedInvoiceId.Value),
+                cancellationToken);
     }
 
     private async Task<bool> ValidateReadableInvoiceLineItemsAsync(

@@ -223,6 +223,11 @@ public sealed class InvoicesController : ControllerBase
             return lineScopeError;
         if (await ValidateExistingLinkedRentalBillingProfileScopeAsync(entity.LinkedRentalBillingProfileId, cancellationToken) is { } rentalProfileScopeError)
             return rentalProfileScopeError;
+        if (!_currentUserContext.HasPermission(PermissionNames.PaymentEdit) &&
+            await HasActivePaymentSideEffectsForInvoiceDeleteAsync([id], cancellationToken))
+        {
+            return Forbid();
+        }
 
         var rentalSettlementTargets = await _rentalSettlementRecalculationService.LoadRentalSettlementTargetsForInvoiceDeleteAsync([id], cancellationToken);
         var previousStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
@@ -254,6 +259,27 @@ public sealed class InvoicesController : ControllerBase
         AddRentalSettlementTarget(targets, previousInvoice?.LinkedRentalBillingProfileId, previousInvoice?.LinkedRentalBillingRunId);
         AddRentalSettlementTarget(targets, currentInvoice.LinkedRentalBillingProfileId, currentInvoice.LinkedRentalBillingRunId);
         await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(targets.Distinct().ToList(), cancellationToken);
+    }
+
+    private async Task<bool> HasActivePaymentSideEffectsForInvoiceDeleteAsync(
+        IReadOnlyCollection<Guid> invoiceIds,
+        CancellationToken cancellationToken)
+    {
+        if (invoiceIds.Count == 0)
+            return false;
+
+        if (await _dbContext.Payments.IgnoreQueryFilters()
+                .AnyAsync(payment => !payment.IsDeleted && invoiceIds.Contains(payment.InvoiceId), cancellationToken))
+        {
+            return true;
+        }
+
+        return await _dbContext.Transactions.IgnoreQueryFilters()
+            .AnyAsync(transaction =>
+                    !transaction.IsDeleted &&
+                    transaction.LinkedInvoiceId.HasValue &&
+                    invoiceIds.Contains(transaction.LinkedInvoiceId.Value),
+                cancellationToken);
     }
 
     private static void AddRentalSettlementTarget(List<(Guid ProfileId, Guid? RunId)> targets, Guid? profileId, Guid? runId)

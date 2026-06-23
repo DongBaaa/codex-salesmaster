@@ -9668,6 +9668,125 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsInvoiceDeleteWithLinkedPayments_WhenPaymentEditMissing()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "invoice-only-sync-delete",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.InvoiceEdit]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+
+        var customerId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        scopedDb.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-INVOICE-DELETE-PAYMENT-PERM-CUSTOMER",
+            NameMatchKey = "SYNCINVOICEDELETEPAYMENTPERMCUSTOMER",
+            TradeType = "Sales"
+        });
+        scopedDb.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-INVOICE-DELETE-PAYMENT-PERM",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 24),
+            TotalAmount = 100_000m,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m
+        });
+        scopedDb.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 6, 25),
+            Amount = 40_000m,
+            Note = "linked payment must require PaymentEdit"
+        });
+        scopedDb.Transactions.Add(new TransactionRecord
+        {
+            Id = paymentId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 25),
+            TransactionKind = "수금",
+            LinkedInvoiceId = invoiceId,
+            LinkedInvoiceNumber = "SYNC-INVOICE-DELETE-PAYMENT-PERM",
+            BankReceipt = 40_000m,
+            ReceiptTotal = 40_000m,
+            SettlementAmount = 40_000m
+        });
+        await scopedDb.SaveChangesAsync();
+
+        var storedInvoice = await scopedDb.Invoices.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(invoice => invoice.Id == invoiceId);
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-invoice-delete-payment-permission",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customerId,
+                    CustomerName = "SYNC-INVOICE-DELETE-PAYMENT-PERM-CUSTOMER",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    InvoiceNumber = "SYNC-INVOICE-DELETE-PAYMENT-PERM",
+                    VersionGroupId = invoiceId,
+                    VersionNumber = 1,
+                    IsLatestVersion = true,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = storedInvoice.InvoiceDate,
+                    ExpectedRevision = storedInvoice.Revision,
+                    IsDeleted = true,
+                    CreatedAtUtc = storedInvoice.CreatedAtUtc,
+                    UpdatedAtUtc = DateTime.UtcNow.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.ConflictCount);
+        var conflict = Assert.Single(result.Conflicts, current => current.EntityName == nameof(Invoice));
+        Assert.Contains("Payment.Edit", conflict.Reason, StringComparison.Ordinal);
+
+        Assert.False(await scopedDb.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.Id == invoiceId)
+            .Select(invoice => invoice.IsDeleted)
+            .SingleAsync());
+        Assert.False(await scopedDb.Payments.IgnoreQueryFilters()
+            .Where(payment => payment.Id == paymentId)
+            .Select(payment => payment.IsDeleted)
+            .SingleAsync());
+        Assert.Equal(invoiceId, await scopedDb.Transactions.IgnoreQueryFilters()
+            .Where(transaction => transaction.Id == paymentId)
+            .Select(transaction => transaction.LinkedInvoiceId)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task Push_RemovesActiveLines_WhenExistingInvoiceIsDeleted()
     {
         var customer = new Customer
