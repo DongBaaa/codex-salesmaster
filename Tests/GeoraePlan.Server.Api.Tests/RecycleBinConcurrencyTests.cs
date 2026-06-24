@@ -1419,6 +1419,145 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
             .AnyAsync(current => current.Kind == "rental-management-company" && current.EntityId == company.Id));
     }
 
+    [Theory]
+    [InlineData("rental-billing-profile", "restore")]
+    [InlineData("rental-billing-profile", "purge")]
+    [InlineData("rental-asset", "restore")]
+    [InlineData("rental-asset", "purge")]
+    [InlineData("rental-billing-log", "restore")]
+    [InlineData("rental-billing-log", "purge")]
+    public async Task RentalScopedMutation_DirectOutOfOfficeId_DoesNotRestoreOrPurgeRow(string kind, string action)
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var targetId = Guid.NewGuid();
+        switch (kind)
+        {
+            case "rental-billing-profile":
+                dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+                {
+                    Id = targetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Shared,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ProfileKey = "DIRECT-HIDDEN-PROFILE-001",
+                    CustomerName = "Hidden direct rental profile",
+                    BillingStatus = "청구중",
+                    SettlementStatus = "미입금",
+                    CompletionStatus = "미완료",
+                    IsDeleted = true,
+                    IsActive = false
+                });
+                break;
+            case "rental-asset":
+                dbContext.RentalAssets.Add(new RentalAsset
+                {
+                    Id = targetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Shared,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    AssetKey = "DIRECT-HIDDEN-ASSET-001",
+                    ManagementId = "DIRECT-HIDDEN-ASSET-001",
+                    ManagementNumber = "DIRECT-HIDDEN-ASSET-001",
+                    ItemName = "Hidden direct rental asset",
+                    AssetStatus = "설치",
+                    IsDeleted = true
+                });
+                break;
+            case "rental-billing-log":
+                dbContext.RentalBillingLogs.Add(new RentalBillingLog
+                {
+                    Id = targetId,
+                    BillingProfileId = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Shared,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    BillingYearMonth = "2026-07",
+                    ScheduledDate = new DateOnly(2026, 7, 25),
+                    Status = "예정",
+                    BilledAmount = 10000m,
+                    IsDeleted = true
+                });
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unsupported rental recycle-bin kind.");
+        }
+
+        await dbContext.SaveChangesAsync();
+
+        var storedBeforeRevision = kind switch
+        {
+            "rental-billing-profile" => await dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+                .Where(current => current.Id == targetId)
+                .Select(current => current.Revision)
+                .SingleAsync(),
+            "rental-asset" => await dbContext.RentalAssets.IgnoreQueryFilters()
+                .Where(current => current.Id == targetId)
+                .Select(current => current.Revision)
+                .SingleAsync(),
+            "rental-billing-log" => await dbContext.RentalBillingLogs.IgnoreQueryFilters()
+                .Where(current => current.Id == targetId)
+                .Select(current => current.Revision)
+                .SingleAsync(),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unsupported rental recycle-bin kind.")
+        };
+        var controller = CreateController(dbContext, currentUser);
+        var request = new RecycleBinMutationRequest
+        {
+            Items =
+            [
+                new RecycleBinMutationTargetDto
+                {
+                    EntityId = targetId,
+                    Kind = kind,
+                    ExpectedRevision = storedBeforeRevision
+                }
+            ]
+        };
+
+        var response = string.Equals(action, "restore", StringComparison.Ordinal)
+            ? await controller.Restore(request, CancellationToken.None)
+            : await controller.Purge(request, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var result = Assert.Single(payload.Results);
+        Assert.False(result.Success);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        switch (kind)
+        {
+            case "rental-billing-profile":
+                var profile = await dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .SingleAsync(current => current.Id == targetId);
+                Assert.True(profile.IsDeleted);
+                Assert.False(profile.IsActive);
+                Assert.Equal(storedBeforeRevision, profile.Revision);
+                break;
+            case "rental-asset":
+                var asset = await dbContext.RentalAssets.IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .SingleAsync(current => current.Id == targetId);
+                Assert.True(asset.IsDeleted);
+                Assert.Equal(storedBeforeRevision, asset.Revision);
+                break;
+            case "rental-billing-log":
+                var log = await dbContext.RentalBillingLogs.IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .SingleAsync(current => current.Id == targetId);
+                Assert.True(log.IsDeleted);
+                Assert.Equal(storedBeforeRevision, log.Revision);
+                break;
+        }
+
+        Assert.False(await dbContext.RecycleBinPurgeRecords
+            .IgnoreQueryFilters()
+            .AnyAsync(current => current.Kind == kind && current.EntityId == targetId));
+    }
+
     [Fact]
     public async Task GetAll_RentalBillingLog_UsesLogScopeAndDoesNotLeakHiddenProfile()
     {
