@@ -78,6 +78,111 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public void DesktopUpdater_CreatesRequestMetadataOnlyForDownloadPathAndDeletesItWhenLaunchFails()
+    {
+        var source = ReadRepositoryFile(
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Services",
+            "DesktopAppUpdateService.cs");
+
+        Assert.Contains("var requestMetadataPath = string.IsNullOrWhiteSpace(preparedPackageFullPath)", source, StringComparison.Ordinal);
+        Assert.Contains("? CreateUpdaterRequestMetadataFile(stagedUpdaterPath, packageUri)", source, StringComparison.Ordinal);
+        Assert.Contains(": null;", source, StringComparison.Ordinal);
+        Assert.Contains("TryDeleteSensitiveFile(requestMetadataPath);", source, StringComparison.Ordinal);
+        var startUpdateStart = source.IndexOf("public void StartUpdate", StringComparison.Ordinal);
+        var startUpdateEnd = source.IndexOf("private static string? ValidatePreparedPackagePath", StringComparison.Ordinal);
+        Assert.True(startUpdateStart >= 0 && startUpdateEnd > startUpdateStart);
+        var startUpdateSource = source[startUpdateStart..startUpdateEnd];
+        AssertInOrder(
+            startUpdateSource,
+            "var preparedPackageFullPath = ValidatePreparedPackagePath(preparedPackagePath, package);",
+            "var stagedUpdaterPath = StageUpdaterForExecution(updaterPath);",
+            "EnsureSufficientDiskSpace(package.FileSize, installRoot);",
+            "TryCleanupStaleUpdateArtifacts();",
+            "var requestMetadataPath = string.IsNullOrWhiteSpace(preparedPackageFullPath)",
+            "Process.Start(new ProcessStartInfo",
+            "TryDeleteSensitiveFile(requestMetadataPath);");
+    }
+
+    [Fact]
+    public void DesktopUpdater_RequestMetadataFileDoesNotPersistPlaintextAuthorization()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var tempRoot = Path.Combine(
+            FindRepositoryRoot(),
+            "temp",
+            "metadata-acl-tests",
+            Guid.NewGuid().ToString("N"));
+        var metadataPath = Path.Combine(tempRoot, "request-metadata.json");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var method = typeof(DesktopAppUpdateService).GetMethod(
+                "WriteSensitiveUpdaterMetadataFile",
+                BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.NotNull(method);
+            var protectMethod = typeof(DesktopAppUpdateService).GetMethod(
+                "ProtectUpdaterMetadataValue",
+                BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.NotNull(protectMethod);
+
+            var protectedValue = Assert.IsType<string>(protectMethod!.Invoke(null, ["Bearer secret-token"]));
+            Assert.False(string.IsNullOrWhiteSpace(protectedValue));
+            Assert.DoesNotContain("secret-token", protectedValue, StringComparison.Ordinal);
+
+            method!.Invoke(null, [metadataPath, $"{{\"ProtectedHeaders\":{{\"Authorization\":\"{protectedValue}\"}}}}"]);
+
+            Assert.True(File.Exists(metadataPath));
+            var json = File.ReadAllText(metadataPath);
+            Assert.DoesNotContain("secret-token", json, StringComparison.Ordinal);
+            Assert.DoesNotContain("Bearer", json, StringComparison.Ordinal);
+            Assert.Contains("ProtectedHeaders", json, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+                Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void DesktopAndUpdater_ShareDpapiProtectedRequestMetadataContract()
+    {
+        var desktopSource = ReadRepositoryFile(
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Services",
+            "DesktopAppUpdateService.cs");
+        var updaterSource = ReadRepositoryFile(
+            "Updater",
+            "거래플랜.Updater",
+            "Program.cs");
+
+        Assert.Contains("ProtectedHeaders = headers.ToDictionary", desktopSource, StringComparison.Ordinal);
+        Assert.Contains("ProtectedData.Protect", desktopSource, StringComparison.Ordinal);
+        Assert.Contains("DataProtectionScope.CurrentUser", desktopSource, StringComparison.Ordinal);
+        Assert.Contains("CryptographicOperations.ZeroMemory(plainBytes);", desktopSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("new UpdaterRequestMetadata\r\n        {\r\n            Headers =", desktopSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("new UpdaterRequestMetadata\n        {\n            Headers =", desktopSource, StringComparison.Ordinal);
+
+        Assert.Contains("public Dictionary<string, string> Headers", updaterSource, StringComparison.Ordinal);
+        Assert.Contains("public Dictionary<string, string> ProtectedHeaders", updaterSource, StringComparison.Ordinal);
+        Assert.Contains("ProtectedData.Unprotect", updaterSource, StringComparison.Ordinal);
+        Assert.Contains("DataProtectionScope.CurrentUser", updaterSource, StringComparison.Ordinal);
+        Assert.Contains("CryptographicOperations.ZeroMemory(plainBytes);", updaterSource, StringComparison.Ordinal);
+        AssertInOrder(
+            updaterSource,
+            "foreach (var header in Headers)",
+            "ApplyHeader(request, header.Key, header.Value);",
+            "foreach (var header in ProtectedHeaders)",
+            "ApplyHeader(request, header.Key, UnprotectMetadataValue(header.Value));");
+    }
+
+    [Fact]
     public void DesktopUpdater_AcceptsOnlySameAuthorityDesktopZipDownloadPackageUri()
     {
         var baseUri = new Uri("https://trade.example.com");

@@ -755,8 +755,11 @@ internal sealed class UpdateRequestMetadata
     {
         PropertyNameCaseInsensitive = true
     };
+    private static readonly byte[] MetadataEntropy =
+        Encoding.UTF8.GetBytes("GeoraePlan.UpdaterRequestMetadata.v1");
 
     public Dictionary<string, string> Headers { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> ProtectedHeaders { get; init; } = new(StringComparer.OrdinalIgnoreCase);
 
     public static UpdateRequestMetadata LoadAndDelete(string? filePath)
     {
@@ -790,12 +793,35 @@ internal sealed class UpdateRequestMetadata
         ArgumentNullException.ThrowIfNull(request);
 
         foreach (var header in Headers)
-        {
-            if (string.IsNullOrWhiteSpace(header.Key) || string.IsNullOrWhiteSpace(header.Value))
-                continue;
+            ApplyHeader(request, header.Key, header.Value);
 
-            if (!request.Headers.TryAddWithoutValidation(header.Key, header.Value))
-                request.Content?.Headers.TryAddWithoutValidation(header.Key, header.Value);
+        foreach (var header in ProtectedHeaders)
+            ApplyHeader(request, header.Key, UnprotectMetadataValue(header.Value));
+    }
+
+    private static void ApplyHeader(HttpRequestMessage request, string key, string value)
+    {
+        if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(value))
+            return;
+
+        if (!request.Headers.TryAddWithoutValidation(key, value))
+            request.Content?.Headers.TryAddWithoutValidation(key, value);
+    }
+
+    private static string UnprotectMetadataValue(string protectedValue)
+    {
+        var protectedBytes = Convert.FromBase64String(protectedValue);
+        var plainBytes = ProtectedData.Unprotect(
+            protectedBytes,
+            MetadataEntropy,
+            DataProtectionScope.CurrentUser);
+        try
+        {
+            return Encoding.UTF8.GetString(plainBytes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(plainBytes);
         }
     }
 }

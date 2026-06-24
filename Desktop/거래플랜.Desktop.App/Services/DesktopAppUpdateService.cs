@@ -5,6 +5,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Reflection;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Shared.Contracts;
@@ -63,6 +64,8 @@ public sealed class DesktopAppUpdateService
     private const string CanonicalExecutableName = "거래플랜.exe";
     private static readonly TimeSpan UpdateArtifactRetention = TimeSpan.FromDays(3);
     private static readonly TimeSpan InstallResidueRetention = TimeSpan.FromDays(14);
+    private static readonly byte[] UpdaterRequestMetadataEntropy =
+        Encoding.UTF8.GetBytes("GeoraePlan.UpdaterRequestMetadata.v1");
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> PreparedPackageLocks = new(StringComparer.OrdinalIgnoreCase);
     private static readonly string[] StartupRequiredRelativePaths =
     [
@@ -375,7 +378,6 @@ public sealed class DesktopAppUpdateService
             throw new FileNotFoundException("거래플랜.Updater.exe를 찾지 못했습니다. 현재 설치본에는 내부 업데이트 도우미가 없어 1회 수동 재설치가 필요할 수 있습니다.");
 
         var stagedUpdaterPath = StageUpdaterForExecution(updaterPath);
-        var requestMetadataPath = CreateUpdaterRequestMetadataFile(stagedUpdaterPath, packageUri);
 
         var currentProcess = Process.GetCurrentProcess();
         if (string.IsNullOrWhiteSpace(Environment.ProcessPath ?? currentProcess.MainModule?.FileName))
@@ -385,6 +387,9 @@ public sealed class DesktopAppUpdateService
         var launchExePath = GetCanonicalLaunchExePath();
         EnsureSufficientDiskSpace(package.FileSize, installRoot);
         TryCleanupStaleUpdateArtifacts();
+        var requestMetadataPath = string.IsNullOrWhiteSpace(preparedPackageFullPath)
+            ? CreateUpdaterRequestMetadataFile(stagedUpdaterPath, packageUri)
+            : null;
 
         var argumentParts = new List<string>
         {
@@ -422,13 +427,21 @@ public sealed class DesktopAppUpdateService
 
         var arguments = string.Join(" ", argumentParts);
 
-        Process.Start(new ProcessStartInfo
+        try
         {
-            FileName = stagedUpdaterPath,
-            Arguments = arguments,
-            UseShellExecute = true,
-            WorkingDirectory = Path.GetDirectoryName(stagedUpdaterPath) ?? AppContext.BaseDirectory
-        });
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = stagedUpdaterPath,
+                Arguments = arguments,
+                UseShellExecute = true,
+                WorkingDirectory = Path.GetDirectoryName(stagedUpdaterPath) ?? AppContext.BaseDirectory
+            });
+        }
+        catch
+        {
+            TryDeleteSensitiveFile(requestMetadataPath);
+            throw;
+        }
     }
 
     private static string? ValidatePreparedPackagePath(string? preparedPackagePath, AppUpdatePackageDto package)
@@ -626,10 +639,13 @@ public sealed class DesktopAppUpdateService
         var metadataPath = Path.Combine(updaterDirectory, "request-metadata.json");
         var payload = JsonSerializer.Serialize(new UpdaterRequestMetadata
         {
-            Headers = headers.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase)
+            ProtectedHeaders = headers.ToDictionary(
+                pair => pair.Key,
+                pair => ProtectUpdaterMetadataValue(pair.Value),
+                StringComparer.OrdinalIgnoreCase)
         });
 
-        File.WriteAllText(metadataPath, payload);
+        WriteSensitiveUpdaterMetadataFile(metadataPath, payload);
 
         try
         {
@@ -641,6 +657,64 @@ public sealed class DesktopAppUpdateService
         }
 
         return metadataPath;
+    }
+
+    private static void WriteSensitiveUpdaterMetadataFile(string metadataPath, string payload)
+    {
+        try
+        {
+            var metadataDirectory = Path.GetDirectoryName(metadataPath);
+            if (!string.IsNullOrWhiteSpace(metadataDirectory))
+                Directory.CreateDirectory(metadataDirectory);
+
+            var bytes = Encoding.UTF8.GetBytes(payload);
+            using var stream = new FileStream(
+                metadataPath,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.None,
+                4096,
+                FileOptions.WriteThrough);
+            stream.Write(bytes, 0, bytes.Length);
+        }
+        catch
+        {
+            TryDeleteSensitiveFile(metadataPath);
+            throw;
+        }
+    }
+
+    private static string ProtectUpdaterMetadataValue(string value)
+    {
+        var plainBytes = Encoding.UTF8.GetBytes(value ?? string.Empty);
+        try
+        {
+            var protectedBytes = ProtectedData.Protect(
+                plainBytes,
+                UpdaterRequestMetadataEntropy,
+                DataProtectionScope.CurrentUser);
+            return Convert.ToBase64String(protectedBytes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(plainBytes);
+        }
+    }
+
+    private static void TryDeleteSensitiveFile(string? metadataPath)
+    {
+        if (string.IsNullOrWhiteSpace(metadataPath))
+            return;
+
+        try
+        {
+            if (File.Exists(metadataPath))
+                File.Delete(metadataPath);
+        }
+        catch
+        {
+            // stale updater-run cleanup에서 다시 삭제를 시도한다.
+        }
     }
 
     private static void CopyDirectory(string sourceDirectory, string destinationDirectory)
@@ -857,7 +931,7 @@ public sealed class DesktopAppUpdateService
 
     private sealed class UpdaterRequestMetadata
     {
-        public Dictionary<string, string> Headers { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, string> ProtectedHeaders { get; init; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
     private static int TryCleanupStaleInstallArtifacts(string installRoot)
