@@ -272,8 +272,11 @@ public sealed class SyncCoordinator
                     state.LastRevision = Math.Max(state.LastRevision, result.CurrentServerRevision);
                     if (result.ConflictCount > 0)
                     {
-                        QueuePaymentAttachmentsForRetry(state, payment.Id, attachmentList);
-                        QueueUnacceptedLinkedPaymentConflict(state.PendingPush, payment, linkedTransaction, result.AcceptedRevisions);
+                        if (WasAccepted(result.AcceptedRevisions, PaymentEntityName, payment.Id))
+                            QueuePaymentAttachmentsForRetry(state, payment.Id, attachmentList);
+                        else
+                            QueueDiscardedPaymentAttachmentDrafts(attachmentList);
+
                         await MarkPushConflictAndRefreshAsync(state, result, ct);
                         await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
                         return state;
@@ -612,24 +615,6 @@ public sealed class SyncCoordinator
 
     private static PaymentAttachmentDto EnsurePaymentAttachmentResult(PaymentAttachmentDto? result)
         => result ?? throw new HttpRequestException("첨부 업로드 응답이 비어 있어 서버 저장 여부를 확인할 수 없습니다.");
-
-    private static void QueueUnacceptedLinkedPaymentConflict(
-        SyncPushRequest pendingPush,
-        PaymentDto payment,
-        TransactionDto? linkedTransaction,
-        IReadOnlyCollection<SyncAcceptedRevisionDto> acceptedRevisions)
-    {
-        pendingPush.Payments.RemoveAll(current => current.Id == payment.Id);
-        if (!WasAccepted(acceptedRevisions, PaymentEntityName, payment.Id))
-            pendingPush.Payments.Add(payment);
-
-        if (linkedTransaction is null)
-            return;
-
-        pendingPush.Transactions.RemoveAll(current => current.Id == linkedTransaction.Id);
-        if (!WasAccepted(acceptedRevisions, TransactionRecordEntityName, linkedTransaction.Id))
-            pendingPush.Transactions.Add(linkedTransaction);
-    }
 
     private static void RemoveAcceptedPendingMutations(
         SyncPushRequest pendingPush,

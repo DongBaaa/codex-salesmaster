@@ -904,7 +904,7 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
-    public void MobileSyncConflict_PreservesUnacceptedPendingPush()
+    public void MobileSyncConflict_RemovesOnlyAcceptedPendingPush()
     {
         var source = File.ReadAllText(Path.Combine(
             FindRepositoryRoot(),
@@ -915,9 +915,6 @@ public sealed class MobileReleaseConfigurationTests
         var normalizedSource = source.Replace("\r\n", "\n", StringComparison.Ordinal);
 
         Assert.Contains("RemoveAcceptedPendingMutations(state.PendingPush, result.AcceptedRevisions);", source, StringComparison.Ordinal);
-        Assert.Contains("QueueUnacceptedLinkedPaymentConflict(state.PendingPush, payment, linkedTransaction, result.AcceptedRevisions);", source, StringComparison.Ordinal);
-        Assert.Contains("pendingPush.Payments.Add(payment);", source, StringComparison.Ordinal);
-        Assert.Contains("pendingPush.Transactions.Add(linkedTransaction);", source, StringComparison.Ordinal);
         Assert.Contains("private const string TransactionRecordEntityName = \"TransactionRecord\";", source, StringComparison.Ordinal);
         Assert.Contains("private const string InvoiceEntityName = \"Invoice\";", source, StringComparison.Ordinal);
         Assert.Contains("private const string PaymentEntityName = \"Payment\";", source, StringComparison.Ordinal);
@@ -927,6 +924,7 @@ public sealed class MobileReleaseConfigurationTests
         Assert.DoesNotContain("nameof(Invoice)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("nameof(Payment)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("nameof(TransactionRecord)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("QueueUnacceptedLinkedPaymentConflict", source, StringComparison.Ordinal);
 
         Assert.DoesNotContain(
             "if (result.ConflictCount > 0)\n                    {\n                        state.PendingPush = new SyncPushRequest",
@@ -1012,6 +1010,11 @@ public sealed class MobileReleaseConfigurationTests
             "catch (Exception ex)\n            {\n                state.PendingPush.Payments.Add(payment);",
             savePaymentMethod,
             StringComparison.Ordinal);
+        Assert.Contains(
+            "if (result.ConflictCount > 0)\n                    {\n                        if (WasAccepted(result.AcceptedRevisions, PaymentEntityName, payment.Id))\n                            QueuePaymentAttachmentsForRetry(state, payment.Id, attachmentList);\n                        else\n                            QueueDiscardedPaymentAttachmentDrafts(attachmentList);",
+            savePaymentMethod,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("QueueUnacceptedLinkedPaymentConflict", savePaymentMethod, StringComparison.Ordinal);
 
         var saveCallIndex = paymentViewSource.IndexOf(
             "var state = await _syncCoordinator.SavePaymentImmediatelyAsync(payment, Attachments, linkedTransaction);",
@@ -1158,7 +1161,7 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
-    public void MobileImmediatePaymentConflict_QueuesAttachmentsForRetryBeforeReturning()
+    public void MobileImmediatePaymentConflict_QueuesOnlyAcceptedAttachmentsBeforeReturning()
     {
         var source = File.ReadAllText(Path.Combine(
             FindRepositoryRoot(),
@@ -1171,10 +1174,12 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("private static void QueuePaymentAttachmentsForRetry(", source, StringComparison.Ordinal);
         Assert.Contains("QueuePaymentAttachmentsForRetry(state, payment.Id, attachmentList);", source, StringComparison.Ordinal);
         Assert.Contains("QueuePaymentAttachmentsForRetry(state, paymentId, attachmentList);", source, StringComparison.Ordinal);
+        Assert.Contains("QueueDiscardedPaymentAttachmentDrafts(attachmentList);", source, StringComparison.Ordinal);
         Assert.Contains("state.PendingPaymentAttachments.RemoveAll(x => x.LocalId == attachment.LocalId);", source, StringComparison.Ordinal);
         Assert.Contains("state.PendingPaymentAttachments.Add(attachment);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("QueueUnacceptedLinkedPaymentConflict", source, StringComparison.Ordinal);
         Assert.Matches(
-            "if \\(result\\.ConflictCount > 0\\)\\n\\s*\\{\\n\\s*QueuePaymentAttachmentsForRetry\\(state, payment\\.Id, attachmentList\\);\\n\\s*QueueUnacceptedLinkedPaymentConflict\\(state\\.PendingPush, payment, linkedTransaction, result\\.AcceptedRevisions\\);",
+            "if \\(result\\.ConflictCount > 0\\)\\n\\s*\\{\\n\\s*if \\(WasAccepted\\(result\\.AcceptedRevisions, PaymentEntityName, payment\\.Id\\)\\)\\n\\s*QueuePaymentAttachmentsForRetry\\(state, payment\\.Id, attachmentList\\);\\n\\s*else\\n\\s*QueueDiscardedPaymentAttachmentDrafts\\(attachmentList\\);",
             normalizedSource);
     }
 
@@ -2415,11 +2420,14 @@ public sealed class MobileReleaseConfigurationTests
             "Mobile",
             "GeoraePlan.Mobile.App",
             "ViewModels",
-            "PaymentDraftViewModel.cs"));
+            "PaymentDraftViewModel.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
 
         Assert.Contains("MergePendingPaymentsIntoInvoice", source, StringComparison.Ordinal);
         Assert.Contains("BuildEffectivePaymentsForInvoice", source, StringComparison.Ordinal);
         Assert.Contains("state.PendingPush.Payments", source, StringComparison.Ordinal);
+        Assert.Contains("var pendingPayments = SyncCoordinator.IsConcurrencyConflictState(state)\n            ? null\n            : state.PendingPush.Payments;", source, StringComparison.Ordinal);
+        Assert.Contains("BuildEffectivePaymentsForInvoice(invoice.Id, invoice.Payments, pendingPayments)", source, StringComparison.Ordinal);
         Assert.Contains("ReplaceInvoiceSnapshot(MergePendingPaymentsIntoInvoice(latestInvoice, state));", source, StringComparison.Ordinal);
         Assert.Contains("latest = MergePendingPaymentsIntoInvoice(latest, pendingState);", source, StringComparison.Ordinal);
     }

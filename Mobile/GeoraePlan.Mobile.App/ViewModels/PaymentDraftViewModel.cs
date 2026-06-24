@@ -544,7 +544,10 @@ public sealed class PaymentDraftViewModel : ObservableObject
 
     private static InvoiceDto MergePendingPaymentsIntoInvoice(InvoiceDto invoice, Models.MobileSyncState state)
     {
-        var payments = BuildEffectivePaymentsForInvoice(invoice.Id, invoice.Payments, state.PendingPush.Payments);
+        var pendingPayments = SyncCoordinator.IsConcurrencyConflictState(state)
+            ? null
+            : state.PendingPush.Payments;
+        var payments = BuildEffectivePaymentsForInvoice(invoice.Id, invoice.Payments, pendingPayments);
         return CloneInvoiceForPaymentDraft(invoice, payments);
     }
 
