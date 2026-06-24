@@ -333,6 +333,39 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void MobileRecycleBinFilterOptions_CoverAllServerRestoreAndPurgeKinds()
+    {
+        var root = FindRepositoryRoot();
+        var serverControllerSource = File.ReadAllText(Path.Combine(
+            root,
+            "Server",
+            "거래플랜.Server.Api",
+            "Controllers",
+            "RecycleBinController.cs"));
+        var mobileViewModelSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "RecycleBinViewModel.cs"));
+
+        var restoreKinds = ExtractServerRecycleBinMutationKinds(serverControllerSource, "Restore");
+        var purgeKinds = ExtractServerRecycleBinMutationKinds(serverControllerSource, "Purge");
+        var mobileFilterKinds = ExtractMobileRecycleBinFilterKinds(mobileViewModelSource);
+
+        Assert.Equal(restoreKinds, purgeKinds);
+        Assert.Contains("RecycleBinFilterOption(string.Empty, \"전체\")", mobileViewModelSource, StringComparison.Ordinal);
+
+        var missingKinds = restoreKinds
+            .Where(kind => !mobileFilterKinds.Contains(kind))
+            .ToArray();
+
+        Assert.True(
+            missingKinds.Length == 0,
+            "모바일 휴지통 종류 필터가 서버 복원/영구삭제 kind를 누락했습니다: " + string.Join(", ", missingKinds));
+    }
+
+    [Fact]
     public void MobilePaymentDraft_RequiresPaymentEditPermissionBeforeEntryAndSave()
     {
         var root = FindRepositoryRoot();
@@ -2961,6 +2994,45 @@ public sealed class MobileReleaseConfigurationTests
         }
 
         return count;
+    }
+
+    private static IReadOnlyCollection<string> ExtractServerRecycleBinMutationKinds(string source, string action)
+    {
+        var kinds = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var line in source.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
+        {
+            var trimmed = line.Trim();
+            var mutationNeedle = $"\" => await {action}";
+            if (!trimmed.StartsWith('"') || !trimmed.Contains(mutationNeedle, StringComparison.Ordinal))
+                continue;
+
+            var end = trimmed.IndexOf('"', 1);
+            Assert.True(end > 1, $"휴지통 {action} kind 파싱 실패: {trimmed}");
+            kinds.Add(trimmed[1..end]);
+        }
+
+        Assert.NotEmpty(kinds);
+        return kinds;
+    }
+
+    private static IReadOnlyCollection<string> ExtractMobileRecycleBinFilterKinds(string source)
+    {
+        const string optionNeedle = "RecycleBinFilterOption(\"";
+        var kinds = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var line in source.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
+        {
+            var start = line.IndexOf(optionNeedle, StringComparison.Ordinal);
+            if (start < 0)
+                continue;
+
+            start += optionNeedle.Length;
+            var end = line.IndexOf('"', start);
+            Assert.True(end > start, $"모바일 휴지통 필터 kind 파싱 실패: {line.Trim()}");
+            kinds.Add(line[start..end]);
+        }
+
+        Assert.NotEmpty(kinds);
+        return kinds;
     }
 
     private static string FindRepositoryRoot()

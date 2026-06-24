@@ -25,8 +25,19 @@ public sealed class RecycleBinViewModel : ObservableObject
         KindOptions.Add(new RecycleBinFilterOption("customer", "거래처"));
         KindOptions.Add(new RecycleBinFilterOption("contract", "계약서"));
         KindOptions.Add(new RecycleBinFilterOption("item", "품목"));
+        KindOptions.Add(new RecycleBinFilterOption("company-profile", "회사설정"));
+        KindOptions.Add(new RecycleBinFilterOption("customer-category", "고객분류"));
+        KindOptions.Add(new RecycleBinFilterOption("price-grade-option", "가격등급"));
+        KindOptions.Add(new RecycleBinFilterOption("trade-type-option", "거래구분"));
+        KindOptions.Add(new RecycleBinFilterOption("item-category-option", "품목분류"));
         KindOptions.Add(new RecycleBinFilterOption("invoice", "전표"));
         KindOptions.Add(new RecycleBinFilterOption("payment", "수금/지급"));
+        KindOptions.Add(new RecycleBinFilterOption("transaction", "거래내역"));
+        KindOptions.Add(new RecycleBinFilterOption("inventory-transfer", "재고이동"));
+        KindOptions.Add(new RecycleBinFilterOption("rental-management-company", "렌탈 관리업체"));
+        KindOptions.Add(new RecycleBinFilterOption("rental-billing-profile", "렌탈 청구프로필"));
+        KindOptions.Add(new RecycleBinFilterOption("rental-asset", "렌탈 자산"));
+        KindOptions.Add(new RecycleBinFilterOption("rental-billing-log", "렌탈 청구로그"));
     }
 
     public ObservableCollection<RecycleBinEntryDto> Entries { get; } = new();
