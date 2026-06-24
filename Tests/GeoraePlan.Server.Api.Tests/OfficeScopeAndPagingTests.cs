@@ -1469,6 +1469,96 @@ public sealed class OfficeScopeAndPagingTests : IDisposable
         Assert.Equal("INV-001", visibleInvoice.InvoiceNumber);
     }
 
+    [Fact]
+    public async Task InvoicesController_DoesNotExposeCustomerName_WhenCustomerIsNotReadable()
+    {
+        var adminUser = CreateAdminUser();
+        Guid invoiceId;
+        Guid customerId;
+        await using (var seedDb = CreateDbContext(adminUser))
+        {
+            seedDb.DataSharingPolicies.Add(new DataSharingPolicy
+            {
+                Id = Guid.NewGuid(),
+                SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+                SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+                TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                ShareCustomers = false,
+                ShareItems = false,
+                ShareInvoices = true,
+                SharePayments = false,
+                ShareContracts = false,
+                ShareReports = false,
+                ShareRentals = false,
+                ShareDeliveries = false,
+                AllowTargetWrite = false,
+                IsActive = true
+            });
+
+            customerId = Guid.NewGuid();
+            invoiceId = Guid.NewGuid();
+            seedDb.Customers.Add(new Customer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "INVOICE-HIDDEN-CUSTOMER-NAME",
+                NameMatchKey = "INVOICEHIDDENCUSTOMERNAME",
+                TradeType = "매출"
+            });
+            seedDb.Invoices.Add(new Invoice
+            {
+                Id = invoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "INV-HIDDEN-CUSTOMER-SCOPE",
+                InvoiceDate = new DateOnly(2026, 6, 24),
+                VoucherType = VoucherType.Sales,
+                TotalAmount = 55000m
+            });
+            await seedDb.SaveChangesAsync();
+        }
+
+        var scopedUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu-invoice-only-reader",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+        await using var scopedDb = CreateDbContext(scopedUser);
+        var controller = new InvoicesController(
+            scopedDb,
+            scopedUser,
+            new InvoiceNumberService(scopedDb),
+            new OfficeScopeService(scopedUser, scopedDb),
+            new InventoryLedgerService(scopedDb),
+            new InvoiceStockSnapshotService(scopedDb, new RevisionClock()),
+            new RentalSettlementRecalculationService(scopedDb));
+
+        var byInvoiceNumberResponse = await controller.GetAll(null, "INV-HIDDEN-CUSTOMER-SCOPE", 200, CancellationToken.None);
+        var byInvoiceNumberOk = Assert.IsType<OkObjectResult>(byInvoiceNumberResponse.Result);
+        var byInvoiceNumber = Assert.IsType<List<InvoiceDto>>(byInvoiceNumberOk.Value);
+        var invoice = Assert.Single(byInvoiceNumber);
+        Assert.Equal(invoiceId, invoice.Id);
+        Assert.Equal(customerId, invoice.CustomerId);
+        Assert.Equal(string.Empty, invoice.CustomerName);
+
+        var byHiddenCustomerResponse = await controller.GetAll(null, "INVOICE-HIDDEN-CUSTOMER-NAME", 200, CancellationToken.None);
+        var byHiddenCustomerOk = Assert.IsType<OkObjectResult>(byHiddenCustomerResponse.Result);
+        var byHiddenCustomer = Assert.IsType<List<InvoiceDto>>(byHiddenCustomerOk.Value);
+        Assert.Empty(byHiddenCustomer);
+
+        var detailResponse = await controller.GetById(invoiceId, CancellationToken.None);
+        var detailOk = Assert.IsType<OkObjectResult>(detailResponse.Result);
+        var detail = Assert.IsType<InvoiceDto>(detailOk.Value);
+        Assert.Equal(string.Empty, detail.CustomerName);
+    }
+
     public void Dispose()
     {
         _connection.Dispose();

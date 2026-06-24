@@ -252,10 +252,10 @@ public sealed class RecycleBinController : ControllerBase
                 .OrderByDescending(invoice => invoice.UpdatedAtUtc)
                 .ToListAsync(cancellationToken);
 
-            var customerMap = await _dbContext.Customers
+            var customerMap = await _officeScopeService.ApplyCustomerScope(_dbContext.Customers
                 .IgnoreQueryFilters()
                 .AsNoTracking()
-                .Where(customer => deletedInvoices.Select(invoice => invoice.CustomerId).Contains(customer.Id))
+                .Where(customer => deletedInvoices.Select(invoice => invoice.CustomerId).Contains(customer.Id)))
                 .ToDictionaryAsync(customer => customer.Id, customer => customer.NameOriginal, cancellationToken);
 
             entries.AddRange(deletedInvoices.Select(invoice =>
@@ -296,10 +296,10 @@ public sealed class RecycleBinController : ControllerBase
                 .Where(invoice => deletedPayments.Select(payment => payment.InvoiceId).Contains(invoice.Id))
                 .ToDictionaryAsync(invoice => invoice.Id, cancellationToken);
 
-            var customerMap = await _dbContext.Customers
+            var customerMap = await _officeScopeService.ApplyCustomerScope(_dbContext.Customers
                 .IgnoreQueryFilters()
                 .AsNoTracking()
-                .Where(customer => invoiceMap.Values.Select(invoice => invoice.CustomerId).Contains(customer.Id))
+                .Where(customer => invoiceMap.Values.Select(invoice => invoice.CustomerId).Contains(customer.Id)))
                 .ToDictionaryAsync(customer => customer.Id, customer => customer.NameOriginal, cancellationToken);
 
             entries.AddRange(deletedPayments.Select(payment =>

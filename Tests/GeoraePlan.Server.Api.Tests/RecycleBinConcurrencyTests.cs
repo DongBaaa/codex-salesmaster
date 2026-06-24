@@ -1070,6 +1070,163 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task GetAll_Invoice_DoesNotExposeHiddenCustomerName_WhenCustomerIsNotReadable()
+    {
+        var adminUser = CreateAdminUser();
+        await using (var seedDb = CreateDbContext(adminUser))
+        {
+            seedDb.DataSharingPolicies.Add(new DataSharingPolicy
+            {
+                Id = Guid.NewGuid(),
+                SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+                SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+                TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                ShareCustomers = false,
+                ShareItems = false,
+                ShareInvoices = true,
+                SharePayments = false,
+                ShareContracts = false,
+                ShareReports = false,
+                ShareRentals = false,
+                ShareDeliveries = false,
+                AllowTargetWrite = false,
+                IsActive = true
+            });
+
+            var customer = new Customer
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "RECYCLE-HIDDEN-INVOICE-CUSTOMER",
+                NameMatchKey = "RECYCLEHIDDENINVOICECUSTOMER",
+                TradeType = "매출"
+            };
+            var invoice = new Invoice
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customer.Id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "RECYCLE-HIDDEN-CUSTOMER-INVOICE",
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 24),
+                TotalAmount = 44000m,
+                IsDeleted = true
+            };
+            seedDb.Customers.Add(customer);
+            seedDb.Invoices.Add(invoice);
+            await seedDb.SaveChangesAsync();
+
+            var scopedUser = new TestCurrentUserContext
+            {
+                Username = "yeonsu-recycle-invoice-only-reader",
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+            };
+            await using var scopedDb = CreateDbContext(scopedUser);
+            var controller = CreateController(scopedDb, scopedUser);
+
+            var response = await controller.GetAll("invoice", null, CancellationToken.None);
+            var ok = Assert.IsType<OkObjectResult>(response.Result);
+            var payload = Assert.IsType<List<RecycleBinEntryDto>>(ok.Value);
+            var entry = Assert.Single(payload);
+
+            Assert.Equal(invoice.Id, entry.EntityId);
+            Assert.DoesNotContain(customer.NameOriginal, entry.Title, StringComparison.Ordinal);
+            Assert.DoesNotContain(customer.NameOriginal, entry.Subtitle, StringComparison.Ordinal);
+            Assert.DoesNotContain(customer.NameOriginal, entry.Detail, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task GetAll_Payment_DoesNotExposeHiddenCustomerName_WhenCustomerIsNotReadable()
+    {
+        var adminUser = CreateAdminUser();
+        await using (var seedDb = CreateDbContext(adminUser))
+        {
+            seedDb.DataSharingPolicies.Add(new DataSharingPolicy
+            {
+                Id = Guid.NewGuid(),
+                SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+                SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+                TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                ShareCustomers = false,
+                ShareItems = false,
+                ShareInvoices = true,
+                SharePayments = true,
+                ShareContracts = false,
+                ShareReports = false,
+                ShareRentals = false,
+                ShareDeliveries = false,
+                AllowTargetWrite = false,
+                IsActive = true
+            });
+
+            var customer = new Customer
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "RECYCLE-HIDDEN-PAYMENT-CUSTOMER",
+                NameMatchKey = "RECYCLEHIDDENPAYMENTCUSTOMER",
+                TradeType = "매출"
+            };
+            var invoice = new Invoice
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customer.Id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "RECYCLE-HIDDEN-PAYMENT-INVOICE",
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 24),
+                TotalAmount = 66000m
+            };
+            var payment = new Payment
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = invoice.Id,
+                PaymentDate = new DateOnly(2026, 6, 24),
+                Amount = 33000m,
+                Note = "hidden customer deleted payment",
+                IsDeleted = true
+            };
+            seedDb.Customers.Add(customer);
+            seedDb.Invoices.Add(invoice);
+            seedDb.Payments.Add(payment);
+            await seedDb.SaveChangesAsync();
+
+            var scopedUser = new TestCurrentUserContext
+            {
+                Username = "yeonsu-recycle-invoice-payment-reader",
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+            };
+            await using var scopedDb = CreateDbContext(scopedUser);
+            var controller = CreateController(scopedDb, scopedUser);
+
+            var response = await controller.GetAll("payment", null, CancellationToken.None);
+            var ok = Assert.IsType<OkObjectResult>(response.Result);
+            var payload = Assert.IsType<List<RecycleBinEntryDto>>(ok.Value);
+            var entry = Assert.Single(payload);
+
+            Assert.Equal(payment.Id, entry.EntityId);
+            Assert.DoesNotContain(customer.NameOriginal, entry.Title, StringComparison.Ordinal);
+            Assert.DoesNotContain(customer.NameOriginal, entry.Subtitle, StringComparison.Ordinal);
+            Assert.DoesNotContain(customer.NameOriginal, entry.Detail, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public async Task GetAll_IncludesDeletedCustomerCategoryForAdmin()
     {
         var currentUser = CreateAdminUser();

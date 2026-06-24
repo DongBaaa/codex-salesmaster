@@ -49,6 +49,8 @@ public sealed class InvoicesController : ControllerBase
         [FromQuery] int take = 200,
         CancellationToken cancellationToken = default)
     {
+        var readableCustomerIds = _officeScopeService.ApplyCustomerScope(_dbContext.Customers.AsNoTracking())
+            .Select(customer => customer.Id);
         var query = _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices
             .Include(x => x.Customer)
             .Include(x => x.Lines)
@@ -61,11 +63,21 @@ public sealed class InvoicesController : ControllerBase
             query = query.Where(x =>
                 x.InvoiceNumber.Contains(q) ||
                 x.Memo.Contains(q) ||
-                (x.Customer != null && x.Customer.NameOriginal.Contains(q)));
+                (x.Customer != null &&
+                 readableCustomerIds.Contains(x.CustomerId) &&
+                 x.Customer.NameOriginal.Contains(q)));
         }
 
-        return Ok(await query.OrderByDescending(x => x.InvoiceDate)
-            .Take(Math.Min(take, 500)).Select(x => x.ToDto()).ToListAsync(cancellationToken));
+        var invoices = await query.OrderByDescending(x => x.InvoiceDate)
+            .Take(Math.Min(take, 500))
+            .ToListAsync(cancellationToken);
+        var readableCustomerIdSet = await LoadReadableCustomerIdSetAsync(
+            invoices.Select(invoice => invoice.CustomerId),
+            cancellationToken);
+
+        return Ok(invoices
+            .Select(invoice => ToScopedDto(invoice, readableCustomerIdSet))
+            .ToList());
     }
 
     [HttpGet("{id:guid}")]
@@ -78,7 +90,37 @@ public sealed class InvoicesController : ControllerBase
             .ThenInclude(payment => payment.Attachments)
             .AsNoTracking())
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
-        return entity is null ? NotFound() : Ok(entity.ToDto());
+        if (entity is null)
+            return NotFound();
+
+        var readableCustomerIdSet = await LoadReadableCustomerIdSetAsync([entity.CustomerId], cancellationToken);
+        return Ok(ToScopedDto(entity, readableCustomerIdSet));
+    }
+
+    private async Task<HashSet<Guid>> LoadReadableCustomerIdSetAsync(
+        IEnumerable<Guid> customerIds,
+        CancellationToken cancellationToken)
+    {
+        var ids = customerIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return [];
+
+        var readableIds = await _officeScopeService.ApplyCustomerScope(_dbContext.Customers.AsNoTracking())
+            .Where(customer => ids.Contains(customer.Id))
+            .Select(customer => customer.Id)
+            .ToListAsync(cancellationToken);
+        return readableIds.ToHashSet();
+    }
+
+    private static InvoiceDto ToScopedDto(Invoice invoice, IReadOnlySet<Guid> readableCustomerIds)
+    {
+        var dto = invoice.ToDto();
+        if (!readableCustomerIds.Contains(invoice.CustomerId))
+            dto.CustomerName = string.Empty;
+        return dto;
     }
 
     [HttpPost]
