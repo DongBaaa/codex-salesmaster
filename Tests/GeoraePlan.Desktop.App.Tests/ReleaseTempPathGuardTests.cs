@@ -1,3 +1,5 @@
+using System.Reflection;
+using 거래플랜.Desktop.App.Services;
 using Xunit;
 
 namespace GeoraePlan.Desktop.App.Tests;
@@ -72,6 +74,31 @@ public sealed class ReleaseTempPathGuardTests
             "await VerifySha256Async(packagePath, options.Sha256);",
             "VerifyExpectedPackageFileSize(packagePath, options.FileSize);",
             "await WaitForProcessExitAsync(options.ProcessId);");
+    }
+
+    [Fact]
+    public void DesktopUpdater_AcceptsOnlySameAuthorityDesktopZipDownloadPackageUri()
+    {
+        var baseUri = new Uri("https://trade.example.com");
+
+        var accepted = InvokeValidatePackageUri(
+            "https://trade.example.com/updates/download/desktop/tradeplan-pc-installer-v1.1.552.zip",
+            baseUri);
+
+        Assert.Equal("https://trade.example.com/updates/download/desktop/tradeplan-pc-installer-v1.1.552.zip", accepted.ToString());
+
+        AssertValidatePackageUriRejected(
+            "https://trade.example.com:444/updates/download/desktop/tradeplan-pc-installer-v1.1.552.zip",
+            baseUri);
+        AssertValidatePackageUriRejected(
+            "https://trade.example.com/updates/download/android/tradeplan-android-v0.2.65.apk",
+            baseUri);
+        AssertValidatePackageUriRejected(
+            "https://trade.example.com/updates/download/desktop/%2e%2e%2ftradeplan-pc-installer-v1.1.552.zip",
+            baseUri);
+        AssertValidatePackageUriRejected(
+            "https://trade.example.com/updates/download/desktop/tradeplan-pc-installer-v1.1.552.exe",
+            baseUri);
     }
 
     [Fact]
@@ -637,6 +664,23 @@ public sealed class ReleaseTempPathGuardTests
         Assert.DoesNotContain("update \"", source, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("drop table", source, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("truncate", source, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static Uri InvokeValidatePackageUri(string packageUrl, Uri baseUri)
+    {
+        var method = typeof(DesktopAppUpdateService).GetMethod(
+            "ValidatePackageUri",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, [packageUrl, baseUri]);
+        return Assert.IsType<Uri>(result);
+    }
+
+    private static void AssertValidatePackageUriRejected(string packageUrl, Uri baseUri)
+    {
+        var ex = Assert.Throws<TargetInvocationException>(() => InvokeValidatePackageUri(packageUrl, baseUri));
+        Assert.IsType<InvalidOperationException>(ex.InnerException);
     }
 
     private static string ReadRepositoryFile(params string[] pathParts)

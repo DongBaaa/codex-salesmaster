@@ -85,6 +85,68 @@ public sealed class UpdatesControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetManifestAsync_RewritesRootRelativePackageUrl_WhenPlatformPathDoesNotMatchPackage()
+    {
+        var manifest = new AppUpdateManifestDto
+        {
+            Channel = "stable",
+            Desktop = new AppUpdatePackageDto
+            {
+                Platform = "desktop",
+                Version = "1.1.115",
+                Mandatory = false,
+                FileName = "tradeplan-pc-installer-v1.1.115.zip",
+                PackageUrl = "/updates/download/android/tradeplan-android-v0.2.65.apk",
+                Sha256 = "ABCDEF",
+                FileSize = 4321,
+                Notes = "test"
+            }
+        };
+
+        await WriteManifestAsync("stable", manifest);
+        var controller = CreateController();
+
+        var response = await controller.GetManifestAsync("stable", CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<AppUpdateManifestDto>(ok.Value);
+
+        Assert.NotNull(payload.Desktop);
+        Assert.Equal(
+            "https://updates.example.com/updates/download/desktop/tradeplan-pc-installer-v1.1.115.zip",
+            payload.Desktop!.PackageUrl);
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_RewritesRootRelativePackageUrl_WhenFileNameContainsEncodedSlash()
+    {
+        var manifest = new AppUpdateManifestDto
+        {
+            Channel = "stable",
+            Desktop = new AppUpdatePackageDto
+            {
+                Platform = "desktop",
+                Version = "1.1.115",
+                Mandatory = false,
+                FileName = "package.zip",
+                PackageUrl = "/updates/download/desktop/%2e%2e%2fpackage.zip",
+                Sha256 = "ABCDEF",
+                FileSize = 4321,
+                Notes = "test"
+            }
+        };
+
+        await WriteManifestAsync("stable", manifest);
+        var controller = CreateController();
+
+        var response = await controller.GetManifestAsync("stable", CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<AppUpdateManifestDto>(ok.Value);
+
+        Assert.NotNull(payload.Desktop);
+        Assert.Equal("https://updates.example.com/updates/download/desktop/package.zip", payload.Desktop!.PackageUrl);
+    }
+
+    [Fact]
     public async Task GetManifestAsync_RewritesNonHttpAbsolutePackageUrl_ToSafeServerDownloadUrl()
     {
         var manifest = new AppUpdateManifestDto

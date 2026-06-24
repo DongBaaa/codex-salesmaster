@@ -668,10 +668,39 @@ public sealed class DesktopAppUpdateService
         if (!isLocal && !string.Equals(packageUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("운영 업데이트 패키지는 HTTPS 주소만 허용됩니다.");
 
-        if (!string.Equals(packageUri.Host, baseUri.Host, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(packageUri.Authority, baseUri.Authority, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("업데이트 패키지 호스트가 현재 서버와 일치하지 않습니다.");
 
+        if (!IsExpectedDesktopPackageUri(packageUri))
+            throw new InvalidOperationException("업데이트 패키지 경로가 PC 업데이트 다운로드 경로와 일치하지 않습니다.");
+
         return packageUri;
+    }
+
+    private static bool IsExpectedDesktopPackageUri(Uri packageUri)
+    {
+        if (!string.IsNullOrWhiteSpace(packageUri.Query) || !string.IsNullOrWhiteSpace(packageUri.Fragment))
+            return false;
+
+        const string expectedPathPrefix = "/updates/download/desktop/";
+        var path = packageUri.AbsolutePath;
+        if (!path.StartsWith(expectedPathPrefix, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var encodedFileName = path[expectedPathPrefix.Length..];
+        if (string.IsNullOrWhiteSpace(encodedFileName) ||
+            encodedFileName.Contains("/", StringComparison.Ordinal) ||
+            encodedFileName.Contains("\\", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var fileName = Uri.UnescapeDataString(encodedFileName);
+        return !string.IsNullOrWhiteSpace(fileName) &&
+               !fileName.Contains("/", StringComparison.Ordinal) &&
+               !fileName.Contains("\\", StringComparison.Ordinal) &&
+               string.Equals(Path.GetFileName(fileName), fileName, StringComparison.Ordinal) &&
+               string.Equals(Path.GetExtension(fileName), ".zip", StringComparison.OrdinalIgnoreCase);
     }
 
     private static int CompareVersions(string left, string right)

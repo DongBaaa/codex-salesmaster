@@ -108,7 +108,9 @@ public sealed class UpdatesController : ControllerBase
         if (string.IsNullOrWhiteSpace(package.FileName) && !string.IsNullOrWhiteSpace(packageUrl))
             package.FileName = Path.GetFileName(packageUrl);
 
-        if (!string.IsNullOrWhiteSpace(packageUrl) && packageUrl.StartsWith("/", StringComparison.Ordinal))
+        if (!string.IsNullOrWhiteSpace(packageUrl) &&
+            packageUrl.StartsWith("/", StringComparison.Ordinal) &&
+            IsAllowedDownloadPackagePath(packageUrl, platform))
         {
             package.PackageUrl = $"{Request.Scheme}://{Request.Host}{packageUrl}";
             return;
@@ -137,8 +139,34 @@ public sealed class UpdatesController : ControllerBase
         if (!string.Equals(packageUri.Authority, Request.Host.Value, StringComparison.OrdinalIgnoreCase))
             return false;
 
+        if (!string.IsNullOrWhiteSpace(packageUri.Query) || !string.IsNullOrWhiteSpace(packageUri.Fragment))
+            return false;
+
+        return IsAllowedDownloadPackagePath(packageUri.AbsolutePath, platform);
+    }
+
+    private static bool IsAllowedDownloadPackagePath(string path, string platform)
+    {
         var expectedPathPrefix = $"/updates/download/{platform}/";
-        return packageUri.AbsolutePath.StartsWith(expectedPathPrefix, StringComparison.OrdinalIgnoreCase);
+        if (!path.StartsWith(expectedPathPrefix, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (path.Contains("?", StringComparison.Ordinal) || path.Contains("#", StringComparison.Ordinal))
+            return false;
+
+        var encodedFileName = path[expectedPathPrefix.Length..];
+        if (string.IsNullOrWhiteSpace(encodedFileName) ||
+            encodedFileName.Contains("/", StringComparison.Ordinal) ||
+            encodedFileName.Contains("\\", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var fileName = Uri.UnescapeDataString(encodedFileName);
+        return !string.IsNullOrWhiteSpace(fileName) &&
+               !fileName.Contains("/", StringComparison.Ordinal) &&
+               !fileName.Contains("\\", StringComparison.Ordinal) &&
+               string.Equals(Path.GetFileName(fileName), fileName, StringComparison.Ordinal);
     }
 
     private string GetStorageRoot()
