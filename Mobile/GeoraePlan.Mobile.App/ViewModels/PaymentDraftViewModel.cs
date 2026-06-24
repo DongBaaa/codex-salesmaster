@@ -170,7 +170,10 @@ public sealed class PaymentDraftViewModel : ObservableObject
             StatusMessage = "수금/지급할 전표 목록을 불러오고 있습니다.";
             _ = RefreshSyncSnapshotInBackgroundAsync();
 
-            var invoices = await _api.GetInvoicesAsync(null);
+            var snapshot = _sessionStore.GetSnapshot();
+            var invoices = (await _api.GetInvoicesAsync(null))
+                .Where(invoice => MobileSessionScopeFilter.CanAccessInvoice(snapshot, invoice))
+                .ToList();
             var pendingState = await _syncCoordinator.LoadAsync();
             pendingState.Normalize();
             Invoices.Clear();
@@ -215,6 +218,12 @@ public sealed class PaymentDraftViewModel : ObservableObject
     {
         if (_initialInvoice is null)
             return;
+
+        if (!MobileSessionScopeFilter.CanAccessInvoice(_sessionStore.GetSnapshot(), _initialInvoice))
+        {
+            StatusMessage = "선택한 전표는 현재 로그인 담당지점/업체 범위 밖입니다.";
+            return;
+        }
 
         var matched = Invoices.FirstOrDefault(invoice => invoice.Id == _initialInvoice.Id);
         if (matched is null)
@@ -393,6 +402,13 @@ public sealed class PaymentDraftViewModel : ObservableObject
                 return;
             }
 
+            if (!MobileSessionScopeFilter.CanAccessInvoice(_sessionStore.GetSnapshot(), latestInvoice))
+            {
+                StatusMessage = "선택한 전표는 현재 로그인 담당지점/업체 범위 밖이라 수금/지급을 저장할 수 없습니다.";
+                _refreshCoordinator.MarkInvoicesChanged();
+                return;
+            }
+
             var outstandingAmount = CalculateOutstandingAmount(latestInvoice);
             if (amount > outstandingAmount)
             {
@@ -479,6 +495,9 @@ public sealed class PaymentDraftViewModel : ObservableObject
         if (latest is null || latest.IsDeleted)
             return null;
 
+        if (!MobileSessionScopeFilter.CanAccessInvoice(_sessionStore.GetSnapshot(), latest))
+            return null;
+
         var pendingState = await _syncCoordinator.LoadAsync();
         pendingState.Normalize();
         latest = MergePendingPaymentsIntoInvoice(latest, pendingState);
@@ -502,10 +521,12 @@ public sealed class PaymentDraftViewModel : ObservableObject
         SelectedInvoice = latest;
     }
 
-    private static IReadOnlyList<InvoiceDto> BuildSyncedInvoiceSnapshots(Models.MobileSyncState state)
+    private IReadOnlyList<InvoiceDto> BuildSyncedInvoiceSnapshots(Models.MobileSyncState state)
     {
+        var snapshot = _sessionStore.GetSnapshot();
         return state.SyncedInvoices
             .Where(invoice => !invoice.IsDeleted)
+            .Where(invoice => MobileSessionScopeFilter.CanAccessInvoice(snapshot, invoice))
             .Select(invoice =>
             {
                 var payments = BuildEffectivePaymentsForInvoice(invoice.Id, state.SyncedPayments, state.PendingPush.Payments);

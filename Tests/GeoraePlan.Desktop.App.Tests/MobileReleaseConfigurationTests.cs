@@ -1259,10 +1259,10 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("IEnumerable<PaymentAttachmentDto>? fallbackAttachments = null", attachmentsPageSource, StringComparison.Ordinal);
         Assert.Contains("_fallbackAttachments = fallbackAttachments?.Where(attachment => attachment is not null && !attachment.IsDeleted).ToList() ?? [];", attachmentsPageSource, StringComparison.Ordinal);
         Assert.Contains("BuildCustomerRentalRows(displayCustomer, syncState)", viewModelSource, StringComparison.Ordinal);
-        Assert.Contains("state.SyncedRentalBillingProfiles.Where(profile => !profile.IsDeleted)", viewModelSource, StringComparison.Ordinal);
-        Assert.Contains("state.SyncedRentalAssets.Where(asset => !asset.IsDeleted)", viewModelSource, StringComparison.Ordinal);
-        Assert.Contains("state.SyncedRentalAssetAssignmentHistories.Where(history => !history.IsDeleted)", viewModelSource, StringComparison.Ordinal);
-        Assert.Contains("var matchContext = BuildCustomerRentalMatchContext(customer, state);", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessRentalBillingProfile(snapshot, profile)", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessRentalAsset(snapshot, asset)", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessRentalAssetAssignmentHistory(snapshot, history)", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("var matchContext = BuildCustomerRentalMatchContext(customer, state, snapshot);", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("MatchesSelectedCustomer(matchContext, profile.CustomerId, profile.BusinessNumber, profile.CustomerName)", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("CustomerRentalLinkRow.FromProfile(profile)", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("CustomerRentalLinkRow.FromAsset(asset, profile)", viewModelSource, StringComparison.Ordinal);
@@ -1288,7 +1288,8 @@ public sealed class MobileReleaseConfigurationTests
             "ViewModels",
             "CustomersViewModel.cs"));
 
-        Assert.Contains("private static CustomerRentalMatchContext BuildCustomerRentalMatchContext(CustomerDto customer, MobileSyncState state)", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("private static CustomerRentalMatchContext BuildCustomerRentalMatchContext(", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("SessionSnapshot snapshot)", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("state.SyncedCustomers", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("BuildUniqueSelectedBusinessNumberKeys(customer, scopedCustomers)", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("BuildUniqueSelectedNameKeys(customer, scopedCustomers)", viewModelSource, StringComparison.Ordinal);
@@ -2220,14 +2221,48 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("var payments = detail is null", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("BuildCustomerPaymentRowsFromSyncedState(displayCustomer, invoices, syncState)", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("거래내역은 동기화 캐시를 표시합니다.", viewModelSource, StringComparison.Ordinal);
-        Assert.Contains("private static IReadOnlyList<InvoiceDto> BuildCustomerInvoicesFromSyncedState(CustomerDto customer, MobileSyncState? state)", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("private IReadOnlyList<InvoiceDto> BuildCustomerInvoicesFromSyncedState(CustomerDto customer, MobileSyncState? state)", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("state.SyncedInvoices", viewModelSource, StringComparison.Ordinal);
-        Assert.Contains("!invoice.IsDeleted && invoice.CustomerId == customer.Id", viewModelSource, StringComparison.Ordinal);
-        Assert.Contains("private static IReadOnlyList<CustomerPaymentHistoryRow> BuildCustomerPaymentRowsFromSyncedState", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("!invoice.IsDeleted &&", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("invoice.CustomerId == customer.Id &&", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessInvoice(snapshot, invoice)", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("private IReadOnlyList<CustomerPaymentHistoryRow> BuildCustomerPaymentRowsFromSyncedState", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("state.SyncedPayments.Where(payment => !payment.IsDeleted)", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("invoiceMap.TryGetValue(payment.InvoiceId, out var invoice)", viewModelSource, StringComparison.Ordinal);
         Assert.Contains(".GroupBy(row => row.PaymentId)", viewModelSource, StringComparison.Ordinal);
         Assert.Contains(".Take(50)", viewModelSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AndroidOfflineCaches_AreRefilteredByCurrentSessionScopeBeforeDisplayOrPendingSave()
+    {
+        var root = FindRepositoryRoot();
+        var mobileRoot = Path.Combine(root, "Mobile", "GeoraePlan.Mobile.App");
+        var scopeFilterSource = File.ReadAllText(Path.Combine(mobileRoot, "Services", "MobileSessionScopeFilter.cs"));
+        var customersSource = File.ReadAllText(Path.Combine(mobileRoot, "ViewModels", "CustomersViewModel.cs"));
+        var itemsSource = File.ReadAllText(Path.Combine(mobileRoot, "ViewModels", "ItemsViewModel.cs"));
+        var invoiceDraftSource = File.ReadAllText(Path.Combine(mobileRoot, "ViewModels", "InvoiceDraftViewModel.cs"));
+        var paymentDraftSource = File.ReadAllText(Path.Combine(mobileRoot, "ViewModels", "PaymentDraftViewModel.cs"));
+        var rentalsSource = File.ReadAllText(Path.Combine(mobileRoot, "ViewModels", "RentalsViewModel.cs"));
+        var transfersSource = File.ReadAllText(Path.Combine(mobileRoot, "ViewModels", "InventoryTransfersViewModel.cs"));
+        var customerEditSource = File.ReadAllText(Path.Combine(mobileRoot, "Pages", "CustomerEditPage.cs"));
+        var itemEditSource = File.ReadAllText(Path.Combine(mobileRoot, "Pages", "ItemEditPage.cs"));
+
+        Assert.Contains("public static class MobileSessionScopeFilter", scopeFilterSource, StringComparison.Ordinal);
+        Assert.Contains("GetReadableOfficeCodes(SessionSnapshot snapshot)", scopeFilterSource, StringComparison.Ordinal);
+        Assert.Contains("TenantScopeCatalog.ScopeTenantAll", scopeFilterSource, StringComparison.Ordinal);
+        Assert.Contains("TenantScopeCatalog.ScopeAdmin", scopeFilterSource, StringComparison.Ordinal);
+
+        Assert.Contains("MobileSessionScopeFilter.CanAccessCustomer(_sessionStore.GetSnapshot(), customer)", customersSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessCustomer(snapshot, customer)", customersSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessItem(snapshot, item)", itemsSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessWarehouse(snapshot, stock.WarehouseCode)", itemsSource, StringComparison.Ordinal);
+        Assert.Contains("CanSaveCurrentInvoiceScope(invoice)", invoiceDraftSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessInvoice(_sessionStore.GetSnapshot(), latestInvoice)", paymentDraftSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessRentalBillingProfile(snapshot, profile)", rentalsSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessInventoryTransfer(snapshot, transfer)", transfersSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessCustomer(_sessionStore.GetSnapshot(), dto)", customerEditSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessItem(_sessionStore.GetSnapshot(), dto)", itemEditSource, StringComparison.Ordinal);
     }
 
     [Fact]

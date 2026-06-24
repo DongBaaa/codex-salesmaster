@@ -20,6 +20,7 @@ public sealed class CustomersViewModel : ObservableObject
     private readonly GeoraePlanApiClient _api;
     private readonly CustomerContractCacheStore _cacheStore;
     private readonly SyncCoordinator _syncCoordinator;
+    private readonly SessionStore _sessionStore;
 
     private string _searchText = string.Empty;
     private string _statusMessage = "거래처를 불러오세요.";
@@ -30,11 +31,16 @@ public sealed class CustomersViewModel : ObservableObject
     private string _detailStatusMessage = "거래처를 선택하면 상세 정보가 표시됩니다.";
     private CustomerDetailSection _selectedDetailSection = CustomerDetailSection.Summary;
 
-    public CustomersViewModel(GeoraePlanApiClient api, CustomerContractCacheStore cacheStore, SyncCoordinator syncCoordinator)
+    public CustomersViewModel(
+        GeoraePlanApiClient api,
+        CustomerContractCacheStore cacheStore,
+        SyncCoordinator syncCoordinator,
+        SessionStore sessionStore)
     {
         _api = api;
         _cacheStore = cacheStore;
         _syncCoordinator = syncCoordinator;
+        _sessionStore = sessionStore;
         RefreshCommand = new AsyncCommand(RefreshAsync);
     }
 
@@ -189,6 +195,14 @@ public sealed class CustomersViewModel : ObservableObject
     {
         if (customer is null)
             return;
+
+        if (!MobileSessionScopeFilter.CanAccessCustomer(_sessionStore.GetSnapshot(), customer))
+        {
+            ClearSelectedCustomer();
+            StatusMessage = "선택한 거래처는 현재 로그인 담당지점/업체 범위 밖입니다.";
+            DetailStatusMessage = StatusMessage;
+            return;
+        }
 
         SelectedCustomer = customer;
         SelectedDetailSection = CustomerDetailSection.Summary;
@@ -380,8 +394,9 @@ public sealed class CustomersViewModel : ObservableObject
 
     private void ReplaceCustomers(IEnumerable<CustomerDto> customers)
     {
+        var snapshot = _sessionStore.GetSnapshot();
         Customers.Clear();
-        foreach (var customer in customers)
+        foreach (var customer in customers.Where(customer => MobileSessionScopeFilter.CanAccessCustomer(snapshot, customer)))
             Customers.Add(customer);
     }
 
@@ -456,14 +471,17 @@ public sealed class CustomersViewModel : ObservableObject
             .ThenByDescending(payment => payment.UpdatedAtUtc)
             .ToList();
 
-    private static IReadOnlyList<InvoiceDto> BuildCustomerInvoicesFromSyncedState(CustomerDto customer, MobileSyncState? state)
+    private IReadOnlyList<InvoiceDto> BuildCustomerInvoicesFromSyncedState(CustomerDto customer, MobileSyncState? state)
     {
         if (state is null || customer.Id == Guid.Empty)
             return [];
 
         state.Normalize();
+        var snapshot = _sessionStore.GetSnapshot();
         return state.SyncedInvoices
-            .Where(invoice => !invoice.IsDeleted && invoice.CustomerId == customer.Id)
+            .Where(invoice => !invoice.IsDeleted &&
+                              invoice.CustomerId == customer.Id &&
+                              MobileSessionScopeFilter.CanAccessInvoice(snapshot, invoice))
             .OrderByDescending(invoice => invoice.InvoiceDate)
             .ThenByDescending(invoice => invoice.UpdatedAtUtc)
             .ThenByDescending(invoice => invoice.CreatedAtUtc)
@@ -471,7 +489,7 @@ public sealed class CustomersViewModel : ObservableObject
             .ToList();
     }
 
-    private static IReadOnlyList<CustomerPaymentHistoryRow> BuildCustomerPaymentRowsFromSyncedState(
+    private IReadOnlyList<CustomerPaymentHistoryRow> BuildCustomerPaymentRowsFromSyncedState(
         CustomerDto customer,
         IEnumerable<InvoiceDto> fallbackInvoices,
         MobileSyncState? state)
@@ -480,9 +498,13 @@ public sealed class CustomersViewModel : ObservableObject
             return BuildPaymentRowsFromInvoices(fallbackInvoices);
 
         state.Normalize();
+        var snapshot = _sessionStore.GetSnapshot();
         var invoiceMap = state.SyncedInvoices
             .Concat(fallbackInvoices)
-            .Where(invoice => !invoice.IsDeleted && invoice.CustomerId == customer.Id && invoice.Id != Guid.Empty)
+            .Where(invoice => !invoice.IsDeleted &&
+                              invoice.CustomerId == customer.Id &&
+                              invoice.Id != Guid.Empty &&
+                              MobileSessionScopeFilter.CanAccessInvoice(snapshot, invoice))
             .GroupBy(invoice => invoice.Id)
             .ToDictionary(
                 group => group.Key,
@@ -520,28 +542,37 @@ public sealed class CustomersViewModel : ObservableObject
             .ToList();
     }
 
-    private static IReadOnlyList<CustomerRentalLinkRow> BuildCustomerRentalRows(CustomerDto customer, MobileSyncState state)
+    private IReadOnlyList<CustomerRentalLinkRow> BuildCustomerRentalRows(CustomerDto customer, MobileSyncState state)
     {
         state.Normalize();
+        var snapshot = _sessionStore.GetSnapshot();
 
         var profileMap = state.SyncedRentalBillingProfiles
-            .Where(profile => !profile.IsDeleted && profile.Id != Guid.Empty)
+            .Where(profile => !profile.IsDeleted &&
+                              profile.Id != Guid.Empty &&
+                              MobileSessionScopeFilter.CanAccessRentalBillingProfile(snapshot, profile))
             .GroupBy(profile => profile.Id)
             .ToDictionary(group => group.Key, group => group.First(), EqualityComparer<Guid>.Default);
         var assetMap = state.SyncedRentalAssets
-            .Where(asset => !asset.IsDeleted && asset.Id != Guid.Empty)
+            .Where(asset => !asset.IsDeleted &&
+                            asset.Id != Guid.Empty &&
+                            MobileSessionScopeFilter.CanAccessRentalAsset(snapshot, asset))
             .GroupBy(asset => asset.Id)
             .ToDictionary(group => group.Key, group => group.First(), EqualityComparer<Guid>.Default);
-        var matchContext = BuildCustomerRentalMatchContext(customer, state);
+        var matchContext = BuildCustomerRentalMatchContext(customer, state, snapshot);
 
         var rows = new List<CustomerRentalLinkRow>();
-        foreach (var profile in state.SyncedRentalBillingProfiles.Where(profile => !profile.IsDeleted))
+        foreach (var profile in state.SyncedRentalBillingProfiles.Where(profile =>
+                     !profile.IsDeleted &&
+                     MobileSessionScopeFilter.CanAccessRentalBillingProfile(snapshot, profile)))
         {
             if (MatchesSelectedCustomer(matchContext, profile.CustomerId, profile.BusinessNumber, profile.CustomerName))
                 rows.Add(CustomerRentalLinkRow.FromProfile(profile));
         }
 
-        foreach (var asset in state.SyncedRentalAssets.Where(asset => !asset.IsDeleted))
+        foreach (var asset in state.SyncedRentalAssets.Where(asset =>
+                     !asset.IsDeleted &&
+                     MobileSessionScopeFilter.CanAccessRentalAsset(snapshot, asset)))
         {
             profileMap.TryGetValue(asset.BillingProfileId ?? Guid.Empty, out var profile);
             if (MatchesSelectedCustomer(
@@ -557,7 +588,9 @@ public sealed class CustomersViewModel : ObservableObject
             }
         }
 
-        foreach (var history in state.SyncedRentalAssetAssignmentHistories.Where(history => !history.IsDeleted))
+        foreach (var history in state.SyncedRentalAssetAssignmentHistories.Where(history =>
+                     !history.IsDeleted &&
+                     MobileSessionScopeFilter.CanAccessRentalAssetAssignmentHistory(snapshot, history)))
         {
             profileMap.TryGetValue(history.BillingProfileId ?? Guid.Empty, out var profile);
             assetMap.TryGetValue(history.AssetId, out var asset);
@@ -588,10 +621,15 @@ public sealed class CustomersViewModel : ObservableObject
             .ToList();
     }
 
-    private static CustomerRentalMatchContext BuildCustomerRentalMatchContext(CustomerDto customer, MobileSyncState state)
+    private static CustomerRentalMatchContext BuildCustomerRentalMatchContext(
+        CustomerDto customer,
+        MobileSyncState state,
+        SessionSnapshot snapshot)
     {
         var scopedCustomers = state.SyncedCustomers
-            .Where(candidate => !candidate.IsDeleted && candidate.Id != Guid.Empty)
+            .Where(candidate => !candidate.IsDeleted &&
+                                candidate.Id != Guid.Empty &&
+                                MobileSessionScopeFilter.CanAccessCustomer(snapshot, candidate))
             .GroupBy(candidate => candidate.Id)
             .Select(group => group
                 .OrderByDescending(candidate => candidate.Revision)
@@ -698,7 +736,11 @@ public sealed class CustomersViewModel : ObservableObject
 
     private async Task<List<CustomerDto>> LoadCachedCustomersAsync()
     {
+        var snapshot = _sessionStore.GetSnapshot();
         var cached = (await _cacheStore.LoadCustomersAsync()).ToList();
+        cached = cached
+            .Where(customer => MobileSessionScopeFilter.CanAccessCustomer(snapshot, customer))
+            .ToList();
         var searchText = SearchText?.Trim();
         if (string.IsNullOrWhiteSpace(searchText))
             return cached;

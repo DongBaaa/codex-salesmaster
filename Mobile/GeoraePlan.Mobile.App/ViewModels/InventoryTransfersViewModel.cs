@@ -9,6 +9,7 @@ public sealed class InventoryTransfersViewModel : ObservableObject
 {
     private readonly JsonSyncStateStore _syncStateStore;
     private readonly SyncCoordinator _syncCoordinator;
+    private readonly SessionStore _sessionStore;
 
     private string _searchText = string.Empty;
     private string _statusMessage = "재고이동 서버 동기화 데이터를 불러올 준비가 되었습니다.";
@@ -16,10 +17,11 @@ public sealed class InventoryTransfersViewModel : ObservableObject
     private DateTime? _lastRefreshUtc;
     private InventoryTransferDto? _selectedTransfer;
 
-    public InventoryTransfersViewModel(JsonSyncStateStore syncStateStore, SyncCoordinator syncCoordinator)
+    public InventoryTransfersViewModel(JsonSyncStateStore syncStateStore, SyncCoordinator syncCoordinator, SessionStore sessionStore)
     {
         _syncStateStore = syncStateStore;
         _syncCoordinator = syncCoordinator;
+        _sessionStore = sessionStore;
         RefreshCommand = new AsyncCommand(RefreshAsync);
         SyncNowCommand = new AsyncCommand(SyncNowAsync);
     }
@@ -204,9 +206,11 @@ public sealed class InventoryTransfersViewModel : ObservableObject
     {
         var state = await _syncStateStore.LoadAsync();
         state.Normalize();
+        var snapshot = _sessionStore.GetSnapshot();
 
         var selectedId = preserveSelection ? SelectedTransfer?.Id : null;
         var filtered = state.SyncedInventoryTransfers
+            .Where(transfer => MobileSessionScopeFilter.CanAccessInventoryTransfer(snapshot, transfer))
             .Where(MatchesSearch)
             .OrderByDescending(x => x.TransferDate)
             .ThenByDescending(x => x.UpdatedAtUtc)

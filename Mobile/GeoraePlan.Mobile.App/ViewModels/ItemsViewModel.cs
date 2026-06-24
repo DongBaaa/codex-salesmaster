@@ -378,8 +378,15 @@ public sealed class ItemsViewModel : ObservableObject
                 detail = await _api.GetItemDetailAsync(item.Id);
 
             var selected = detail?.Item ?? item;
+            if (!MobileSessionScopeFilter.CanAccessItem(_sessionStore.GetSnapshot(), selected))
+            {
+                ClearSelectedItem();
+                StatusMessage = $"{item.NameOriginal} 품목은 현재 로그인 담당지점/업체 범위 밖입니다.";
+                return;
+            }
+
             selected.CategoryName = NormalizeCategoryName(selected.CategoryName);
-            PopulateSelectedItem(selected, detail?.BranchStocks ?? []);
+            PopulateSelectedItem(selected, FilterBranchStocksForCurrentScope(detail?.BranchStocks ?? []));
             StatusMessage = $"{selected.NameOriginal} 품목을 선택했습니다.";
         }
         catch (Exception ex)
@@ -444,7 +451,10 @@ public sealed class ItemsViewModel : ObservableObject
         StatusMessage = SelectedCategory is null
             ? $"전체 품목에서 '{trimmedSearch}' 검색 중입니다."
             : $"{normalizedCategory} 분류 품목을 조회하고 있습니다.";
-        var items = await _api.GetItemsAsync(trimmedSearch, categoryQueryValue);
+        var snapshot = _sessionStore.GetSnapshot();
+        var items = (await _api.GetItemsAsync(trimmedSearch, categoryQueryValue))
+            .Where(item => MobileSessionScopeFilter.CanAccessItem(snapshot, item))
+            .ToList();
 
         Items.Clear();
         foreach (var item in items.OrderBy(item => item.NameOriginal))
@@ -567,9 +577,14 @@ public sealed class ItemsViewModel : ObservableObject
 
         var selected = state.SyncedItems
             .Where(candidate => !candidate.IsDeleted)
+            .Where(candidate => MobileSessionScopeFilter.CanAccessItem(_sessionStore.GetSnapshot(), candidate))
             .FirstOrDefault(candidate => candidate.Id == item.Id) ?? item;
+        if (!MobileSessionScopeFilter.CanAccessItem(_sessionStore.GetSnapshot(), selected))
+            return false;
+
         var branchStocks = state.SyncedItemWarehouseStocks
             .Where(stock => stock.ItemId == item.Id)
+            .Where(stock => MobileSessionScopeFilter.CanAccessWarehouse(_sessionStore.GetSnapshot(), stock.WarehouseCode))
             .OrderBy(stock => stock.WarehouseCode, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -604,14 +619,21 @@ public sealed class ItemsViewModel : ObservableObject
         OnPropertyChanged(nameof(SelectedItemBranchStocksHeight));
     }
 
-    private static IEnumerable<ItemDto> GetActiveSyncedItems(MobileSyncState state)
+    private IEnumerable<ItemDto> GetActiveSyncedItems(MobileSyncState state)
         => state.SyncedItems
             .Where(item => !item.IsDeleted)
+            .Where(item => MobileSessionScopeFilter.CanAccessItem(_sessionStore.GetSnapshot(), item))
             .Select(item =>
             {
                 item.CategoryName = NormalizeCategoryName(item.CategoryName);
                 return item;
             });
+
+    private IEnumerable<ItemWarehouseStockDto> FilterBranchStocksForCurrentScope(IEnumerable<ItemWarehouseStockDto> branchStocks)
+    {
+        var snapshot = _sessionStore.GetSnapshot();
+        return branchStocks.Where(stock => MobileSessionScopeFilter.CanAccessWarehouse(snapshot, stock.WarehouseCode));
+    }
 
     private static IReadOnlyList<ItemCategorySummaryDto> BuildCategorySummaries(IEnumerable<ItemDto> items)
         => items

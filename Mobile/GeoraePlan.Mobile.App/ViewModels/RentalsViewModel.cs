@@ -18,6 +18,7 @@ public sealed class RentalsViewModel : ObservableObject
 {
     private readonly JsonSyncStateStore _syncStateStore;
     private readonly SyncCoordinator _syncCoordinator;
+    private readonly SessionStore _sessionStore;
 
     private string _searchText = string.Empty;
     private string _statusMessage = "렌탈 서버 동기화 데이터를 불러올 준비가 되었습니다.";
@@ -25,10 +26,11 @@ public sealed class RentalsViewModel : ObservableObject
     private DateTime? _lastRefreshUtc;
     private RentalMobileSection _selectedSection = RentalMobileSection.BillingProfiles;
 
-    public RentalsViewModel(JsonSyncStateStore syncStateStore, SyncCoordinator syncCoordinator)
+    public RentalsViewModel(JsonSyncStateStore syncStateStore, SyncCoordinator syncCoordinator, SessionStore sessionStore)
     {
         _syncStateStore = syncStateStore;
         _syncCoordinator = syncCoordinator;
+        _sessionStore = sessionStore;
         RefreshCommand = new AsyncCommand(RefreshAsync);
         SyncNowCommand = new AsyncCommand(SyncNowAsync);
     }
@@ -200,25 +202,38 @@ public sealed class RentalsViewModel : ObservableObject
     {
         var state = await _syncStateStore.LoadAsync();
         state.Normalize();
+        var snapshot = _sessionStore.GetSnapshot();
 
         var effectiveBillingProfiles = MergeForDisplay(
             state.SyncedRentalBillingProfiles,
-            state.PendingPush.RentalBillingProfiles);
+            state.PendingPush.RentalBillingProfiles)
+            .Where(profile => MobileSessionScopeFilter.CanAccessRentalBillingProfile(snapshot, profile))
+            .ToList();
         var effectiveRentalAssets = MergeForDisplay(
             state.SyncedRentalAssets,
-            state.PendingPush.RentalAssets);
+            state.PendingPush.RentalAssets)
+            .Where(asset => MobileSessionScopeFilter.CanAccessRentalAsset(snapshot, asset))
+            .ToList();
         var effectiveAssignmentHistories = MergeForDisplay(
             state.SyncedRentalAssetAssignmentHistories,
-            state.PendingPush.RentalAssetAssignmentHistories);
+            state.PendingPush.RentalAssetAssignmentHistories)
+            .Where(history => MobileSessionScopeFilter.CanAccessRentalAssetAssignmentHistory(snapshot, history))
+            .ToList();
         var effectiveBillingLogs = MergeForDisplay(
             state.SyncedRentalBillingLogs,
-            state.PendingPush.RentalBillingLogs);
+            state.PendingPush.RentalBillingLogs)
+            .Where(log => MobileSessionScopeFilter.CanAccessRentalBillingLog(snapshot, log))
+            .ToList();
         var effectiveInvoices = MergeForDisplay(
             state.SyncedInvoices,
-            state.PendingPush.Invoices);
+            state.PendingPush.Invoices)
+            .Where(invoice => MobileSessionScopeFilter.CanAccessInvoice(snapshot, invoice))
+            .ToList();
         var effectiveTransactions = MergeForDisplay(
             state.SyncedTransactions,
-            state.PendingPush.Transactions);
+            state.PendingPush.Transactions)
+            .Where(transaction => MobileSessionScopeFilter.CanAccessTransaction(snapshot, transaction))
+            .ToList();
         var effectivePayments = MergeForDisplay(
             state.SyncedPayments,
             state.PendingPush.Payments);

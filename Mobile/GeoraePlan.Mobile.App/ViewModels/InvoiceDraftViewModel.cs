@@ -433,6 +433,12 @@ public sealed class InvoiceDraftViewModel : ObservableObject
 
         await LoadAsync();
 
+        if (!MobileSessionScopeFilter.CanAccessInvoice(_sessionStore.GetSnapshot(), invoice))
+        {
+            StatusMessage = "선택한 전표는 현재 로그인 담당지점/업체 범위 밖입니다.";
+            return;
+        }
+
         _editingInvoice = invoice;
         OnPropertyChanged(nameof(IsEditMode));
         ConfigureVoucherType(invoice.VoucherType);
@@ -599,6 +605,13 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     public Task SelectCustomerAsync(CustomerDto customer)
     {
         SelectInvoiceOfficeByCustomerScope(customer);
+        if (!IsCustomerInSelectedInvoiceOfficeScope(customer))
+        {
+            SelectedCustomer = null;
+            StatusMessage = "선택한 거래처는 현재 전표 담당지점 범위 밖입니다. 담당지점 또는 거래처를 다시 선택하세요.";
+            return Task.CompletedTask;
+        }
+
         SelectedCustomer = customer;
         StatusMessage = $"{customer.NameOriginal} {CustomerNameLabelText}를 선택했습니다.";
         return Task.CompletedTask;
@@ -661,6 +674,13 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         }
 
         SelectInvoiceOfficeByCustomerScope(customer);
+        if (!IsCustomerInSelectedInvoiceOfficeScope(customer))
+        {
+            SelectedCustomer = null;
+            StatusMessage = "선택한 거래처는 현재 전표 담당지점 범위 밖입니다. 담당지점 또는 거래처를 다시 선택하세요.";
+            return;
+        }
+
         SelectedCustomer = customer;
         CustomerSearchText = customer.NameOriginal;
         StatusMessage = $"{customer.NameOriginal} {CustomerNameLabelText} 기준입니다. 품목을 추가한 뒤 마지막 저장 카드에서 {DocumentKindText} 전표를 저장하세요.";
@@ -681,6 +701,13 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             return false;
 
         SelectInvoiceOfficeByCustomerScope(customer);
+        if (!IsCustomerInSelectedInvoiceOfficeScope(customer))
+        {
+            SelectedCustomer = null;
+            StatusMessage = $"{reason} / 동기화 캐시 거래처가 현재 전표 담당지점 범위 밖이라 선택하지 않았습니다.";
+            return true;
+        }
+
         SelectedCustomer = customer;
         CustomerSearchText = customer.NameOriginal;
         StatusMessage = $"{reason} / 동기화 캐시 기준으로 {customer.NameOriginal} {CustomerNameLabelText}를 선택했습니다. 품목을 추가한 뒤 마지막 저장 카드에서 {DocumentKindText} 전표를 저장하세요.";
@@ -993,6 +1020,8 @@ public sealed class InvoiceDraftViewModel : ObservableObject
 
         var isEditMode = _editingInvoice is not null;
         var invoice = BuildCurrentInvoiceDto(forSave: true);
+        if (!CanSaveCurrentInvoiceScope(invoice))
+            return;
 
         try
         {
@@ -1148,6 +1177,30 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             Lines = lines,
             Payments = _editingInvoice?.Payments ?? new List<PaymentDto>()
         };
+    }
+
+    private bool CanSaveCurrentInvoiceScope(InvoiceDto invoice)
+    {
+        var snapshot = _sessionStore.GetSnapshot();
+        if (!MobileSessionScopeFilter.CanAccessInvoice(snapshot, invoice))
+        {
+            StatusMessage = "전표 담당지점이 현재 로그인 담당지점/업체 범위 밖입니다.";
+            return false;
+        }
+
+        if (SelectedCustomer is not null && !MobileSessionScopeFilter.CanAccessCustomer(snapshot, SelectedCustomer))
+        {
+            StatusMessage = "선택한 거래처가 현재 로그인 담당지점/업체 범위 밖입니다.";
+            return false;
+        }
+
+        if (SelectedCustomer is not null && !IsCustomerInSelectedInvoiceOfficeScope(SelectedCustomer))
+        {
+            StatusMessage = "선택한 거래처가 전표 담당지점 범위 밖입니다. 거래처를 다시 선택하세요.";
+            return false;
+        }
+
+        return true;
     }
 
     private async Task OpenItemEntrySheetAsync(ItemDto item, bool recordRecent, bool requireResolvedActiveItem = false)

@@ -175,6 +175,13 @@ public sealed class CustomerEditPage : ContentPage
             _statusLabel.Text = "거래처를 저장하고 있습니다.";
 
             dto = BuildDto(name, tenantCode, officeCode);
+            if (!MobileSessionScopeFilter.CanAccessCustomer(_sessionStore.GetSnapshot(), dto))
+            {
+                _statusLabel.Text = "현재 로그인 담당지점/업체 범위 밖 거래처는 저장할 수 없습니다.";
+                await DisplayAlert("저장 범위 확인", _statusLabel.Text, "확인");
+                return;
+            }
+
             var saved = _source is null
                 ? await _api.CreateCustomerAsync(dto)
                 : await _api.UpdateCustomerAsync(dto);
@@ -216,6 +223,13 @@ public sealed class CustomerEditPage : ContentPage
         {
             _statusLabel.Text = "권한이 없어 거래처를 삭제할 수 없습니다.";
             await DisplayAlert("권한 확인", _statusLabel.Text, "확인");
+            return;
+        }
+
+        if (!MobileSessionScopeFilter.CanAccessCustomer(_sessionStore.GetSnapshot(), _source))
+        {
+            _statusLabel.Text = "현재 로그인 담당지점/업체 범위 밖 거래처는 삭제할 수 없습니다.";
+            await DisplayAlert("삭제 범위 확인", _statusLabel.Text, "확인");
             return;
         }
 
