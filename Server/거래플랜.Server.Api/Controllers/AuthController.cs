@@ -38,7 +38,7 @@ public sealed class AuthController : ControllerBase
         var user = await _dbContext.Users
             .IgnoreQueryFilters()
             .Include(x => x.Permissions)
-            .FirstOrDefaultAsync(x => x.Username == username && x.IsActive, cancellationToken);
+            .FirstOrDefaultAsync(x => x.Username == username && x.IsActive && !x.IsDeleted, cancellationToken);
 
         if (user is null || !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
         {
@@ -62,7 +62,7 @@ public sealed class AuthController : ControllerBase
         var user = await _dbContext.Users
             .IgnoreQueryFilters()
             .Include(x => x.Permissions)
-            .FirstOrDefaultAsync(x => x.Id == userId && x.IsActive, cancellationToken);
+            .FirstOrDefaultAsync(x => x.Id == userId && x.IsActive && !x.IsDeleted, cancellationToken);
 
         if (user is null)
             return Unauthorized();

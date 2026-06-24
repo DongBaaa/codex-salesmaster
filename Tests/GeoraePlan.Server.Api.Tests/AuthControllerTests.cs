@@ -82,6 +82,31 @@ public sealed class AuthControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Refresh_ReturnsUnauthorized_WhenAuthenticatedUserIsDeleted()
+    {
+        var user = new UserAccount
+        {
+            Username = "deleted-refresh-user",
+            PasswordHash = "unused-refresh-hash",
+            Role = "User",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            IsActive = true,
+            IsDeleted = true
+        };
+
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(user);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, user.Id);
+        var response = await controller.Refresh(CancellationToken.None);
+
+        Assert.IsType<UnauthorizedResult>(response.Result);
+    }
+
+    [Fact]
     public async Task Login_ReturnsUnauthorized_WhenUserIsInactiveEvenWithValidPassword()
     {
         var user = new UserAccount
@@ -93,6 +118,37 @@ public sealed class AuthControllerTests : IDisposable
             OfficeCode = OfficeCodeCatalog.Usenet,
             ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
             IsActive = false
+        };
+
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(user);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, user.Id);
+        var response = await controller.Login(
+            new LoginRequest
+            {
+                Username = user.Username,
+                Password = "correct-password"
+            },
+            CancellationToken.None);
+
+        Assert.IsType<UnauthorizedResult>(response.Result);
+    }
+
+    [Fact]
+    public async Task Login_ReturnsUnauthorized_WhenUserIsDeletedEvenWithValidPassword()
+    {
+        var user = new UserAccount
+        {
+            Username = "deleted-login-user",
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword("correct-password"),
+            Role = "User",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            IsActive = true,
+            IsDeleted = true
         };
 
         await using var dbContext = CreateDbContext();
