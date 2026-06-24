@@ -353,6 +353,56 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
                 .SingleAsync());
     }
 
+    [Theory]
+    [InlineData("restore")]
+    [InlineData("purge")]
+    public async Task CustomerMutation_DirectOutOfOfficeId_DoesNotRestoreOrPurgeRow(string action)
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = CreateDeletedCustomerOutsideCurrentOffice();
+        dbContext.Customers.Add(customer);
+        await dbContext.SaveChangesAsync();
+
+        var storedBefore = await dbContext.Customers.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == customer.Id);
+        var controller = CreateController(dbContext, currentUser);
+        var request = new RecycleBinMutationRequest
+        {
+            Items =
+            [
+                new RecycleBinMutationTargetDto
+                {
+                    EntityId = customer.Id,
+                    Kind = "customer",
+                    ExpectedRevision = storedBefore.Revision
+                }
+            ]
+        };
+
+        var response = string.Equals(action, "restore", StringComparison.Ordinal)
+            ? await controller.Restore(request, CancellationToken.None)
+            : await controller.Purge(request, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var result = Assert.Single(payload.Results);
+        Assert.False(result.Success);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        var storedAfter = await dbContext.Customers.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == customer.Id);
+        Assert.True(storedAfter.IsDeleted);
+        Assert.Equal(storedBefore.Revision, storedAfter.Revision);
+        Assert.False(await dbContext.RecycleBinPurgeRecords
+            .IgnoreQueryFilters()
+            .AnyAsync(current => current.Kind == "customer" && current.EntityId == customer.Id));
+    }
+
     [Fact]
     public async Task PurgeItem_RejectsRemainingInvoiceLineReference()
     {
