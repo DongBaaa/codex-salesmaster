@@ -561,6 +561,8 @@ public sealed class RecycleBinController : ControllerBase
                 Success = mutation.Success,
                 Message = mutation.Message
             });
+            if (!mutation.Success)
+                _dbContext.ChangeTracker.Clear();
             if (mutation.Success)
                 result.SucceededCount++;
         }
@@ -598,6 +600,8 @@ public sealed class RecycleBinController : ControllerBase
                 Success = mutation.Success,
                 Message = mutation.Message
             });
+            if (!mutation.Success)
+                _dbContext.ChangeTracker.Clear();
             if (mutation.Success)
                 result.SucceededCount++;
         }
