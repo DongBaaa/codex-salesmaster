@@ -2965,6 +2965,138 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FlagsUnreferencedFilesInCentralStorage()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var fileStorage = CreateFileStorage();
+        var customerId = Guid.NewGuid();
+        var contractId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+        var deletedAttachmentId = Guid.NewGuid();
+        var referencedBytes = new byte[] { 1, 2, 3 };
+        var deletedReferenceBytes = new byte[] { 4, 5 };
+        var orphanBytes = new byte[] { 9, 9, 9, 9 };
+        var referencedPath = await fileStorage.SaveBytesAsync(
+            "customer-contracts",
+            customerId.ToString("N"),
+            contractId,
+            "referenced-contract.pdf",
+            referencedBytes);
+        var deletedReferencedPath = await fileStorage.SaveBytesAsync(
+            "transaction-attachments",
+            transactionId.ToString("N"),
+            deletedAttachmentId,
+            "deleted-referenced.pdf",
+            deletedReferenceBytes);
+        var orphanPath = await fileStorage.SaveBytesAsync(
+            "customer-contracts",
+            customerId.ToString("N"),
+            Guid.NewGuid(),
+            "orphan-contract.pdf",
+            orphanBytes);
+
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "파일 저장소 orphan 거래처",
+            NameMatchKey = "FILESTORAGEORPHANCUSTOMER",
+            TradeType = "매출"
+        });
+        dbContext.CustomerContracts.Add(new CustomerContract
+        {
+            Id = contractId,
+            CustomerId = customerId,
+            ContractType = "거래계약서",
+            FileName = "referenced-contract.pdf",
+            FileSize = referencedBytes.LongLength,
+            FileHash = Convert.ToHexString(SHA256.HashData(referencedBytes)),
+            StoragePath = referencedPath,
+            FileContent = []
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = transactionId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 24),
+            TransactionKind = "수금"
+        });
+        dbContext.TransactionAttachments.Add(new TransactionAttachment
+        {
+            Id = deletedAttachmentId,
+            TransactionId = transactionId,
+            FileName = "deleted-referenced.pdf",
+            FileSize = deletedReferenceBytes.LongLength,
+            FileHash = Convert.ToHexString(SHA256.HashData(deletedReferenceBytes)),
+            StoragePath = deletedReferencedPath,
+            FileContent = [],
+            IsDeleted = true
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = new IntegrityController(dbContext, new OfficeScopeService(currentUser, dbContext), fileStorage);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issue = Assert.Single(payload.Issues, current => current.Code == "file_storage_unreferenced");
+
+        Assert.Equal("Warning", issue.Severity);
+        Assert.Equal(1, issue.Count);
+
+        var detailsResponse = await controller.GetReportDetails("file_storage_unreferenced", CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+        var row = Assert.Single(details.Rows);
+
+        Assert.Equal(1, details.DetailCount);
+        Assert.Equal("파일저장소", row.EntityType);
+        Assert.Equal("orphan-contract.pdf", row.PrimaryText);
+        Assert.Equal("customer-contracts", row.SecondaryText);
+        Assert.Contains("DB StoragePath 참조 없음", row.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains(orphanPath, row.DetailText, StringComparison.Ordinal);
+        Assert.DoesNotContain("referenced-contract.pdf", row.DetailText, StringComparison.Ordinal);
+        Assert.DoesNotContain("deleted-referenced.pdf", row.DetailText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetReport_HidesUnreferencedFileStorageScanForOfficeScopedUsers()
+    {
+        var currentUser = CreateOfficeScopedUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var fileStorage = CreateFileStorage();
+        await fileStorage.SaveBytesAsync(
+            "customer-contracts",
+            "outside-office-scope",
+            Guid.NewGuid(),
+            "office-hidden-orphan.pdf",
+            [1, 2, 3]);
+
+        var controller = new IntegrityController(dbContext, new OfficeScopeService(currentUser, dbContext), fileStorage);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+
+        Assert.DoesNotContain(payload.Issues, current => current.Code == "file_storage_unreferenced");
+
+        var detailsResponse = await controller.GetReportDetails("file_storage_unreferenced", CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+
+        Assert.Equal(0, details.DetailCount);
+        Assert.Empty(details.Rows);
+    }
+
+    [Fact]
     public async Task GetReport_IgnoresNonInventoryItems_WhenCountingStockMismatch()
     {
         var currentUser = CreateAdminUser();

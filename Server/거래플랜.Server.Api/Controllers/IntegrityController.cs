@@ -35,6 +35,12 @@ public sealed class IntegrityController : ControllerBase
         "image/heic",
         "image/heif"
     };
+    private static readonly string[] AuditedFileStorageAreas =
+    [
+        "customer-contracts",
+        "transaction-attachments",
+        "payment-attachments"
+    ];
 
     private readonly AppDbContext _dbContext;
     private readonly OfficeScopeService _officeScopeService;
@@ -550,6 +556,13 @@ public sealed class IntegrityController : ControllerBase
             fileStorageIssueCandidates.Count(IsStoredFileHashMismatch),
             "Error",
             "저장소 실제 파일 SHA256과 DB 파일 해시가 다른 첨부/계약서가 있습니다.");
+        var unreferencedStoredFileCandidates = await LoadUnreferencedStoredFileCandidatesAsync(cancellationToken);
+        AddIssue(
+            issues,
+            "file_storage_unreferenced",
+            unreferencedStoredFileCandidates.Count,
+            "Warning",
+            "DB 계약서/증빙 행에서 참조되지 않는 파일 저장소 파일이 남아 있습니다.");
 
         var report = new IntegrityReportDto
         {
@@ -652,6 +665,7 @@ public sealed class IntegrityController : ControllerBase
             "file_storage_missing" => await LoadStoredFileMissingDetailsAsync(cancellationToken),
             "file_storage_size_mismatch" => await LoadStoredFileSizeMismatchDetailsAsync(cancellationToken),
             "file_storage_hash_mismatch" => await LoadStoredFileHashMismatchDetailsAsync(cancellationToken),
+            "file_storage_unreferenced" => await LoadUnreferencedStoredFileDetailsAsync(cancellationToken),
             _ => []
         };
     }
@@ -3574,6 +3588,131 @@ public sealed class IntegrityController : ControllerBase
         return candidates;
     }
 
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadUnreferencedStoredFileDetailsAsync(CancellationToken cancellationToken)
+    {
+        var candidates = await LoadUnreferencedStoredFileCandidatesAsync(cancellationToken);
+        return candidates
+            .Select(CreateUnreferencedStoredFileDetailRow)
+            .ToList();
+    }
+
+    private async Task<List<FileStorageOrphanCandidate>> LoadUnreferencedStoredFileCandidatesAsync(CancellationToken cancellationToken)
+    {
+        if (!_officeScopeService.HasGlobalDataScope || !TryGetFileStorageRoot(out var storageRoot))
+            return [];
+
+        var referencedPaths = await LoadReferencedFileStoragePathsAsync(storageRoot, cancellationToken);
+        var candidates = new List<FileStorageOrphanCandidate>();
+        foreach (var area in AuditedFileStorageAreas)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var areaRoot = Path.Combine(storageRoot, area);
+            if (!Directory.Exists(areaRoot))
+                continue;
+
+            try
+            {
+                foreach (var filePath in Directory.EnumerateFiles(areaRoot, "*", SearchOption.AllDirectories))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!TryNormalizeStoredPath(filePath, storageRoot, out var normalizedPath) ||
+                        referencedPaths.Contains(normalizedPath))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        var fileInfo = new FileInfo(normalizedPath);
+                        candidates.Add(new FileStorageOrphanCandidate(
+                            Area: area,
+                            StoredPath: normalizedPath,
+                            FileName: FormatStoredFileDisplayName(fileInfo.Name),
+                            Length: fileInfo.Length,
+                            LastWriteTimeUtc: fileInfo.LastWriteTimeUtc));
+                    }
+                    catch (IOException)
+                    {
+                        // 파일 저장소 스캔 중 이동/잠금된 파일은 다음 점검에서 다시 확인한다.
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        // 권한 문제로 읽을 수 없는 파일은 기존 누락/불일치 점검을 방해하지 않도록 건너뛴다.
+                    }
+                }
+            }
+            catch (DirectoryNotFoundException)
+            {
+                // 스캔 중 디렉터리가 제거되면 다음 점검에서 재평가한다.
+            }
+            catch (IOException)
+            {
+                // 저장소 일시 I/O 오류는 무결성 리포트 전체 실패로 확산하지 않는다.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // 영역별 권한 오류는 다른 영역 스캔을 계속 진행한다.
+            }
+        }
+
+        return candidates
+            .OrderBy(candidate => candidate.Area, StringComparer.Ordinal)
+            .ThenBy(candidate => candidate.StoredPath, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private async Task<HashSet<string>> LoadReferencedFileStoragePathsAsync(
+        string storageRoot,
+        CancellationToken cancellationToken)
+    {
+        var rawPaths = new List<string>();
+        rawPaths.AddRange(await _dbContext.CustomerContracts
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(contract => !string.IsNullOrWhiteSpace(contract.StoragePath))
+            .Select(contract => contract.StoragePath)
+            .ToListAsync(cancellationToken));
+        rawPaths.AddRange(await _dbContext.TransactionAttachments
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(attachment => !string.IsNullOrWhiteSpace(attachment.StoragePath))
+            .Select(attachment => attachment.StoragePath)
+            .ToListAsync(cancellationToken));
+        rawPaths.AddRange(await _dbContext.PaymentAttachments
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(attachment => !string.IsNullOrWhiteSpace(attachment.StoragePath))
+            .Select(attachment => attachment.StoragePath)
+            .ToListAsync(cancellationToken));
+
+        var referencedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var rawPath in rawPaths)
+        {
+            if (TryNormalizeStoredPath(rawPath, storageRoot, out var normalizedPath))
+                referencedPaths.Add(normalizedPath);
+        }
+
+        return referencedPaths;
+    }
+
+    private bool TryGetFileStorageRoot(out string storageRoot)
+    {
+        storageRoot = string.Empty;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_fileStorage.RootPath))
+                return false;
+
+            storageRoot = Path.GetFullPath(_fileStorage.RootPath);
+            return Directory.Exists(storageRoot);
+        }
+        catch
+        {
+            storageRoot = string.Empty;
+            return false;
+        }
+    }
+
     private async Task<List<IntegrityIssueDetailRowDto>> LoadSharedItemScopeConflictDetailsAsync(CancellationToken cancellationToken)
     {
         var snapshots = await LoadSharedItemScopeConflictSnapshotsAsync(cancellationToken);
@@ -4239,6 +4378,7 @@ public sealed class IntegrityController : ControllerBase
             "file_storage_missing" => new IntegrityIssueDefinition("file_storage_missing", "Error", "저장소 경로가 있으나 실제 저장 파일을 읽을 수 없는 첨부/계약서가 있습니다."),
             "file_storage_size_mismatch" => new IntegrityIssueDefinition("file_storage_size_mismatch", "Error", "저장소 실제 파일 크기와 DB 파일 크기가 다른 첨부/계약서가 있습니다."),
             "file_storage_hash_mismatch" => new IntegrityIssueDefinition("file_storage_hash_mismatch", "Error", "저장소 실제 파일 SHA256과 DB 파일 해시가 다른 첨부/계약서가 있습니다."),
+            "file_storage_unreferenced" => new IntegrityIssueDefinition("file_storage_unreferenced", "Warning", "DB 계약서/증빙 행에서 참조되지 않는 파일 저장소 파일이 남아 있습니다."),
             _ => new IntegrityIssueDefinition(string.Empty, string.Empty, string.Empty)
         };
 
@@ -4441,6 +4581,21 @@ public sealed class IntegrityController : ControllerBase
                 $"DB FileContent {candidate.FileContentLength:N0} bytes"));
     }
 
+    private static IntegrityIssueDetailRowDto CreateUnreferencedStoredFileDetailRow(FileStorageOrphanCandidate candidate)
+    {
+        return CreateDetailRow(
+            entityType: "파일저장소",
+            entityIdText: string.Empty,
+            primaryText: FirstNonEmpty(candidate.FileName, candidate.StoredPath),
+            secondaryText: candidate.Area,
+            referenceText: "DB StoragePath 참조 없음",
+            scopeText: "전역 저장소",
+            detailText: CombineParts(
+                $"StoragePath {candidate.StoredPath}",
+                $"저장파일 크기 {candidate.Length:N0} bytes",
+                $"수정시각 {FormatUtcDateTime(candidate.LastWriteTimeUtc)}"));
+    }
+
     private static List<IntegrityIssueDetailRowDto> CreateFileStorageIssueDetails(
         IEnumerable<FileStorageIssueCandidate> candidates,
         Func<FileStorageIssueCandidate, bool> predicate)
@@ -4455,6 +4610,56 @@ public sealed class IntegrityController : ControllerBase
 
     private FileStorageInspectionResult InspectStoredFile(string? storagePath, string? fileHash)
         => _fileStorage.Inspect(storagePath, computeHash: IsSha256Hex(fileHash));
+
+    private static bool TryNormalizeStoredPath(string? storedPath, string storageRoot, out string normalizedPath)
+    {
+        normalizedPath = string.Empty;
+        if (string.IsNullOrWhiteSpace(storedPath) || string.IsNullOrWhiteSpace(storageRoot))
+            return false;
+
+        try
+        {
+            var root = EnsureTrailingDirectorySeparator(Path.GetFullPath(storageRoot));
+            var fullPath = Path.GetFullPath(storedPath);
+            if (!fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            normalizedPath = fullPath;
+            return true;
+        }
+        catch
+        {
+            normalizedPath = string.Empty;
+            return false;
+        }
+    }
+
+    private static string EnsureTrailingDirectorySeparator(string path)
+        => path.EndsWith(Path.DirectorySeparatorChar) || path.EndsWith(Path.AltDirectorySeparatorChar)
+            ? path
+            : path + Path.DirectorySeparatorChar;
+
+    private static string FormatStoredFileDisplayName(string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+            return string.Empty;
+
+        const int storagePrefixLength = 34;
+        if (fileName.Length > storagePrefixLength &&
+            fileName[32] == '_' &&
+            fileName[33] == '_' &&
+            fileName[..32].All(IsHexCharacter))
+        {
+            return fileName[storagePrefixLength..];
+        }
+
+        return fileName;
+    }
+
+    private static bool IsHexCharacter(char character)
+        => (character >= '0' && character <= '9') ||
+           (character >= 'a' && character <= 'f') ||
+           (character >= 'A' && character <= 'F');
 
     private static bool IsFileContentUnavailable(FileStorageIssueCandidate candidate)
         => candidate.FileSize > 0 &&
@@ -4692,6 +4897,13 @@ public sealed class IntegrityController : ControllerBase
         string StoragePath,
         int FileContentLength,
         FileStorageInspectionResult StorageInspection);
+
+    private sealed record FileStorageOrphanCandidate(
+        string Area,
+        string StoredPath,
+        string FileName,
+        long Length,
+        DateTime LastWriteTimeUtc);
 
     private sealed record AttachmentFileTypeIssueRow(
         string EntityType,
