@@ -806,6 +806,38 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void MobileSyncForbiddenPush_PreservesPendingPushAndShowsPermissionMessage()
+    {
+        var source = File.ReadAllText(Path.Combine(
+                FindRepositoryRoot(),
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "Services",
+                "SyncCoordinator.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains("private async Task<MobileSyncState> PushInternalAsync(MobileSyncState state, CancellationToken ct)", source, StringComparison.Ordinal);
+        Assert.Contains("var result = EnsurePushResult(await _api.PushAsync(scopedPush, ct));", source, StringComparison.Ordinal);
+        Assert.Contains("RemoveSentScopedPendingMutations(state.PendingPush, scopedPush, result);", source, StringComparison.Ordinal);
+        Assert.Matches(
+            "private async Task<MobileSyncState> PushInternalAsync[\\s\\S]*catch \\(Exception ex\\)\\n\\s*\\{\\n\\s*MarkFailure\\(state, ex\\);\\n\\s*await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync\\(state, ct\\);\\n\\s*return state;\\n\\s*\\}",
+            source);
+        Assert.DoesNotContain(
+            "catch (Exception ex)\n        {\n            state.PendingPush = new SyncPushRequest",
+            source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "catch (Exception ex)\n        {\n            RemoveSentScopedPendingMutations",
+            source,
+            StringComparison.Ordinal);
+
+        Assert.Contains("state.LastError = TranslateFailureMessage(ex);", source, StringComparison.Ordinal);
+        Assert.Contains("state.LastFailureAllowsCachedDisplay = MobileRetryableNetworkFailure.IsRetryable(ex) || IsConcurrencyConflict(ex);", source, StringComparison.Ordinal);
+        Assert.Contains("HttpRequestException httpEx when httpEx.StatusCode == HttpStatusCode.Forbidden", source, StringComparison.Ordinal);
+        Assert.Contains("=> \"현재 계정 권한 또는 지점 범위 때문에 저장할 수 없습니다. 담당지점/권한을 확인해 주세요.\"", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MobileImmediatePaymentConflict_QueuesAttachmentsForRetryBeforeReturning()
     {
         var source = File.ReadAllText(Path.Combine(
