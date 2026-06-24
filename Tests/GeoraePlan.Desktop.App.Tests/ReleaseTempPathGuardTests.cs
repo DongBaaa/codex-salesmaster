@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Diagnostics;
 using 거래플랜.Desktop.App.Services;
 using Xunit;
 
@@ -183,6 +184,115 @@ public sealed class ReleaseTempPathGuardTests
             "$ProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path",
             "$tempInitializer = Join-Path $ProjectRoot 'tools\\common\\Initialize-GeoraePlanTemp.ps1'",
             "& powershell -NoProfile -ExecutionPolicy Bypass -File $desktopScript -ProjectRoot $ProjectRoot");
+    }
+
+    [Fact]
+    public async Task DesktopInstallerBuild_FailsFastWhenUpdaterPublishFails()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var scriptPath = Path.Combine(
+            repositoryRoot,
+            "tools",
+            "release",
+            "Build-GeoraePlanDesktopInstaller.ps1");
+        var testRoot = Path.Combine(
+            repositoryRoot,
+            "temp",
+            "release-failfast-tests",
+            Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            Directory.CreateDirectory(testRoot);
+            Directory.CreateDirectory(Path.Combine(testRoot, "deploy"));
+            File.WriteAllText(Path.Combine(testRoot, "deploy", "Set-ApiBaseUrl.ps1"), "# test deployment marker");
+
+            var desktopProjectDirectory = Path.Combine(testRoot, "Desktop", "거래플랜.Desktop.App");
+            Directory.CreateDirectory(desktopProjectDirectory);
+            File.WriteAllText(
+                Path.Combine(desktopProjectDirectory, "거래플랜.Desktop.App.csproj"),
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <Version>9.9.999</Version>
+                  </PropertyGroup>
+                </Project>
+                """);
+
+            var updaterProjectDirectory = Path.Combine(testRoot, "Updater", "거래플랜.Updater");
+            Directory.CreateDirectory(updaterProjectDirectory);
+            File.WriteAllText(
+                Path.Combine(updaterProjectDirectory, "거래플랜.Updater.csproj"),
+                "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+
+            var sourceFolder = Path.Combine(testRoot, "source");
+            Directory.CreateDirectory(sourceFolder);
+            File.WriteAllText(
+                Path.Combine(sourceFolder, "appsettings.json"),
+                "{\"Api\":{\"BaseUrl\":\"https://example.invalid\"}}");
+            File.WriteAllText(Path.Combine(sourceFolder, "거래플랜.exe"), "fake desktop exe");
+
+            var fakeDotnetPath = Path.Combine(testRoot, "fake-dotnet.cmd");
+            File.WriteAllText(
+                fakeDotnetPath,
+                """
+                @echo off
+                if "%~1"=="--version" (
+                  echo 8.0.100
+                  exit /b 0
+                )
+                echo %*>>"%~dp0dotnet-args.txt"
+                exit /b 37
+                """);
+
+            using var process = new Process();
+            process.StartInfo = new ProcessStartInfo
+            {
+                FileName = "powershell",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            process.StartInfo.ArgumentList.Add("-NoProfile");
+            process.StartInfo.ArgumentList.Add("-ExecutionPolicy");
+            process.StartInfo.ArgumentList.Add("Bypass");
+            process.StartInfo.ArgumentList.Add("-File");
+            process.StartInfo.ArgumentList.Add(scriptPath);
+            process.StartInfo.ArgumentList.Add("-ProjectRoot");
+            process.StartInfo.ArgumentList.Add(testRoot);
+            process.StartInfo.ArgumentList.Add("-SourceFolder");
+            process.StartInfo.ArgumentList.Add(sourceFolder);
+            process.StartInfo.ArgumentList.Add("-OutputRoot");
+            process.StartInfo.ArgumentList.Add(Path.Combine(testRoot, "output"));
+            process.StartInfo.ArgumentList.Add("-SkipNativeInstallers");
+            process.StartInfo.Environment["DOTNET_EXE"] = fakeDotnetPath;
+            process.Start();
+
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            var exited = process.WaitForExit(60_000);
+            Assert.True(exited, "Desktop installer build fail-fast test timed out.");
+
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+            Assert.NotEqual(0, process.ExitCode);
+            Assert.Contains(
+                "Failed to publish updater for desktop package.",
+                stdout + stderr,
+                StringComparison.Ordinal);
+            Assert.True(
+                File.Exists(Path.Combine(testRoot, "dotnet-args.txt")),
+                "Fake dotnet should have been invoked for updater publish.");
+            Assert.False(
+                File.Exists(Path.Combine(testRoot, "output", "관리자용", "거래플랜-PC-설치패키지.zip")),
+                "Installer package must not be created when updater publish fails.");
+        }
+        finally
+        {
+            if (Directory.Exists(testRoot))
+                Directory.Delete(testRoot, recursive: true);
+        }
     }
 
     [Fact]

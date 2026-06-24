@@ -342,9 +342,16 @@ if (Test-Path -LiteralPath $updaterProject) {
     $updaterPublishRoot = Join-Path $env:TEMP 'georaeplan-updater-publish'
     Remove-Item -LiteralPath $updaterPublishRoot -Recurse -Force -ErrorAction SilentlyContinue
     & $dotnetExe publish $updaterProject -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $updaterPublishRoot | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-        Invoke-RobocopyMirror -Source $updaterPublishRoot -Destination (Join-Path $appRoot 'Updater')
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Failed to publish updater for desktop package.'
     }
+
+    $publishedUpdaterExe = Join-Path $updaterPublishRoot '거래플랜.Updater.exe'
+    if (-not (Test-Path -LiteralPath $publishedUpdaterExe)) {
+        throw "Published updater executable not found: $publishedUpdaterExe"
+    }
+
+    Invoke-RobocopyMirror -Source $updaterPublishRoot -Destination (Join-Path $appRoot 'Updater')
 }
 
 $serverUrl = ''
