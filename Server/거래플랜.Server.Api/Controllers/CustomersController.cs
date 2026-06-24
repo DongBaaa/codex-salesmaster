@@ -187,6 +187,8 @@ public sealed class CustomersController : ControllerBase
     {
         if (!_officeScopeService.CanEditCustomers())
             return Forbid();
+        if (dto.IsDeleted)
+            return SoftDeleteMutationGuard.RejectCreate("거래처");
 
         NormalizeCustomerClassification(dto);
         var entity = new Customer { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };

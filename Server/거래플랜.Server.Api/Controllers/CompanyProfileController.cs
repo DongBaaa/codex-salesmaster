@@ -55,6 +55,9 @@ public sealed class CompanyProfileController : ControllerBase
         if (!_officeScopeService.CanWriteOfficeForCompanyProfiles(normalizedOfficeCode))
             return Forbid();
 
+        if (dto.IsDeleted)
+            return SoftDeleteMutationGuard.RejectUpdate("회사 프로필");
+
         dto.OfficeCode = normalizedOfficeCode;
 
         var profile = dto.Id == Guid.Empty

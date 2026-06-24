@@ -3,6 +3,7 @@ using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
 using 거래플랜.Server.Api.Security;
 using 거래플랜.Server.Api.Services;
+using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -35,6 +36,8 @@ public sealed class CustomerMastersController : ControllerBase
     {
         if (!_officeScopeService.CanEditCustomers())
             return Forbid();
+        if (dto.IsDeleted)
+            return SoftDeleteMutationGuard.RejectCreate("거래처 원장");
 
         var entity = new CustomerMaster { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
         dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode);

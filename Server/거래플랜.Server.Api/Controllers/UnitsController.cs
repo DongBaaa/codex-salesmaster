@@ -29,6 +29,8 @@ public sealed class UnitsController : ControllerBase
         var normalizedName = UnitCatalogNormalizer.Normalize(dto.Name);
         if (string.IsNullOrWhiteSpace(normalizedName))
             return BadRequest(new { error = "unit_name_required", message = "단위명은 필수입니다." });
+        if (dto.IsDeleted)
+            return SoftDeleteMutationGuard.RejectCreate("단위");
 
         var entity = new Unit { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
         if (!dto.IsDeleted &&
@@ -53,6 +55,8 @@ public sealed class UnitsController : ControllerBase
         if (entity is null) return NotFound();
         if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Unit)) is { } conflict)
             return conflict;
+        if (dto.IsDeleted)
+            return SoftDeleteMutationGuard.RejectUpdate("단위");
         var normalizedName = UnitCatalogNormalizer.Normalize(dto.Name);
         if (string.IsNullOrWhiteSpace(normalizedName))
             return BadRequest(new { error = "unit_name_required", message = "단위명은 필수입니다." });

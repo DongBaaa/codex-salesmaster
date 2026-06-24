@@ -288,6 +288,111 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task DirectCreateEndpoints_RejectSoftDeletedPayloadsAndDoNotCreateHiddenRows()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var itemId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var unitId = Guid.NewGuid();
+        var categoryId = Guid.NewGuid();
+        var customerMasterId = Guid.NewGuid();
+
+        var customersController = new CustomersController(dbContext, new OfficeScopeService(currentUser, dbContext), new StubCentralFileStorage());
+        var customerResponse = await customersController.Create(new CustomerDto
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "CREATE-DELETED-CUSTOMER",
+            NameMatchKey = "CREATEDELETEDCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true
+        }, CancellationToken.None);
+        AssertSoftDeleteCreateRejected(Assert.IsType<BadRequestObjectResult>(customerResponse.Result));
+
+        var itemsController = new ItemsController(dbContext, new OfficeScopeService(currentUser, dbContext));
+        var itemResponse = await itemsController.Create(new ItemDto
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "CREATE-DELETED-ITEM",
+            NameMatchKey = "CREATEDELETEDITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            Unit = "EA",
+            IsDeleted = true
+        }, CancellationToken.None);
+        AssertSoftDeleteCreateRejected(Assert.IsType<BadRequestObjectResult>(itemResponse.Result));
+
+        var invoicesController = CreateInvoicesController(dbContext, currentUser);
+        var invoiceResponse = await invoicesController.Create(new InvoiceDto
+        {
+            Id = invoiceId,
+            CustomerId = Guid.NewGuid(),
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 24),
+            IsDeleted = true
+        }, CancellationToken.None);
+        AssertSoftDeleteCreateRejected(Assert.IsType<BadRequestObjectResult>(invoiceResponse.Result));
+
+        var paymentsController = CreatePaymentsController(dbContext, currentUser);
+        var paymentResponse = await paymentsController.Create(new PaymentDto
+        {
+            Id = paymentId,
+            InvoiceId = Guid.NewGuid(),
+            PaymentDate = new DateOnly(2026, 6, 24),
+            Amount = 1m,
+            IsDeleted = true
+        }, CancellationToken.None);
+        AssertSoftDeleteCreateRejected(Assert.IsType<BadRequestObjectResult>(paymentResponse.Result));
+
+        var unitsController = new UnitsController(dbContext);
+        var unitResponse = await unitsController.Create(new UnitDto
+        {
+            Id = unitId,
+            Name = "CREATE-DELETED-UNIT",
+            IsActive = true,
+            IsDeleted = true
+        }, CancellationToken.None);
+        AssertSoftDeleteCreateRejected(Assert.IsType<BadRequestObjectResult>(unitResponse.Result));
+
+        var customerCategoriesController = new CustomerCategoriesController(dbContext);
+        var categoryResponse = await customerCategoriesController.Create(new CustomerCategoryDto
+        {
+            Id = categoryId,
+            Name = "생성삭제분류",
+            IsDeleted = true
+        }, CancellationToken.None);
+        AssertSoftDeleteCreateRejected(Assert.IsType<BadRequestObjectResult>(categoryResponse.Result));
+
+        var customerMastersController = new CustomerMastersController(dbContext, new OfficeScopeService(currentUser, dbContext));
+        var customerMasterResponse = await customerMastersController.Create(new CustomerMasterDto
+        {
+            Id = customerMasterId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "CREATE-DELETED-MASTER",
+            NameMatchKey = "CREATEDELETEDMASTER",
+            IsDeleted = true
+        }, CancellationToken.None);
+        AssertSoftDeleteCreateRejected(Assert.IsType<BadRequestObjectResult>(customerMasterResponse.Result));
+
+        Assert.False(await dbContext.Customers.IgnoreQueryFilters().AnyAsync(row => row.Id == customerId));
+        Assert.False(await dbContext.Items.IgnoreQueryFilters().AnyAsync(row => row.Id == itemId));
+        Assert.False(await dbContext.Invoices.IgnoreQueryFilters().AnyAsync(row => row.Id == invoiceId));
+        Assert.False(await dbContext.Payments.IgnoreQueryFilters().AnyAsync(row => row.Id == paymentId));
+        Assert.False(await dbContext.Units.IgnoreQueryFilters().AnyAsync(row => row.Id == unitId));
+        Assert.False(await dbContext.CustomerCategories.IgnoreQueryFilters().AnyAsync(row => row.Id == categoryId));
+        Assert.False(await dbContext.CustomerMasters.IgnoreQueryFilters().AnyAsync(row => row.Id == customerMasterId));
+    }
+
+    [Fact]
     public async Task ItemsController_Update_ReturnsConflict_WhenRevisionFallbackDoesNotMatch()
     {
         var currentUser = CreateAdminUser();
@@ -5212,6 +5317,42 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task CompanyProfileController_Upsert_RejectsSoftDeleteMutationViaPutAndKeepsProfileActive()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var profile = new CompanyProfile
+        {
+            Id = Guid.NewGuid(),
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileName = "USENET default",
+            TradeName = "USENET",
+            IsDefaultForOffice = true,
+            IsActive = true
+        };
+        dbContext.CompanyProfiles.Add(profile);
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.CompanyProfiles.IgnoreQueryFilters().FirstAsync(row => row.Id == profile.Id);
+        var dto = stored.ToDto();
+        dto.ExpectedRevision = stored.Revision;
+        dto.IsDeleted = true;
+
+        var controller = new CompanyProfileController(dbContext, new OfficeScopeService(currentUser, dbContext));
+        var response = await controller.Upsert(dto, CancellationToken.None);
+
+        AssertSoftDeletePutRejected(Assert.IsType<BadRequestObjectResult>(response.Result));
+        Assert.False(await dbContext.CompanyProfiles.IgnoreQueryFilters()
+            .Where(row => row.Id == profile.Id)
+            .Select(row => row.IsDeleted)
+            .SingleAsync());
+
+        var readResponse = await controller.Get(OfficeCodeCatalog.Usenet, CancellationToken.None);
+        Assert.IsType<OkObjectResult>(readResponse.Result);
+    }
+
+    [Fact]
     public async Task SyncPush_ReturnsAcceptedRevision_ForConsecutiveCompanyProfileSaves()
     {
         var currentUser = CreateAdminUser();
@@ -5444,6 +5585,78 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         Assert.Equal(2, await dbContext.CustomerCategories.IgnoreQueryFilters().CountAsync(category => !category.IsDeleted));
     }
 
+    [Fact]
+    public async Task UnitsController_Update_RejectsSoftDeleteMutationViaPut()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var unitId = Guid.NewGuid();
+        dbContext.Units.Add(new Unit
+        {
+            Id = unitId,
+            Name = "EA",
+            IsActive = true
+        });
+        await dbContext.SaveChangesAsync();
+
+        var storedUnit = await dbContext.Units.IgnoreQueryFilters().FirstAsync(unit => unit.Id == unitId);
+        var controller = new UnitsController(dbContext);
+        var response = await controller.Update(unitId, new UnitDto
+        {
+            Id = unitId,
+            Name = "EA",
+            IsActive = true,
+            IsDeleted = true,
+            ExpectedRevision = storedUnit.Revision
+        }, CancellationToken.None);
+
+        AssertSoftDeletePutRejected(Assert.IsType<BadRequestObjectResult>(response.Result));
+        Assert.False(await dbContext.Units.IgnoreQueryFilters()
+            .Where(unit => unit.Id == unitId)
+            .Select(unit => unit.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task CustomerCategoriesController_Update_RejectsSoftDeleteMutationViaPutAndDeleteEndpointDeletes()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var categoryId = Guid.NewGuid();
+        dbContext.CustomerCategories.Add(new CustomerCategory
+        {
+            Id = categoryId,
+            Name = "기업"
+        });
+        await dbContext.SaveChangesAsync();
+
+        var storedCategory = await dbContext.CustomerCategories.IgnoreQueryFilters().FirstAsync(category => category.Id == categoryId);
+        var controller = new CustomerCategoriesController(dbContext);
+        var updateResponse = await controller.Update(categoryId, new CustomerCategoryDto
+        {
+            Id = categoryId,
+            Name = "기업",
+            IsDeleted = true,
+            ExpectedRevision = storedCategory.Revision
+        }, CancellationToken.None);
+
+        AssertSoftDeletePutRejected(Assert.IsType<BadRequestObjectResult>(updateResponse.Result));
+        Assert.False(await dbContext.CustomerCategories.IgnoreQueryFilters()
+            .Where(category => category.Id == categoryId)
+            .Select(category => category.IsDeleted)
+            .SingleAsync());
+
+        var deleteResult = await controller.Delete(categoryId, storedCategory.Revision, CancellationToken.None);
+
+        Assert.IsType<NoContentResult>(deleteResult);
+        Assert.True(await dbContext.CustomerCategories.IgnoreQueryFilters()
+            .Where(category => category.Id == categoryId)
+            .Select(category => category.IsDeleted)
+            .SingleAsync());
+    }
+
     private static TDto AssertOk<TDto>(ActionResult<TDto> response)
     {
         var ok = Assert.IsType<OkObjectResult>(response.Result);
@@ -5458,6 +5671,16 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         Assert.Equal(SoftDeleteMutationGuard.ErrorCode, payloadType.GetProperty("error")?.GetValue(payload));
         var message = Assert.IsType<string>(payloadType.GetProperty("message")?.GetValue(payload));
         Assert.Contains("전용 삭제 API", message, StringComparison.Ordinal);
+    }
+
+    private static void AssertSoftDeleteCreateRejected(BadRequestObjectResult badRequest)
+    {
+        var payload = badRequest.Value;
+        Assert.NotNull(payload);
+        var payloadType = payload!.GetType();
+        Assert.Equal(SoftDeleteMutationGuard.CreateErrorCode, payloadType.GetProperty("error")?.GetValue(payload));
+        var message = Assert.IsType<string>(payloadType.GetProperty("message")?.GetValue(payload));
+        Assert.Contains("삭제 상태로 저장할 수 없습니다", message, StringComparison.Ordinal);
     }
 
     private static SyncPushResult AssertSyncOk(ActionResult<SyncPushResult> response)

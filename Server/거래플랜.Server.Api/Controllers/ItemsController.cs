@@ -191,6 +191,8 @@ public sealed class ItemsController : ControllerBase
     {
         if (!_officeScopeService.CanEditItems())
             return Forbid();
+        if (dto.IsDeleted)
+            return SoftDeleteMutationGuard.RejectCreate("품목");
 
         var entity = new Item { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
         dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode);

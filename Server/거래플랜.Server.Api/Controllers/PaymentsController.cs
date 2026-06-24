@@ -277,6 +277,8 @@ public sealed class PaymentsController : ControllerBase
     {
         if (!_officeScopeService.CanEditPayments())
             return Forbid();
+        if (dto.IsDeleted)
+            return SoftDeleteMutationGuard.RejectCreate("수금/지급");
 
         var invoice = await _dbContext.Invoices
             .IgnoreQueryFilters()

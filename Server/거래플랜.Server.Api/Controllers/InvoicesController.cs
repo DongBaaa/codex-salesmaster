@@ -129,6 +129,8 @@ public sealed class InvoicesController : ControllerBase
     {
         if (!_officeScopeService.CanEditInvoices())
             return Forbid();
+        if (dto.IsDeleted)
+            return SoftDeleteMutationGuard.RejectCreate("전표");
 
         var customer = await _dbContext.Customers
             .IgnoreQueryFilters()
