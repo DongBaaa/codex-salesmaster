@@ -160,6 +160,111 @@ public sealed class RecycleBinMutationIsolationTests : IDisposable
             .SingleAsync());
     }
 
+    [Fact]
+    public async Task Purge_ClearsFailedMutationTrackerBeforeNextSuccessfulItem()
+    {
+        var user = CreateOfficeUser();
+        var profileId = Guid.Parse("b8111111-1111-1111-1111-111111111111");
+        var linkedAssetId = Guid.Parse("b8222222-2222-2222-2222-222222222222");
+        var outOfScopeLogId = Guid.Parse("b8333333-3333-3333-3333-333333333333");
+        var customerId = Guid.Parse("b8444444-4444-4444-4444-444444444444");
+
+        await using (var seedDb = CreateDbContext(user))
+        {
+            seedDb.RentalBillingProfiles.Add(new RentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = "purge-isolation-profile",
+                CustomerName = "Purge isolation rental profile",
+                BillingType = "묶음",
+                IsDeleted = true
+            });
+
+            seedDb.RentalAssets.Add(new RentalAsset
+            {
+                Id = linkedAssetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "purge-isolation-asset",
+                BillingProfileId = profileId,
+                ManagementNumber = "PI-0001",
+                AssetStatus = RentalAssetStatusNormalizer.Active,
+                BillingEligibilityStatus = "청구대상"
+            });
+
+            seedDb.RentalBillingLogs.Add(new RentalBillingLog
+            {
+                Id = outOfScopeLogId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                BillingProfileId = profileId,
+                BillingYearMonth = "2026-06",
+                ScheduledDate = new DateOnly(2026, 6, 25),
+                Status = "예정",
+                BilledAmount = 10_000m,
+                IsDeleted = true
+            });
+
+            seedDb.Customers.Add(new Customer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Recycle purge success customer",
+                NameMatchKey = "recyclepurgesuccesscustomer",
+                IsDeleted = true
+            });
+
+            await seedDb.SaveChangesAsync();
+        }
+
+        await using var scopedDb = CreateDbContext(user);
+        var controller = CreateRecycleBinController(scopedDb, user);
+
+        var response = await controller.Purge(new RecycleBinMutationRequest
+        {
+            Items =
+            [
+                new RecycleBinMutationTargetDto
+                {
+                    EntityId = profileId,
+                    Kind = "rental-billing-profile"
+                },
+                new RecycleBinMutationTargetDto
+                {
+                    EntityId = customerId,
+                    Kind = "customer"
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        Assert.Equal(2, payload.RequestedCount);
+        Assert.Equal(1, payload.SucceededCount);
+        Assert.False(payload.Results[0].Success);
+        Assert.Contains("렌탈 청구로그", payload.Results[0].Message, StringComparison.Ordinal);
+        Assert.True(payload.Results[1].Success);
+
+        scopedDb.ChangeTracker.Clear();
+        Assert.True(await scopedDb.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == profileId));
+        Assert.Equal(profileId, await scopedDb.RentalAssets.IgnoreQueryFilters()
+            .Where(asset => asset.Id == linkedAssetId)
+            .Select(asset => asset.BillingProfileId)
+            .SingleAsync());
+        Assert.True(await scopedDb.RentalBillingLogs.IgnoreQueryFilters()
+            .AnyAsync(log => log.Id == outOfScopeLogId));
+        Assert.False(await scopedDb.Customers.IgnoreQueryFilters()
+            .AnyAsync(customer => customer.Id == customerId));
+    }
+
     private AppDbContext CreateDbContext(TestCurrentUserContext currentUser)
     {
         var revisionClock = new RevisionClock();
@@ -189,6 +294,15 @@ public sealed class RecycleBinMutationIsolationTests : IDisposable
         OfficeCode = OfficeCodeCatalog.Usenet,
         ScopeType = TenantScopeCatalog.ScopeAdmin,
         IsAdmin = true,
+        Permissions = [PermissionNames.DataBackupRestore]
+    };
+
+    private static TestCurrentUserContext CreateOfficeUser() => new()
+    {
+        Username = "recycle-batch-office",
+        TenantCode = TenantScopeCatalog.UsenetGroup,
+        OfficeCode = OfficeCodeCatalog.Usenet,
+        ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
         Permissions = [PermissionNames.DataBackupRestore]
     };
 
