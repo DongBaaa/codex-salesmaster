@@ -995,6 +995,81 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task GetAll_Transaction_DoesNotExposeHiddenCustomerName_WhenCustomerIsNotReadable()
+    {
+        var adminUser = CreateAdminUser();
+        await using (var seedDb = CreateDbContext(adminUser))
+        {
+            seedDb.DataSharingPolicies.Add(new DataSharingPolicy
+            {
+                Id = Guid.NewGuid(),
+                SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+                SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+                TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                ShareCustomers = false,
+                ShareItems = false,
+                ShareInvoices = false,
+                SharePayments = true,
+                ShareContracts = false,
+                ShareReports = false,
+                ShareRentals = false,
+                ShareDeliveries = false,
+                AllowTargetWrite = false,
+                IsActive = true
+            });
+
+            var customer = new Customer
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "RECYCLE-HIDDEN-TRANSACTION-CUSTOMER",
+                NameMatchKey = "RECYCLEHIDDENTRANSACTIONCUSTOMER",
+                TradeType = "매출"
+            };
+            var transaction = new TransactionRecord
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customer.Id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 24),
+                TransactionKind = "수금",
+                ReceiptTotal = 12345m,
+                BankReceipt = 12345m,
+                Note = "hidden customer deleted transaction",
+                IsDeleted = true
+            };
+            seedDb.Customers.Add(customer);
+            seedDb.Transactions.Add(transaction);
+            await seedDb.SaveChangesAsync();
+
+            var scopedUser = new TestCurrentUserContext
+            {
+                Username = "yeonsu-recycle-transaction-only-reader",
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+            };
+            await using var scopedDb = CreateDbContext(scopedUser);
+            var controller = CreateController(scopedDb, scopedUser);
+
+            var response = await controller.GetAll("transaction", null, CancellationToken.None);
+            var ok = Assert.IsType<OkObjectResult>(response.Result);
+            var payload = Assert.IsType<List<RecycleBinEntryDto>>(ok.Value);
+            var entry = Assert.Single(payload);
+
+            Assert.Equal(transaction.Id, entry.EntityId);
+            Assert.DoesNotContain(customer.NameOriginal, entry.Title, StringComparison.Ordinal);
+            Assert.DoesNotContain(customer.NameOriginal, entry.Subtitle, StringComparison.Ordinal);
+            Assert.DoesNotContain(customer.NameOriginal, entry.Detail, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public async Task GetAll_IncludesDeletedCustomerCategoryForAdmin()
     {
         var currentUser = CreateAdminUser();

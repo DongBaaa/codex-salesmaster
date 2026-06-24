@@ -334,10 +334,10 @@ public sealed class RecycleBinController : ControllerBase
                 .OrderByDescending(transaction => transaction.UpdatedAtUtc)
                 .ToListAsync(cancellationToken);
 
-            var customerMap = await _dbContext.Customers
+            var customerMap = await _officeScopeService.ApplyCustomerScope(_dbContext.Customers
                 .IgnoreQueryFilters()
                 .AsNoTracking()
-                .Where(customer => deletedTransactions.Select(transaction => transaction.CustomerId).Contains(customer.Id))
+                .Where(customer => deletedTransactions.Select(transaction => transaction.CustomerId).Contains(customer.Id)))
                 .ToDictionaryAsync(customer => customer.Id, customer => customer.NameOriginal, cancellationToken);
 
             entries.AddRange(deletedTransactions.Select(transaction =>
