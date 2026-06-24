@@ -104,6 +104,62 @@ public sealed class SyncDiagnosticsScopeTests
     }
 
     [Fact]
+    public async Task PendingSyncScopeDiagnostics_AreLimitedByTargetScopeInsteadOfRecorderOffice()
+    {
+        PrepareAppRoot("georaeplan-sync-diagnostics-pending-scope-target");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var pendingScopeId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
+            var pendingScopeEvent = CreateDiagnosticEvent(
+                pendingScopeId,
+                "Open",
+                new DateTime(2026, 6, 24, 2, 10, 0, DateTimeKind.Utc),
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                "global-admin",
+                "저장된 지점 동기화 계정 없음으로 dirty 보류: scope=OFFICE:ITWORLD, office=ITWORLD, tenant=ITWORLD, count=3",
+                normalizedMessage: "pending_scope|missing_sync_credential|OFFICE:ITWORLD|ITWORLD|ITWORLD",
+                category: "권한/범위 오류",
+                subcategory: "missing_sync_credential");
+            pendingScopeEvent.EntityName = "PendingSyncScope";
+            pendingScopeEvent.EntityId = "OFFICE:ITWORLD";
+            pendingScopeEvent.ReferenceEntityName = "Office";
+            pendingScopeEvent.ReferenceEntityId = OfficeCodeCatalog.Itworld;
+            db.SyncDiagnosticEvents.Add(pendingScopeEvent);
+            await db.SaveChangesAsync();
+
+            var usenetDiagnostics = new SyncDiagnosticsService(CreateOfficeSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet));
+            var itworldDiagnostics = new SyncDiagnosticsService(CreateOfficeSession(TenantScopeCatalog.Itworld, OfficeCodeCatalog.Itworld));
+
+            var usenetEvents = await usenetDiagnostics.GetEventsAsync(new SyncDiagnosticFilter(string.Empty, "전체", "전체", "전체", false));
+            var usenetSummary = await usenetDiagnostics.GetSummaryAsync();
+
+            Assert.Empty(usenetEvents);
+            Assert.Equal(0, usenetSummary.OpenIssueCount);
+            Assert.Equal(0, usenetSummary.TotalIssueCount);
+
+            await usenetDiagnostics.ResolveOpenIssuesAsync();
+            db.ChangeTracker.Clear();
+            Assert.Equal("Open", await ReadDiagnosticStatusAsync(db, pendingScopeId));
+
+            var itworldEvents = await itworldDiagnostics.GetEventsAsync(new SyncDiagnosticFilter(string.Empty, "전체", "전체", "전체", false));
+            var visible = Assert.Single(itworldEvents);
+            Assert.Equal(pendingScopeId, visible.Id);
+            Assert.Equal("OFFICE:ITWORLD", visible.EntityId);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task RecordIssueAsync_DoesNotCoalesceAcrossDiagnosticScope()
     {
         PrepareAppRoot("georaeplan-sync-diagnostics-coalesce-scope");

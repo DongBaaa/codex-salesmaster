@@ -558,7 +558,64 @@ public sealed class SyncDiagnosticsService
     }
 
     private bool CanCurrentSessionAccessEvent(LocalSyncDiagnosticEvent entity)
-        => CanCurrentSessionAccessDiagnosticScope(entity.OfficeCode, entity.TenantCode);
+    {
+        if (string.Equals(entity.EntityName, "PendingSyncScope", StringComparison.OrdinalIgnoreCase))
+        {
+            return CanCurrentSessionAccessPendingSyncScope(
+                entity.EntityId,
+                entity.ReferenceEntityId,
+                entity.TenantCode);
+        }
+
+        return CanCurrentSessionAccessDiagnosticScope(entity.OfficeCode, entity.TenantCode);
+    }
+
+    private bool CanCurrentSessionAccessPendingSyncScope(string? scopeKey, string? requiredOfficeCode, string? tenantCode)
+    {
+        if (!_session.IsLoggedIn)
+            return true;
+
+        var normalizedScopeKey = (scopeKey ?? string.Empty).Trim();
+        if (string.Equals(normalizedScopeKey, "SHARED", StringComparison.OrdinalIgnoreCase))
+            return CanCurrentSessionAccessSharedDiagnosticScope();
+
+        if (normalizedScopeKey.StartsWith("OFFICE:", StringComparison.OrdinalIgnoreCase))
+        {
+            var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(normalizedScopeKey[7..], string.Empty);
+            return !string.IsNullOrWhiteSpace(officeCode) &&
+                   CanCurrentSessionAccessDiagnosticScope(
+                       officeCode,
+                       TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, officeCode));
+        }
+
+        if (normalizedScopeKey.StartsWith("TENANT:", StringComparison.OrdinalIgnoreCase))
+        {
+            var scopedTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(normalizedScopeKey[7..], string.Empty);
+            return TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(scopedTenantCode)
+                .Any(officeCode => CanCurrentSessionAccessDiagnosticScope(officeCode, scopedTenantCode));
+        }
+
+        if (!string.IsNullOrWhiteSpace(requiredOfficeCode))
+        {
+            var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(requiredOfficeCode, string.Empty);
+            return !string.IsNullOrWhiteSpace(normalizedOfficeCode) &&
+                   CanCurrentSessionAccessDiagnosticScope(
+                       normalizedOfficeCode,
+                       TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, normalizedOfficeCode));
+        }
+
+        if (!string.IsNullOrWhiteSpace(tenantCode))
+            return CanCurrentSessionAccessDiagnosticScope(null, tenantCode);
+
+        return false;
+    }
+
+    private bool CanCurrentSessionAccessSharedDiagnosticScope()
+        => _session.HasAdministrativePrivileges ||
+           string.Equals(_session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase) ||
+           _session.HasPermission(AppPermissionNames.CompanyProfileEdit) ||
+           _session.HasPermission(AppPermissionNames.SettingsEdit) ||
+           _session.HasPermission(AppPermissionNames.RentalSettingsEdit);
 
     private bool CanCurrentSessionAccessDiagnosticScope(string? officeCode, string? tenantCode, string? fallbackOfficeCode = null)
     {
