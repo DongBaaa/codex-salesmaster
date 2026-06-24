@@ -3538,6 +3538,65 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PurgeContract_DoesNotDeleteSharedStoragePathStillReferencedByAnotherContract()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = CreateScopedCustomer("공유 계약서 파일 거래처", OfficeCodeCatalog.Usenet);
+        var sharedStoragePath = "storage/shared-contract-file.bin";
+        var purgedContract = new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            ContractType = "삭제 계약서",
+            StoragePath = sharedStoragePath,
+            FileName = "shared-contract-file.bin",
+            IsDeleted = true
+        };
+        var remainingContract = new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            ContractType = "남은 계약서",
+            StoragePath = sharedStoragePath,
+            FileName = "shared-contract-file.bin",
+            IsDeleted = false
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.CustomerContracts.AddRange(purgedContract, remainingContract);
+        await dbContext.SaveChangesAsync();
+
+        var storage = new StubCentralFileStorage();
+        var controller = CreateController(dbContext, currentUser, storage);
+
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = purgedContract.Id,
+                        Kind = "contract"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success, item.Message);
+        Assert.DoesNotContain(sharedStoragePath, storage.DeletedPaths);
+        Assert.False(await dbContext.CustomerContracts.IgnoreQueryFilters().AnyAsync(current => current.Id == purgedContract.Id));
+        Assert.Equal(sharedStoragePath, await dbContext.CustomerContracts.IgnoreQueryFilters()
+            .Where(current => current.Id == remainingContract.Id)
+            .Select(current => current.StoragePath)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task PurgePayment_DeletesAttachmentStorageOnlyAfterDbCommit()
     {
         var currentUser = CreateOfficeOnlyUser();
@@ -3602,6 +3661,82 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         Assert.Contains(paymentAttachmentPath, storage.DeletedPaths);
         Assert.False(await dbContext.Payments.IgnoreQueryFilters().AnyAsync(current => current.Id == payment.Id));
         Assert.False(await dbContext.PaymentAttachments.IgnoreQueryFilters().AnyAsync(current => current.Id == paymentAttachmentId));
+    }
+
+    [Fact]
+    public async Task PurgePayment_DoesNotDeleteSharedAttachmentStoragePathStillReferencedByAnotherPaymentAttachment()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = CreateScopedCustomer("공유 수금 파일 거래처", OfficeCodeCatalog.Usenet);
+        var invoice = CreateScopedInvoice(customer.Id, OfficeCodeCatalog.Usenet, "INV-PAYMENT-PURGE-SHARED-FILE");
+        var purgedPayment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 24),
+            Amount = 1000m,
+            IsDeleted = true
+        };
+        var remainingPayment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 24),
+            Amount = 2000m,
+            IsDeleted = true
+        };
+        var sharedStoragePath = "storage/shared-payment-attachment.bin";
+        var purgedAttachment = new PaymentAttachment
+        {
+            Id = Guid.NewGuid(),
+            PaymentId = purgedPayment.Id,
+            FileName = "shared-payment-attachment.bin",
+            StoragePath = sharedStoragePath,
+            IsDeleted = true
+        };
+        var remainingAttachment = new PaymentAttachment
+        {
+            Id = Guid.NewGuid(),
+            PaymentId = remainingPayment.Id,
+            FileName = "shared-payment-attachment.bin",
+            StoragePath = sharedStoragePath,
+            IsDeleted = true
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(invoice);
+        dbContext.Payments.AddRange(purgedPayment, remainingPayment);
+        dbContext.PaymentAttachments.AddRange(purgedAttachment, remainingAttachment);
+        await dbContext.SaveChangesAsync();
+
+        var storage = new StubCentralFileStorage();
+        var controller = CreateController(dbContext, currentUser, storage);
+
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = purgedPayment.Id,
+                        Kind = "payment"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.True(item.Success, item.Message);
+        Assert.DoesNotContain(sharedStoragePath, storage.DeletedPaths);
+        Assert.False(await dbContext.PaymentAttachments.IgnoreQueryFilters().AnyAsync(current => current.Id == purgedAttachment.Id));
+        Assert.Equal(sharedStoragePath, await dbContext.PaymentAttachments.IgnoreQueryFilters()
+            .Where(current => current.Id == remainingAttachment.Id)
+            .Select(current => current.StoragePath)
+            .SingleAsync());
     }
 
     [Fact]

@@ -1746,8 +1746,7 @@ public sealed class RecycleBinController : ControllerBase
         _dbContext.Customers.Remove(customer);
         await _dbContext.SaveChangesAsync(cancellationToken);
 
-        foreach (var storagePath in contractStoragePaths)
-            _fileStorage.DeleteIfExists(storagePath);
+        await DeleteStoragePathsIfUnreferencedAsync(contractStoragePaths, cancellationToken);
 
         return (true, "거래처를 영구삭제했습니다.");
     }
@@ -1782,7 +1781,7 @@ public sealed class RecycleBinController : ControllerBase
         _dbContext.CustomerContracts.Remove(contract);
         await _dbContext.SaveChangesAsync(cancellationToken);
 
-        _fileStorage.DeleteIfExists(storagePath);
+        await DeleteStoragePathsIfUnreferencedAsync([storagePath], cancellationToken);
 
         return (true, "계약서를 영구삭제했습니다.");
     }
@@ -2089,8 +2088,7 @@ public sealed class RecycleBinController : ControllerBase
         await _inventoryLedgerService.RebuildAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
-        foreach (var attachmentPath in paymentAttachmentPaths)
-            _fileStorage.DeleteIfExists(attachmentPath);
+        await DeleteStoragePathsIfUnreferencedAsync(paymentAttachmentPaths, cancellationToken);
 
         return (true, "전표를 영구삭제했습니다.");
     }
@@ -2132,8 +2130,7 @@ public sealed class RecycleBinController : ControllerBase
         _dbContext.Payments.Remove(payment);
         await _dbContext.SaveChangesAsync(cancellationToken);
 
-        foreach (var attachmentPath in attachmentPaths)
-            _fileStorage.DeleteIfExists(attachmentPath);
+        await DeleteStoragePathsIfUnreferencedAsync(attachmentPaths, cancellationToken);
 
         return (true, "수금/지급 기록을 영구삭제했습니다.");
     }
@@ -2197,8 +2194,7 @@ public sealed class RecycleBinController : ControllerBase
         _dbContext.Transactions.Remove(transaction);
         await _dbContext.SaveChangesAsync(cancellationToken);
 
-        foreach (var attachmentPath in attachmentPaths)
-            _fileStorage.DeleteIfExists(attachmentPath);
+        await DeleteStoragePathsIfUnreferencedAsync(attachmentPaths, cancellationToken);
 
         return (true, "거래내역을 영구삭제했습니다.");
     }
@@ -2388,9 +2384,66 @@ public sealed class RecycleBinController : ControllerBase
         await _inventoryLedgerService.RebuildAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
-        _fileStorage.DeleteIfExists(receiveEvidencePath);
+        await DeleteStoragePathsIfUnreferencedAsync([receiveEvidencePath], cancellationToken);
 
         return (true, "재고이동을 영구삭제했습니다.");
+    }
+
+    private async Task DeleteStoragePathsIfUnreferencedAsync(
+        IEnumerable<string?> storagePaths,
+        CancellationToken cancellationToken)
+    {
+        var paths = storagePaths
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(path => path!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (paths.Count == 0)
+            return;
+
+        var referencedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in await _dbContext.CustomerContracts
+                     .IgnoreQueryFilters()
+                     .AsNoTracking()
+                     .Where(contract => contract.StoragePath != null && paths.Contains(contract.StoragePath))
+                     .Select(contract => contract.StoragePath!)
+                     .ToListAsync(cancellationToken))
+        {
+            referencedPaths.Add(path);
+        }
+
+        foreach (var path in await _dbContext.TransactionAttachments
+                     .IgnoreQueryFilters()
+                     .AsNoTracking()
+                     .Where(attachment => attachment.StoragePath != null && paths.Contains(attachment.StoragePath))
+                     .Select(attachment => attachment.StoragePath!)
+                     .ToListAsync(cancellationToken))
+        {
+            referencedPaths.Add(path);
+        }
+
+        foreach (var path in await _dbContext.PaymentAttachments
+                     .IgnoreQueryFilters()
+                     .AsNoTracking()
+                     .Where(attachment => attachment.StoragePath != null && paths.Contains(attachment.StoragePath))
+                     .Select(attachment => attachment.StoragePath!)
+                     .ToListAsync(cancellationToken))
+        {
+            referencedPaths.Add(path);
+        }
+
+        foreach (var path in await _dbContext.InventoryTransfers
+                     .IgnoreQueryFilters()
+                     .AsNoTracking()
+                     .Where(transfer => transfer.ReceiveEvidencePath != null && paths.Contains(transfer.ReceiveEvidencePath))
+                     .Select(transfer => transfer.ReceiveEvidencePath!)
+                     .ToListAsync(cancellationToken))
+        {
+            referencedPaths.Add(path);
+        }
+
+        foreach (var storagePath in paths.Where(path => !referencedPaths.Contains(path)))
+            _fileStorage.DeleteIfExists(storagePath);
     }
 
     private async Task<(bool Success, string Message)> PurgeRentalManagementCompanyAsync(RecycleBinMutationTargetDto target, CancellationToken cancellationToken)
