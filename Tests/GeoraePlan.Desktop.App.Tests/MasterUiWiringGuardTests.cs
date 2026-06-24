@@ -267,6 +267,103 @@ public sealed class MasterUiWiringGuardTests
         }
     }
 
+    [Fact]
+    public void HighRiskMutationCommands_KeepPermissionConcurrencyAndServiceGuards()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var mainViewModel = ReadAppFile(appRoot, "ViewModels", "MainViewModel.cs");
+        var salesViewModel = ReadAppFile(appRoot, "ViewModels", "SalesViewModel.cs");
+        var paymentViewModel = ReadAppFile(appRoot, "ViewModels", "PaymentViewModel.cs");
+        var rentalBillingViewModel = ReadAppFile(appRoot, "ViewModels", "RentalBillingViewModel.cs");
+        var rentalAssetViewModel = ReadAppFile(appRoot, "ViewModels", "RentalAssetViewModel.cs");
+        var inventoryTransferViewModel = ReadAppFile(appRoot, "ViewModels", "InventoryTransferViewModel.cs");
+
+        AssertContainsAll(
+            mainViewModel,
+            "var saveResult = await _local.SaveInvoiceAsync(inv, saveContext, _session);",
+            "AutoRebaseWhenLatestSavedBySameUser = true,",
+            "ExpectedConcurrencyStamp = string.IsNullOrWhiteSpace(_editConcurrencyStamp)",
+            "saveResult.ConcurrencyConflict",
+            "saveResult.PermissionDenied",
+            "await _local.DeleteInvoiceAsync(row.Id, _session, row.Revision)",
+            "result.ConcurrencyConflict ? \"동시 수정 충돌\" : result.PermissionDenied ? \"권한 없음\" : \"삭제 실패\"",
+            "var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));");
+
+        AssertContainsAll(
+            salesViewModel,
+            "[RelayCommand(CanExecute = nameof(CanConfirmPurchaseReceiving))]",
+            "var saveResult = await _local.SaveInvoiceAsync(inv, saveContext, _session);",
+            "AutoRebaseWhenLatestSavedBySameUser = true,",
+            "ExpectedConcurrencyStamp = string.IsNullOrWhiteSpace(CurrentConcurrencyStamp)",
+            "saveResult.ConcurrencyConflict",
+            "saveResult.PermissionDenied",
+            "var savedInvoice = await _local.GetInvoiceAsync(saveResult.SavedInvoiceId, _session)",
+            "await RefreshPaymentSummaryAsync();");
+
+        AssertContainsAll(
+            paymentViewModel,
+            "public bool CanEditPayments => _session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.PaymentEdit);",
+            "[RelayCommand(CanExecute = nameof(CanSave))]",
+            "if (!CanEditPayments)",
+            "var result = await _local.SaveTransactionAsync(transaction, _session);",
+            "if (result.ConcurrencyConflict)",
+            "[RelayCommand(CanExecute = nameof(CanDeleteHistory))]",
+            "var result = await _local.DeleteTransactionAsync(target.Id, _session, target.Revision);",
+            "await RefreshContextCoreAsync(Interlocked.Increment(ref _contextRefreshVersion));",
+            "var result = await _local.SaveTransactionAttachmentAsync(",
+            "var result = await _local.DeleteTransactionAttachmentAsync(selectedAttachmentId, _session, expectedRevision);");
+
+        AssertContainsAll(
+            rentalBillingViewModel,
+            "private bool CanEditPayments => _session.HasAdministrativePrivileges ||",
+            "private bool CanEditInvoices => _session.HasAdministrativePrivileges ||",
+            "public bool CanSave => CanEditRentalProfiles &&",
+            "public bool CanStartBillingSelected => SelectedRow is not null &&",
+            "public bool CanRegisterSettlementSelected => SelectedRow is not null && HasPersistedSelectedProfile && CanEditCurrentSelection && CanEditPayments",
+            "var result = await _rental.SaveBillingProfileAsync(entity, _session, BuildPendingAssetLinkEdits());",
+            "var result = await _rental.StartBillingAsync(targetId, ReferenceDate, _session, expectedRevision: expectedRevision);",
+            "var result = await _rental.HoldBillingAsync(targetId, ReferenceDate, string.Empty, _session, expectedRevision: expectedRevision);",
+            "var result = await _rental.RegisterBillingSettlementAsync(targetId, ReferenceDate, settledAmount, string.Empty, _session, expectedRevision: expectedRevision);",
+            "var result = await _rental.DeleteBillingHistoryAsync(",
+            "expectedRevision: SelectedRow.Source.Revision,",
+            "expectedInvoiceRevision: history.InvoiceRevision);",
+            "? await _rental.DeleteBillingProfileAsync(targetProfileId, _session, SelectedRow.Source.Revision)",
+            "await _rental.DeleteBillingProfileAsync(row.Source.Id, _session, row.Source.Revision);",
+            "var result = await _rental.MarkBillingCompletedAsync(");
+
+        AssertContainsAll(
+            rentalAssetViewModel,
+            "public bool CanSave => SelectedRow is null",
+            "public bool CanDeleteSelected => SelectedRow is not null && CanEditCurrentSelection;",
+            "[RelayCommand(CanExecute = nameof(CanSave))]",
+            "[RelayCommand(CanExecute = nameof(CanDeleteSelected))]",
+            "[RelayCommand(CanExecute = nameof(CanDeleteChecked))]",
+            "[RelayCommand(CanExecute = nameof(CanReplaceSelected))]",
+            "if (!CanDeleteSelected)",
+            ".Where(row => !CanEditAssetRow(row))",
+            "var result = await _rental.DeleteAssetAsync(targetAssetId, _session, SelectedRow.Source.Revision);",
+            "var result = await _rental.DeleteAssetAsync(row.Source.Id, _session, row.Source.Revision);",
+            "OriginalAssetRevision = original.Revision,",
+            "ReplacementAssetRevision = replacement.Revision,",
+            "result = await _rental.ReplaceRentalEquipmentAsync(request, _session);",
+            "if (!CanSave)",
+            "var result = await _rental.SaveAssetAsync(BuildAsset(snapshot), _session);");
+
+        AssertContainsAll(
+            inventoryTransferViewModel,
+            "public bool CanDeleteTransfer => HasSavedTransfer && CanCurrentUserDelete;",
+            "public bool CanConfirmReceipt => HasSavedTransfer && !IsFinalTransferStatus && CanCurrentUserReceive;",
+            "public bool CanRejectTransfer => HasSavedTransfer && !IsFinalTransferStatus && CanCurrentUserReceive;",
+            "var result = await _local.DeleteInventoryTransferAsync(targetTransferId, _session, _transferRevision);",
+            "if (!CanConfirmReceipt)",
+            "var result = await _local.ConfirmInventoryTransferReceiptAsync(",
+            "expectedRevision: _transferRevision);",
+            "if (!CanRejectTransfer)",
+            "var result = await _local.RejectInventoryTransferAsync(TransferId, RejectReason, _session, expectedRevision: _transferRevision);",
+            "var result = await _local.SaveInventoryTransferAsync(transfer, _session);",
+            "if (result.ConcurrencyConflict && showConflictDialog)");
+    }
+
     private static void AssertContainsAll(string source, params string[] expectedMarkers)
     {
         foreach (var marker in expectedMarkers)
