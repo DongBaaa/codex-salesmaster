@@ -93,7 +93,9 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("CreateActionButton(\"로그 복사\")", windowSource, StringComparison.Ordinal);
         Assert.Contains("CreateActionButton(\"로그 위치 열기\")", windowSource, StringComparison.Ordinal);
         Assert.Contains("CreateActionButton(\"닫기\")", windowSource, StringComparison.Ordinal);
-        Assert.Contains("Clipboard.SetText(content.ToString())", windowSource, StringComparison.Ordinal);
+        Assert.Contains("SetClipboardTextWithRetry(content.ToString())", windowSource, StringComparison.Ordinal);
+        Assert.Contains("private static void SetClipboardTextWithRetry(string text)", windowSource, StringComparison.Ordinal);
+        Assert.Contains("CanOpenClipboardForProbe()", windowSource, StringComparison.Ordinal);
         Assert.Contains("File.ReadAllText(_failureLogPath!, Encoding.UTF8)", windowSource, StringComparison.Ordinal);
         Assert.Contains("FileName = \"explorer.exe\"", windowSource, StringComparison.Ordinal);
         Assert.Contains("Arguments = \"/select,\" + QuoteExplorerArgument(_failureLogPath!)", windowSource, StringComparison.Ordinal);

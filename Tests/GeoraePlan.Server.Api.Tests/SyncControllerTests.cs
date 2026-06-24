@@ -7135,6 +7135,188 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_DeletesReplacedCustomerContractFile_AfterSuccessfulCommit()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "CONTRACT-FILE-REPLACEMENT-CUSTOMER",
+            NameMatchKey = "CONTRACTFILEREPLACEMENTCUSTOMER",
+            TradeType = "Sales"
+        };
+        var contract = new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            ContractType = "거래계약서",
+            FileName = "old-contract.pdf",
+            MimeType = "application/pdf",
+            FileSize = 4,
+            FileHash = "OLD-HASH",
+            Description = "old file",
+            StoragePath = "customer-contracts/old-contract.pdf",
+            FileContent = []
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.CustomerContracts.Add(contract);
+        await _dbContext.SaveChangesAsync();
+
+        var fileStorage = new RecordingCentralFileStorage();
+        var controller = CreateController(_dbContext, new TestCurrentUserContext
+        {
+            Username = "admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        }, fileStorage);
+        var storedBefore = await _dbContext.CustomerContracts.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == contract.Id);
+        var newBytes = TestPdfBytes();
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-contract-file-replacement-cleanup",
+            CustomerContracts =
+            [
+                new CustomerContractDto
+                {
+                    Id = contract.Id,
+                    CustomerId = customer.Id,
+                    ContractType = "거래계약서",
+                    FileName = "new-contract.pdf",
+                    MimeType = "application/pdf",
+                    FileSize = newBytes.LongLength,
+                    FileHash = ComputeTestSha256Hex(newBytes),
+                    Description = "new file",
+                    ExpectedRevision = storedBefore.Revision,
+                    Revision = storedBefore.Revision,
+                    MutationId = $"device-contract-file-replacement-cleanup:CustomerContract:{contract.Id:N}:1",
+                    MutationCreatedAtUtc = storedBefore.UpdatedAtUtc.AddMinutes(1),
+                    UploadedAtUtc = storedBefore.UpdatedAtUtc.AddMinutes(1),
+                    CreatedAtUtc = storedBefore.CreatedAtUtc,
+                    UpdatedAtUtc = storedBefore.UpdatedAtUtc.AddMinutes(1),
+                    FileContent = newBytes
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedAfter = await _dbContext.CustomerContracts.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == contract.Id);
+        var saveCall = Assert.Single(fileStorage.SaveCalls);
+        Assert.NotEqual(contract.Id, saveCall.FileId);
+        Assert.Equal(saveCall.StoredPath, storedAfter.StoragePath);
+        Assert.Contains("customer-contracts/old-contract.pdf", fileStorage.DeletedPaths);
+    }
+
+    [Fact]
+    public async Task Push_DoesNotDeleteReplacedContractFile_WhenStoragePathIsStillReferenced()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "CONTRACT-FILE-SHARED-PATH-CUSTOMER",
+            NameMatchKey = "CONTRACTFILESHAREDPATHCUSTOMER",
+            TradeType = "Sales"
+        };
+        var sharedStoragePath = "customer-contracts/shared-contract.pdf";
+        var updatedContract = new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            ContractType = "거래계약서",
+            FileName = "old-contract.pdf",
+            MimeType = "application/pdf",
+            FileSize = 4,
+            FileHash = "OLD-HASH",
+            Description = "old file",
+            StoragePath = sharedStoragePath,
+            FileContent = []
+        };
+        var stillReferencedContract = new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            ContractType = "거래계약서",
+            FileName = "shared-contract.pdf",
+            MimeType = "application/pdf",
+            FileSize = 4,
+            FileHash = "SHARED-HASH",
+            Description = "still references old path",
+            StoragePath = sharedStoragePath,
+            FileContent = []
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.CustomerContracts.AddRange(updatedContract, stillReferencedContract);
+        await _dbContext.SaveChangesAsync();
+
+        var fileStorage = new RecordingCentralFileStorage();
+        var controller = CreateController(_dbContext, new TestCurrentUserContext
+        {
+            Username = "admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        }, fileStorage);
+        var storedBefore = await _dbContext.CustomerContracts.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == updatedContract.Id);
+        var newBytes = TestPdfBytes();
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-contract-file-shared-path-cleanup",
+            CustomerContracts =
+            [
+                new CustomerContractDto
+                {
+                    Id = updatedContract.Id,
+                    CustomerId = customer.Id,
+                    ContractType = "거래계약서",
+                    FileName = "new-contract.pdf",
+                    MimeType = "application/pdf",
+                    FileSize = newBytes.LongLength,
+                    FileHash = ComputeTestSha256Hex(newBytes),
+                    Description = "new file",
+                    ExpectedRevision = storedBefore.Revision,
+                    Revision = storedBefore.Revision,
+                    MutationId = $"device-contract-file-shared-path-cleanup:CustomerContract:{updatedContract.Id:N}:1",
+                    MutationCreatedAtUtc = storedBefore.UpdatedAtUtc.AddMinutes(1),
+                    UploadedAtUtc = storedBefore.UpdatedAtUtc.AddMinutes(1),
+                    CreatedAtUtc = storedBefore.CreatedAtUtc,
+                    UpdatedAtUtc = storedBefore.UpdatedAtUtc.AddMinutes(1),
+                    FileContent = newBytes
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(sharedStoragePath, await _dbContext.CustomerContracts.IgnoreQueryFilters()
+            .Where(current => current.Id == stillReferencedContract.Id)
+            .Select(current => current.StoragePath)
+            .SingleAsync());
+        Assert.DoesNotContain(sharedStoragePath, fileStorage.DeletedPaths);
+    }
+
+    [Fact]
     public async Task Push_DowngradesNewCustomerContractMetadataOnlyPdf_ToDraftNotice()
     {
         var customer = new Customer
@@ -11889,6 +12071,108 @@ public sealed class SyncControllerTests : IDisposable
         var saveCall = Assert.Single(fileStorage.SaveCalls);
         Assert.NotEqual(attachmentId, saveCall.FileId);
         Assert.Contains(saveCall.StoredPath, fileStorage.DeletedPaths);
+    }
+
+    [Fact]
+    public async Task Push_DeletesReplacedTransactionAttachmentFile_AfterSuccessfulCommit()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "TRANSACTION-ATTACHMENT-REPLACEMENT-CUSTOMER",
+            NameMatchKey = "TRANSACTIONATTACHMENTREPLACEMENTCUSTOMER",
+            TradeType = "Sales"
+        };
+        var transaction = new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 24),
+            TransactionKind = "일반수금",
+            CashReceipt = 1000m,
+            ReceiptTotal = 1000m,
+            SettlementAmount = 1000m,
+            CreatedAtUtc = new DateTime(2026, 6, 24, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 24, 0, 0, 0, DateTimeKind.Utc)
+        };
+        var attachment = new TransactionAttachment
+        {
+            Id = Guid.NewGuid(),
+            TransactionId = transaction.Id,
+            AttachmentType = "기타",
+            FileName = "old-receipt.pdf",
+            MimeType = "application/pdf",
+            FileSize = 4,
+            FileHash = "OLD-HASH",
+            Description = "old file",
+            UploadedByUsername = "admin",
+            UploadedAtUtc = new DateTime(2026, 6, 24, 0, 0, 0, DateTimeKind.Utc),
+            StoragePath = "transaction-attachments/old-receipt.pdf",
+            FileContent = []
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.Transactions.Add(transaction);
+        _dbContext.TransactionAttachments.Add(attachment);
+        await _dbContext.SaveChangesAsync();
+
+        var fileStorage = new RecordingCentralFileStorage();
+        var controller = CreateController(_dbContext, new TestCurrentUserContext
+        {
+            Username = "admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        }, fileStorage);
+        var storedBefore = await _dbContext.TransactionAttachments.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == attachment.Id);
+        var newBytes = TestPdfBytes();
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-transaction-attachment-file-replacement-cleanup",
+            TransactionAttachments =
+            [
+                new TransactionAttachmentDto
+                {
+                    Id = attachment.Id,
+                    TransactionId = transaction.Id,
+                    AttachmentType = "기타",
+                    FileName = "new-receipt.pdf",
+                    MimeType = "application/pdf",
+                    FileSize = newBytes.LongLength,
+                    FileHash = ComputeTestSha256Hex(newBytes),
+                    Description = "new file",
+                    UploadedByUsername = "admin",
+                    UploadedAtUtc = storedBefore.UpdatedAtUtc.AddMinutes(1),
+                    ExpectedRevision = storedBefore.Revision,
+                    Revision = storedBefore.Revision,
+                    CreatedAtUtc = storedBefore.CreatedAtUtc,
+                    UpdatedAtUtc = storedBefore.UpdatedAtUtc.AddMinutes(1),
+                    FileContent = newBytes
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedAfter = await _dbContext.TransactionAttachments.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == attachment.Id);
+        var saveCall = Assert.Single(fileStorage.SaveCalls);
+        Assert.NotEqual(attachment.Id, saveCall.FileId);
+        Assert.Equal(saveCall.StoredPath, storedAfter.StoragePath);
+        Assert.Contains("transaction-attachments/old-receipt.pdf", fileStorage.DeletedPaths);
     }
 
     [Fact]

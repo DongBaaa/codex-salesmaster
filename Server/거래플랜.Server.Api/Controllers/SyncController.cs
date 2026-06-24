@@ -589,6 +589,7 @@ public sealed class SyncController : ControllerBase
         var requiresInventoryLedgerRebuild = false;
         var requiresRentalAssignmentRefresh = false;
         var savedStoragePaths = new List<string>();
+        var replacedStoragePaths = new List<string>();
         await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
         try
         {
@@ -619,7 +620,7 @@ public sealed class SyncController : ControllerBase
             if (validCustomerContracts.Count > 0)
             {
                 await _dbContext.SaveChangesAsync(cancellationToken);
-                await PersistCustomerContractsToStorageAsync(acceptedCustomerContracts, savedStoragePaths, cancellationToken);
+                await PersistCustomerContractsToStorageAsync(acceptedCustomerContracts, savedStoragePaths, replacedStoragePaths, cancellationToken);
                 await _dbContext.SaveChangesAsync(cancellationToken);
             }
             var scopedItems = await PrepareScopedItemsAsync(request.Items ?? [], result, cancellationToken);
@@ -674,7 +675,7 @@ public sealed class SyncController : ControllerBase
             if (validTransactionAttachments.Count > 0)
             {
                 await _dbContext.SaveChangesAsync(cancellationToken);
-                await PersistTransactionAttachmentsToStorageAsync(acceptedTransactionAttachments, savedStoragePaths, cancellationToken);
+                await PersistTransactionAttachmentsToStorageAsync(acceptedTransactionAttachments, savedStoragePaths, replacedStoragePaths, cancellationToken);
                 await _dbContext.SaveChangesAsync(cancellationToken);
             }
             var scopedInventoryTransfers = await PrepareScopedInventoryTransfersAsync(request.InventoryTransfers ?? [], result, cancellationToken);
@@ -783,6 +784,7 @@ public sealed class SyncController : ControllerBase
             await PopulateAcceptedRevisionsAsync(result, validRentalProfiles, _dbContext.RentalBillingProfiles, nameof(RentalBillingProfile), cancellationToken);
             await DeduplicateOpenConflictLogsForResultAsync(result.Conflicts, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
+            await DeleteReplacedStoragePathsIfUnreferencedAsync(replacedStoragePaths);
         }
         catch
         {
@@ -6442,6 +6444,7 @@ public sealed class SyncController : ControllerBase
     private async Task PersistCustomerContractsToStorageAsync(
         IEnumerable<CustomerContractDto> contracts,
         ICollection<string> savedStoragePaths,
+        ICollection<string> replacedStoragePaths,
         CancellationToken cancellationToken)
     {
         foreach (var dto in contracts.Where(current => !current.IsDeleted && (current.FileContent?.Length ?? 0) > 0))
@@ -6452,6 +6455,7 @@ public sealed class SyncController : ControllerBase
             if (entity is null)
                 continue;
 
+            var previousStoragePath = entity.StoragePath;
             var storedPath = await _fileStorage.SaveBytesAsync(
                 "customer-contracts",
                 entity.CustomerId.ToString("N"),
@@ -6462,6 +6466,7 @@ public sealed class SyncController : ControllerBase
             entity.StoragePath = storedPath;
             entity.FileContent = [];
             savedStoragePaths.Add(storedPath);
+            AddReplacedStoragePath(replacedStoragePaths, previousStoragePath, storedPath);
         }
     }
 
@@ -6471,6 +6476,7 @@ public sealed class SyncController : ControllerBase
     private async Task PersistTransactionAttachmentsToStorageAsync(
         IEnumerable<TransactionAttachmentDto> attachments,
         ICollection<string> savedStoragePaths,
+        ICollection<string> replacedStoragePaths,
         CancellationToken cancellationToken)
     {
         foreach (var dto in attachments.Where(current => !current.IsDeleted && (current.FileContent?.Length ?? 0) > 0))
@@ -6481,6 +6487,7 @@ public sealed class SyncController : ControllerBase
             if (entity is null)
                 continue;
 
+            var previousStoragePath = entity.StoragePath;
             var storedPath = await _fileStorage.SaveBytesAsync(
                 "transaction-attachments",
                 entity.TransactionId.ToString("N"),
@@ -6491,6 +6498,70 @@ public sealed class SyncController : ControllerBase
             entity.StoragePath = storedPath;
             entity.FileContent = [];
             savedStoragePaths.Add(storedPath);
+            AddReplacedStoragePath(replacedStoragePaths, previousStoragePath, storedPath);
+        }
+    }
+
+    private static void AddReplacedStoragePath(ICollection<string> replacedStoragePaths, string? previousStoragePath, string newStoragePath)
+    {
+        if (string.IsNullOrWhiteSpace(previousStoragePath))
+            return;
+
+        if (string.Equals(previousStoragePath.Trim(), newStoragePath.Trim(), StringComparison.OrdinalIgnoreCase))
+            return;
+
+        replacedStoragePaths.Add(previousStoragePath);
+    }
+
+    private async Task DeleteReplacedStoragePathsIfUnreferencedAsync(IEnumerable<string> replacedStoragePaths)
+    {
+        var paths = replacedStoragePaths
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(path => path.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (paths.Count == 0)
+            return;
+
+        try
+        {
+            var referencedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var path in await _dbContext.CustomerContracts.IgnoreQueryFilters()
+                         .AsNoTracking()
+                         .Where(contract => contract.StoragePath != null && paths.Contains(contract.StoragePath))
+                         .Select(contract => contract.StoragePath!)
+                         .ToListAsync(CancellationToken.None))
+            {
+                referencedPaths.Add(path);
+            }
+
+            foreach (var path in await _dbContext.TransactionAttachments.IgnoreQueryFilters()
+                         .AsNoTracking()
+                         .Where(attachment => attachment.StoragePath != null && paths.Contains(attachment.StoragePath))
+                         .Select(attachment => attachment.StoragePath!)
+                         .ToListAsync(CancellationToken.None))
+            {
+                referencedPaths.Add(path);
+            }
+
+            foreach (var path in await _dbContext.PaymentAttachments.IgnoreQueryFilters()
+                         .AsNoTracking()
+                         .Where(attachment => attachment.StoragePath != null && paths.Contains(attachment.StoragePath))
+                         .Select(attachment => attachment.StoragePath!)
+                         .ToListAsync(CancellationToken.None))
+            {
+                referencedPaths.Add(path);
+            }
+
+            foreach (var path in paths.Where(path => !referencedPaths.Contains(path)))
+            {
+                _fileStorage.DeleteIfExists(path);
+            }
+        }
+        catch
+        {
+            // best-effort cleanup after successful commit.
         }
     }
 

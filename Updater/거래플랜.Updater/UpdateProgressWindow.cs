@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -152,7 +154,7 @@ internal sealed class UpdateProgressWindow : Window
                 content.AppendLine(File.ReadAllText(_failureLogPath!, Encoding.UTF8));
             }
 
-            Clipboard.SetText(content.ToString());
+            SetClipboardTextWithRetry(content.ToString());
             _copyLogButton.Content = "복사 완료";
         }
         catch (Exception ex)
@@ -160,6 +162,44 @@ internal sealed class UpdateProgressWindow : Window
             _detailBlock.Text = _failureDetail + Environment.NewLine + Environment.NewLine + $"로그 복사에 실패했습니다: {ex.Message}";
         }
     }
+
+    private static void SetClipboardTextWithRetry(string text)
+    {
+        Exception? lastError = null;
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            try
+            {
+                if (!CanOpenClipboardForProbe())
+                    throw new InvalidOperationException("Clipboard is busy.");
+
+                Clipboard.SetText(text);
+                return;
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+                Thread.Sleep(100);
+            }
+        }
+
+        throw lastError ?? new InvalidOperationException("Clipboard write failed.");
+    }
+
+    private static bool CanOpenClipboardForProbe()
+    {
+        if (!OpenClipboard(IntPtr.Zero))
+            return false;
+
+        CloseClipboard();
+        return true;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool OpenClipboard(IntPtr hWndNewOwner);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool CloseClipboard();
 
     private void OpenFailureLogFolder()
     {

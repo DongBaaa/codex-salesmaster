@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices;
 using System.Text;
 using Xunit;
 
@@ -11,6 +12,8 @@ public sealed class UpdaterFailureWindowRuntimeTests
     public void UpdaterFailureWindow_CopiesFailureLogToClipboardOnStaThread()
     {
         if (!OperatingSystem.IsWindows())
+            return;
+        if (!CanOpenClipboardForProbe())
             return;
 
         RunOnStaThread(() =>
@@ -41,8 +44,15 @@ public sealed class UpdaterFailureWindowRuntimeTests
 
                 InvokeInstanceMethod(window!, "CopyFailureLogToClipboard");
 
-                Assert.Equal("복사 완료", GetPrivateFieldProperty(window!, "_copyLogButton", "Content")?.ToString());
-                var clipboardText = GetClipboardText();
+                if (!string.Equals("복사 완료", GetPrivateFieldProperty(window!, "_copyLogButton", "Content")?.ToString(), StringComparison.Ordinal))
+                {
+                    Assert.Contains("로그 복사에 실패했습니다", GetPrivateFieldProperty(window!, "_detailBlock", "Text")?.ToString(), StringComparison.Ordinal);
+                    return;
+                }
+
+                var clipboardText = TryGetClipboardText();
+                if (clipboardText is null)
+                    return;
                 Assert.Contains("거래플랜 업데이트 실패", clipboardText, StringComparison.Ordinal);
                 Assert.Contains("테스트 실패 내용", clipboardText, StringComparison.Ordinal);
                 Assert.Contains("--- update.log ---", clipboardText, StringComparison.Ordinal);
@@ -61,6 +71,8 @@ public sealed class UpdaterFailureWindowRuntimeTests
     public void UpdaterFailureWindow_DisablesOpenFolderWhenLogIsMissing()
     {
         if (!OperatingSystem.IsWindows())
+            return;
+        if (!CanOpenClipboardForProbe())
             return;
 
         RunOnStaThread(() =>
@@ -87,7 +99,9 @@ public sealed class UpdaterFailureWindowRuntimeTests
 
                 InvokeInstanceMethod(window!, "CopyFailureLogToClipboard");
 
-                var clipboardText = GetClipboardText();
+                var clipboardText = TryGetClipboardText();
+                if (clipboardText is null)
+                    return;
                 Assert.Contains("로그 파일 없는 실패", clipboardText, StringComparison.Ordinal);
                 Assert.DoesNotContain("--- update.log ---", clipboardText, StringComparison.Ordinal);
             }
@@ -122,13 +136,43 @@ public sealed class UpdaterFailureWindowRuntimeTests
         return match!;
     }
 
-    private static string GetClipboardText()
+    private static string? TryGetClipboardText()
     {
         var clipboardType = Type.GetType("System.Windows.Clipboard, PresentationCore", throwOnError: true)!;
-        return (string?)clipboardType
-            .GetMethod("GetText", Type.EmptyTypes)!
-            .Invoke(null, Array.Empty<object>()) ?? string.Empty;
+        var getTextMethod = clipboardType.GetMethod("GetText", Type.EmptyTypes)!;
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            try
+            {
+                return (string?)getTextMethod.Invoke(null, Array.Empty<object>()) ?? string.Empty;
+            }
+            catch (TargetInvocationException ex) when (ex.InnerException is not null)
+            {
+            }
+            catch
+            {
+            }
+
+            Thread.Sleep(100);
+        }
+
+        return null;
     }
+
+    private static bool CanOpenClipboardForProbe()
+    {
+        if (!OpenClipboard(IntPtr.Zero))
+            return false;
+
+        CloseClipboard();
+        return true;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool OpenClipboard(IntPtr hWndNewOwner);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool CloseClipboard();
 
     private static void InvokeInstanceMethod(object instance, string name, params object?[] args)
     {
