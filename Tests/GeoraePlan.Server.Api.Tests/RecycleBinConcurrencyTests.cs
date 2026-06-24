@@ -2598,6 +2598,133 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task GetAllCompanyProfile_ForOfficeAdmin_DoesNotExposeOutOfScopeDeletedProfiles()
+    {
+        var currentUser = CreateOfficeOnlyAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var visibleProfileId = Guid.NewGuid();
+        var hiddenProfileId = Guid.NewGuid();
+        dbContext.CompanyProfiles.AddRange(
+            new CompanyProfile
+            {
+                Id = visibleProfileId,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileName = "USENET 삭제 회사설정",
+                TradeName = "USENET",
+                IsDeleted = true,
+                IsActive = false
+            },
+            new CompanyProfile
+            {
+                Id = hiddenProfileId,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ProfileName = "ITWORLD 삭제 회사설정",
+                TradeName = "ITWORLD",
+                IsDeleted = true,
+                IsActive = false
+            });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.GetAll("company-profile", null, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<List<RecycleBinEntryDto>>(ok.Value);
+        var entry = Assert.Single(payload);
+        Assert.Equal(visibleProfileId, entry.EntityId);
+        Assert.DoesNotContain(payload, current => current.EntityId == hiddenProfileId);
+    }
+
+    [Fact]
+    public async Task RestoreCompanyProfile_ForOfficeAdmin_RejectsOutOfScopeProfile()
+    {
+        var currentUser = CreateOfficeOnlyAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var hiddenProfileId = Guid.NewGuid();
+        dbContext.CompanyProfiles.Add(new CompanyProfile
+        {
+            Id = hiddenProfileId,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ProfileName = "ITWORLD 삭제 회사설정",
+            TradeName = "ITWORLD",
+            IsDeleted = true,
+            IsActive = false
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = hiddenProfileId,
+                        Kind = "company-profile"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var result = Assert.Single(payload.Results);
+        Assert.False(result.Success);
+        Assert.Equal(0, payload.SucceededCount);
+        Assert.True(await dbContext.CompanyProfiles.IgnoreQueryFilters()
+            .Where(current => current.Id == hiddenProfileId)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task PurgeCompanyProfile_ForOfficeAdmin_RejectsOutOfScopeProfile()
+    {
+        var currentUser = CreateOfficeOnlyAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var hiddenProfileId = Guid.NewGuid();
+        dbContext.CompanyProfiles.Add(new CompanyProfile
+        {
+            Id = hiddenProfileId,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ProfileName = "ITWORLD 삭제 회사설정",
+            TradeName = "ITWORLD",
+            IsDeleted = true,
+            IsActive = false
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = hiddenProfileId,
+                        Kind = "company-profile"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var result = Assert.Single(payload.Results);
+        Assert.False(result.Success);
+        Assert.Equal(0, payload.SucceededCount);
+        Assert.True(await dbContext.CompanyProfiles.IgnoreQueryFilters()
+            .AnyAsync(current => current.Id == hiddenProfileId && current.IsDeleted));
+        Assert.False(await dbContext.RecycleBinPurgeRecords
+            .AnyAsync(current => current.Kind == "company-profile" && current.EntityId == hiddenProfileId));
+    }
+
+    [Fact]
     public async Task RestoreRentalAsset_RejectsHiddenActiveIdentifierConflictWithoutLeakingDetails()
     {
         var currentUser = CreateOfficeOnlyUser();
@@ -5227,6 +5354,16 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
             OfficeCode = OfficeCodeCatalog.Usenet,
             ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
             IsAdmin = false
+        };
+
+    private static TestCurrentUserContext CreateOfficeOnlyAdminUser()
+        => new()
+        {
+            Username = "office-admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            IsAdmin = true
         };
 
     private sealed class ServerRentalBillingRunSnapshot

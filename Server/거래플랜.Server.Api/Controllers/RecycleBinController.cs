@@ -135,24 +135,26 @@ public sealed class RecycleBinController : ControllerBase
 
         if (canManageSharedSettings && ShouldIncludeKind(normalizedKind, "company-profile"))
         {
-            var deletedCompanyProfiles = await _dbContext.CompanyProfiles
+            var deletedCompanyProfiles = await _officeScopeService.ApplyCompanyProfileScope(_dbContext.CompanyProfiles
                 .IgnoreQueryFilters()
                 .AsNoTracking()
-                .Where(profile => profile.IsDeleted)
+                .Where(profile => profile.IsDeleted))
                 .OrderByDescending(profile => profile.UpdatedAtUtc)
                 .ToListAsync(cancellationToken);
 
-            entries.AddRange(deletedCompanyProfiles.Select(profile => new RecycleBinEntryDto
-            {
-                EntityId = profile.Id,
-                Kind = "company-profile",
-                KindText = "회사설정",
-                Title = string.IsNullOrWhiteSpace(profile.TradeName) ? "(회사설정)" : profile.TradeName,
-                Subtitle = JoinSegments(profile.BusinessNumber, profile.Representative),
-                Detail = JoinSegments(profile.ContactNumber, profile.Email, profile.Address),
-                DeletedAtUtc = profile.UpdatedAtUtc,
-                Revision = profile.Revision
-            }));
+            entries.AddRange(deletedCompanyProfiles
+                .Where(profile => _officeScopeService.CanWriteOfficeForCompanyProfiles(profile.OfficeCode))
+                .Select(profile => new RecycleBinEntryDto
+                {
+                    EntityId = profile.Id,
+                    Kind = "company-profile",
+                    KindText = "회사설정",
+                    Title = string.IsNullOrWhiteSpace(profile.TradeName) ? "(회사설정)" : profile.TradeName,
+                    Subtitle = JoinSegments(profile.BusinessNumber, profile.Representative),
+                    Detail = JoinSegments(profile.ContactNumber, profile.Email, profile.Address),
+                    DeletedAtUtc = profile.UpdatedAtUtc,
+                    Revision = profile.Revision
+                }));
         }
 
         if (canManageSharedSettings && ShouldIncludeKind(normalizedKind, "customer-category"))
@@ -822,6 +824,8 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == profileId, cancellationToken);
         if (profile is null)
             return (false, "복원할 회사설정을 찾을 수 없습니다.");
+        if (!_officeScopeService.CanWriteOfficeForCompanyProfiles(profile.OfficeCode))
+            return (false, "현재 계정으로 복원할 수 없는 회사설정입니다.");
         if (!profile.IsDeleted)
             return (true, "이미 활성 상태인 회사설정입니다.");
 
@@ -1856,6 +1860,8 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == profileId, cancellationToken);
         if (profile is null)
             return (false, "영구삭제할 회사설정을 찾을 수 없습니다.");
+        if (!_officeScopeService.CanWriteOfficeForCompanyProfiles(profile.OfficeCode))
+            return (false, "현재 계정으로 영구삭제할 수 없는 회사설정입니다.");
         if (!profile.IsDeleted)
             return (false, "활성 상태 회사설정은 휴지통에서 영구삭제할 수 없습니다.");
 
