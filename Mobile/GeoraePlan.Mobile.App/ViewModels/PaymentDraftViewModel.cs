@@ -460,8 +460,7 @@ public sealed class PaymentDraftViewModel : ObservableObject
             }
 
             if (state.PendingPaymentCount == 0 &&
-                state.ConsecutiveFailureCount > 0 &&
-                !string.IsNullOrWhiteSpace(state.LastError))
+                SyncCoordinator.IsFailedImmediateSaveWithoutServerAcceptance(state))
             {
                 StatusMessage = $"{PaymentActionText}이 저장되지 않았습니다. {state.LastError}";
                 return;

@@ -888,7 +888,7 @@ public sealed class MobileReleaseConfigurationTests
             "var state = await _syncCoordinator.SavePaymentImmediatelyAsync(payment, Attachments, linkedTransaction);",
             StringComparison.Ordinal);
         var failureGuardIndex = paymentViewSource.IndexOf(
-            "if (state.PendingPaymentCount == 0 &&\n                state.ConsecutiveFailureCount > 0 &&\n                !string.IsNullOrWhiteSpace(state.LastError))",
+            "if (state.PendingPaymentCount == 0 &&\n                SyncCoordinator.IsFailedImmediateSaveWithoutServerAcceptance(state))",
             saveCallIndex,
             StringComparison.Ordinal);
         var successBranchIndex = paymentViewSource.IndexOf(
@@ -904,9 +904,60 @@ public sealed class MobileReleaseConfigurationTests
         Assert.True(failureGuardIndex > saveCallIndex);
         Assert.True(successBranchIndex > failureGuardIndex);
         Assert.True(successCallbackIndex > successBranchIndex);
+        Assert.Contains("public static bool IsFailedImmediateSaveWithoutServerAcceptance(MobileSyncState state)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("!HasServerAcceptanceDuringCurrentAttempt(state);", coordinatorSource, StringComparison.Ordinal);
         Assert.Matches(
-            "if \\(state\\.PendingPaymentCount == 0 &&\\n\\s*state\\.ConsecutiveFailureCount > 0 &&\\n\\s*!string\\.IsNullOrWhiteSpace\\(state\\.LastError\\)\\)\\n\\s*\\{\\n\\s*StatusMessage = \\$\"\\{PaymentActionText\\}[^\\n]+\\{state\\.LastError\\}\";\\n\\s*return;\\n\\s*\\}",
+            "if \\(state\\.PendingPaymentCount == 0 &&\\n\\s*SyncCoordinator\\.IsFailedImmediateSaveWithoutServerAcceptance\\(state\\)\\)\\n\\s*\\{\\n\\s*StatusMessage = \\$\"\\{PaymentActionText\\}[^\\n]+\\{state\\.LastError\\}\";\\n\\s*return;\\n\\s*\\}",
             paymentViewSource);
+    }
+
+    [Fact]
+    public void MobileImmediateSave_PostSaveRefreshOrAttachmentFailureStillShowsSaved()
+    {
+        var root = FindRepositoryRoot();
+        var coordinatorSource = File.ReadAllText(Path.Combine(
+                root,
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "Services",
+                "SyncCoordinator.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var invoiceViewSource = File.ReadAllText(Path.Combine(
+                root,
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "ViewModels",
+                "InvoiceDraftViewModel.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var paymentViewSource = File.ReadAllText(Path.Combine(
+                root,
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "ViewModels",
+                "PaymentDraftViewModel.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains("private static bool HasServerAcceptanceDuringCurrentAttempt(MobileSyncState state)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("state.LastSuccessUtc.Value >= state.LastAttemptUtc.Value;", coordinatorSource, StringComparison.Ordinal);
+        Assert.True(
+            coordinatorSource.Split("state = await PullInternalAsync(state, ct);\n                state.LastSuccessUtc = DateTime.UtcNow;", StringSplitOptions.None).Length >= 3,
+            "Invoice and payment immediate-save paths must rewrite LastSuccessUtc after PullInternalAsync so refresh failures are not treated as save rejection.");
+        Assert.Contains(
+            "state = await PullInternalAsync(state, ct);\n                state.LastSuccessUtc = DateTime.UtcNow;\n                RestorePaymentAttachmentUploadErrorsAfterPull(state, attachmentUploadErrors);",
+            coordinatorSource,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "if (state.PendingInvoiceCount == 0 &&\n                SyncCoordinator.IsFailedImmediateSaveWithoutServerAcceptance(state))",
+            invoiceViewSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "if (state.PendingPaymentCount == 0 &&\n                SyncCoordinator.IsFailedImmediateSaveWithoutServerAcceptance(state))",
+            paymentViewSource,
+            StringComparison.Ordinal);
+        Assert.Contains("최신 데이터 새로고침 대기", invoiceViewSource, StringComparison.Ordinal);
+        Assert.Contains("최신 데이터 새로고침 대기", paymentViewSource, StringComparison.Ordinal);
+        Assert.Contains("첨부 {state.PendingPaymentAttachmentCount:N0}건", paymentViewSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1198,7 +1249,7 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("다음 동기화에서 다시 시도합니다", source, StringComparison.Ordinal);
         Assert.Contains("state.ConsecutiveFailureCount = Math.Max(1, state.ConsecutiveFailureCount);", source, StringComparison.Ordinal);
         Assert.Matches(
-            "state = await PullInternalAsync\\(state, ct\\);\\n\\s*RestorePaymentAttachmentUploadErrorsAfterPull\\(state, attachmentUploadErrors\\);",
+            "state = await PullInternalAsync\\(state, ct\\);\\n\\s*state\\.LastSuccessUtc = DateTime\\.UtcNow;\\n\\s*RestorePaymentAttachmentUploadErrorsAfterPull\\(state, attachmentUploadErrors\\);",
             normalizedSource);
     }
 

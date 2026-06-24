@@ -31,6 +31,17 @@ public sealed class SyncCoordinator
     public static bool IsConcurrencyConflictState(MobileSyncState state)
         => state is not null && IsConcurrencyConflictMessage(state.LastError);
 
+    public static bool IsFailedImmediateSaveWithoutServerAcceptance(MobileSyncState state)
+        => state is not null &&
+           state.ConsecutiveFailureCount > 0 &&
+           !string.IsNullOrWhiteSpace(state.LastError) &&
+           !HasServerAcceptanceDuringCurrentAttempt(state);
+
+    private static bool HasServerAcceptanceDuringCurrentAttempt(MobileSyncState state)
+        => state.LastSuccessUtc.HasValue &&
+           state.LastAttemptUtc.HasValue &&
+           state.LastSuccessUtc.Value >= state.LastAttemptUtc.Value;
+
     public static bool IsConcurrencyConflictMessage(string? message)
         => !string.IsNullOrWhiteSpace(message) &&
            message.Contains("다른 PC/모바일에서 먼저 수정", StringComparison.Ordinal);
@@ -197,6 +208,7 @@ public sealed class SyncCoordinator
                 state.LastFailureAllowsCachedDisplay = true;
                 state.ConsecutiveFailureCount = 0;
                 state = await PullInternalAsync(state, ct);
+                state.LastSuccessUtc = DateTime.UtcNow;
             }
             catch (Exception ex) when (IsConcurrencyConflict(ex))
             {
@@ -299,6 +311,7 @@ public sealed class SyncCoordinator
                 state.LastFailureAllowsCachedDisplay = true;
                 state.ConsecutiveFailureCount = 0;
                 state = await PullInternalAsync(state, ct);
+                state.LastSuccessUtc = DateTime.UtcNow;
                 RestorePaymentAttachmentUploadErrorsAfterPull(state, attachmentUploadErrors);
                 RestoreTerminalPaymentAttachmentUploadErrorsAfterPull(state, terminalAttachmentUploadErrors);
             }

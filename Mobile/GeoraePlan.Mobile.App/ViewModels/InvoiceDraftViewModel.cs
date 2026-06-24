@@ -1037,8 +1037,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             }
 
             if (state.PendingInvoiceCount == 0 &&
-                state.ConsecutiveFailureCount > 0 &&
-                !string.IsNullOrWhiteSpace(state.LastError))
+                SyncCoordinator.IsFailedImmediateSaveWithoutServerAcceptance(state))
             {
                 StatusMessage = $"{DocumentKindText} 전표가 저장되지 않았습니다. {state.LastError}";
                 return;
