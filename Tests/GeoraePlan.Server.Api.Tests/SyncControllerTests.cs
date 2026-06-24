@@ -6203,6 +6203,225 @@ public sealed class SyncControllerTests : IDisposable
         Assert.False(await scopedDb.RentalBillingLogs.IgnoreQueryFilters().AnyAsync(log => log.Id == logId));
     }
 
+    [Theory]
+    [InlineData("rental-billing-profile", false)]
+    [InlineData("rental-billing-profile", true)]
+    [InlineData("rental-asset", false)]
+    [InlineData("rental-asset", true)]
+    [InlineData("rental-billing-log", false)]
+    [InlineData("rental-billing-log", true)]
+    public async Task Push_RejectsExistingRentalScopedEntity_WhenDirectIdIsOutsideWritableScope(string kind, bool delete)
+    {
+        var targetId = Guid.NewGuid();
+        var hiddenProfileId = kind == "rental-billing-log" ? Guid.NewGuid() : targetId;
+        switch (kind)
+        {
+            case "rental-billing-profile":
+                _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+                {
+                    Id = targetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Shared,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ManagementCompanyCode = OfficeCodeCatalog.Yeonsu,
+                    ProfileKey = "SYNC-HIDDEN-DIRECT-PROFILE-001",
+                    CustomerName = "Hidden direct profile",
+                    ItemName = "Hidden profile item",
+                    MonthlyAmount = 1000m,
+                    IsDeleted = false
+                });
+                break;
+            case "rental-asset":
+                _dbContext.RentalAssets.Add(new RentalAsset
+                {
+                    Id = targetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Shared,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ManagementCompanyCode = OfficeCodeCatalog.Yeonsu,
+                    AssetKey = "SYNC-HIDDEN-DIRECT-ASSET-001",
+                    ManagementId = "SYNC-HIDDEN-DIRECT-ASSET-001",
+                    ManagementNumber = "SYNC-HIDDEN-DIRECT-ASSET-001",
+                    ItemName = "Hidden direct asset",
+                    AssetStatus = "설치",
+                    MonthlyFee = 1000m,
+                    IsDeleted = false
+                });
+                break;
+            case "rental-billing-log":
+                _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+                {
+                    Id = hiddenProfileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Shared,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ManagementCompanyCode = OfficeCodeCatalog.Yeonsu,
+                    ProfileKey = "SYNC-HIDDEN-DIRECT-LOG-PROFILE-001",
+                    CustomerName = "Hidden direct log profile",
+                    ItemName = "Hidden log item",
+                    IsDeleted = false
+                });
+                _dbContext.RentalBillingLogs.Add(new RentalBillingLog
+                {
+                    Id = targetId,
+                    BillingProfileId = hiddenProfileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Shared,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    BillingYearMonth = "2026-08",
+                    ScheduledDate = new DateOnly(2026, 8, 25),
+                    Status = "예정",
+                    BilledAmount = 1000m,
+                    Note = "Hidden direct log",
+                    IsDeleted = false
+                });
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unsupported rental sync kind.");
+        }
+
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var beforeRevision = kind switch
+        {
+            "rental-billing-profile" => await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+                .Where(current => current.Id == targetId)
+                .Select(current => current.Revision)
+                .SingleAsync(),
+            "rental-asset" => await _dbContext.RentalAssets.IgnoreQueryFilters()
+                .Where(current => current.Id == targetId)
+                .Select(current => current.Revision)
+                .SingleAsync(),
+            "rental-billing-log" => await _dbContext.RentalBillingLogs.IgnoreQueryFilters()
+                .Where(current => current.Id == targetId)
+                .Select(current => current.Revision)
+                .SingleAsync(),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unsupported rental sync kind.")
+        };
+
+        var currentUser = CreateOfficeSyncUser(PermissionNames.RentalProfileEdit, PermissionNames.RentalAssetEdit);
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var request = new SyncPushRequest
+        {
+            DeviceId = $"device-direct-hidden-{kind}-{delete}"
+        };
+        switch (kind)
+        {
+            case "rental-billing-profile":
+                request.RentalBillingProfiles =
+                [
+                    new RentalBillingProfileDto
+                    {
+                        Id = targetId,
+                        TenantCode = TenantScopeCatalog.UsenetGroup,
+                        OfficeCode = OfficeCodeCatalog.Shared,
+                        ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                        ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                        ProfileKey = "SYNC-HIDDEN-DIRECT-PROFILE-001",
+                        CustomerName = "Tampered direct profile",
+                        ItemName = "Tampered profile item",
+                        MonthlyAmount = 9999m,
+                        IsDeleted = delete,
+                        Revision = beforeRevision,
+                        ExpectedRevision = beforeRevision,
+                        CreatedAtUtc = new DateTime(2026, 6, 25, 0, 0, 0, DateTimeKind.Utc),
+                        UpdatedAtUtc = new DateTime(2026, 6, 25, 0, 1, 0, DateTimeKind.Utc)
+                    }
+                ];
+                break;
+            case "rental-asset":
+                request.RentalAssets =
+                [
+                    new RentalAssetDto
+                    {
+                        Id = targetId,
+                        TenantCode = TenantScopeCatalog.UsenetGroup,
+                        OfficeCode = OfficeCodeCatalog.Shared,
+                        ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                        ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                        AssetKey = "SYNC-HIDDEN-DIRECT-ASSET-001",
+                        ManagementId = "SYNC-HIDDEN-DIRECT-ASSET-001",
+                        ManagementNumber = "SYNC-HIDDEN-DIRECT-ASSET-001",
+                        ItemName = "Tampered direct asset",
+                        AssetStatus = "회수",
+                        MonthlyFee = 9999m,
+                        IsDeleted = delete,
+                        Revision = beforeRevision,
+                        ExpectedRevision = beforeRevision,
+                        CreatedAtUtc = new DateTime(2026, 6, 25, 0, 0, 0, DateTimeKind.Utc),
+                        UpdatedAtUtc = new DateTime(2026, 6, 25, 0, 1, 0, DateTimeKind.Utc)
+                    }
+                ];
+                break;
+            case "rental-billing-log":
+                request.RentalBillingLogs =
+                [
+                    new RentalBillingLogDto
+                    {
+                        Id = targetId,
+                        BillingProfileId = hiddenProfileId,
+                        TenantCode = TenantScopeCatalog.UsenetGroup,
+                        OfficeCode = OfficeCodeCatalog.Shared,
+                        ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                        BillingYearMonth = "2026-08",
+                        ScheduledDate = new DateOnly(2026, 8, 25),
+                        Status = "완료",
+                        BilledAmount = 9999m,
+                        Note = "Tampered direct log",
+                        IsDeleted = delete,
+                        Revision = beforeRevision,
+                        ExpectedRevision = beforeRevision,
+                        CreatedAtUtc = new DateTime(2026, 6, 25, 0, 0, 0, DateTimeKind.Utc),
+                        UpdatedAtUtc = new DateTime(2026, 6, 25, 0, 1, 0, DateTimeKind.Utc)
+                    }
+                ];
+                break;
+        }
+
+        var response = await controller.Push(request, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.Reason.Contains("Current account cannot modify this office scope.", StringComparison.OrdinalIgnoreCase));
+
+        scopedDb.ChangeTracker.Clear();
+        switch (kind)
+        {
+            case "rental-billing-profile":
+                var profile = await scopedDb.RentalBillingProfiles.IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .SingleAsync(current => current.Id == targetId);
+                Assert.Equal("Hidden direct profile", profile.CustomerName);
+                Assert.Equal(1000m, profile.MonthlyAmount);
+                Assert.False(profile.IsDeleted);
+                Assert.Equal(beforeRevision, profile.Revision);
+                break;
+            case "rental-asset":
+                var asset = await scopedDb.RentalAssets.IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .SingleAsync(current => current.Id == targetId);
+                Assert.Equal("Hidden direct asset", asset.ItemName);
+                Assert.Equal(1000m, asset.MonthlyFee);
+                Assert.False(asset.IsDeleted);
+                Assert.Equal(beforeRevision, asset.Revision);
+                break;
+            case "rental-billing-log":
+                var log = await scopedDb.RentalBillingLogs.IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .SingleAsync(current => current.Id == targetId);
+                Assert.Equal("Hidden direct log", log.Note);
+                Assert.Equal(1000m, log.BilledAmount);
+                Assert.False(log.IsDeleted);
+                Assert.Equal(beforeRevision, log.Revision);
+                break;
+        }
+    }
+
     [Fact]
     public async Task Push_RestoresLinkedDeletedCustomerContracts_WhenRestoringRentalBillingProfile()
     {
