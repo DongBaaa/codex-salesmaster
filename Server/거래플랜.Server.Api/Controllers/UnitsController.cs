@@ -2,6 +2,7 @@ using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
 using 거래플랜.Server.Api.Security;
+using 거래플랜.Server.Api.Services;
 using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
@@ -81,6 +82,17 @@ public sealed class UnitsController : ControllerBase
         if (entity is null) return NotFound();
         if (OptimisticConcurrencyGuard.Check(this, entity, expectedRevision, nameof(Unit)) is { } conflict)
             return conflict;
+        var referenceBlockMessage = await UnitDeletionReferenceGuard.BuildReferenceBlockMessageAsync(
+            _dbContext,
+            entity.Name,
+            cancellationToken);
+        if (referenceBlockMessage is not null)
+            return Conflict(new
+            {
+                error = UnitDeletionReferenceGuard.ConflictCode,
+                message = referenceBlockMessage
+            });
+
         entity.IsDeleted = true;
         await _dbContext.SaveChangesAsync(cancellationToken);
         return NoContent();

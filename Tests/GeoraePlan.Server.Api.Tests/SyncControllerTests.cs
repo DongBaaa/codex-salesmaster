@@ -13050,6 +13050,204 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsUnitDelete_WhenReferencedByItemInvoiceOrTransfer()
+    {
+        var unitId = Guid.NewGuid();
+        var itemId = Guid.NewGuid();
+        var customerId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var transferId = Guid.NewGuid();
+
+        _dbContext.Units.Add(new Unit
+        {
+            Id = unitId,
+            Name = "EA",
+            IsActive = true,
+            IsDeleted = false,
+            UpdatedAtUtc = new DateTime(2026, 6, 24, 0, 5, 0, DateTimeKind.Utc)
+        });
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "SYNC-UNIT-REFERENCE-ITEM",
+            NameMatchKey = "SYNCUNITREFERENCEITEM",
+            CategoryName = "기타",
+            Unit = "EA",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock
+        });
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-UNIT-REFERENCE-CUSTOMER",
+            NameMatchKey = "SYNCUNITREFERENCECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-UNIT-REFERENCE-INVOICE",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 24),
+            Lines =
+            [
+                new InvoiceLine
+                {
+                    Id = Guid.NewGuid(),
+                    InvoiceId = invoiceId,
+                    ItemId = itemId,
+                    ItemNameOriginal = "SYNC-UNIT-REFERENCE-ITEM",
+                    Unit = "EA",
+                    Quantity = 1m,
+                    UnitPrice = 1_000m,
+                    LineAmount = 1_000m,
+                    OrderIndex = 1,
+                    ItemTrackingType = ItemTrackingTypes.Stock
+                }
+            ]
+        });
+        _dbContext.InventoryTransfers.Add(new InventoryTransfer
+        {
+            Id = transferId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TransferNumber = "SYNC-UNIT-REFERENCE-TRANSFER",
+            TransferDate = new DateOnly(2026, 6, 24),
+            FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            Lines =
+            [
+                new InventoryTransferLine
+                {
+                    Id = Guid.NewGuid(),
+                    TransferId = transferId,
+                    ItemId = itemId,
+                    ItemNameOriginal = "SYNC-UNIT-REFERENCE-ITEM",
+                    Unit = "EA",
+                    Quantity = 1m
+                }
+            ]
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var stored = await _dbContext.Units.IgnoreQueryFilters().AsNoTracking().SingleAsync(unit => unit.Id == unitId);
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-unit-delete-referenced",
+            Units =
+            [
+                new UnitDto
+                {
+                    Id = unitId,
+                    Name = " EA ",
+                    IsActive = false,
+                    IsDeleted = true,
+                    ExpectedRevision = stored.Revision,
+                    UpdatedAtUtc = stored.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict => conflict.EntityName == nameof(Unit));
+        Assert.False(await _dbContext.Units.IgnoreQueryFilters()
+            .Where(unit => unit.Id == unitId)
+            .Select(unit => unit.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_RejectsUnitDelete_WhenOnlyNameMatchesDifferentActiveId()
+    {
+        var existingId = Guid.NewGuid();
+        _dbContext.Units.Add(new Unit
+        {
+            Id = existingId,
+            Name = "EA",
+            IsActive = true,
+            IsDeleted = false,
+            UpdatedAtUtc = new DateTime(2026, 6, 24, 0, 6, 0, DateTimeKind.Utc)
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var incomingId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-unit-delete-wrong-id",
+            Units =
+            [
+                new UnitDto
+                {
+                    Id = incomingId,
+                    Name = " ea ",
+                    IsActive = false,
+                    IsDeleted = true,
+                    UpdatedAtUtc = new DateTime(2026, 6, 24, 0, 7, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(Unit) &&
+            conflict.Reason.Contains("does not exist", StringComparison.OrdinalIgnoreCase));
+        Assert.False(await _dbContext.Units.IgnoreQueryFilters().AnyAsync(unit => unit.Id == incomingId));
+        Assert.False(await _dbContext.Units.IgnoreQueryFilters()
+            .Where(unit => unit.Id == existingId)
+            .Select(unit => unit.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_RejectsUnitDelete_WhenServerRowIsMissing()
+    {
+        var missingUnitId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-unit-delete-missing",
+            Units =
+            [
+                new UnitDto
+                {
+                    Id = missingUnitId,
+                    Name = "BOX",
+                    IsActive = false,
+                    IsDeleted = true,
+                    UpdatedAtUtc = new DateTime(2026, 6, 24, 0, 8, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(Unit) &&
+            conflict.Reason.Contains("does not exist", StringComparison.OrdinalIgnoreCase));
+        Assert.False(await _dbContext.Units.IgnoreQueryFilters().AnyAsync(unit => unit.Id == missingUnitId));
+    }
+
+    [Fact]
     public async Task Push_RejectsCustomerCategoryDuplicateNameAfterTrim()
     {
         var existingId = Guid.NewGuid();

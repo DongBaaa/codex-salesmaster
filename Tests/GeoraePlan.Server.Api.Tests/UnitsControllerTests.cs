@@ -106,6 +106,44 @@ public sealed class UnitsControllerTests : IDisposable
         Assert.False(await dbContext.Units.IgnoreQueryFilters().AnyAsync(unit => unit.Id == incomingId));
     }
 
+    [Fact]
+    public async Task Delete_ReturnsConflict_WhenReferencedByItem()
+    {
+        await using var dbContext = CreateDbContext();
+        var unitId = Guid.NewGuid();
+        dbContext.Units.Add(new Unit
+        {
+            Id = unitId,
+            Name = "EA",
+            IsActive = true,
+            IsDeleted = false
+        });
+        dbContext.Items.Add(new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "UNIT-REFERENCE-ITEM",
+            NameMatchKey = "UNITREFERENCEITEM",
+            CategoryName = "기타",
+            Unit = "EA",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock
+        });
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Units.IgnoreQueryFilters().AsNoTracking().SingleAsync(unit => unit.Id == unitId);
+        var controller = new UnitsController(dbContext);
+        var response = await controller.Delete(unitId, stored.Revision, CancellationToken.None);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(response);
+        Assert.Contains("unit_delete_blocked_by_references", conflict.Value?.ToString(), StringComparison.Ordinal);
+        Assert.False(await dbContext.Units.IgnoreQueryFilters()
+            .Where(unit => unit.Id == unitId)
+            .Select(unit => unit.IsDeleted)
+            .SingleAsync());
+    }
+
     public void Dispose()
     {
         _connection.Dispose();

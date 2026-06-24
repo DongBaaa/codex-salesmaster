@@ -1096,8 +1096,10 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            var entity = existingUnits.FirstOrDefault(current => current.Id == dto.Id)
-                ?? existingUnits
+            var entityById = existingUnits.FirstOrDefault(current => current.Id == dto.Id);
+            var entity = dto.IsDeleted
+                ? entityById
+                : entityById ?? existingUnits
                     .Where(current =>
                         string.Equals(
                             UnitCatalogNormalizer.Normalize(current.Name),
@@ -1106,6 +1108,25 @@ public sealed class SyncController : ControllerBase
                     .OrderByDescending(current => current.UpdatedAtUtc)
                     .ThenByDescending(current => current.Revision)
                     .FirstOrDefault();
+
+            if (entity is null && dto.IsDeleted)
+            {
+                AddClientConflict(dto, nameof(Unit), "Unit does not exist on server.", result);
+                continue;
+            }
+
+            if (dto.IsDeleted && entity is not null && !entity.IsDeleted)
+            {
+                var referenceBlockMessage = await UnitDeletionReferenceGuard.BuildReferenceBlockMessageAsync(
+                    _dbContext,
+                    entity.Name,
+                    cancellationToken);
+                if (referenceBlockMessage is not null)
+                {
+                    AddClientConflict(dto, nameof(Unit), referenceBlockMessage, result);
+                    continue;
+                }
+            }
 
             if (entity is null)
             {
