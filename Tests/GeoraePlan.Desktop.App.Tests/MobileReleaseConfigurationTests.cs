@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Xunit;
 using 거래플랜.Shared.Contracts;
 
@@ -75,6 +76,42 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("'-p:AndroidEnableProfiledAot=false'", source, StringComparison.Ordinal);
         Assert.Contains("Remove-Item -LiteralPath $publishDirectory -Recurse -Force -ErrorAction Stop", source, StringComparison.Ordinal);
         Assert.Contains("$publishResult.ExitCode -ne 0 -and $shouldEnableAot", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MobilePages_CommandButtons_BindOnlyToInitializedAsyncCommands()
+    {
+        var root = FindRepositoryRoot();
+        var mobileRoot = Path.Combine(root, "Mobile", "GeoraePlan.Mobile.App");
+        var pagesRoot = Path.Combine(mobileRoot, "Pages");
+        var viewModelsRoot = Path.Combine(mobileRoot, "ViewModels");
+        var commandBindings = new SortedSet<string>(StringComparer.Ordinal);
+        var bindingPattern = new Regex(
+            @"SetBinding\s*\(\s*Button\.CommandProperty\s*,\s*nameof\s*\(\s*(?<viewModel>[A-Za-z_][A-Za-z0-9_]*)\.(?<command>[A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\)",
+            RegexOptions.Compiled);
+
+        foreach (var pagePath in Directory.EnumerateFiles(pagesRoot, "*.cs", SearchOption.TopDirectoryOnly))
+        {
+            var pageSource = File.ReadAllText(pagePath);
+            Assert.DoesNotContain("SetBinding(Button.CommandProperty, \"", pageSource, StringComparison.Ordinal);
+            Assert.DoesNotContain("SetBinding(Button.CommandProperty, new Binding(\"", pageSource, StringComparison.Ordinal);
+
+            foreach (Match match in bindingPattern.Matches(pageSource))
+            {
+                var viewModelName = match.Groups["viewModel"].Value;
+                var commandName = match.Groups["command"].Value;
+                commandBindings.Add($"{viewModelName}.{commandName}");
+
+                var viewModelPath = Path.Combine(viewModelsRoot, viewModelName + ".cs");
+                Assert.True(File.Exists(viewModelPath), $"모바일 페이지가 없는 ViewModel Command에 바인딩했습니다: {Path.GetFileName(pagePath)} -> {viewModelName}.{commandName}");
+
+                var viewModelSource = File.ReadAllText(viewModelPath);
+                Assert.Contains($"public AsyncCommand {commandName} {{ get; }}", viewModelSource, StringComparison.Ordinal);
+                Assert.Contains($"{commandName} = new AsyncCommand(", viewModelSource, StringComparison.Ordinal);
+            }
+        }
+
+        Assert.True(commandBindings.Count >= 15, $"모바일 Button Command 바인딩 감지 수가 예상보다 적습니다: {commandBindings.Count}");
     }
 
     [Fact]

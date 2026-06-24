@@ -78,6 +78,38 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public void UpdateAssetPublisher_WritesAtomicManifestAndPreservesReferencedDownloads()
+    {
+        var source = ReadRepositoryFile(
+            "tools",
+            "release",
+            "Publish-GeoraePlanUpdateAssets.ps1");
+
+        Assert.Contains("$tempInitializer = Join-Path $ProjectRoot 'tools\\common\\Initialize-GeoraePlanTemp.ps1'", source, StringComparison.Ordinal);
+        Assert.Contains(". $tempInitializer -ProjectRoot $ProjectRoot", source, StringComparison.Ordinal);
+        Assert.Contains("function Write-JsonFileAtomically", source, StringComparison.Ordinal);
+        Assert.Contains("[System.IO.File]::Replace($tempPath, $TargetPath, $backupPath, $true)", source, StringComparison.Ordinal);
+        Assert.Contains("Move-Item -LiteralPath $tempPath -Destination $TargetPath -Force", source, StringComparison.Ordinal);
+        Assert.Contains("Write-JsonFileAtomically -TargetPath $manifestPath -InputObject $manifest", source, StringComparison.Ordinal);
+
+        Assert.Contains("Test-DesktopUpdatePackage -PackagePath $SourcePath -ExpectedVersion $Version", source, StringComparison.Ordinal);
+        Assert.Contains("'App/Updater/거래플랜.Updater.exe'", source, StringComparison.Ordinal);
+        Assert.Contains("'App/appsettings.json'", source, StringComparison.Ordinal);
+        Assert.Contains("sha256 = $hash.Hash", source, StringComparison.Ordinal);
+        Assert.Contains("fileSize = [int64]$fileInfo.Length", source, StringComparison.Ordinal);
+
+        Assert.Contains("$preservedDesktopFiles = Get-ManifestReferencedFileNames -ManifestRoot $manifestRoot -Platform 'desktop'", source, StringComparison.Ordinal);
+        Assert.Contains("$preservedAndroidFiles = Get-ManifestReferencedFileNames -ManifestRoot $manifestRoot -Platform 'android'", source, StringComparison.Ordinal);
+        Assert.Contains("-PreserveFileNames $preservedDesktopFiles", source, StringComparison.Ordinal);
+        Assert.Contains("-PreserveFileNames $preservedAndroidFiles", source, StringComparison.Ordinal);
+        AssertInOrder(
+            source,
+            "Write-JsonFileAtomically -TargetPath $manifestPath -InputObject $manifest",
+            "$preservedDesktopFiles = Get-ManifestReferencedFileNames -ManifestRoot $manifestRoot -Platform 'desktop'",
+            "$removedDesktopPackages = Remove-OldPackages");
+    }
+
+    [Fact]
     public void DesktopUpdaterFailureWindow_ProvidesCopyableLogDiagnosticsAndStaysOpen()
     {
         var windowSource = ReadRepositoryFile(
