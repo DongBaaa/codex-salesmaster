@@ -240,20 +240,30 @@ public sealed class PaymentsController : ControllerBase
             FileSize = bytes.LongLength,
             FileHash = Convert.ToHexString(SHA256.HashData(bytes)),
             UploadedAtUtc = DateTime.UtcNow,
-            FileContent = bytes
+            FileContent = []
         };
 
-        _dbContext.PaymentAttachments.Add(entity);
-        await _dbContext.SaveChangesAsync(cancellationToken);
-        entity.StoragePath = await _fileStorage.SaveBytesAsync(
+        var storedPath = await _fileStorage.SaveBytesAsync(
             "payment-attachments",
             paymentId.ToString("N"),
             entity.Id,
             safeFileName,
             bytes,
             cancellationToken);
-        entity.FileContent = [];
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        entity.StoragePath = storedPath;
+
+        _dbContext.PaymentAttachments.Add(entity);
+        try
+        {
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch
+        {
+            _fileStorage.DeleteIfExists(storedPath);
+            _dbContext.Entry(entity).State = EntityState.Detached;
+            throw;
+        }
+
         return Ok(entity.ToDto(false));
     }
 

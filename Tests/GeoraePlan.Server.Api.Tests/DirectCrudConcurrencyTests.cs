@@ -4267,6 +4267,11 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         Assert.Equal(first.Id, second.Id);
         Assert.Equal(first.FileHash, second.FileHash);
         Assert.Equal(1, await dbContext.PaymentAttachments.IgnoreQueryFilters().CountAsync(current => current.PaymentId == payment.Id));
+        var storedAttachment = await dbContext.PaymentAttachments.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.PaymentId == payment.Id);
+        Assert.False(string.IsNullOrWhiteSpace(storedAttachment.StoragePath));
+        Assert.Empty(storedAttachment.FileContent);
     }
 
     [Fact]
@@ -4320,6 +4325,59 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
 
         var badRequest = Assert.IsType<BadRequestObjectResult>(response.Result);
         Assert.Contains("file_content_mismatch", badRequest.Value?.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(await dbContext.PaymentAttachments.IgnoreQueryFilters().ToListAsync());
+    }
+
+    [Fact]
+    public async Task PaymentsController_UploadAttachment_DoesNotPersistRow_WhenFileStorageFails()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Payment attachment storage failure customer",
+            NameMatchKey = "PAYMENTATTACHMENTSTORAGEFAILURECUSTOMER",
+            TradeType = "Sales"
+        };
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "PAYMENT-ATTACHMENT-STORAGE-FAIL",
+            InvoiceDate = new DateOnly(2026, 6, 24)
+        };
+        var payment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 24),
+            Amount = 5000m,
+            Note = "storage failure must not persist attachment row"
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(invoice);
+        dbContext.Payments.Add(payment);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreatePaymentsController(dbContext, currentUser, new ThrowingCentralFileStorage());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => controller.UploadAttachment(
+            payment.Id,
+            CreateFormFile("storage-failure-receipt.pdf", "application/pdf", TestPdfBytes("storage failure")),
+            "내역첨부",
+            "storage failure should not create db row",
+            Guid.NewGuid(),
+            CancellationToken.None));
+
+        dbContext.ChangeTracker.Clear();
         Assert.Empty(await dbContext.PaymentAttachments.IgnoreQueryFilters().ToListAsync());
     }
 
@@ -4968,6 +5026,16 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             new StubCentralFileStorage(),
             new RentalSettlementRecalculationService(dbContext));
 
+    private static PaymentsController CreatePaymentsController(
+        AppDbContext dbContext,
+        TestCurrentUserContext currentUser,
+        ICentralFileStorage fileStorage)
+        => new(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext),
+            fileStorage,
+            new RentalSettlementRecalculationService(dbContext));
+
     private static RentalDirectPaymentScenario SeedRentalDirectPaymentScenario(
         AppDbContext dbContext,
         decimal? existingPaymentAmount = null,
@@ -5445,6 +5513,27 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
 
         public Task<string> SaveBytesAsync(string category, string tenantKey, Guid fileId, string? fileName, byte[] content, CancellationToken cancellationToken = default)
             => Task.FromResult(Path.Combine(RootPath, category, tenantKey, fileId.ToString("N"), fileName ?? "file.bin"));
+
+        public byte[] ReadBytes(string? storedPath, byte[]? fallbackContent)
+            => fallbackContent ?? Array.Empty<byte>();
+
+        public void DeleteIfExists(string? storedPath)
+        {
+        }
+    }
+
+    private sealed class ThrowingCentralFileStorage : ICentralFileStorage
+    {
+        public string RootPath => Path.GetTempPath();
+
+        public Task<string> SaveBytesAsync(
+            string category,
+            string tenantKey,
+            Guid fileId,
+            string? fileName,
+            byte[] content,
+            CancellationToken cancellationToken = default)
+            => Task.FromException<string>(new InvalidOperationException("file storage failed"));
 
         public byte[] ReadBytes(string? storedPath, byte[]? fallbackContent)
             => fallbackContent ?? Array.Empty<byte>();
