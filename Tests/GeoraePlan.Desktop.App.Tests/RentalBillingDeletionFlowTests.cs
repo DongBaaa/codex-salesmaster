@@ -3968,6 +3968,257 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     [Fact]
+    public async Task OfficeOnlyUser_DirectOutOfOfficeBillingIds_DoNotRevealOrMutateHistory()
+    {
+        PrepareAppRoot("georaeplan-rental-direct-cross-office-billing-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var hiddenProfileId = Guid.NewGuid();
+            var hiddenAssetId = Guid.NewGuid();
+            var hiddenCustomerId = Guid.NewGuid();
+            var hiddenInvoiceId = Guid.NewGuid();
+            var hiddenPaymentId = Guid.NewGuid();
+            var hiddenTransactionId = Guid.NewGuid();
+            var hiddenLogId = Guid.NewGuid();
+            var hiddenRunId = Guid.NewGuid();
+            var hiddenCustomerName = "Hidden Yeonsu direct billing customer";
+            var now = DateTime.UtcNow;
+            var hiddenTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, OfficeCodeCatalog.Yeonsu);
+
+            db.Customers.Add(CreateCustomer(hiddenCustomerId, hiddenCustomerName, OfficeCodeCatalog.Yeonsu));
+
+            var profile = CreateBillingProfile(hiddenProfileId, hiddenAssetId, hiddenCustomerName);
+            profile.TenantCode = hiddenTenant;
+            profile.OfficeCode = OfficeCodeCatalog.Yeonsu;
+            profile.ManagementCompanyCode = OfficeCodeCatalog.Yeonsu;
+            profile.ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu;
+            profile.CustomerId = hiddenCustomerId;
+            profile.BillingStatus = PaymentFlowConstants.BillingStatusInProgress;
+            profile.SettlementStatus = PaymentFlowConstants.SettlementStatusPartial;
+            profile.CompletionStatus = PaymentFlowConstants.CompletionPending;
+            profile.SettledAmount = 25_000m;
+            profile.OutstandingAmount = 75_000m;
+            profile.LastSettledDate = new DateOnly(2026, 5, 27);
+            profile.BillingRunsJson = JsonSerializer.Serialize(new List<RentalBillingRunModel>
+            {
+                new()
+                {
+                    RunId = hiddenRunId,
+                    RunKey = "2026-05",
+                    ScheduledDate = new DateOnly(2026, 5, 25),
+                    PeriodStartDate = new DateOnly(2026, 5, 1),
+                    PeriodEndDate = new DateOnly(2026, 5, 31),
+                    PeriodLabel = "2026-05",
+                    Status = PaymentFlowConstants.BillingStatusInProgress,
+                    BilledAmount = 100_000m,
+                    SettledAmount = 25_000m,
+                    SettlementStatus = PaymentFlowConstants.SettlementStatusPartial,
+                    SettledDate = new DateOnly(2026, 5, 27)
+                }
+            });
+            profile.IsDirty = false;
+            db.RentalBillingProfiles.Add(profile);
+
+            var asset = CreateRentalAsset(hiddenAssetId, hiddenCustomerName, hiddenProfileId, "\uCCAD\uAD6C\uB300\uC0C1");
+            asset.TenantCode = hiddenTenant;
+            asset.OfficeCode = OfficeCodeCatalog.Yeonsu;
+            asset.ManagementCompanyCode = OfficeCodeCatalog.Yeonsu;
+            asset.ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu;
+            asset.CustomerId = hiddenCustomerId;
+            asset.IsDirty = false;
+            db.RentalAssets.Add(asset);
+
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = hiddenInvoiceId,
+                CustomerId = hiddenCustomerId,
+                TenantCode = hiddenTenant,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                SourceWarehouseCode = DomainConstants.WarehouseYeonsuMain,
+                InvoiceNumber = "Y202605-9999",
+                LocalTempNumber = "YL202605-9999",
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 5, 25),
+                TotalAmount = 100_000m,
+                SupplyAmount = 90_909m,
+                VatAmount = 9_091m,
+                LinkedRentalBillingProfileId = hiddenProfileId,
+                LinkedRentalBillingRunId = hiddenRunId,
+                VersionGroupId = hiddenInvoiceId,
+                VersionNumber = 1,
+                IsLatestVersion = true,
+                IsConfirmed = true,
+                IsDirty = false,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now,
+                LastSavedAtUtc = now,
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        Id = Guid.NewGuid(),
+                        InvoiceId = hiddenInvoiceId,
+                        ItemNameOriginal = "Hidden rental line",
+                        Unit = "EA",
+                        Quantity = 1m,
+                        UnitPrice = 100_000m,
+                        LineAmount = 100_000m,
+                        OrderIndex = 0
+                    }
+                }
+            });
+            db.Payments.Add(new LocalPayment
+            {
+                Id = hiddenPaymentId,
+                InvoiceId = hiddenInvoiceId,
+                PaymentDate = new DateOnly(2026, 5, 27),
+                Amount = 25_000m,
+                Note = "hidden cross-office payment",
+                IsDirty = false,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            });
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = hiddenTransactionId,
+                CustomerId = hiddenCustomerId,
+                TenantCode = hiddenTenant,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                TransactionDate = new DateOnly(2026, 5, 27),
+                TransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt,
+                LinkedInvoiceId = hiddenInvoiceId,
+                LinkedInvoiceNumber = "Y202605-9999",
+                LinkedRentalBillingProfileId = hiddenProfileId,
+                LinkedRentalBillingRunId = hiddenRunId,
+                BankReceipt = 25_000m,
+                ReceiptTotal = 25_000m,
+                SettlementAmount = 25_000m,
+                Note = "hidden cross-office transaction",
+                IsDirty = false,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            });
+            db.RentalBillingLogs.Add(new LocalRentalBillingLog
+            {
+                Id = hiddenLogId,
+                BillingProfileId = hiddenProfileId,
+                TenantCode = hiddenTenant,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                BillingYearMonth = "2026-05",
+                ScheduledDate = new DateOnly(2026, 5, 25),
+                ProcessedDate = new DateOnly(2026, 5, 27),
+                ProcessedByUsername = "hidden-yeonsu-user",
+                Status = PaymentFlowConstants.SettlementStatusPartial,
+                BilledAmount = 100_000m,
+                Note = "hidden cross-office log",
+                IsDirty = false,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            });
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            var session = CreateOfficeOnlySession(
+                OfficeCodeCatalog.Usenet,
+                AppPermissionNames.RentalProfileEdit,
+                AppPermissionNames.InvoiceEdit,
+                AppPermissionNames.PaymentEdit);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+
+            var directHistory = await rental.GetBillingHistoryRowsAsync(
+                new[] { hiddenProfileId },
+                session,
+                new DateOnly(2026, 5, 28));
+            Assert.Empty(directHistory);
+
+            var start = await rental.StartBillingAsync(hiddenProfileId, new DateOnly(2026, 5, 25), session);
+            Assert.False(start.Success);
+            Assert.Contains("권한", start.Message);
+
+            var register = await rental.RegisterBillingSettlementAsync(
+                hiddenProfileId,
+                new DateOnly(2026, 5, 28),
+                50_000m,
+                "cross-office direct register attempt",
+                session,
+                billingRunId: hiddenRunId);
+            Assert.False(register.Success);
+            Assert.Contains("권한", register.Message);
+
+            var delete = await rental.DeleteBillingHistoryAsync(hiddenProfileId, hiddenRunId, session);
+            Assert.False(delete.Success);
+            Assert.Contains("권한", delete.Message);
+
+            db.ChangeTracker.Clear();
+            var storedProfile = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == hiddenProfileId);
+            Assert.False(storedProfile.IsDirty);
+            Assert.False(storedProfile.IsDeleted);
+            Assert.Equal(25_000m, storedProfile.SettledAmount);
+            Assert.Equal(75_000m, storedProfile.OutstandingAmount);
+            var storedRun = DeserializeRuns(storedProfile).Single(current => current.RunId == hiddenRunId);
+            Assert.Equal(25_000m, storedRun.SettledAmount);
+            Assert.Equal(PaymentFlowConstants.SettlementStatusPartial, storedRun.SettlementStatus);
+
+            var storedInvoice = await db.Invoices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == hiddenInvoiceId);
+            Assert.False(storedInvoice.IsDirty);
+            Assert.False(storedInvoice.IsDeleted);
+            Assert.Equal(100_000m, storedInvoice.TotalAmount);
+
+            var storedPayment = await db.Payments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == hiddenPaymentId);
+            Assert.False(storedPayment.IsDirty);
+            Assert.False(storedPayment.IsDeleted);
+            Assert.Equal(25_000m, storedPayment.Amount);
+
+            var transactions = await db.Transactions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(current => current.LinkedRentalBillingProfileId == hiddenProfileId)
+                .ToListAsync();
+            var storedTransaction = Assert.Single(transactions);
+            Assert.Equal(hiddenTransactionId, storedTransaction.Id);
+            Assert.False(storedTransaction.IsDirty);
+            Assert.False(storedTransaction.IsDeleted);
+            Assert.Equal(25_000m, storedTransaction.SettlementAmount);
+
+            var storedLog = await db.RentalBillingLogs
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == hiddenLogId);
+            Assert.False(storedLog.IsDirty);
+            Assert.False(storedLog.IsDeleted);
+            Assert.Equal(PaymentFlowConstants.SettlementStatusPartial, storedLog.Status);
+
+            Assert.Empty(await local.GetDirtyTransactionsForSyncAsync(session));
+            Assert.Empty(await local.GetDirtyPaymentsForSyncAsync(session));
+            Assert.Empty(await local.GetDirtyRentalBillingLogsForSyncAsync(session));
+            var visibleInvoices = await local.GetInvoicesAsync(null, null, null, session);
+            Assert.DoesNotContain(visibleInvoices, invoice => invoice.Id == hiddenInvoiceId);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SyncPull_DirectRentalBillingInvoicePaymentDelete_RevertsRentalSettlement()
     {
         PrepareAppRoot("georaeplan-rental-pull-payment-delete-settlement");
