@@ -580,10 +580,11 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			{
 				throw new InvalidOperationException(referenceBlockMessage);
 			}
+			DateTime deletedAtUtc = DateTime.UtcNow;
 			customer.IsDeleted = true;
 			customer.IsDirty = true;
-			customer.UpdatedAtUtc = DateTime.UtcNow;
-			await SoftDeleteCustomerContractsAsync(id, ct);
+			customer.UpdatedAtUtc = deletedAtUtc;
+			await SoftDeleteCustomerContractsAsync(id, deletedAtUtc, ct);
 			await _db.SaveChangesAsync(ct);
 		}
 	}
@@ -613,10 +614,11 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Denied(referenceBlockMessage);
 		}
+		DateTime deletedAtUtc = DateTime.UtcNow;
 		customer.IsDeleted = true;
 		customer.IsDirty = true;
-		customer.UpdatedAtUtc = DateTime.UtcNow;
-		await SoftDeleteCustomerContractsAsync(id, ct);
+		customer.UpdatedAtUtc = deletedAtUtc;
+		await SoftDeleteCustomerContractsAsync(id, deletedAtUtc, ct);
 		await _db.SaveChangesAsync(ct);
 		_officeAccess.RevokeTemporaryCustomerAccess(session, id);
 		return OfficeMutationResult.Ok(id, "거래처를 삭제했습니다.");
@@ -7504,7 +7506,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 	}
 
-	private async Task SoftDeleteCustomerContractsAsync(Guid customerId, CancellationToken ct)
+	private async Task SoftDeleteCustomerContractsAsync(Guid customerId, DateTime deletedAtUtc, CancellationToken ct)
 	{
 		foreach (LocalCustomerContract contract in await (from current in _db.CustomerContracts.IgnoreQueryFilters()
 			where current.CustomerId == customerId && !current.IsDeleted
@@ -7512,8 +7514,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			contract.IsDeleted = true;
 			contract.IsDirty = true;
-			contract.IsPrimary = false;
-			contract.UpdatedAtUtc = DateTime.UtcNow;
+			contract.UpdatedAtUtc = deletedAtUtc;
 		}
 	}
 

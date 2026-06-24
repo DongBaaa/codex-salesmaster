@@ -1118,8 +1118,15 @@ public sealed partial class LocalStateService
         if (!customer.IsDeleted)
             return OfficeMutationResult.Ok(customerId, "이미 활성 상태인 거래처입니다.");
 
+        var deletedAtUtc = customer.UpdatedAtUtc;
         var now = DateTime.UtcNow;
         RestoreCustomerCore(customer, session, now);
+        var restoredContractCount = await RestoreContractsDeletedWithCustomerAsync(
+            customer,
+            deletedAtUtc,
+            session,
+            now,
+            ct);
         AddRestoreAudit(nameof(LocalCustomer), customer.Id, new
         {
             customer.NameOriginal,
@@ -1128,7 +1135,11 @@ public sealed partial class LocalStateService
         }, session, now);
 
         await _db.SaveChangesAsync(ct);
-        return OfficeMutationResult.Ok(customer.Id, "거래처를 휴지통에서 복원했습니다.");
+        return OfficeMutationResult.Ok(
+            customer.Id,
+            restoredContractCount > 0
+                ? $"거래처를 휴지통에서 복원하고 함께 삭제된 계약서 {restoredContractCount:N0}건도 복원했습니다."
+                : "거래처를 휴지통에서 복원했습니다.");
     }
 
     private async Task<OfficeMutationResult> ApplyServerPurgedCustomerAsync(
@@ -2405,6 +2416,68 @@ public sealed partial class LocalStateService
         {
             _officeAccess.GrantTemporaryCustomerAccess(session, customer.Id);
         }
+    }
+
+    private async Task<int> RestoreContractsDeletedWithCustomerAsync(
+        LocalCustomer customer,
+        DateTime customerDeletedAtUtc,
+        SessionState session,
+        DateTime now,
+        CancellationToken ct)
+    {
+        if (!CanManageCustomerContracts(session) || !CanAccessCustomer(customer, session))
+            return 0;
+
+        var restoreWindowEndUtc = customerDeletedAtUtc.AddSeconds(5);
+        var contracts = await _db.CustomerContracts
+            .IgnoreQueryFilters()
+            .Where(contract =>
+                contract.CustomerId == customer.Id &&
+                contract.IsDeleted &&
+                contract.UpdatedAtUtc >= customerDeletedAtUtc &&
+                contract.UpdatedAtUtc <= restoreWindowEndUtc)
+            .ToListAsync(ct);
+        if (contracts.Count == 0)
+            return 0;
+
+        if (contracts.Any(contract => contract.IsPrimary))
+        {
+            var restoringIds = contracts.Select(contract => contract.Id).ToList();
+            var otherActivePrimaryContracts = await _db.CustomerContracts
+                .IgnoreQueryFilters()
+                .Where(contract =>
+                    contract.CustomerId == customer.Id &&
+                    !restoringIds.Contains(contract.Id) &&
+                    !contract.IsDeleted &&
+                    contract.IsPrimary)
+                .ToListAsync(ct);
+
+            foreach (var other in otherActivePrimaryContracts)
+            {
+                other.IsPrimary = false;
+                other.IsDirty = true;
+                other.UpdatedAtUtc = now;
+            }
+        }
+
+        foreach (var contract in contracts)
+        {
+            RestoreEntity(contract, now);
+            if (contract.FileContent.Length > 0 && contract.FileSize <= 0)
+                contract.FileSize = contract.FileContent.LongLength;
+            if (contract.FileContent.Length > 0 && string.IsNullOrWhiteSpace(contract.FileHash))
+                contract.FileHash = ComputeFileHash(contract.FileContent);
+
+            AddRestoreAudit(nameof(LocalCustomerContract), contract.Id, new
+            {
+                customer.NameOriginal,
+                contract.ContractType,
+                contract.FileName,
+                Reason = "CustomerRestore"
+            }, session, now);
+        }
+
+        return contracts.Count;
     }
 
     private async Task<OfficeMutationResult> RestoreRentalBillingProfileAsync(

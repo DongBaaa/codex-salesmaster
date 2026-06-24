@@ -214,6 +214,131 @@ public sealed class RecycleBinScopeAndSyncTests
     }
 
     [Fact]
+    public async Task LocalStateService_RestoreCustomer_RestoresContractsDeletedWithCustomer()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-customer-contract-restore-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var primaryContractId = Guid.NewGuid();
+            var secondaryContractId = Guid.NewGuid();
+            var oldDeletedContractId = Guid.NewGuid();
+            var originalUpdatedAt = new DateTime(2026, 6, 25, 1, 0, 0, DateTimeKind.Utc);
+            var oldDeletedAt = originalUpdatedAt.AddHours(-2);
+
+            db.Customers.Add(CreateScopedCustomer(customerId, TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet, isDeleted: false));
+            db.CustomerContracts.AddRange(
+                new LocalCustomerContract
+                {
+                    Id = primaryContractId,
+                    CustomerId = customerId,
+                    ContractType = "Primary",
+                    FileName = "primary.pdf",
+                    IsPrimary = true,
+                    IsDeleted = false,
+                    IsDirty = false,
+                    CreatedAtUtc = originalUpdatedAt,
+                    UpdatedAtUtc = originalUpdatedAt,
+                    Revision = 20
+                },
+                new LocalCustomerContract
+                {
+                    Id = secondaryContractId,
+                    CustomerId = customerId,
+                    ContractType = "Secondary",
+                    FileName = "secondary.pdf",
+                    IsPrimary = false,
+                    IsDeleted = false,
+                    IsDirty = false,
+                    CreatedAtUtc = originalUpdatedAt,
+                    UpdatedAtUtc = originalUpdatedAt,
+                    Revision = 21
+                },
+                new LocalCustomerContract
+                {
+                    Id = oldDeletedContractId,
+                    CustomerId = customerId,
+                    ContractType = "OldDeleted",
+                    FileName = "old-deleted.pdf",
+                    IsPrimary = false,
+                    IsDeleted = true,
+                    IsDirty = false,
+                    CreatedAtUtc = oldDeletedAt,
+                    UpdatedAtUtc = oldDeletedAt,
+                    Revision = 22
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var delete = await service.DeleteCustomerAsync(customerId, session);
+
+            Assert.True(delete.Success, delete.Message);
+            db.ChangeTracker.Clear();
+
+            var deletedCustomer = await db.Customers
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(customer => customer.Id == customerId);
+            var deletedContracts = await db.CustomerContracts
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(contract => contract.CustomerId == customerId)
+                .ToDictionaryAsync(contract => contract.Id);
+
+            Assert.True(deletedCustomer.IsDeleted);
+            Assert.True(deletedContracts[primaryContractId].IsDeleted);
+            Assert.True(deletedContracts[primaryContractId].IsPrimary);
+            Assert.Equal(deletedCustomer.UpdatedAtUtc, deletedContracts[primaryContractId].UpdatedAtUtc);
+            Assert.Equal(deletedCustomer.UpdatedAtUtc, deletedContracts[secondaryContractId].UpdatedAtUtc);
+            Assert.True(deletedContracts[oldDeletedContractId].IsDeleted);
+            Assert.Equal(oldDeletedAt, deletedContracts[oldDeletedContractId].UpdatedAtUtc);
+
+            var restore = await service.RestoreCustomerAsync(customerId, session);
+
+            Assert.True(restore.Success, restore.Message);
+            db.ChangeTracker.Clear();
+
+            var restoredCustomer = await db.Customers
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(customer => customer.Id == customerId);
+            var restoredContracts = await db.CustomerContracts
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(contract => contract.CustomerId == customerId)
+                .ToDictionaryAsync(contract => contract.Id);
+
+            Assert.False(restoredCustomer.IsDeleted);
+            Assert.True(restoredCustomer.IsDirty);
+            Assert.False(restoredContracts[primaryContractId].IsDeleted);
+            Assert.True(restoredContracts[primaryContractId].IsDirty);
+            Assert.True(restoredContracts[primaryContractId].IsPrimary);
+            Assert.False(restoredContracts[secondaryContractId].IsDeleted);
+            Assert.True(restoredContracts[secondaryContractId].IsDirty);
+            Assert.True(restoredContracts[oldDeletedContractId].IsDeleted);
+            Assert.False(restoredContracts[oldDeletedContractId].IsDirty);
+
+            var dirtyContracts = await service.GetDirtyCustomerContractsForSyncAsync(session);
+            Assert.Contains(dirtyContracts, contract => contract.Id == primaryContractId);
+            Assert.Contains(dirtyContracts, contract => contract.Id == secondaryContractId);
+            Assert.DoesNotContain(dirtyContracts, contract => contract.Id == oldDeletedContractId);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task LocalStateService_GetRecycleBinEntriesAsync_FiltersRentalAssetsByBusinessDatabase()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-recycle-bin-scope-{Guid.NewGuid():N}");
