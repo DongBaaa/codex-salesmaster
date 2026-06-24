@@ -1478,6 +1478,177 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     [Fact]
+    public async Task RegisterBillingSettlement_PartialThenCompleteCreatesDeltaEvidenceAndCompletedRun()
+    {
+        PrepareAppRoot("georaeplan-rental-register-settlement-partial-complete");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Partial then complete settlement customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "\uCCAD\uAD6C\uB300\uC0C1"));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+            var start = await rental.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+            Assert.True(start.Success, start.Message);
+
+            var invoice = await db.Invoices.AsNoTracking().SingleAsync(current => current.Id == start.RelatedEntityId);
+            var runId = Assert.IsType<Guid>(invoice.LinkedRentalBillingRunId);
+            var firstAmount = invoice.TotalAmount / 2m;
+
+            var firstRegister = await rental.RegisterBillingSettlementAsync(
+                profileId,
+                new DateOnly(2026, 5, 27),
+                firstAmount,
+                "partial settlement",
+                session,
+                billingRunId: runId);
+            Assert.True(firstRegister.Success, firstRegister.Message);
+
+            db.ChangeTracker.Clear();
+            var partiallyPaidProfile = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == profileId);
+            Assert.Equal(firstAmount, partiallyPaidProfile.SettledAmount);
+            Assert.Equal(invoice.TotalAmount - firstAmount, partiallyPaidProfile.OutstandingAmount);
+            Assert.Equal(PaymentFlowConstants.CompletionPending, partiallyPaidProfile.CompletionStatus);
+            var partiallyPaidRun = DeserializeRuns(partiallyPaidProfile).Single(current => current.RunId == runId);
+            Assert.Equal(firstAmount, partiallyPaidRun.SettledAmount);
+            Assert.Equal(PaymentFlowConstants.BillingStatusInProgress, partiallyPaidRun.Status);
+            Assert.Equal(PaymentFlowConstants.SettlementStatusPartial, partiallyPaidRun.SettlementStatus);
+
+            var completeRegister = await rental.RegisterBillingSettlementAsync(
+                profileId,
+                new DateOnly(2026, 5, 28),
+                invoice.TotalAmount,
+                "complete settlement",
+                session,
+                billingRunId: runId);
+            Assert.True(completeRegister.Success, completeRegister.Message);
+
+            var repeatComplete = await rental.RegisterBillingSettlementAsync(
+                profileId,
+                new DateOnly(2026, 5, 28),
+                invoice.TotalAmount,
+                "complete settlement repeat",
+                session,
+                billingRunId: runId);
+            Assert.True(repeatComplete.Success, repeatComplete.Message);
+
+            db.ChangeTracker.Clear();
+            var settledInvoice = await db.Invoices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == invoice.Id);
+            var settledInvoiceDisplayNumber = string.IsNullOrWhiteSpace(settledInvoice.InvoiceNumber)
+                ? settledInvoice.LocalTempNumber
+                : settledInvoice.InvoiceNumber;
+            Assert.False(string.IsNullOrWhiteSpace(settledInvoiceDisplayNumber));
+
+            var transactions = await db.Transactions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(current =>
+                    !current.IsDeleted &&
+                    current.LinkedRentalBillingProfileId == profileId &&
+                    current.LinkedRentalBillingRunId == runId)
+                .OrderBy(current => current.TransactionDate)
+                .ThenBy(current => current.Id)
+                .ToListAsync();
+            Assert.Equal(2, transactions.Count);
+            Assert.All(transactions, transaction =>
+            {
+                Assert.Equal(PaymentFlowConstants.TransactionKindRentalReceipt, transaction.TransactionKind);
+                Assert.Equal(invoice.Id, transaction.LinkedInvoiceId);
+                Assert.Equal(settledInvoiceDisplayNumber, transaction.LinkedInvoiceNumber);
+                Assert.Equal(firstAmount, transaction.SettlementAmount);
+                Assert.Equal(firstAmount, transaction.ReceiptTotal);
+                Assert.Equal(firstAmount, transaction.BankReceipt);
+            });
+            Assert.Equal(new DateOnly(2026, 5, 27), transactions[0].TransactionDate);
+            Assert.Equal(new DateOnly(2026, 5, 28), transactions[1].TransactionDate);
+            Assert.Equal(invoice.TotalAmount, transactions.Sum(transaction => transaction.SettlementAmount));
+
+            var transactionIds = transactions.Select(transaction => transaction.Id).ToHashSet();
+            var payments = await db.Payments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(current => transactionIds.Contains(current.Id))
+                .OrderBy(current => current.PaymentDate)
+                .ThenBy(current => current.Id)
+                .ToListAsync();
+            Assert.Equal(2, payments.Count);
+            Assert.All(payments, payment =>
+            {
+                Assert.Equal(invoice.Id, payment.InvoiceId);
+                Assert.Equal(firstAmount, payment.Amount);
+            });
+            Assert.Equal(new DateOnly(2026, 5, 27), payments[0].PaymentDate);
+            Assert.Equal(new DateOnly(2026, 5, 28), payments[1].PaymentDate);
+            Assert.Equal(invoice.TotalAmount, payments.Sum(payment => payment.Amount));
+
+            var completedProfile = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == profileId);
+            Assert.Equal(invoice.TotalAmount, completedProfile.SettledAmount);
+            Assert.Equal(0m, completedProfile.OutstandingAmount);
+            Assert.Equal(PaymentFlowConstants.CompletionDone, completedProfile.CompletionStatus);
+            Assert.Equal(PaymentFlowConstants.SettlementStatusConfirmed, completedProfile.SettlementStatus);
+            Assert.Equal(new DateOnly(2026, 5, 28), completedProfile.LastSettledDate);
+            Assert.True(completedProfile.IsDirty);
+
+            var completedRun = DeserializeRuns(completedProfile).Single(current => current.RunId == runId);
+            Assert.Equal(invoice.TotalAmount, completedRun.BilledAmount);
+            Assert.Equal(invoice.TotalAmount, completedRun.SettledAmount);
+            Assert.Equal(PaymentFlowConstants.BillingStatusCompleted, completedRun.Status);
+            Assert.Equal(PaymentFlowConstants.SettlementStatusConfirmed, completedRun.SettlementStatus);
+            Assert.Equal(new DateOnly(2026, 5, 28), completedRun.SettledDate);
+
+            var log = Assert.Single(await db.RentalBillingLogs
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(current => current.BillingProfileId == profileId)
+                .ToListAsync());
+            Assert.False(log.IsDeleted);
+            Assert.True(log.IsDirty);
+            Assert.Equal(PaymentFlowConstants.SettlementStatusConfirmed, log.Status);
+            Assert.Equal(invoice.TotalAmount, log.BilledAmount);
+
+            var history = Assert.Single(await rental.GetBillingHistoryRowsAsync(
+                new[] { profileId },
+                session,
+                new DateOnly(2026, 5, 28)));
+            Assert.Equal(runId, history.BillingRunId);
+            Assert.True(history.HasInvoice);
+            Assert.Equal(invoice.Id, history.InvoiceId);
+            Assert.Equal(invoice.TotalAmount, history.BilledAmount);
+            Assert.Equal(invoice.TotalAmount, history.SettledAmount);
+            Assert.Equal(0m, history.OutstandingAmount);
+            Assert.Equal(new DateOnly(2026, 5, 28), history.SettledDate);
+            Assert.Equal(PaymentFlowConstants.SettlementStatusConfirmed, history.SettlementStatus);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task PaymentViewModel_RentalBillingSettlementWindow_SaveCreatesTransactionPaymentAndRunSettlement()
     {
         PrepareAppRoot("georaeplan-rental-payment-window-save-settlement");
