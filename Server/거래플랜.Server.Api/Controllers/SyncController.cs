@@ -873,6 +873,27 @@ public sealed class SyncController : ControllerBase
             var entity = await dbSet.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken);
             if (entity is null)
             {
+                if (dto.IsDeleted)
+                {
+                    if (dto.Id == Guid.Empty)
+                    {
+                        AddClientConflict(dto, entityName, $"{entityName} delete requires an id.", result);
+                        continue;
+                    }
+
+                    RegisterProcessedMutation(dto, entityName, deviceId);
+                    result.AcceptedRevisions.Add(new SyncAcceptedRevisionDto
+                    {
+                        EntityName = entityName,
+                        EntityId = dto.Id,
+                        Revision = Math.Max(dto.ExpectedRevision, dto.Revision),
+                        UpdatedAtUtc = NormalizeUtc(dto.UpdatedAtUtc)
+                    });
+                    accepted.Add(dto);
+                    result.AcceptedCount++;
+                    continue;
+                }
+
                 var newEntity = create(dto);
                 apply(newEntity, dto);
                 dbSet.Add(newEntity);

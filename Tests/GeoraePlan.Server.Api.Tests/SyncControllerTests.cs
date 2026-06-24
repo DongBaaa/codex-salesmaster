@@ -11142,6 +11142,44 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_AcknowledgesMissingCustomerDeleteWithoutCreatingGhostRow()
+    {
+        var missingCustomerId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-missing-customer-delete",
+            Customers =
+            [
+                new CustomerDto
+                {
+                    Id = missingCustomerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "MISSING-CUSTOMER-DELETE",
+                    NameMatchKey = "MISSINGCUSTOMERDELETE",
+                    TradeType = CustomerClassificationNormalizer.Sales,
+                    IsDeleted = true,
+                    UpdatedAtUtc = new DateTime(2026, 6, 25, 0, 20, 0, DateTimeKind.Utc),
+                    Revision = 17,
+                    ExpectedRevision = 17
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(Customer) &&
+            revision.EntityId == missingCustomerId);
+        Assert.False(await _dbContext.Customers.IgnoreQueryFilters().AnyAsync(customer => customer.Id == missingCustomerId));
+    }
+
+    [Fact]
     public async Task Push_RejectsInvoiceDeleteWithLinkedPayments_WhenPaymentEditMissing()
     {
         var currentUser = new TestCurrentUserContext
