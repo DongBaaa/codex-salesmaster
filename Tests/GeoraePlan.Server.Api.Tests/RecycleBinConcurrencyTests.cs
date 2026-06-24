@@ -1305,6 +1305,61 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         Assert.Equal(stored.Revision, entry.Revision);
     }
 
+    [Theory]
+    [InlineData("restore")]
+    [InlineData("purge")]
+    public async Task SharedSettingMutation_NonAdminDirectCustomerCategoryId_DoesNotRestoreOrPurgeRow(string action)
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var category = new CustomerCategory
+        {
+            Id = Guid.NewGuid(),
+            Name = "Non-admin direct deleted customer category",
+            IsDeleted = true
+        };
+        dbContext.CustomerCategories.Add(category);
+        await dbContext.SaveChangesAsync();
+
+        var storedBefore = await dbContext.CustomerCategories.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == category.Id);
+        var controller = CreateController(dbContext, currentUser);
+        var request = new RecycleBinMutationRequest
+        {
+            Items =
+            [
+                new RecycleBinMutationTargetDto
+                {
+                    EntityId = category.Id,
+                    Kind = "customer-category",
+                    ExpectedRevision = storedBefore.Revision
+                }
+            ]
+        };
+
+        var response = string.Equals(action, "restore", StringComparison.Ordinal)
+            ? await controller.Restore(request, CancellationToken.None)
+            : await controller.Purge(request, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var result = Assert.Single(payload.Results);
+        Assert.False(result.Success);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        var storedAfter = await dbContext.CustomerCategories.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == category.Id);
+        Assert.True(storedAfter.IsDeleted);
+        Assert.Equal(storedBefore.Revision, storedAfter.Revision);
+        Assert.False(await dbContext.RecycleBinPurgeRecords
+            .IgnoreQueryFilters()
+            .AnyAsync(current => current.Kind == "customer-category" && current.EntityId == category.Id));
+    }
+
     [Fact]
     public async Task GetAll_RentalBillingLog_UsesLogScopeAndDoesNotLeakHiddenProfile()
     {
