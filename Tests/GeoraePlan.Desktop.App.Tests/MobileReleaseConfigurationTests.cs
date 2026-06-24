@@ -366,6 +366,65 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void RecycleBinPurgeRecords_AreAppliedByDesktopAndAndroidSyncForAllServerKinds()
+    {
+        var root = FindRepositoryRoot();
+        var serverControllerSource = File.ReadAllText(Path.Combine(
+            root,
+            "Server",
+            "거래플랜.Server.Api",
+            "Controllers",
+            "RecycleBinController.cs"));
+        var desktopSyncSource = File.ReadAllText(Path.Combine(
+                root,
+                "Desktop",
+                "거래플랜.Desktop.App",
+                "Services",
+                "SyncService.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var mobileSyncSource = File.ReadAllText(Path.Combine(
+                root,
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "Services",
+                "SyncCoordinator.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        var purgeKinds = ExtractServerRecycleBinMutationKinds(serverControllerSource, "Purge");
+        var desktopPurgeFlowSource = ExtractBetween(
+            desktopSyncSource,
+            "private async Task ApplyPulledPurgeRecordsAsync",
+            "private Task<bool> IsPurgeRecordSupersededByActiveLocalEntityAsync");
+        var desktopOrderSource = ExtractBetween(
+            desktopSyncSource,
+            "private static int GetPurgeApplyOrder",
+            "private static bool TryParseRecycleBinEntityKind");
+        var desktopParserSource = ExtractBetween(
+            desktopSyncSource,
+            "private static bool TryParseRecycleBinEntityKind",
+            "private static bool IsServerSyncDisabled");
+        var mobileApplySource = ExtractBetween(
+            mobileSyncSource,
+            "private async Task ApplyPurgeRecordAsync",
+            "private static void RemoveEntityById");
+        var mobileOrderSource = ExtractBetween(
+            mobileSyncSource,
+            "private static int GetPurgeApplyOrder",
+            "            _ => 99");
+
+        Assert.Contains("await _local.ApplyServerPurgeRecycleBinEntryAsync(entityKind, dto.EntityId, ct);", desktopPurgeFlowSource, StringComparison.Ordinal);
+        Assert.Contains("await ApplyPurgeRecordAsync(state, NormalizePurgeRecordKind(record.Kind), record.EntityId, record.Revision, ct);", mobileSyncSource, StringComparison.Ordinal);
+
+        foreach (var kind in purgeKinds)
+        {
+            Assert.Contains($"\"{kind}\"", desktopOrderSource, StringComparison.Ordinal);
+            Assert.Contains($"case \"{kind}\":", desktopParserSource, StringComparison.Ordinal);
+            Assert.Contains($"case \"{kind}\":", mobileApplySource, StringComparison.Ordinal);
+            Assert.Contains($"\"{kind}\"", mobileOrderSource, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void MobilePaymentDraft_RequiresPaymentEditPermissionBeforeEntryAndSave()
     {
         var root = FindRepositoryRoot();
