@@ -17,16 +17,21 @@ public sealed class UsersController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
     private readonly ICurrentUserContext _currentUserContext;
+    private readonly OfficeScopeService _officeScopeService;
 
-    public UsersController(AppDbContext dbContext, ICurrentUserContext currentUserContext)
+    public UsersController(
+        AppDbContext dbContext,
+        ICurrentUserContext currentUserContext,
+        OfficeScopeService officeScopeService)
     {
         _dbContext = dbContext;
         _currentUserContext = currentUserContext;
+        _officeScopeService = officeScopeService;
     }
 
     [HttpGet]
     public async Task<ActionResult<List<UserAccountDto>>> GetAll(CancellationToken cancellationToken)
-        => Ok(await _dbContext.Users.Include(x => x.Permissions).AsNoTracking()
+        => Ok(await ApplyUserManagementScope(_dbContext.Users.Include(x => x.Permissions).AsNoTracking())
             .Select(x => x.ToDto()).ToListAsync(cancellationToken));
 
     [HttpPost]
@@ -54,13 +59,16 @@ public sealed class UsersController : ControllerBase
         if (!TenantScopeCatalog.TenantContainsOffice(normalizedTenantCode, normalizedOfficeCode))
             return BadRequest("TenantCode and OfficeCode are not compatible.");
 
-        var normalizedScopeType = NormalizeScopeType(request.ScopeType, request.Role);
+        var normalizedRole = NormalizeRole(request.Role);
+        var normalizedScopeType = NormalizeScopeType(request.ScopeType, normalizedRole);
+        if (EnsureCanManageUserAssignment(normalizedTenantCode, normalizedOfficeCode, normalizedScopeType) is { } forbidden)
+            return forbidden;
 
         var user = new UserAccount
         {
             Username = username,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password),
-            Role = NormalizeRole(request.Role),
+            Role = normalizedRole,
             TenantCode = normalizedTenantCode,
             OfficeCode = normalizedOfficeCode,
             ScopeType = normalizedScopeType,
@@ -82,8 +90,9 @@ public sealed class UsersController : ControllerBase
         [FromBody] UpdateUserRequest request,
         CancellationToken cancellationToken)
     {
-        var user = await _dbContext.Users
+        var user = await ApplyUserManagementScope(_dbContext.Users
             .Include(x => x.Permissions)
+            .AsQueryable())
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (user is null)
             return NotFound();
@@ -107,10 +116,13 @@ public sealed class UsersController : ControllerBase
         if (!TenantScopeCatalog.TenantContainsOffice(normalizedTenantCode, normalizedOfficeCode))
             return BadRequest("TenantCode and OfficeCode are not compatible.");
 
-        var normalizedScopeType = NormalizeScopeType(request.ScopeType, request.Role);
+        var normalizedRole = NormalizeRole(request.Role);
+        var normalizedScopeType = NormalizeScopeType(request.ScopeType, normalizedRole);
+        if (EnsureCanManageUserAssignment(normalizedTenantCode, normalizedOfficeCode, normalizedScopeType) is { } forbidden)
+            return forbidden;
 
         user.Username = username;
-        user.Role = NormalizeRole(request.Role);
+        user.Role = normalizedRole;
         user.TenantCode = normalizedTenantCode;
         user.OfficeCode = normalizedOfficeCode;
         user.ScopeType = normalizedScopeType;
@@ -127,7 +139,7 @@ public sealed class UsersController : ControllerBase
     public async Task<ActionResult<UserAccountDto>> UpdatePermissions(
         Guid id, [FromBody] UpdateUserPermissionsRequest request, CancellationToken cancellationToken)
     {
-        var user = await _dbContext.Users.Include(x => x.Permissions)
+        var user = await ApplyUserManagementScope(_dbContext.Users.Include(x => x.Permissions).AsQueryable())
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (user is null) return NotFound();
         if (OptimisticConcurrencyGuard.Check(this, user, request.ExpectedRevision, nameof(UserAccount)) is { } conflict)
@@ -152,7 +164,7 @@ public sealed class UsersController : ControllerBase
         if (string.IsNullOrWhiteSpace(request.Password))
             return BadRequest("Password is required.");
 
-        var user = await _dbContext.Users
+        var user = await ApplyUserManagementScope(_dbContext.Users.AsQueryable())
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (user is null)
             return NotFound();
@@ -167,8 +179,9 @@ public sealed class UsersController : ControllerBase
     [HttpDelete("{id:guid}")]
     public async Task<ActionResult> Delete(Guid id, [FromQuery] long? expectedRevision, CancellationToken cancellationToken)
     {
-        var user = await _dbContext.Users
+        var user = await ApplyUserManagementScope(_dbContext.Users
             .Include(x => x.Permissions)
+            .AsQueryable())
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (user is null)
             return NotFound();
@@ -212,6 +225,39 @@ public sealed class UsersController : ControllerBase
             cancellationToken);
     }
 
+    private IQueryable<UserAccount> ApplyUserManagementScope(IQueryable<UserAccount> query)
+    {
+        if (_officeScopeService.HasSystemConfigurationScope)
+            return query;
+
+        var tenantCode = _officeScopeService.CurrentTenantCode;
+        var writableOffices = _officeScopeService.WritableOfficeCodes;
+        return query.Where(user =>
+            user.TenantCode == tenantCode &&
+            writableOffices.Contains(user.OfficeCode) &&
+            user.ScopeType != TenantScopeCatalog.ScopeAdmin);
+    }
+
+    private ActionResult? EnsureCanManageUserAssignment(
+        string tenantCode,
+        string officeCode,
+        string scopeType)
+    {
+        if (_officeScopeService.HasSystemConfigurationScope)
+            return null;
+
+        if (!string.Equals(tenantCode, _officeScopeService.CurrentTenantCode, StringComparison.OrdinalIgnoreCase))
+            return Forbid();
+
+        if (string.Equals(scopeType, TenantScopeCatalog.ScopeAdmin, StringComparison.OrdinalIgnoreCase))
+            return Forbid();
+
+        if (!_officeScopeService.WritableOfficeCodes.Contains(officeCode, StringComparer.OrdinalIgnoreCase))
+            return Forbid();
+
+        return null;
+    }
+
     private void ApplyPermissions(UserAccount user, IEnumerable<string> permissions)
     {
         var normalizedPermissions = permissions
@@ -232,4 +278,3 @@ public sealed class UsersController : ControllerBase
         }
     }
 }
-

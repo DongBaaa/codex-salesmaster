@@ -79,7 +79,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     public ObservableCollection<DisplayOption> CompanyProfileOptions { get; } = new();
 
     public bool CanManageUsers => _session.HasAdministrativePrivileges && !_session.IsOfflineMode;
-    public bool CanManageTenantConfiguration => _session.HasAdministrativePrivileges && !_session.IsOfflineMode;
+    public bool CanManageTenantConfiguration => _session.HasGlobalDataScope && !_session.IsOfflineMode;
     public bool CanManageSelectionOptions => _session.HasAdministrativePrivileges;
     public bool CanEditCompanyProfiles => _session.HasAdministrativePrivileges;
     public string UserManagementHint => CanManageUsers

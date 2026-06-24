@@ -4779,7 +4779,7 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         await dbContext.SaveChangesAsync();
 
         var stored = await dbContext.Users.IgnoreQueryFilters().Include(x => x.Permissions).FirstAsync(x => x.Id == user.Id);
-        var controller = new UsersController(dbContext, currentUser);
+        var controller = new UsersController(dbContext, currentUser, new OfficeScopeService(currentUser, dbContext));
         var response = await controller.Update(
             stored.Id,
             new UpdateUserRequest
@@ -4816,7 +4816,7 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         await dbContext.SaveChangesAsync();
 
         var stored = await dbContext.TenantDefinitions.IgnoreQueryFilters().FirstAsync(x => x.TenantCode == tenant.TenantCode);
-        var controller = new TenantSettingsController(dbContext);
+        var controller = new TenantSettingsController(dbContext, new OfficeScopeService(currentUser, dbContext));
         var response = await controller.UpdateTenant(
             stored.TenantCode,
             new UpdateTenantDefinitionRequest

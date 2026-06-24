@@ -56,7 +56,7 @@ public sealed partial class EnvironmentSettingsViewModel
         ? "관리자는 업체 권역, 지점 역할, 지점 간 데이터 연동 정책을 직접 수정할 수 있습니다."
         : _session.IsOfflineMode
             ? "오프라인 모드에서는 업체 / 데이터 권한 설정을 불러오거나 변경할 수 없습니다."
-            : "일반 사용자는 업체 / 데이터 권한 설정을 조회만 할 수 있고 변경은 관리자만 가능합니다.";
+            : "전역 관리자 범위가 아닌 계정은 업체 / 데이터 권한 설정을 조회하거나 변경할 수 없습니다.";
     public string CurrentScopeMatrixHint => _session.IsOfflineMode
         ? "오프라인 모드에서는 현재 계정의 서버 기준 범위를 조회할 수 없습니다."
         : "현재 로그인 계정이 실제로 읽고 쓸 수 있는 지점 범위를 서버 기준으로 보여줍니다.";

@@ -31,9 +31,11 @@ public sealed class OfficeScopeService
     }
 
     public bool IsAdmin => _currentUserContext.IsAdmin;
+    public bool IsGodMode => _currentUserContext.IsGodMode;
     public bool HasAdministrativeWriteAccess => _currentUserContext.IsAdmin || _currentUserContext.IsGodMode;
     public bool HasGlobalDataScope =>
         IsAdmin && string.Equals(CurrentScopeType, TenantScopeCatalog.ScopeAdmin, StringComparison.OrdinalIgnoreCase);
+    public bool HasSystemConfigurationScope => IsGodMode || HasGlobalDataScope;
     private bool HasAdministrativeRentalScope => _currentUserContext.IsAdmin || _currentUserContext.IsGodMode;
     private bool HasRentalWideReadScope =>
         HasAdministrativeRentalScope ||

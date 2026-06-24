@@ -1,6 +1,7 @@
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
+using 거래플랜.Server.Api.Services;
 using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
@@ -15,15 +16,22 @@ namespace 거래플랜.Server.Api.Controllers;
 public sealed class TenantSettingsController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
+    private readonly OfficeScopeService _officeScopeService;
 
-    public TenantSettingsController(AppDbContext dbContext)
+    public TenantSettingsController(
+        AppDbContext dbContext,
+        OfficeScopeService officeScopeService)
     {
         _dbContext = dbContext;
+        _officeScopeService = officeScopeService;
     }
 
     [HttpGet]
     public async Task<ActionResult<TenantConfigurationSnapshotDto>> Get(CancellationToken cancellationToken)
     {
+        if (RequireSystemConfigurationScope() is { } forbidden)
+            return forbidden;
+
         var snapshot = new TenantConfigurationSnapshotDto
         {
             Tenants = await _dbContext.TenantDefinitions.AsNoTracking()
@@ -54,6 +62,9 @@ public sealed class TenantSettingsController : ControllerBase
         [FromBody] UpdateTenantDefinitionRequest request,
         CancellationToken cancellationToken)
     {
+        if (RequireSystemConfigurationScope() is { } forbidden)
+            return forbidden;
+
         var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(tenantCode);
         var entity = await _dbContext.TenantDefinitions.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.TenantCode == normalizedTenantCode, cancellationToken);
@@ -81,6 +92,9 @@ public sealed class TenantSettingsController : ControllerBase
         [FromBody] UpdateTenantOfficeDefinitionRequest request,
         CancellationToken cancellationToken)
     {
+        if (RequireSystemConfigurationScope() is { } forbidden)
+            return forbidden;
+
         var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode);
         var entity = await _dbContext.TenantOfficeDefinitions.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.OfficeCode == normalizedOfficeCode, cancellationToken);
@@ -105,6 +119,9 @@ public sealed class TenantSettingsController : ControllerBase
         [FromBody] UpsertDataSharingPolicyRequest request,
         CancellationToken cancellationToken)
     {
+        if (RequireSystemConfigurationScope() is { } forbidden)
+            return forbidden;
+
         var normalized = await NormalizePolicyRequestAsync(request, cancellationToken);
         if (!normalized.Success)
             return BadRequest(normalized.ErrorMessage);
@@ -133,6 +150,9 @@ public sealed class TenantSettingsController : ControllerBase
         [FromBody] UpsertDataSharingPolicyRequest request,
         CancellationToken cancellationToken)
     {
+        if (RequireSystemConfigurationScope() is { } forbidden)
+            return forbidden;
+
         var entity = await _dbContext.DataSharingPolicies.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == id, cancellationToken);
         if (entity is null)
@@ -163,6 +183,9 @@ public sealed class TenantSettingsController : ControllerBase
     [HttpDelete("sharing-policies/{id:guid}")]
     public async Task<IActionResult> DeleteSharingPolicy(Guid id, [FromQuery] long? expectedRevision, CancellationToken cancellationToken)
     {
+        if (RequireSystemConfigurationScope() is { } forbidden)
+            return forbidden;
+
         var entity = await _dbContext.DataSharingPolicies.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == id, cancellationToken);
         if (entity is null)
@@ -175,6 +198,9 @@ public sealed class TenantSettingsController : ControllerBase
         await _dbContext.SaveChangesAsync(cancellationToken);
         return NoContent();
     }
+
+    private ActionResult? RequireSystemConfigurationScope()
+        => _officeScopeService.HasSystemConfigurationScope ? null : Forbid();
 
     private async Task<(bool Success, string ErrorMessage, Guid Id, string SourceTenantCode, string SourceOfficeCode, string TargetTenantCode, string TargetOfficeCode, bool ShareCustomers, bool ShareItems, bool ShareInvoices, bool SharePayments, bool ShareContracts, bool ShareReports, bool ShareRentals, bool ShareDeliveries, bool AllowTargetWrite, bool IsActive, string Note)> NormalizePolicyRequestAsync(
         UpsertDataSharingPolicyRequest request,

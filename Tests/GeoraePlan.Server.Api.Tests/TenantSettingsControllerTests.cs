@@ -38,7 +38,7 @@ public sealed class TenantSettingsControllerTests : IDisposable
         });
         await dbContext.SaveChangesAsync();
 
-        var controller = new TenantSettingsController(dbContext);
+        var controller = CreateController(dbContext);
         var response = await controller.CreateSharingPolicy(new UpsertDataSharingPolicyRequest
         {
             SourceTenantCode = TenantScopeCatalog.UsenetGroup,
@@ -96,7 +96,7 @@ public sealed class TenantSettingsControllerTests : IDisposable
             .Where(policy => policy.Id == activePolicyId)
             .Select(policy => policy.Revision)
             .SingleAsync();
-        var controller = new TenantSettingsController(dbContext);
+        var controller = CreateController(dbContext);
         var response = await controller.UpdateSharingPolicy(activePolicyId, new UpsertDataSharingPolicyRequest
         {
             ExpectedRevision = expectedRevision,
@@ -120,14 +120,40 @@ public sealed class TenantSettingsControllerTests : IDisposable
             policy.TargetOfficeCode == OfficeCodeCatalog.Yeonsu));
     }
 
+    [Fact]
+    public async Task TenantSettingsController_ForTenantAdmin_ReturnsForbid()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            ScopeType = TenantScopeCatalog.ScopeTenantAll,
+            IsAdmin = true
+        };
+        await using var dbContext = CreateDbContext(currentUser);
+        var controller = CreateController(dbContext, currentUser);
+
+        var getResponse = await controller.Get(CancellationToken.None);
+        Assert.IsType<ForbidResult>(getResponse.Result);
+
+        var createResponse = await controller.CreateSharingPolicy(new UpsertDataSharingPolicyRequest
+        {
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Usenet,
+            ShareCustomers = true,
+            IsActive = true
+        }, CancellationToken.None);
+        Assert.IsType<ForbidResult>(createResponse.Result);
+    }
+
     public void Dispose()
     {
         _connection.Dispose();
     }
 
-    private AppDbContext CreateDbContext()
+    private AppDbContext CreateDbContext(TestCurrentUserContext? currentUser = null)
     {
-        var currentUser = new TestCurrentUserContext();
+        currentUser ??= new TestCurrentUserContext();
         var options = new DbContextOptionsBuilder<AppDbContext>()
             .UseSqlite(_connection)
             .Options;
@@ -135,6 +161,16 @@ public sealed class TenantSettingsControllerTests : IDisposable
         var dbContext = new AppDbContext(options, currentUser, new RevisionClock());
         dbContext.Database.EnsureCreated();
         return dbContext;
+    }
+
+    private static TenantSettingsController CreateController(
+        AppDbContext dbContext,
+        TestCurrentUserContext? currentUser = null)
+    {
+        currentUser ??= new TestCurrentUserContext();
+        return new TenantSettingsController(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext));
     }
 
     private static async Task SeedTenantScopeDefinitionsAsync(AppDbContext dbContext)
