@@ -277,10 +277,16 @@ public sealed class RecycleBinController : ControllerBase
 
         if (ShouldIncludeKind(normalizedKind, "payment"))
         {
+            var readableInvoiceIds = _officeScopeService.ApplySyncInvoiceScope(_dbContext.Invoices
+                .IgnoreQueryFilters()
+                .AsNoTracking())
+                .Select(invoice => invoice.Id);
+
             var deletedPayments = await _officeScopeService.ApplyPaymentScope(_dbContext.Payments
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .Where(payment => payment.IsDeleted))
+                .Where(payment => readableInvoiceIds.Contains(payment.InvoiceId))
                 .OrderByDescending(payment => payment.UpdatedAtUtc)
                 .ToListAsync(cancellationToken);
 
