@@ -2508,7 +2508,14 @@ public sealed partial class LocalStateService
                 .FirstOrDefaultAsync(current => current.Id == profile.CustomerId.Value, ct);
             if (customer is not null && customer.IsDeleted && CanAccessCustomer(customer, session))
             {
+                var customerDeletedAtUtc = customer.UpdatedAtUtc;
                 RestoreCustomerCore(customer, session, now);
+                await RestoreContractsDeletedWithCustomerAsync(
+                    customer,
+                    customerDeletedAtUtc,
+                    session,
+                    now,
+                    ct);
                 AddRestoreAudit(nameof(LocalCustomer), customer.Id, new
                 {
                     customer.NameOriginal,
@@ -2573,7 +2580,14 @@ public sealed partial class LocalStateService
                 .FirstOrDefaultAsync(current => current.Id == asset.CustomerId.Value, ct);
             if (customer is not null && customer.IsDeleted && CanAccessCustomer(customer, session))
             {
+                var customerDeletedAtUtc = customer.UpdatedAtUtc;
                 RestoreCustomerCore(customer, session, now);
+                await RestoreContractsDeletedWithCustomerAsync(
+                    customer,
+                    customerDeletedAtUtc,
+                    session,
+                    now,
+                    ct);
                 AddRestoreAudit(nameof(LocalCustomer), customer.Id, new
                 {
                     customer.NameOriginal,

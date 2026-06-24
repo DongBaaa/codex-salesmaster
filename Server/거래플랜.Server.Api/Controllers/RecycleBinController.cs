@@ -1457,6 +1457,8 @@ public sealed class RecycleBinController : ControllerBase
                 if (!_officeScopeService.CanWriteOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode))
                     return (false, "현재 계정으로 연결된 거래처를 복원할 수 없습니다.");
 
+                var customerDeletedAtUtc = customer.UpdatedAtUtc;
+                await RestoreContractsDeletedWithCustomerAsync(customer, customerDeletedAtUtc, cancellationToken);
                 customer.IsDeleted = false;
                 customerRestored = true;
             }
@@ -1512,6 +1514,8 @@ public sealed class RecycleBinController : ControllerBase
                 if (!_officeScopeService.CanWriteOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode))
                     return (false, "현재 계정으로 연결된 거래처를 복원할 수 없습니다.");
 
+                var customerDeletedAtUtc = customer.UpdatedAtUtc;
+                await RestoreContractsDeletedWithCustomerAsync(customer, customerDeletedAtUtc, cancellationToken);
                 customer.IsDeleted = false;
                 customerRestored = true;
             }

@@ -339,6 +339,154 @@ public sealed class RecycleBinScopeAndSyncTests
     }
 
     [Fact]
+    public async Task LocalStateService_RestoreRentalBillingProfile_RestoresCustomerContractsDeletedWithCustomer()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-profile-contract-restore-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var profileId = Guid.NewGuid();
+            var contractId = Guid.NewGuid();
+            var deletedAt = new DateTime(2026, 6, 25, 2, 0, 0, DateTimeKind.Utc);
+
+            db.Customers.Add(CreateDeletedScopedCustomer(customerId, deletedAt));
+            db.CustomerContracts.Add(CreateDeletedCustomerContract(contractId, customerId, deletedAt));
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = "restore-profile-contract-link",
+                CustomerId = customerId,
+                CustomerName = "Rental profile restore customer",
+                InstallSiteName = "Rental profile site",
+                MonthlyAmount = 120000m,
+                IsActive = false,
+                IsDeleted = true,
+                IsDirty = false,
+                CreatedAtUtc = deletedAt,
+                UpdatedAtUtc = deletedAt,
+                Revision = 30
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var restore = await service.RestoreRecycleBinEntryAsync(RecycleBinEntityKind.RentalBillingProfile, profileId, session);
+
+            Assert.True(restore.Success, restore.Message);
+            db.ChangeTracker.Clear();
+
+            Assert.False(await db.RentalBillingProfiles.IgnoreQueryFilters()
+                .Where(profile => profile.Id == profileId)
+                .Select(profile => profile.IsDeleted)
+                .SingleAsync());
+            Assert.False(await db.Customers.IgnoreQueryFilters()
+                .Where(customer => customer.Id == customerId)
+                .Select(customer => customer.IsDeleted)
+                .SingleAsync());
+
+            var contract = await db.CustomerContracts.IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == contractId);
+            Assert.False(contract.IsDeleted);
+            Assert.True(contract.IsDirty);
+
+            var dirtyContracts = await service.GetDirtyCustomerContractsForSyncAsync(session);
+            Assert.Contains(dirtyContracts, current => current.Id == contractId);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalStateService_RestoreRentalAsset_RestoresCustomerContractsDeletedWithCustomer()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-asset-contract-restore-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var contractId = Guid.NewGuid();
+            var deletedAt = new DateTime(2026, 6, 25, 2, 30, 0, DateTimeKind.Utc);
+
+            db.Customers.Add(CreateDeletedScopedCustomer(customerId, deletedAt));
+            db.CustomerContracts.Add(CreateDeletedCustomerContract(contractId, customerId, deletedAt));
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = $"restore-asset-contract-link-{assetId:N}",
+                ManagementId = $"RA-{assetId:N}"[..12],
+                ManagementNumber = $"RA-{assetId:N}"[..12],
+                CustomerId = customerId,
+                CustomerName = "Rental asset restore customer",
+                InstallLocation = "Rental asset site",
+                ItemName = "Restore asset item",
+                AssetStatus = "설치",
+                IsDeleted = true,
+                IsDirty = false,
+                CreatedAtUtc = deletedAt,
+                UpdatedAtUtc = deletedAt,
+                Revision = 40
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var restore = await service.RestoreRecycleBinEntryAsync(RecycleBinEntityKind.RentalAsset, assetId, session);
+
+            Assert.True(restore.Success, restore.Message);
+            db.ChangeTracker.Clear();
+
+            Assert.False(await db.RentalAssets.IgnoreQueryFilters()
+                .Where(asset => asset.Id == assetId)
+                .Select(asset => asset.IsDeleted)
+                .SingleAsync());
+            Assert.False(await db.Customers.IgnoreQueryFilters()
+                .Where(customer => customer.Id == customerId)
+                .Select(customer => customer.IsDeleted)
+                .SingleAsync());
+
+            var contract = await db.CustomerContracts.IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == contractId);
+            Assert.False(contract.IsDeleted);
+            Assert.True(contract.IsDirty);
+
+            var dirtyContracts = await service.GetDirtyCustomerContractsForSyncAsync(session);
+            Assert.Contains(dirtyContracts, current => current.Id == contractId);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task LocalStateService_GetRecycleBinEntriesAsync_FiltersRentalAssetsByBusinessDatabase()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-recycle-bin-scope-{Guid.NewGuid():N}");
@@ -1357,6 +1505,38 @@ public sealed class RecycleBinScopeAndSyncTests
             IsDeleted = isDeleted,
             IsDirty = false,
             Revision = 6
+        };
+
+    private static LocalCustomer CreateDeletedScopedCustomer(Guid customerId, DateTime deletedAt)
+        => new()
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = $"Deleted scoped customer {customerId:N}",
+            NameMatchKey = $"deletedscopedcustomer{customerId:N}",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true,
+            IsDirty = false,
+            CreatedAtUtc = deletedAt,
+            UpdatedAtUtc = deletedAt,
+            Revision = 18
+        };
+
+    private static LocalCustomerContract CreateDeletedCustomerContract(Guid contractId, Guid customerId, DateTime deletedAt)
+        => new()
+        {
+            Id = contractId,
+            CustomerId = customerId,
+            ContractType = "거래계약서",
+            FileName = $"deleted-contract-{contractId:N}.pdf",
+            IsPrimary = true,
+            IsDeleted = true,
+            IsDirty = false,
+            CreatedAtUtc = deletedAt,
+            UpdatedAtUtc = deletedAt,
+            Revision = 19
         };
 
     private static LocalInvoice CreateInvoice(

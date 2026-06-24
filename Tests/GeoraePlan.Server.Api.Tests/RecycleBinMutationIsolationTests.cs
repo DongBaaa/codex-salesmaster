@@ -265,6 +265,138 @@ public sealed class RecycleBinMutationIsolationTests : IDisposable
             .AnyAsync(customer => customer.Id == customerId));
     }
 
+    [Fact]
+    public async Task RestoreRentalBillingProfile_RestoresCustomerContractsDeletedWithCustomer()
+    {
+        var user = CreateAdminUser();
+        var customerId = Guid.Parse("c8111111-1111-1111-1111-111111111111");
+        var profileId = Guid.Parse("c8222222-2222-2222-2222-222222222222");
+        var contractId = Guid.Parse("c8333333-3333-3333-3333-333333333333");
+
+        await using (var seedDb = CreateDbContext(user))
+        {
+            seedDb.Customers.Add(CreateDeletedCustomer(customerId));
+            seedDb.CustomerContracts.Add(CreateDeletedCustomerContract(contractId, customerId));
+            seedDb.RentalBillingProfiles.Add(new RentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = "restore-profile-contract-link",
+                CustomerId = customerId,
+                CustomerName = "Restore profile customer",
+                InstallSiteName = "Restore profile site",
+                MonthlyAmount = 120000m,
+                IsActive = false,
+                IsDeleted = true
+            });
+            await seedDb.SaveChangesAsync();
+        }
+
+        await using var scopedDb = CreateDbContext(user);
+        var controller = CreateRecycleBinController(scopedDb, user);
+
+        var response = await controller.Restore(new RecycleBinMutationRequest
+        {
+            Items =
+            [
+                new RecycleBinMutationTargetDto
+                {
+                    EntityId = profileId,
+                    Kind = "rental-billing-profile"
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var result = Assert.Single(payload.Results);
+        Assert.True(result.Success, result.Message);
+
+        scopedDb.ChangeTracker.Clear();
+        Assert.False(await scopedDb.RentalBillingProfiles.IgnoreQueryFilters()
+            .Where(profile => profile.Id == profileId)
+            .Select(profile => profile.IsDeleted)
+            .SingleAsync());
+        Assert.False(await scopedDb.Customers.IgnoreQueryFilters()
+            .Where(customer => customer.Id == customerId)
+            .Select(customer => customer.IsDeleted)
+            .SingleAsync());
+        Assert.False(await scopedDb.CustomerContracts.IgnoreQueryFilters()
+            .Where(contract => contract.Id == contractId)
+            .Select(contract => contract.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task RestoreRentalAsset_RestoresCustomerContractsDeletedWithCustomer()
+    {
+        var user = CreateAdminUser();
+        var customerId = Guid.Parse("d8111111-1111-1111-1111-111111111111");
+        var assetId = Guid.Parse("d8222222-2222-2222-2222-222222222222");
+        var contractId = Guid.Parse("d8333333-3333-3333-3333-333333333333");
+
+        await using (var seedDb = CreateDbContext(user))
+        {
+            seedDb.Customers.Add(CreateDeletedCustomer(customerId));
+            seedDb.CustomerContracts.Add(CreateDeletedCustomerContract(contractId, customerId));
+            seedDb.RentalAssets.Add(new RentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "restore-asset-contract-link",
+                ManagementId = "RA-LINK-001",
+                ManagementNumber = "RA-LINK-001",
+                CustomerId = customerId,
+                CustomerName = "Restore asset customer",
+                InstallLocation = "Restore asset site",
+                ItemName = "Restore asset item",
+                AssetStatus = RentalAssetStatusNormalizer.Active,
+                IsDeleted = true
+            });
+            await seedDb.SaveChangesAsync();
+        }
+
+        await using var scopedDb = CreateDbContext(user);
+        var controller = CreateRecycleBinController(scopedDb, user);
+
+        var response = await controller.Restore(new RecycleBinMutationRequest
+        {
+            Items =
+            [
+                new RecycleBinMutationTargetDto
+                {
+                    EntityId = assetId,
+                    Kind = "rental-asset"
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var result = Assert.Single(payload.Results);
+        Assert.True(result.Success, result.Message);
+
+        scopedDb.ChangeTracker.Clear();
+        Assert.False(await scopedDb.RentalAssets.IgnoreQueryFilters()
+            .Where(asset => asset.Id == assetId)
+            .Select(asset => asset.IsDeleted)
+            .SingleAsync());
+        Assert.False(await scopedDb.Customers.IgnoreQueryFilters()
+            .Where(customer => customer.Id == customerId)
+            .Select(customer => customer.IsDeleted)
+            .SingleAsync());
+        Assert.False(await scopedDb.CustomerContracts.IgnoreQueryFilters()
+            .Where(contract => contract.Id == contractId)
+            .Select(contract => contract.IsDeleted)
+            .SingleAsync());
+    }
+
     private AppDbContext CreateDbContext(TestCurrentUserContext currentUser)
     {
         var revisionClock = new RevisionClock();
@@ -305,6 +437,30 @@ public sealed class RecycleBinMutationIsolationTests : IDisposable
         ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
         Permissions = [PermissionNames.DataBackupRestore]
     };
+
+    private static Customer CreateDeletedCustomer(Guid customerId)
+        => new()
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = $"Deleted customer {customerId:N}",
+            NameMatchKey = $"deletedcustomer{customerId:N}",
+            TradeType = "매출",
+            IsDeleted = true
+        };
+
+    private static CustomerContract CreateDeletedCustomerContract(Guid contractId, Guid customerId)
+        => new()
+        {
+            Id = contractId,
+            CustomerId = customerId,
+            ContractType = "거래계약서",
+            FileName = $"deleted-contract-{contractId:N}.pdf",
+            IsPrimary = true,
+            IsDeleted = true
+        };
 
     public void Dispose() => _connection.Dispose();
 
