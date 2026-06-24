@@ -7581,6 +7581,10 @@ public sealed class SyncService : IDisposable
         var pulledKeys = dtos
             .Select(dto => BuildItemWarehouseStockKey(dto.ItemId, dto.WarehouseCode))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var affectedItemIds = dtos
+            .Where(dto => dto.ItemId != Guid.Empty)
+            .Select(dto => dto.ItemId)
+            .ToHashSet();
 
         foreach (var dto in dtos)
         {
@@ -7596,16 +7600,20 @@ public sealed class SyncService : IDisposable
             }
         }
 
-        await RemovePulledItemWarehouseStocksMissingFromServerAsync(pulledKeys, ct);
+        var removedItemIds = await RemovePulledItemWarehouseStocksMissingFromServerAsync(pulledKeys, ct);
+        affectedItemIds.UnionWith(removedItemIds);
+        await _db.SaveChangesAsync(ct);
+        await RecalculatePulledItemCurrentStocksAsync(affectedItemIds, ct);
         await _db.SaveChangesAsync(ct);
     }
 
-    private async Task RemovePulledItemWarehouseStocksMissingFromServerAsync(
+    private async Task<HashSet<Guid>> RemovePulledItemWarehouseStocksMissingFromServerAsync(
         IReadOnlySet<string> pulledKeys,
         CancellationToken ct)
     {
+        var affectedItemIds = new HashSet<Guid>();
         if (!_session.IsLoggedIn)
-            return;
+            return affectedItemIds;
 
         var candidates = await (from stock in _db.ItemWarehouseStocks
                                 join item in _db.Items.IgnoreQueryFilters() on stock.ItemId equals item.Id
@@ -7614,9 +7622,9 @@ public sealed class SyncService : IDisposable
                                     Stock = stock,
                                     Item = item
                                 })
-            .ToListAsync(ct);
+                                 .ToListAsync(ct);
         if (candidates.Count == 0)
-            return;
+            return affectedItemIds;
 
         var sessionTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
             _session.TenantCode,
@@ -7638,6 +7646,39 @@ public sealed class SyncService : IDisposable
                 continue;
 
             _db.ItemWarehouseStocks.Remove(candidate.Stock);
+            affectedItemIds.Add(candidate.Stock.ItemId);
+        }
+
+        return affectedItemIds;
+    }
+
+    private async Task RecalculatePulledItemCurrentStocksAsync(
+        IReadOnlyCollection<Guid> itemIds,
+        CancellationToken ct)
+    {
+        if (itemIds.Count == 0)
+            return;
+
+        var stockRows = await _db.ItemWarehouseStocks
+            .AsNoTracking()
+            .Where(stock => itemIds.Contains(stock.ItemId))
+            .Select(stock => new { stock.ItemId, stock.Quantity })
+            .ToListAsync(ct);
+        var stockTotals = stockRows
+            .GroupBy(stock => stock.ItemId)
+            .ToDictionary(group => group.Key, group => group.Sum(stock => stock.Quantity));
+        var items = await _db.Items.IgnoreQueryFilters()
+            .Where(item => itemIds.Contains(item.Id) && !item.IsDeleted && !item.IsDirty)
+            .ToListAsync(ct);
+
+        foreach (var item in items)
+        {
+            var recalculated = ItemOperationalPolicy.SupportsInventory(item.TrackingType) &&
+                               stockTotals.TryGetValue(item.Id, out var stockTotal)
+                ? stockTotal
+                : 0m;
+
+            item.CurrentStock = recalculated;
         }
     }
 
