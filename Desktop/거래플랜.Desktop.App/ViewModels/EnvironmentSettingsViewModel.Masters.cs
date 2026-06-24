@@ -230,6 +230,9 @@ public sealed partial class EnvironmentSettingsViewModel
     [RelayCommand]
     private async Task SaveCategoryOptionAsync()
     {
+        if (!EnsureCanManageSelectionOptions())
+            return;
+
         var result = await _local.SaveCustomerCategoryAsync(new LocalCustomerCategory
         {
             Id = IsNewCategoryOption ? Guid.NewGuid() : SelectedCategoryOption?.Id ?? Guid.NewGuid(),
@@ -253,6 +256,9 @@ public sealed partial class EnvironmentSettingsViewModel
     [RelayCommand]
     private async Task DeleteCategoryOptionAsync()
     {
+        if (!EnsureCanManageSelectionOptions())
+            return;
+
         if (SelectedCategoryOption is null)
         {
             StatusMessage = "삭제할 고객분류를 선택하세요.";
@@ -285,6 +291,9 @@ public sealed partial class EnvironmentSettingsViewModel
     [RelayCommand]
     private async Task SavePriceGradeOptionAsync()
     {
+        if (!EnsureCanManageSelectionOptions())
+            return;
+
         var result = await _local.SavePriceGradeOptionAsync(
             new LocalPriceGradeOption
             {
@@ -313,6 +322,9 @@ public sealed partial class EnvironmentSettingsViewModel
     [RelayCommand]
     private async Task DeletePriceGradeOptionAsync()
     {
+        if (!EnsureCanManageSelectionOptions())
+            return;
+
         if (SelectedPriceGradeOption is null)
         {
             StatusMessage = "삭제할 가격등급을 선택하세요.";
@@ -346,6 +358,9 @@ public sealed partial class EnvironmentSettingsViewModel
     [RelayCommand]
     private async Task SaveTradeTypeOptionAsync()
     {
+        if (!EnsureCanManageSelectionOptions())
+            return;
+
         var result = await _local.SaveTradeTypeOptionAsync(
             new LocalTradeTypeOption
             {
@@ -375,6 +390,9 @@ public sealed partial class EnvironmentSettingsViewModel
     [RelayCommand]
     private async Task DeleteTradeTypeOptionAsync()
     {
+        if (!EnsureCanManageSelectionOptions())
+            return;
+
         if (SelectedTradeTypeOption is null)
         {
             StatusMessage = "삭제할 거래구분을 선택하세요.";
@@ -406,6 +424,9 @@ public sealed partial class EnvironmentSettingsViewModel
     [RelayCommand]
     private async Task SaveItemCategoryOptionAsync()
     {
+        if (!EnsureCanManageSelectionOptions())
+            return;
+
         var result = await _local.SaveItemCategoryOptionAsync(
             new LocalItemCategoryOption
             {
@@ -433,6 +454,9 @@ public sealed partial class EnvironmentSettingsViewModel
     [RelayCommand]
     private async Task DeleteItemCategoryOptionAsync()
     {
+        if (!EnsureCanManageSelectionOptions())
+            return;
+
         if (SelectedItemCategoryOption is null)
         {
             StatusMessage = "삭제할 품목분류를 선택하세요.";
@@ -450,6 +474,15 @@ public sealed partial class EnvironmentSettingsViewModel
         NewItemCategoryOption();
         var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(2));
         StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(result.Message, serverWriteResult);
+    }
+
+    private bool EnsureCanManageSelectionOptions()
+    {
+        if (CanManageSelectionOptions)
+            return true;
+
+        StatusMessage = "환경설정 기준값은 환경설정 편집 권한이 있는 계정만 수정할 수 있습니다.";
+        return false;
     }
 
     private async Task ReloadCustomerCategoriesAsync()

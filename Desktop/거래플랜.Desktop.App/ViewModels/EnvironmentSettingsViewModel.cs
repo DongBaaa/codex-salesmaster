@@ -81,6 +81,12 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     public bool CanManageUsers => _session.HasAdministrativePrivileges && !_session.IsOfflineMode;
     public bool CanManageTenantConfiguration => _session.HasSystemConfigurationScope && !_session.IsOfflineMode;
     public bool CanManageSelectionOptions => _session.HasPermission(AppPermissionNames.SettingsEdit);
+    public bool CanManageLegacyMigrationData =>
+        _session.HasAdministrativePrivileges ||
+        (_session.HasPermission(AppPermissionNames.DataBackupRestore) &&
+         _session.HasPermission(AppPermissionNames.CustomerEdit) &&
+         _session.HasPermission(AppPermissionNames.ItemEdit) &&
+         _session.HasPermission(AppPermissionNames.InventoryReset));
     public bool CanEditCompanyProfiles => _session.HasPermission(AppPermissionNames.CompanyProfileEdit);
     public string UserManagementHint => CanManageUsers
         ? "사용자 ID, 담당지점, 권한, 비밀번호를 관리합니다."
@@ -348,6 +354,9 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     [RelayCommand]
     private async Task SelectLegacySourceDbPathAsync()
     {
+        if (!EnsureCanManageLegacyMigrationData())
+            return;
+
         var dialog = new OpenFileDialog
         {
             Title = "외부 레거시 DB(FDB) 선택",
@@ -365,6 +374,9 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     [RelayCommand]
     private async Task SelectLegacyCustomerExcelPathAsync()
     {
+        if (!EnsureCanManageLegacyMigrationData())
+            return;
+
         var initialDirectory = Path.GetDirectoryName(LegacyCustomerExcelPath);
         if (string.IsNullOrWhiteSpace(initialDirectory) || !Directory.Exists(initialDirectory))
             initialDirectory = AppPaths.UserDownloadsDir;
@@ -389,6 +401,9 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     [RelayCommand]
     private async Task SelectLegacyItemExcelPathAsync()
     {
+        if (!EnsureCanManageLegacyMigrationData())
+            return;
+
         var initialDirectory = Path.GetDirectoryName(LegacyItemExcelPath);
         if (string.IsNullOrWhiteSpace(initialDirectory) || !Directory.Exists(initialDirectory))
             initialDirectory = AppPaths.UserDownloadsDir;
@@ -413,6 +428,9 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     [RelayCommand]
     private async Task ExportLegacyDataAsync()
     {
+        if (!EnsureCanManageLegacyMigrationData())
+            return;
+
         try
         {
             if (string.IsNullOrWhiteSpace(LegacySourceDbPath) || !File.Exists(LegacySourceDbPath))
@@ -452,6 +470,9 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     [RelayCommand]
     private async Task ImportLegacyExcelDataAsync()
     {
+        if (!EnsureCanManageLegacyMigrationData())
+            return;
+
         try
         {
             if (string.IsNullOrWhiteSpace(LegacyCustomerExcelPath) || !File.Exists(LegacyCustomerExcelPath))
@@ -518,11 +539,24 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     [RelayCommand]
     private async Task ExportAndImportLegacyDataAsync()
     {
+        if (!EnsureCanManageLegacyMigrationData())
+            return;
+
         await ExportLegacyDataAsync();
         if (!LegacyMigrationStatus.StartsWith("추출 완료", StringComparison.Ordinal))
             return;
 
         await ImportLegacyExcelDataAsync();
+    }
+
+    private bool EnsureCanManageLegacyMigrationData()
+    {
+        if (CanManageLegacyMigrationData)
+            return true;
+
+        LegacyMigrationStatus = "이전 데이터 추출/반영은 관리자 또는 백업복원·거래처·품목·재고조정 권한을 모두 가진 계정만 실행할 수 있습니다.";
+        StatusMessage = LegacyMigrationStatus;
+        return false;
     }
 
     [RelayCommand]

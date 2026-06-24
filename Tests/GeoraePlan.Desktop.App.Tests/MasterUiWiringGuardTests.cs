@@ -90,11 +90,60 @@ public sealed class MasterUiWiringGuardTests
             "var allItems = await _local.GetItemsAsync(_session)");
     }
 
+    [Fact]
+    public void EnvironmentSettingsWindow_LegacyAndSelectionMutationsRequireExplicitPermissions()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var xaml = ReadAppFile(appRoot, "Views", "EnvironmentSettingsWindow.xaml");
+        var viewModel = ReadAppFile(appRoot, "ViewModels", "EnvironmentSettingsViewModel.cs");
+        var masterViewModel = ReadAppFile(appRoot, "ViewModels", "EnvironmentSettingsViewModel.Masters.cs");
+
+        AssertContainsAll(
+            xaml,
+            "Text=\"{Binding LegacySourceDbPath, UpdateSourceTrigger=PropertyChanged}\" Margin=\"0,0,8,0\" IsEnabled=\"{Binding CanManageLegacyMigrationData}\"",
+            "Command=\"{Binding SelectLegacySourceDbPathCommand}\" IsEnabled=\"{Binding CanManageLegacyMigrationData}\"",
+            "Text=\"{Binding LegacyCustomerExcelPath, UpdateSourceTrigger=PropertyChanged}\" Margin=\"0,0,8,0\" IsEnabled=\"{Binding CanManageLegacyMigrationData}\"",
+            "Command=\"{Binding SelectLegacyCustomerExcelPathCommand}\" IsEnabled=\"{Binding CanManageLegacyMigrationData}\"",
+            "Text=\"{Binding LegacyItemExcelPath, UpdateSourceTrigger=PropertyChanged}\" Margin=\"0,0,8,0\" IsEnabled=\"{Binding CanManageLegacyMigrationData}\"",
+            "Command=\"{Binding SelectLegacyItemExcelPathCommand}\" IsEnabled=\"{Binding CanManageLegacyMigrationData}\"",
+            "Command=\"{Binding ExportLegacyDataCommand}\" Margin=\"0,0,8,0\" IsEnabled=\"{Binding CanManageLegacyMigrationData}\"",
+            "Command=\"{Binding ImportLegacyExcelDataCommand}\" Margin=\"0,0,8,0\" IsEnabled=\"{Binding CanManageLegacyMigrationData}\"",
+            "Command=\"{Binding ExportAndImportLegacyDataCommand}\" IsEnabled=\"{Binding CanManageLegacyMigrationData}\"");
+
+        AssertContainsAll(
+            viewModel,
+            "public bool CanManageLegacyMigrationData =>",
+            "AppPermissionNames.DataBackupRestore",
+            "AppPermissionNames.CustomerEdit",
+            "AppPermissionNames.ItemEdit",
+            "AppPermissionNames.InventoryReset",
+            "private bool EnsureCanManageLegacyMigrationData()",
+            "if (!EnsureCanManageLegacyMigrationData())");
+        Assert.Equal(6, CountOccurrences(viewModel, "if (!EnsureCanManageLegacyMigrationData())"));
+
+        AssertContainsAll(
+            masterViewModel,
+            "private bool EnsureCanManageSelectionOptions()",
+            "환경설정 기준값은 환경설정 편집 권한이 있는 계정만 수정할 수 있습니다.",
+            "private async Task SaveCategoryOptionAsync()",
+            "private async Task DeleteCategoryOptionAsync()",
+            "private async Task SavePriceGradeOptionAsync()",
+            "private async Task DeletePriceGradeOptionAsync()",
+            "private async Task SaveTradeTypeOptionAsync()",
+            "private async Task DeleteTradeTypeOptionAsync()",
+            "private async Task SaveItemCategoryOptionAsync()",
+            "private async Task DeleteItemCategoryOptionAsync()");
+        Assert.Equal(8, CountOccurrences(masterViewModel, "if (!EnsureCanManageSelectionOptions())"));
+    }
+
     private static void AssertContainsAll(string source, params string[] expectedMarkers)
     {
         foreach (var marker in expectedMarkers)
             Assert.Contains(marker, source, StringComparison.Ordinal);
     }
+
+    private static int CountOccurrences(string source, string marker)
+        => source.Split(marker, StringSplitOptions.None).Length - 1;
 
     private static string ReadAppFile(string appRoot, params string[] pathParts)
         => File.ReadAllText(Path.Combine([appRoot, .. pathParts]));

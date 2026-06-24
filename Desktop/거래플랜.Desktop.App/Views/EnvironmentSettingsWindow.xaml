@@ -313,8 +313,8 @@
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Grid.Column="0" Text="원본 DB(FDB)" VerticalAlignment="Center"/>
-                                        <TextBox Grid.Column="1" Text="{Binding LegacySourceDbPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0"/>
-                                        <Button Grid.Column="2" Content="찾기" Background="#455A64" Command="{Binding SelectLegacySourceDbPathCommand}"/>
+                                        <TextBox Grid.Column="1" Text="{Binding LegacySourceDbPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" IsEnabled="{Binding CanManageLegacyMigrationData}"/>
+                                        <Button Grid.Column="2" Content="찾기" Background="#455A64" Command="{Binding SelectLegacySourceDbPathCommand}" IsEnabled="{Binding CanManageLegacyMigrationData}"/>
                                     </Grid>
 
                                     <Grid Margin="0,0,0,8">
@@ -324,8 +324,8 @@
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Grid.Column="0" Text="거래처 엑셀" VerticalAlignment="Center"/>
-                                        <TextBox Grid.Column="1" Text="{Binding LegacyCustomerExcelPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0"/>
-                                        <Button Grid.Column="2" Content="찾기" Background="#455A64" Command="{Binding SelectLegacyCustomerExcelPathCommand}"/>
+                                        <TextBox Grid.Column="1" Text="{Binding LegacyCustomerExcelPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" IsEnabled="{Binding CanManageLegacyMigrationData}"/>
+                                        <Button Grid.Column="2" Content="찾기" Background="#455A64" Command="{Binding SelectLegacyCustomerExcelPathCommand}" IsEnabled="{Binding CanManageLegacyMigrationData}"/>
                                     </Grid>
 
                                     <Grid Margin="0,0,0,8">
@@ -335,14 +335,14 @@
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Grid.Column="0" Text="품목 엑셀" VerticalAlignment="Center"/>
-                                        <TextBox Grid.Column="1" Text="{Binding LegacyItemExcelPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0"/>
-                                        <Button Grid.Column="2" Content="찾기" Background="#455A64" Command="{Binding SelectLegacyItemExcelPathCommand}"/>
+                                        <TextBox Grid.Column="1" Text="{Binding LegacyItemExcelPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" IsEnabled="{Binding CanManageLegacyMigrationData}"/>
+                                        <Button Grid.Column="2" Content="찾기" Background="#455A64" Command="{Binding SelectLegacyItemExcelPathCommand}" IsEnabled="{Binding CanManageLegacyMigrationData}"/>
                                     </Grid>
 
                                     <WrapPanel Margin="0,4,0,0">
-                                        <Button Content="1) 원본 DB → 엑셀 추출" Background="#00796B" Command="{Binding ExportLegacyDataCommand}" Margin="0,0,8,0"/>
-                                        <Button Content="2) 엑셀 → 거래플랜 반영" Background="#1565C0" Command="{Binding ImportLegacyExcelDataCommand}" Margin="0,0,8,0"/>
-                                        <Button Content="추출 + 반영 한번에" Background="#6D4C41" Command="{Binding ExportAndImportLegacyDataCommand}"/>
+                                        <Button Content="1) 원본 DB → 엑셀 추출" Background="#00796B" Command="{Binding ExportLegacyDataCommand}" Margin="0,0,8,0" IsEnabled="{Binding CanManageLegacyMigrationData}"/>
+                                        <Button Content="2) 엑셀 → 거래플랜 반영" Background="#1565C0" Command="{Binding ImportLegacyExcelDataCommand}" Margin="0,0,8,0" IsEnabled="{Binding CanManageLegacyMigrationData}"/>
+                                        <Button Content="추출 + 반영 한번에" Background="#6D4C41" Command="{Binding ExportAndImportLegacyDataCommand}" IsEnabled="{Binding CanManageLegacyMigrationData}"/>
                                     </WrapPanel>
 
                                     <TextBlock Text="{Binding LegacyMigrationStatus}" Foreground="#90CAF9" Margin="0,10,0,0" TextWrapping="Wrap"/>
