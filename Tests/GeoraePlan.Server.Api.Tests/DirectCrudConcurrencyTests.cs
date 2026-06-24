@@ -4518,6 +4518,80 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task CustomersController_DoesNotExposeContractContent_WhenParentCustomerIsNotReadable()
+    {
+        var adminUser = CreateAdminUser();
+        await using (var seedDb = CreateDbContext(adminUser))
+        {
+            seedDb.DataSharingPolicies.Add(new DataSharingPolicy
+            {
+                Id = Guid.NewGuid(),
+                SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+                SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+                TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                ShareCustomers = false,
+                ShareItems = false,
+                ShareInvoices = false,
+                SharePayments = false,
+                ShareContracts = true,
+                ShareReports = false,
+                ShareRentals = false,
+                ShareDeliveries = false,
+                AllowTargetWrite = false,
+                IsActive = true
+            });
+
+            var customer = new Customer
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Hidden customer contract",
+                NameMatchKey = "HIDDENCUSTOMERCONTRACT",
+                TradeType = "Sales"
+            };
+            var content = TestPdfBytes("hidden customer contract content");
+            var contract = new CustomerContract
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customer.Id,
+                ContractType = "거래계약서",
+                FileName = "hidden-customer-contract.pdf",
+                MimeType = "application/pdf",
+                FileSize = content.LongLength,
+                FileHash = "hidden-contract-hash",
+                FileContent = content,
+                UploadedAtUtc = new DateTime(2026, 6, 24, 1, 30, 0, DateTimeKind.Utc)
+            };
+
+            seedDb.Customers.Add(customer);
+            seedDb.CustomerContracts.Add(contract);
+            await seedDb.SaveChangesAsync();
+
+            var scopedUser = new TestCurrentUserContext
+            {
+                Username = "yeonsu-contract-only-direct-reader",
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+            };
+            await using var scopedDb = CreateDbContext(scopedUser);
+            var controller = new CustomersController(
+                scopedDb,
+                new OfficeScopeService(scopedUser, scopedDb),
+                new StubCentralFileStorage());
+
+            var contractsResponse = await controller.GetContracts(customer.Id, CancellationToken.None);
+            Assert.IsType<NotFoundResult>(contractsResponse.Result);
+
+            var contentResponse = await controller.DownloadContractContent(contract.Id, CancellationToken.None);
+            Assert.IsType<NotFoundResult>(contentResponse);
+        }
+    }
+
+    [Fact]
     public async Task CompanyProfileController_Upsert_ReturnsConflict_WhenExpectedRevisionDoesNotMatch()
     {
         var currentUser = CreateAdminUser();

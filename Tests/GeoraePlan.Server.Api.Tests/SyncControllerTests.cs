@@ -5104,6 +5104,75 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Pull_DoesNotReturnCustomerContract_WhenParentCustomerIsNotReadable()
+    {
+        _dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        {
+            Id = Guid.NewGuid(),
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ShareCustomers = false,
+            ShareItems = false,
+            ShareInvoices = false,
+            SharePayments = false,
+            ShareContracts = true,
+            ShareReports = false,
+            ShareRentals = false,
+            ShareDeliveries = false,
+            AllowTargetWrite = false,
+            IsActive = true
+        });
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-HIDDEN-CUSTOMER-CONTRACT",
+            NameMatchKey = "SYNCHIDDENCUSTOMERCONTRACT",
+            TradeType = "매출",
+            Revision = 30
+        };
+        var contract = new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            ContractType = "거래계약서",
+            FileName = "hidden-customer-contract.pdf",
+            MimeType = "application/pdf",
+            FileSize = 4,
+            FileHash = "hash",
+            FileContent = [0x25, 0x50, 0x44, 0x46],
+            IsPrimary = true,
+            UploadedByUsername = "admin",
+            UploadedAtUtc = new DateTime(2026, 6, 24, 1, 35, 0, DateTimeKind.Utc),
+            Revision = 31
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.CustomerContracts.Add(contract);
+        await _dbContext.SaveChangesAsync();
+
+        var scopedUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu-contract-only-sync-reader",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+        await using var scopedDb = CreateDbContext(scopedUser);
+        var controller = CreateController(scopedDb, scopedUser);
+
+        var response = await controller.Pull(0, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPullResponse>(ok.Value);
+
+        Assert.DoesNotContain(result.Customers, current => current.Id == customer.Id);
+        Assert.DoesNotContain(result.CustomerContracts, current => current.Id == contract.Id);
+    }
+
+    [Fact]
     public async Task Pull_OfficeOnlyUser_ReturnsOnlyResponsiblePaymentAndRentalRows()
     {
         var visibleCustomer = new Customer

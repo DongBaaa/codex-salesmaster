@@ -284,7 +284,8 @@ public sealed class OfficeScopeService
             return query;
 
         var tenantCode = CurrentTenantCode;
-        var readableOffices = ResolveReadableOfficeCodes(DataArea.Contracts);
+        var customerReadableOffices = ResolveReadableOfficeCodes(DataArea.Customers);
+        var contractReadableOffices = ResolveReadableOfficeCodes(DataArea.Contracts);
         var tenantOffices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode);
         return query.Where(entity =>
             entity.Customer != null &&
@@ -294,9 +295,17 @@ public sealed class OfficeScopeService
                entity.Customer.OfficeCode == null ||
                entity.Customer.OfficeCode == string.Empty ||
                tenantOffices.Contains(entity.Customer.OfficeCode))) ||
-             readableOffices.Contains(entity.Customer.ResponsibleOfficeCode) ||
+             customerReadableOffices.Contains(entity.Customer.ResponsibleOfficeCode) ||
              ((entity.Customer.ResponsibleOfficeCode == null || entity.Customer.ResponsibleOfficeCode == string.Empty) &&
-              readableOffices.Contains(entity.Customer.OfficeCode))));
+              customerReadableOffices.Contains(entity.Customer.OfficeCode))) &&
+            ((entity.Customer.ResponsibleOfficeCode == OfficeCodeCatalog.Shared &&
+              (entity.Customer.OfficeCode == OfficeCodeCatalog.Shared ||
+               entity.Customer.OfficeCode == null ||
+               entity.Customer.OfficeCode == string.Empty ||
+               tenantOffices.Contains(entity.Customer.OfficeCode))) ||
+             contractReadableOffices.Contains(entity.Customer.ResponsibleOfficeCode) ||
+             ((entity.Customer.ResponsibleOfficeCode == null || entity.Customer.ResponsibleOfficeCode == string.Empty) &&
+              contractReadableOffices.Contains(entity.Customer.OfficeCode))));
     }
 
     public IQueryable<Item> ApplyItemScope(IQueryable<Item> query)
