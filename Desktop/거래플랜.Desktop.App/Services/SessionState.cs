@@ -35,6 +35,7 @@ public sealed class SessionState
     public bool HasAdministrativePrivileges => IsAdmin || IsGodMode;
     public bool HasGlobalDataScope =>
         HasAdministrativePrivileges && string.Equals(ScopeType, TenantScopeCatalog.ScopeAdmin, StringComparison.OrdinalIgnoreCase);
+    public bool HasSystemConfigurationScope => IsGodMode || HasGlobalDataScope;
     public event EventHandler? BusinessDatabaseChanged;
 
     public void SetSession(string token, UserSessionDto user, DateTime? expiresAtUtc = null)
@@ -65,7 +66,7 @@ public sealed class SessionState
         BusinessOfficeCode = ResolveBusinessOfficeCode(TenantCode);
         ScopeType = ResolveScopeType(user.ScopeType, user.Role, OfficeCode);
 
-        if (preserveBusinessDatabaseSelection && HasAdministrativePrivileges)
+        if (preserveBusinessDatabaseSelection && HasSystemConfigurationScope)
         {
             SetBusinessDatabase(previousBusinessDatabaseName, previousBusinessDatabaseDisplayName);
             return;
@@ -106,7 +107,7 @@ public sealed class SessionState
 
     public void SetBusinessDatabase(string? databaseName, string? displayName = null)
     {
-        if (!HasAdministrativePrivileges)
+        if (!HasSystemConfigurationScope)
         {
             ResetBusinessDatabaseSelection();
             return;

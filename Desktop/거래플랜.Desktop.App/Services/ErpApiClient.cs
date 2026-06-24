@@ -45,7 +45,7 @@ public sealed class ErpApiClient
         if (_http.DefaultRequestHeaders.Contains(tenantHeaderName))
             _http.DefaultRequestHeaders.Remove(tenantHeaderName);
 
-        if (!includeBusinessDatabaseHeader || !_session.HasAdministrativePrivileges)
+        if (!includeBusinessDatabaseHeader || !_session.HasSystemConfigurationScope)
             return;
 
         var headerValue = ResolveBusinessDatabaseHeaderValue(businessDatabaseNameOverride);

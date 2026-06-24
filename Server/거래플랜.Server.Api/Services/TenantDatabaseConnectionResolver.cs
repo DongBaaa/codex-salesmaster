@@ -129,7 +129,7 @@ public sealed class TenantDatabaseConnectionResolver : ITenantDatabaseConnection
         if (httpContext is null)
             return TenantScopeCatalog.UsenetGroup;
 
-        if (httpContext.User.IsInRole("Admin"))
+        if (CanUseRequestedTenantHeader(httpContext.User))
         {
             var requestedTenant = httpContext.Request.Query["tenantCode"].FirstOrDefault()
                                   ?? httpContext.Request.Headers["X-Tenant-Code"].FirstOrDefault();
@@ -140,5 +140,18 @@ public sealed class TenantDatabaseConnectionResolver : ITenantDatabaseConnection
         var tenantClaim = httpContext.User.FindFirstValue("tenant");
         var officeClaim = httpContext.User.FindFirstValue("office");
         return TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(tenantClaim, officeClaim);
+    }
+
+    private static bool CanUseRequestedTenantHeader(ClaimsPrincipal user)
+    {
+        if (user.Claims.Any(claim => claim.Type == "god" && string.Equals(claim.Value, "true", StringComparison.OrdinalIgnoreCase)))
+            return true;
+
+        var scopeClaim = user.FindFirstValue("scope");
+        return user.IsInRole("Admin") &&
+               string.Equals(
+                   TenantScopeCatalog.NormalizeScopeTypeOrDefault(scopeClaim),
+                   TenantScopeCatalog.ScopeAdmin,
+                   StringComparison.OrdinalIgnoreCase);
     }
 }

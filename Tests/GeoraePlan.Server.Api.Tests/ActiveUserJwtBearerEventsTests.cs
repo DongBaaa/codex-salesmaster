@@ -16,6 +16,42 @@ namespace GeoraePlan.Server.Api.Tests;
 public sealed class ActiveUserJwtBearerEventsTests
 {
     [Fact]
+    public void TenantDatabaseConnectionResolver_IgnoresTenantHeader_ForTenantScopedAdmin()
+    {
+        var resolver = CreateHttpResolver(
+            user: CreatePrincipal(
+                isAdmin: true,
+                scopeType: TenantScopeCatalog.ScopeTenantAll,
+                tenantCode: TenantScopeCatalog.UsenetGroup,
+                officeCode: OfficeCodeCatalog.Usenet),
+            requestedTenantCode: TenantScopeCatalog.Itworld);
+
+        var resolved = resolver.ResolveCurrent();
+
+        Assert.Equal(TenantScopeCatalog.UsenetGroup, resolved.TenantCode);
+        Assert.False(resolved.IsDedicatedBusinessDatabase);
+        Assert.Equal("Host=default", resolved.ConnectionString);
+    }
+
+    [Fact]
+    public void TenantDatabaseConnectionResolver_HonorsTenantHeader_ForGlobalAdmin()
+    {
+        var resolver = CreateHttpResolver(
+            user: CreatePrincipal(
+                isAdmin: true,
+                scopeType: TenantScopeCatalog.ScopeAdmin,
+                tenantCode: TenantScopeCatalog.UsenetGroup,
+                officeCode: OfficeCodeCatalog.Usenet),
+            requestedTenantCode: TenantScopeCatalog.Itworld);
+
+        var resolved = resolver.ResolveCurrent();
+
+        Assert.Equal(TenantScopeCatalog.Itworld, resolved.TenantCode);
+        Assert.True(resolved.IsDedicatedBusinessDatabase);
+        Assert.Equal("Host=itworld", resolved.ConnectionString);
+    }
+
+    [Fact]
     public async Task IsActiveUserAsync_UsesCentralUserActiveAndDeletedState()
     {
         var tempDb = Path.Combine(Path.GetTempPath(), $"georaeplan-active-user-{Guid.NewGuid():N}.db");
@@ -138,6 +174,49 @@ public sealed class ActiveUserJwtBearerEventsTests
                 SqliteDbPath = sqliteDbPath
             },
             new HttpContextAccessor());
+
+    private static TenantDatabaseConnectionResolver CreateHttpResolver(
+        ClaimsPrincipal user,
+        string requestedTenantCode)
+    {
+        var httpContext = new DefaultHttpContext();
+        httpContext.Request.Path = "/sync/pull";
+        httpContext.Request.Headers["X-Tenant-Code"] = requestedTenantCode;
+        httpContext.User = user;
+
+        return new TenantDatabaseConnectionResolver(
+            new TenantDatabaseRoutingOptions
+            {
+                UseSqlite = false,
+                DefaultConnectionString = "Host=default",
+                DedicatedBusinessConnections = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [TenantScopeCatalog.Itworld] = "Host=itworld"
+                }
+            },
+            new HttpContextAccessor
+            {
+                HttpContext = httpContext
+            });
+    }
+
+    private static ClaimsPrincipal CreatePrincipal(
+        bool isAdmin,
+        string scopeType,
+        string tenantCode,
+        string officeCode)
+    {
+        var claims = new List<Claim>
+        {
+            new("tenant", tenantCode),
+            new("office", officeCode),
+            new("scope", scopeType)
+        };
+        if (isAdmin)
+            claims.Add(new Claim(ClaimTypes.Role, "Admin"));
+
+        return new ClaimsPrincipal(new ClaimsIdentity(claims, "test"));
+    }
 
     private static AppDbContext CreateDbContext(string sqliteDbPath)
     {
