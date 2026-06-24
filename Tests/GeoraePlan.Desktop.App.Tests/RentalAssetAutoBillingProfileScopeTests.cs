@@ -178,7 +178,7 @@ public sealed class RentalAssetAutoBillingProfileScopeTests
             TenantCode = tenantCode,
             OfficeCode = officeCode,
             ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
-            Permissions = []
+            Permissions = [AppPermissionNames.RentalAssetEdit]
         });
         return session;
     }

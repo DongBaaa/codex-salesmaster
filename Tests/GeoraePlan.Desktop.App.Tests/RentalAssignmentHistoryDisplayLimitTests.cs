@@ -525,7 +525,7 @@ public sealed class RentalAssignmentHistoryDisplayLimitTests
             TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, officeCode),
             OfficeCode = officeCode,
             ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
-            Permissions = []
+            Permissions = [AppPermissionNames.RentalAssetEdit]
         });
         return session;
     }

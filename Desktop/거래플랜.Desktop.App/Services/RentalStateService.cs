@@ -8513,6 +8513,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
             session.HasPermission(AppPermissionNames.RentalEditAll) ||
             session.HasPermission(AppPermissionNames.RentalProfileEdit));
 
+    private static bool CanEditRentalAssets(SessionState? session)
+        => session is not null && session.IsLoggedIn && (
+            session.HasAdministrativePrivileges ||
+            session.HasPermission(AppPermissionNames.RentalEditAll) ||
+            session.HasPermission(AppPermissionNames.RentalAssetEdit));
+
     public bool CanViewAllAssetScope(SessionState? session)
         => session is not null && session.IsLoggedIn;
 
@@ -8537,6 +8543,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (session is null || !session.IsLoggedIn)
             return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        if (!CanEditRentalAssets(session))
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         if (CanManageAllAssetScope(session))
         {
             return OfficeCodeCatalog.All
@@ -8554,6 +8563,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
     public bool CanEditAssetScope(string? officeCode, SessionState? session)
     {
         if (session is null || !session.IsLoggedIn)
+            return false;
+
+        if (!CanEditRentalAssets(session))
             return false;
 
         if (CanManageAllAssetScope(session))

@@ -115,8 +115,12 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     public bool CanViewAll => _rental.CanViewAllAssetScope(_session);
     public bool CanManageAll => _rental.CanManageAllAssetScope(_session);
     public bool CanEditOfficeSelection => CanManageAll;
-    public bool CanSave => SelectedRow is null || (SelectedRow.HasFullDetail && CanEditCurrentSelection);
+    public bool CanCreateAsset => _rental.CanEditAssetScope(ResolveDefaultEditOfficeCode(EditOfficeCode), _session);
+    public bool CanSave => SelectedRow is null
+        ? CanCreateAsset
+        : SelectedRow.HasFullDetail && CanEditCurrentSelection;
     public bool CanDeleteSelected => SelectedRow is not null && CanEditCurrentSelection;
+    public bool CanDeleteChecked => Rows.Any(CanEditAssetRow);
     public bool CanReplaceSelected => SelectedRow is not null &&
                                       SelectedRow.HasFullDetail &&
                                       CanEditCurrentSelection &&
@@ -146,11 +150,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     public LocalStateService LocalStateService => _local;
     public SessionState SessionState => _session;
 
-    private bool CanEditCurrentSelection => SelectedRow is null || _rental.CanEditAssetScope(
-        string.IsNullOrWhiteSpace(SelectedRow.Source.ResponsibleOfficeCode)
-            ? SelectedRow.Source.ManagementCompanyCode
-            : SelectedRow.Source.ResponsibleOfficeCode,
-        _session);
+    private bool CanEditCurrentSelection => SelectedRow is null
+        ? CanCreateAsset
+        : CanEditAssetRow(SelectedRow);
 
     public RentalAssetViewModel(
         RentalStateService rental,
@@ -346,6 +348,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     partial void OnSearchTextChanged(string value) => RequestFilterReload();
 
+    partial void OnEditOfficeCodeChanged(string value) => RefreshRentalAssetMutationCommandStates();
+
     partial void OnSelectedRowChanging(RentalAssetViewRow? oldValue, RentalAssetViewRow? newValue)
     {
         if (_suppressSelectionAutoSave || ReferenceEquals(oldValue, newValue))
@@ -438,6 +442,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                     return;
 
                 Rows.ReplaceWith(rows);
+                RefreshRentalAssetMutationCommandStates();
 
                 if (selectedRowId.HasValue)
                 {
@@ -506,6 +511,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         {
             var row = await _rental.GetAssetRowAsync(assetId, _session);
             Rows.ReplaceWith(row is null ? Array.Empty<RentalAssetViewRow>() : new[] { row });
+            RefreshRentalAssetMutationCommandStates();
         }
         finally
         {
@@ -513,7 +519,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         }
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanSave))]
     private async Task SaveAsync()
     {
         var snapshot = CaptureEditSnapshot();
@@ -526,12 +532,18 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             showConflictDialog: true);
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanDeleteSelected))]
     private async Task DeleteAsync()
     {
         if (SelectedRow is null)
         {
             StatusMessage = "삭제할 렌탈 자산을 선택하세요.";
+            return;
+        }
+
+        if (!CanDeleteSelected)
+        {
+            StatusMessage = "권한이 없어 해당 렌탈 자산을 삭제할 수 없습니다.";
             return;
         }
 
@@ -558,7 +570,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         ResetForNewAsset();
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanDeleteChecked))]
     private async Task DeleteCheckedAsync()
     {
         var targets = Rows
@@ -567,6 +579,15 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         if (targets.Count == 0)
         {
             StatusMessage = "삭제할 렌탈 자산을 먼저 선택하세요.";
+            return;
+        }
+
+        var deniedTargets = targets
+            .Where(row => !CanEditAssetRow(row))
+            .ToList();
+        if (deniedTargets.Count > 0)
+        {
+            StatusMessage = $"권한이 없어 선택한 렌탈 자산 {deniedTargets.Count:N0}건을 삭제할 수 없습니다.";
             return;
         }
 
@@ -612,9 +633,15 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         }
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanCreateAsset))]
     private async Task NewAsset()
     {
+        if (!CanCreateAsset)
+        {
+            StatusMessage = "권한이 없어 신규 렌탈 자산을 등록할 수 없습니다.";
+            return;
+        }
+
         if (!await TryAutoSaveCurrentEditAsync(refreshAfterSave: true))
             return;
 
@@ -924,9 +951,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             OnPropertyChanged(nameof(HasLastAssignmentHistory));
             OnPropertyChanged(nameof(ShowLastAssignmentHistory));
             OnPropertyChanged(nameof(IsNewAsset));
-            OnPropertyChanged(nameof(CanSave));
-            OnPropertyChanged(nameof(CanDeleteSelected));
-            OnPropertyChanged(nameof(CanReplaceSelected));
+            RefreshRentalAssetMutationCommandStates();
             return;
         }
 
@@ -977,9 +1002,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         OnPropertyChanged(nameof(HasLastAssignmentHistory));
         OnPropertyChanged(nameof(ShowLastAssignmentHistory));
         OnPropertyChanged(nameof(IsNewAsset));
-        OnPropertyChanged(nameof(CanSave));
-        OnPropertyChanged(nameof(CanDeleteSelected));
-        OnPropertyChanged(nameof(CanReplaceSelected));
+        RefreshRentalAssetMutationCommandStates();
         ResetEditBaseline();
         if (!value.HasFullDetail)
         {
@@ -1644,6 +1667,24 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             fallbackOfficeCode);
     }
 
+    private bool CanEditAssetRow(RentalAssetViewRow? row)
+        => row is not null &&
+           _rental.CanEditAssetScope(ResolveAssetOfficeCode(row.Source, _session.OfficeCode), _session);
+
+    private void RefreshRentalAssetMutationCommandStates()
+    {
+        OnPropertyChanged(nameof(CanCreateAsset));
+        OnPropertyChanged(nameof(CanSave));
+        OnPropertyChanged(nameof(CanDeleteSelected));
+        OnPropertyChanged(nameof(CanDeleteChecked));
+        OnPropertyChanged(nameof(CanReplaceSelected));
+        SaveCommand.NotifyCanExecuteChanged();
+        DeleteCommand.NotifyCanExecuteChanged();
+        NewAssetCommand.NotifyCanExecuteChanged();
+        DeleteCheckedCommand.NotifyCanExecuteChanged();
+        ReplaceRentalEquipmentCommand.NotifyCanExecuteChanged();
+    }
+
     private static bool HasReplaceableRentalAssignment(LocalRentalAsset asset)
         => asset.BillingProfileId.HasValue ||
            asset.CustomerId.HasValue ||
@@ -2178,9 +2219,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
         ApplyAssetStatusUiRules();
         OnPropertyChanged(nameof(IsNewAsset));
-        OnPropertyChanged(nameof(CanSave));
-        OnPropertyChanged(nameof(CanDeleteSelected));
-        OnPropertyChanged(nameof(CanReplaceSelected));
+        RefreshRentalAssetMutationCommandStates();
         OnPropertyChanged(nameof(HasLastAssignmentHistory));
         OnPropertyChanged(nameof(ShowLastAssignmentHistory));
         OnPropertyChanged(nameof(IsNonOperatingAssetStatus));
