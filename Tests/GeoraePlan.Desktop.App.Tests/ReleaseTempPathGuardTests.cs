@@ -401,6 +401,102 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public async Task DesktopInstallerScript_RestoresPreviousInstallRootWhenValidationFailsAfterCopy()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var scriptPath = Path.Combine(
+            repositoryRoot,
+            "tools",
+            "release",
+            "Build-GeoraePlanDesktopInstaller.ps1");
+        var testRoot = Path.Combine(
+            repositoryRoot,
+            "temp",
+            "install-rollback-tests",
+            Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            Directory.CreateDirectory(testRoot);
+            Directory.CreateDirectory(Path.Combine(testRoot, "deploy"));
+            File.WriteAllText(Path.Combine(testRoot, "deploy", "Set-ApiBaseUrl.ps1"), "# test deployment marker");
+
+            var desktopProjectDirectory = Path.Combine(testRoot, "Desktop", "거래플랜.Desktop.App");
+            Directory.CreateDirectory(desktopProjectDirectory);
+            File.WriteAllText(
+                Path.Combine(desktopProjectDirectory, "거래플랜.Desktop.App.csproj"),
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <Version>9.9.999</Version>
+                  </PropertyGroup>
+                </Project>
+                """);
+
+            var sourceFolder = Path.Combine(testRoot, "source");
+            Directory.CreateDirectory(sourceFolder);
+            File.WriteAllText(
+                Path.Combine(sourceFolder, "appsettings.json"),
+                "{\"Api\":{\"BaseUrl\":\"https://example.invalid/new\"}}");
+            File.WriteAllText(Path.Combine(sourceFolder, "거래플랜.exe"), "new invalid executable without version");
+            File.WriteAllText(Path.Combine(sourceFolder, "new-only.txt"), "new file that must disappear after rollback");
+
+            var fakeDotnetPath = Path.Combine(testRoot, "fake-dotnet.cmd");
+            File.WriteAllText(
+                fakeDotnetPath,
+                """
+                @echo off
+                if "%~1"=="--version" (
+                  echo 8.0.100
+                  exit /b 0
+                )
+                exit /b 0
+                """);
+
+            var buildResult = await RunPowerShellAsync(
+                scriptPath,
+                ("-ProjectRoot", testRoot),
+                ("-SourceFolder", sourceFolder),
+                ("-OutputRoot", Path.Combine(testRoot, "output")),
+                ("-SkipNativeInstallers", null),
+                ("DOTNET_EXE", fakeDotnetPath));
+            Assert.Equal(0, buildResult.ExitCode);
+
+            var packageRoot = Path.Combine(testRoot, "output", "관리자용", "거래플랜-PC-설치패키지");
+            var installScriptPath = Path.Combine(packageRoot, "Install-GeoraePlan.ps1");
+            Assert.True(File.Exists(installScriptPath), "Generated install script was not found.");
+
+            var installRoot = Path.Combine(testRoot, "install-root");
+            Directory.CreateDirectory(installRoot);
+            File.WriteAllText(Path.Combine(installRoot, "거래플랜.exe"), "old executable content");
+            File.WriteAllText(Path.Combine(installRoot, "appsettings.json"), "{\"Api\":{\"BaseUrl\":\"https://example.invalid/old\"}}");
+            File.WriteAllText(Path.Combine(installRoot, "old-only.txt"), "old file that must remain after rollback");
+
+            var installResult = await RunPowerShellAsync(
+                installScriptPath,
+                ("-InstallRoot", installRoot),
+                ("-NoLaunch", null),
+                ("-NoShortcuts", null),
+                ("-SuppressUi", null),
+                ("-LogPath", Path.Combine(testRoot, "install.log")),
+                ("DOTNET_EXE", fakeDotnetPath));
+
+            Assert.NotEqual(0, installResult.ExitCode);
+            Assert.Contains("설치된 실행 파일 버전을 확인하지 못했습니다.", installResult.StdOut + installResult.StdErr);
+            Assert.Equal("old executable content", File.ReadAllText(Path.Combine(installRoot, "거래플랜.exe")));
+            Assert.Equal("{\"Api\":{\"BaseUrl\":\"https://example.invalid/old\"}}", File.ReadAllText(Path.Combine(installRoot, "appsettings.json")));
+            Assert.True(File.Exists(Path.Combine(installRoot, "old-only.txt")));
+            Assert.False(File.Exists(Path.Combine(installRoot, "new-only.txt")));
+            Assert.Empty(Directory.EnumerateDirectories(testRoot, ".tradeplan-install-rollback-*", SearchOption.AllDirectories));
+        }
+        finally
+        {
+            if (Directory.Exists(testRoot))
+                Directory.Delete(testRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void AndroidBuildScript_DisableAotOverridesProjectAotDefaults()
     {
         var source = ReadRepositoryFile(
@@ -898,8 +994,54 @@ public sealed class ReleaseTempPathGuardTests
         Assert.IsType<InvalidOperationException>(ex.InnerException);
     }
 
+    private static async Task<ProcessResult> RunPowerShellAsync(
+        string scriptPath,
+        params (string Name, string? Value)[] argumentsAndEnvironment)
+    {
+        using var process = new Process();
+        process.StartInfo = new ProcessStartInfo
+        {
+            FileName = "powershell",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        process.StartInfo.ArgumentList.Add("-NoProfile");
+        process.StartInfo.ArgumentList.Add("-ExecutionPolicy");
+        process.StartInfo.ArgumentList.Add("Bypass");
+        process.StartInfo.ArgumentList.Add("-File");
+        process.StartInfo.ArgumentList.Add(scriptPath);
+
+        foreach (var (name, value) in argumentsAndEnvironment)
+        {
+            if (!name.StartsWith("-", StringComparison.Ordinal))
+            {
+                process.StartInfo.Environment[name] = value ?? string.Empty;
+                continue;
+            }
+
+            process.StartInfo.ArgumentList.Add(name);
+            if (value is not null)
+                process.StartInfo.ArgumentList.Add(value);
+        }
+
+        process.Start();
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        var exited = process.WaitForExit(120_000);
+        Assert.True(exited, $"PowerShell script timed out: {scriptPath}");
+
+        return new ProcessResult(
+            process.ExitCode,
+            await stdoutTask,
+            await stderrTask);
+    }
+
     private static string ReadRepositoryFile(params string[] pathParts)
         => File.ReadAllText(Path.Combine([FindRepositoryRoot(), .. pathParts]));
+
+    private sealed record ProcessResult(int ExitCode, string StdOut, string StdErr);
 
     private static void AssertInOrder(string source, params string[] tokens)
     {

@@ -411,6 +411,7 @@ param(
     [string]`$InstallRoot = '',
     [switch]`$NoLaunch,
     [switch]`$NoShortcuts,
+    [switch]`$SuppressUi,
     [string]`$LogPath = ''
 )
 
@@ -548,6 +549,11 @@ function Compare-Version {
 function Show-InstallError {
     param([Parameter(Mandatory = `$true)][string]`$Message)
 
+    if (`$SuppressUi) {
+        Write-InstallLog ("설치 오류 UI 생략: {0}" -f `$Message)
+        return
+    }
+
     Add-Type -AssemblyName PresentationFramework
     [System.Windows.MessageBox]::Show(`$Message, '__APP_DISPLAY_NAME__ 설치', 'OK', 'Error') | Out-Null
 }
@@ -615,6 +621,10 @@ function Ensure-ElevatedIfNeeded {
         `$argumentParts += '-NoShortcuts'
     }
 
+    if (`$SuppressUi) {
+        `$argumentParts += '-SuppressUi'
+    }
+
     if (-not [string]::IsNullOrWhiteSpace(`$LogPath)) {
         `$argumentParts += ('-LogPath "{0}"' -f `$LogPath)
     }
@@ -645,7 +655,74 @@ function Ensure-SufficientInstallSpace {
     }
 }
 
+function New-InstallRollbackSnapshot {
+    param(
+        [Parameter(Mandatory = `$true)][string]`$Path,
+        [Parameter(Mandatory = `$true)][string]`$Label
+    )
+
+    `$fullPath = [System.IO.Path]::GetFullPath(`$Path)
+    `$hadExistingInstall = Test-Path -LiteralPath `$fullPath
+    `$backupRoot = ''
+
+    if (`$hadExistingInstall) {
+        `$parentPath = Split-Path -Parent `$fullPath
+        if ([string]::IsNullOrWhiteSpace(`$parentPath)) {
+            `$parentPath = [System.IO.Path]::GetTempPath()
+        }
+
+        `$safeLabel = (`$Label -replace '[^A-Za-z0-9._-]', '-')
+        `$backupRoot = Join-Path `$parentPath ('.tradeplan-install-rollback-{0}-{1}' -f `$safeLabel, [Guid]::NewGuid().ToString('N'))
+        Write-InstallLog ("rollback snapshot 생성: {0} -> {1}" -f `$fullPath, `$backupRoot)
+        Invoke-RobocopyMirror -Source `$fullPath -Destination `$backupRoot
+    }
+    else {
+        Write-InstallLog ("rollback snapshot: 기존 설치 경로 없음. Path={0}" -f `$fullPath)
+    }
+
+    return [pscustomobject]@{
+        Path = `$fullPath
+        Label = `$Label
+        HadExistingInstall = `$hadExistingInstall
+        BackupRoot = `$backupRoot
+    }
+}
+
+function Restore-InstallRollbackSnapshot {
+    param([Parameter(Mandatory = `$true)]`$Snapshot)
+
+    if (`$Snapshot.HadExistingInstall) {
+        if ([string]::IsNullOrWhiteSpace(`$Snapshot.BackupRoot) -or -not (Test-Path -LiteralPath `$Snapshot.BackupRoot)) {
+            throw ("rollback snapshot을 찾지 못했습니다. Label={0}, BackupRoot={1}" -f `$Snapshot.Label, `$Snapshot.BackupRoot)
+        }
+
+        Write-InstallLog ("rollback 복구: {0} -> {1}" -f `$Snapshot.BackupRoot, `$Snapshot.Path)
+        Invoke-RobocopyMirror -Source `$Snapshot.BackupRoot -Destination `$Snapshot.Path
+        return
+    }
+
+    if (Test-Path -LiteralPath `$Snapshot.Path) {
+        Write-InstallLog ("rollback 정리: 실패한 신규 설치 경로 제거 {0}" -f `$Snapshot.Path)
+        Remove-Item -LiteralPath `$Snapshot.Path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Remove-InstallRollbackSnapshot {
+    param([Parameter(Mandatory = `$true)]`$Snapshot)
+
+    if (-not [string]::IsNullOrWhiteSpace(`$Snapshot.BackupRoot) -and (Test-Path -LiteralPath `$Snapshot.BackupRoot)) {
+        try {
+            Remove-Item -LiteralPath `$Snapshot.BackupRoot -Recurse -Force
+            Write-InstallLog ("rollback snapshot 제거: {0}" -f `$Snapshot.BackupRoot)
+        }
+        catch {
+            Write-InstallLog ("rollback snapshot 제거 실패: {0}" -f `$_.Exception.Message)
+        }
+    }
+}
+
 `$ErrorActionPreference = 'Stop'
+`$installRollbackSnapshots = @()
 
 try {
     Write-InstallLog ("설치 시작. InstallRoot={0}" -f `$InstallRoot)
@@ -667,6 +744,11 @@ try {
 
     Write-InstallLog '설치 공간을 확인합니다.'
     Ensure-SufficientInstallSpace -SourceRoot `$sourceRoot
+    `$installRollbackSnapshots += New-InstallRollbackSnapshot -Path `$InstallRoot -Label 'primary'
+    if (`$useLegacyBridgeCopy) {
+        `$installRollbackSnapshots += New-InstallRollbackSnapshot -Path `$legacyUserRoot -Label 'legacy'
+    }
+
     Write-InstallLog '파일 복사를 시작합니다.'
     Invoke-RobocopyMirror -Source `$sourceRoot -Destination `$InstallRoot
     if (`$useLegacyBridgeCopy) {
@@ -721,6 +803,9 @@ try {
     Write-Host "Install complete: `$InstallRoot"
     Write-Host "Executable: `$exePath"
     Write-InstallLog ("설치 완료. Executable={0}" -f `$exePath)
+    foreach (`$snapshot in @(`$installRollbackSnapshots)) {
+        Remove-InstallRollbackSnapshot -Snapshot `$snapshot
+    }
 
     if (-not `$NoLaunch) {
         Write-InstallLog '설치 후 앱을 다시 실행합니다.'
@@ -729,6 +814,17 @@ try {
 }
 catch {
     Write-InstallLog ("설치 실패: {0}" -f `$_.Exception)
+    foreach (`$snapshot in @(`$installRollbackSnapshots)) {
+        try {
+            Restore-InstallRollbackSnapshot -Snapshot `$snapshot
+        }
+        catch {
+            Write-InstallLog ("rollback 복구 실패: {0}" -f `$_.Exception)
+        }
+    }
+    foreach (`$snapshot in @(`$installRollbackSnapshots)) {
+        Remove-InstallRollbackSnapshot -Snapshot `$snapshot
+    }
     Show-InstallError (`$_.Exception.Message)
     exit 1
 }

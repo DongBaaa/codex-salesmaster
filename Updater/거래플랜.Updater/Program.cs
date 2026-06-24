@@ -153,6 +153,7 @@ internal static class Program
             "-InstallRoot",
             QuoteArgument(options.InstallRoot),
             "-NoLaunch",
+            "-SuppressUi",
             "-LogPath",
             QuoteArgument(logPath ?? string.Empty)
         }.Where(static part => !string.IsNullOrWhiteSpace(part)));
