@@ -838,6 +838,78 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void MobileImmediatePaymentForbiddenFailure_DoesNotShowSavedOrInvokeSuccess()
+    {
+        var root = FindRepositoryRoot();
+        var coordinatorSource = File.ReadAllText(Path.Combine(
+                root,
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "Services",
+                "SyncCoordinator.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var paymentViewSource = File.ReadAllText(Path.Combine(
+                root,
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "ViewModels",
+                "PaymentDraftViewModel.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        var methodStart = coordinatorSource.IndexOf(
+            "public async Task<MobileSyncState> SavePaymentImmediatelyAsync",
+            StringComparison.Ordinal);
+        var methodEnd = coordinatorSource.IndexOf(
+            "public async Task<MobileSyncState> TryBackgroundSyncAsync",
+            methodStart,
+            StringComparison.Ordinal);
+        Assert.True(methodStart >= 0);
+        Assert.True(methodEnd > methodStart);
+        var savePaymentMethod = coordinatorSource[methodStart..methodEnd];
+
+        Assert.Contains(
+            "StatusCode: HttpStatusCode.BadRequest\n                or HttpStatusCode.Forbidden\n                or HttpStatusCode.NotFound\n                or HttpStatusCode.UnprocessableEntity",
+            coordinatorSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "catch (Exception ex) when (IsNonRetryableClientFailure(ex))\n            {\n                MarkFailure(state, ex);\n            }",
+            savePaymentMethod,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "catch (Exception ex) when (IsNonRetryableClientFailure(ex))\n            {\n                state.PendingPush.Payments.Add(payment);",
+            savePaymentMethod,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "catch (Exception ex)\n            {\n                state.PendingPush.Payments.Add(payment);",
+            savePaymentMethod,
+            StringComparison.Ordinal);
+
+        var saveCallIndex = paymentViewSource.IndexOf(
+            "var state = await _syncCoordinator.SavePaymentImmediatelyAsync(payment, Attachments, linkedTransaction);",
+            StringComparison.Ordinal);
+        var failureGuardIndex = paymentViewSource.IndexOf(
+            "if (state.PendingPaymentCount == 0 &&\n                state.ConsecutiveFailureCount > 0 &&\n                !string.IsNullOrWhiteSpace(state.LastError))",
+            saveCallIndex,
+            StringComparison.Ordinal);
+        var successBranchIndex = paymentViewSource.IndexOf(
+            "if (state.PendingPaymentCount == 0)\n            {\n                _refreshCoordinator.MarkInvoicesChanged();",
+            failureGuardIndex + 1,
+            StringComparison.Ordinal);
+        var successCallbackIndex = paymentViewSource.IndexOf(
+            "await SavedSuccessfully.Invoke();",
+            successBranchIndex,
+            StringComparison.Ordinal);
+
+        Assert.True(saveCallIndex >= 0);
+        Assert.True(failureGuardIndex > saveCallIndex);
+        Assert.True(successBranchIndex > failureGuardIndex);
+        Assert.True(successCallbackIndex > successBranchIndex);
+        Assert.Matches(
+            "if \\(state\\.PendingPaymentCount == 0 &&\\n\\s*state\\.ConsecutiveFailureCount > 0 &&\\n\\s*!string\\.IsNullOrWhiteSpace\\(state\\.LastError\\)\\)\\n\\s*\\{\\n\\s*StatusMessage = \\$\"\\{PaymentActionText\\}[^\\n]+\\{state\\.LastError\\}\";\\n\\s*return;\\n\\s*\\}",
+            paymentViewSource);
+    }
+
+    [Fact]
     public void MobileImmediatePaymentConflict_QueuesAttachmentsForRetryBeforeReturning()
     {
         var source = File.ReadAllText(Path.Combine(

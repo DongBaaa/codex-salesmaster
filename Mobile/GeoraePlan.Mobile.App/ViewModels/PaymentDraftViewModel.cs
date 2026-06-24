@@ -459,6 +459,14 @@ public sealed class PaymentDraftViewModel : ObservableObject
                 return;
             }
 
+            if (state.PendingPaymentCount == 0 &&
+                state.ConsecutiveFailureCount > 0 &&
+                !string.IsNullOrWhiteSpace(state.LastError))
+            {
+                StatusMessage = $"{PaymentActionText}이 저장되지 않았습니다. {state.LastError}";
+                return;
+            }
+
             if (state.PendingPaymentCount == 0)
             {
                 _refreshCoordinator.MarkInvoicesChanged();
