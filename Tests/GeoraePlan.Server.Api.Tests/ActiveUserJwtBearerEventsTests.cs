@@ -119,6 +119,97 @@ public sealed class ActiveUserJwtBearerEventsTests
     }
 
     [Fact]
+    public async Task IsCurrentTokenAsync_RejectsStaleRoleScopeAndPermissionClaims()
+    {
+        var tempDb = Path.Combine(Path.GetTempPath(), $"georaeplan-current-token-{Guid.NewGuid():N}.db");
+
+        try
+        {
+            var userId = Guid.NewGuid();
+            await using (var dbContext = CreateDbContext(tempDb))
+            {
+                await dbContext.Database.EnsureCreatedAsync();
+                dbContext.Users.Add(new UserAccount
+                {
+                    Id = userId,
+                    Username = "scope-token-user",
+                    PasswordHash = "unused",
+                    Role = "User",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+                    IsActive = true,
+                    Permissions =
+                    {
+                        new UserPermission { Permission = PermissionNames.CustomerEdit },
+                        new UserPermission { Permission = PermissionNames.InvoiceEdit }
+                    }
+                });
+                await dbContext.SaveChangesAsync();
+            }
+
+            var validator = new ActiveUserSessionValidator(CreateResolver(tempDb));
+            var currentToken = CreateSessionPrincipal(
+                userId,
+                role: "User",
+                tenantCode: TenantScopeCatalog.UsenetGroup,
+                officeCode: OfficeCodeCatalog.Yeonsu,
+                scopeType: TenantScopeCatalog.ScopeOfficeOnly,
+                PermissionNames.CustomerEdit,
+                PermissionNames.InvoiceEdit);
+
+            Assert.True(await validator.IsCurrentTokenAsync(userId, currentToken, CancellationToken.None));
+
+            var staleRoleToken = CreateSessionPrincipal(
+                userId,
+                role: "Admin",
+                tenantCode: TenantScopeCatalog.UsenetGroup,
+                officeCode: OfficeCodeCatalog.Yeonsu,
+                scopeType: TenantScopeCatalog.ScopeOfficeOnly,
+                PermissionNames.CustomerEdit,
+                PermissionNames.InvoiceEdit);
+            Assert.False(await validator.IsCurrentTokenAsync(userId, staleRoleToken, CancellationToken.None));
+
+            var staleOfficeToken = CreateSessionPrincipal(
+                userId,
+                role: "User",
+                tenantCode: TenantScopeCatalog.UsenetGroup,
+                officeCode: OfficeCodeCatalog.Usenet,
+                scopeType: TenantScopeCatalog.ScopeOfficeOnly,
+                PermissionNames.CustomerEdit,
+                PermissionNames.InvoiceEdit);
+            Assert.False(await validator.IsCurrentTokenAsync(userId, staleOfficeToken, CancellationToken.None));
+
+            var staleScopeToken = CreateSessionPrincipal(
+                userId,
+                role: "User",
+                tenantCode: TenantScopeCatalog.UsenetGroup,
+                officeCode: OfficeCodeCatalog.Yeonsu,
+                scopeType: TenantScopeCatalog.ScopeTenantAll,
+                PermissionNames.CustomerEdit,
+                PermissionNames.InvoiceEdit);
+            Assert.False(await validator.IsCurrentTokenAsync(userId, staleScopeToken, CancellationToken.None));
+
+            var stalePermissionToken = CreateSessionPrincipal(
+                userId,
+                role: "User",
+                tenantCode: TenantScopeCatalog.UsenetGroup,
+                officeCode: OfficeCodeCatalog.Yeonsu,
+                scopeType: TenantScopeCatalog.ScopeOfficeOnly,
+                PermissionNames.CustomerEdit,
+                PermissionNames.InvoiceEdit,
+                PermissionNames.DataBackupRestore);
+            Assert.False(await validator.IsCurrentTokenAsync(userId, stalePermissionToken, CancellationToken.None));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(tempDb))
+                File.Delete(tempDb);
+        }
+    }
+
+    [Fact]
     public async Task TokenValidated_Fails_WhenUserIdClaimIsMissingOrInactive()
     {
         var inactiveValidator = new StubActiveUserSessionValidator(false);
@@ -218,6 +309,28 @@ public sealed class ActiveUserJwtBearerEventsTests
         return new ClaimsPrincipal(new ClaimsIdentity(claims, "test"));
     }
 
+    private static ClaimsPrincipal CreateSessionPrincipal(
+        Guid userId,
+        string role,
+        string tenantCode,
+        string officeCode,
+        string scopeType,
+        params string[] permissions)
+    {
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.NameIdentifier, userId.ToString()),
+            new(ClaimTypes.Name, "scope-token-user"),
+            new(ClaimTypes.Role, role),
+            new("tenant", tenantCode),
+            new("office", officeCode),
+            new("scope", scopeType)
+        };
+        claims.AddRange(permissions.Select(permission => new Claim("perm", permission)));
+
+        return new ClaimsPrincipal(new ClaimsIdentity(claims, JwtBearerDefaults.AuthenticationScheme));
+    }
+
     private static AppDbContext CreateDbContext(string sqliteDbPath)
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
@@ -231,6 +344,15 @@ public sealed class ActiveUserJwtBearerEventsTests
         public Guid? LastUserId { get; private set; }
 
         public Task<bool> IsActiveUserAsync(Guid userId, CancellationToken cancellationToken)
+        {
+            LastUserId = userId;
+            return Task.FromResult(isActive);
+        }
+
+        public Task<bool> IsCurrentTokenAsync(
+            Guid userId,
+            ClaimsPrincipal principal,
+            CancellationToken cancellationToken)
         {
             LastUserId = userId;
             return Task.FromResult(isActive);
