@@ -198,6 +198,167 @@ public sealed class SyncItemWarehouseStockPullTests
     }
 
     [Fact]
+    public async Task SyncPullInventoryTransferRejection_RestoresSourceStockAndRecalculatesCurrentStock()
+    {
+        PrepareAppRoot("georaeplan-sync-transfer-reject-pull");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var now = DateTime.UtcNow;
+            var itemId = Guid.Parse("81800000-0000-0000-0000-000000000001");
+            var transferId = Guid.Parse("81800000-0000-0000-0000-000000000002");
+            var lineId = Guid.Parse("81800000-0000-0000-0000-000000000003");
+
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "재고이동 pull 반려 품목",
+                NameMatchKey = "재고이동pull반려품목",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                CurrentStock = 3m,
+                CreatedAtUtc = now.AddHours(-2),
+                UpdatedAtUtc = now.AddHours(-2),
+                Revision = 10,
+                IsDirty = false
+            });
+            db.ItemWarehouseStocks.Add(new LocalItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode = DomainConstants.WarehouseUsenetMain,
+                Quantity = 3m,
+                UpdatedAtUtc = now.AddHours(-1),
+                Revision = 10
+            });
+            db.InventoryTransfers.Add(new LocalInventoryTransfer
+            {
+                Id = transferId,
+                TransferNumber = "TR-PULL-REJECT",
+                TransferDate = new DateOnly(2026, 6, 27),
+                FromWarehouseCode = DomainConstants.WarehouseUsenetMain,
+                ToWarehouseCode = DomainConstants.WarehouseYeonsuMain,
+                TransferStatus = InventoryTransferStatusNormalizer.Pending,
+                CreatedByUsername = "usenet",
+                RequestedByUsername = "usenet",
+                RequestedAtUtc = now.AddHours(-1),
+                CreatedAtUtc = now.AddHours(-1),
+                UpdatedAtUtc = now.AddHours(-1),
+                Revision = 10,
+                IsDirty = false,
+                Lines =
+                {
+                    new LocalInventoryTransferLine
+                    {
+                        Id = lineId,
+                        TransferId = transferId,
+                        ItemId = itemId,
+                        ItemNameOriginal = "재고이동 pull 반려 품목",
+                        Unit = "EA",
+                        Quantity = 2m
+                    }
+                }
+            });
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            using var sync = CreateSyncService(db, session);
+            await InvokeApplyPullAsync(
+                sync,
+                new SyncPullResponse
+                {
+                    CurrentServerRevision = 60,
+                    ItemWarehouseStocks =
+                    {
+                        new ItemWarehouseStockDto
+                        {
+                            ItemId = itemId,
+                            WarehouseCode = DomainConstants.WarehouseUsenetMain,
+                            Quantity = 5m,
+                            UpdatedAtUtc = now.AddMinutes(10),
+                            Revision = 60
+                        }
+                    },
+                    InventoryTransfers =
+                    {
+                        new InventoryTransferDto
+                        {
+                            Id = transferId,
+                            TenantCode = TenantScopeCatalog.UsenetGroup,
+                            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                            TransferNumber = "TR-PULL-REJECT",
+                            TransferDate = new DateOnly(2026, 6, 27),
+                            FromWarehouseCode = DomainConstants.WarehouseUsenetMain,
+                            ToWarehouseCode = DomainConstants.WarehouseYeonsuMain,
+                            TransferStatus = InventoryTransferStatusNormalizer.Rejected,
+                            CreatedByUsername = "usenet",
+                            RequestedByUsername = "usenet",
+                            RequestedAtUtc = now.AddHours(-1),
+                            RejectedByUsername = "yeonsu",
+                            RejectedAtUtc = now.AddMinutes(9),
+                            RejectReason = "서버 검수 반려",
+                            LastStatusChangedByUsername = "yeonsu",
+                            LastStatusChangedAtUtc = now.AddMinutes(9),
+                            CreatedAtUtc = now.AddHours(-1),
+                            UpdatedAtUtc = now.AddMinutes(10),
+                            Revision = 60,
+                            Lines =
+                            {
+                                new InventoryTransferLineDto
+                                {
+                                    Id = lineId,
+                                    TransferId = transferId,
+                                    ItemId = itemId,
+                                    ItemNameOriginal = "재고이동 pull 반려 품목",
+                                    Unit = "EA",
+                                    Quantity = 2m
+                                }
+                            }
+                        }
+                    }
+                });
+
+            db.ChangeTracker.Clear();
+
+            var item = await db.Items.AsNoTracking().SingleAsync(current => current.Id == itemId);
+            Assert.Equal(5m, item.CurrentStock);
+            Assert.False(item.IsDirty);
+
+            var stock = await db.ItemWarehouseStocks
+                .AsNoTracking()
+                .SingleAsync(current => current.ItemId == itemId && current.WarehouseCode == DomainConstants.WarehouseUsenetMain);
+            Assert.Equal(5m, stock.Quantity);
+            Assert.Equal(60, stock.Revision);
+            Assert.False(await db.ItemWarehouseStocks
+                .AnyAsync(current => current.ItemId == itemId && current.WarehouseCode == DomainConstants.WarehouseYeonsuMain));
+
+            var transfer = await db.InventoryTransfers
+                .AsNoTracking()
+                .Include(current => current.Lines)
+                .SingleAsync(current => current.Id == transferId);
+            var line = Assert.Single(transfer.Lines);
+            Assert.Equal(InventoryTransferStatusNormalizer.Rejected, transfer.TransferStatus);
+            Assert.Equal("서버 검수 반려", transfer.RejectReason);
+            Assert.Equal("yeonsu", transfer.RejectedByUsername);
+            Assert.False(transfer.IsDirty);
+            Assert.Equal(60, transfer.Revision);
+            Assert.Equal(2m, line.Quantity);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SyncPullItemWarehouseStocks_RemovesServerMissingRowsAndPreservesDirtyItemRows()
     {
         PrepareAppRoot("georaeplan-sync-stock-pull-replace");
