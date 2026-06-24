@@ -3053,9 +3053,13 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	public async Task<OfficeMutationResult> SavePaymentAsync(LocalPayment payment, SessionState session, CancellationToken ct = default(CancellationToken))
 	{
 		var invoice = await _db.Invoices.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync((LocalInvoice current) => current.Id == payment.InvoiceId, ct);
-		if (invoice == null)
+		if (invoice == null || invoice.IsDeleted)
 		{
 			return OfficeMutationResult.Missing("전표를 찾을 수 없습니다.");
+		}
+		if (payment.Amount <= 0m)
+		{
+			return OfficeMutationResult.Denied("수금/지급 금액은 0보다 커야 합니다.");
 		}
 		if (!CanWriteOperationalScope(session, invoice.TenantCode, invoice.ResponsibleOfficeCode, invoice.OfficeCode))
 		{
@@ -3072,6 +3076,21 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		if (existingInvoice != null && !CanWriteOperationalScope(session, existingInvoice.TenantCode, existingInvoice.ResponsibleOfficeCode, existingInvoice.OfficeCode))
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 전표 수금/지급을 저장할 수 없습니다.");
+		}
+		var alreadySettledAmount = (await _db.Payments.IgnoreQueryFilters()
+				.AsNoTracking()
+				.Where(current =>
+					!current.IsDeleted &&
+					current.InvoiceId == payment.InvoiceId &&
+					current.Id != payment.Id)
+				.Select(current => current.Amount)
+				.ToListAsync(ct))
+			.Sum();
+		var outstandingAmount = Math.Max(0m, invoice.TotalAmount - alreadySettledAmount);
+		if (payment.Amount > outstandingAmount)
+		{
+			return OfficeMutationResult.Denied(
+				$"입력 금액이 현재 잔액보다 {payment.Amount - outstandingAmount:N0}원 많습니다. 최신 전표를 다시 조회한 뒤 금액을 확인하세요.");
 		}
 		var affectedInvoiceIds = new[] { existing?.InvoiceId, payment.InvoiceId }
 			.Where(id => id.HasValue && id.Value != Guid.Empty)

@@ -225,6 +225,113 @@ public sealed class TransactionSaveLinkConsistencyTests
         }
     }
 
+    [Fact]
+    public async Task SavePaymentAsync_RejectsAmountAboveInvoiceOutstanding()
+    {
+        PrepareAppRoot("georaeplan-payment-over-outstanding");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var invoiceId = Guid.NewGuid();
+            var existingPaymentId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(customerId, "Payment over outstanding customer"));
+            db.Invoices.Add(CreateInvoice(invoiceId, customerId));
+            db.Payments.Add(new LocalPayment
+            {
+                Id = existingPaymentId,
+                InvoiceId = invoiceId,
+                PaymentDate = new DateOnly(2026, 6, 22),
+                Amount = 800m,
+                Note = "existing partial payment",
+                IsDeleted = false
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreatePaymentEditorSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var overPaymentId = Guid.NewGuid();
+
+            var result = await local.SavePaymentAsync(new LocalPayment
+            {
+                Id = overPaymentId,
+                InvoiceId = invoiceId,
+                PaymentDate = new DateOnly(2026, 6, 23),
+                Amount = 300m,
+                Note = "over outstanding payment"
+            }, session);
+
+            Assert.False(result.Success);
+            Assert.Empty(await db.Payments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(current => current.Id == overPaymentId)
+                .ToListAsync());
+
+            var existingPayment = await db.Payments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == existingPaymentId);
+            Assert.Equal(800m, existingPayment.Amount);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SavePaymentAsync_RejectsDeletedInvoiceBeforeCreatingPayment()
+    {
+        PrepareAppRoot("georaeplan-payment-deleted-invoice");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var invoiceId = Guid.NewGuid();
+            var deletedInvoice = CreateInvoice(invoiceId, customerId);
+            deletedInvoice.IsDeleted = true;
+            deletedInvoice.IsLatestVersion = false;
+            db.Customers.Add(CreateCustomer(customerId, "Deleted invoice payment customer"));
+            db.Invoices.Add(deletedInvoice);
+            await db.SaveChangesAsync();
+
+            var session = CreatePaymentEditorSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var paymentId = Guid.NewGuid();
+
+            var result = await local.SavePaymentAsync(new LocalPayment
+            {
+                Id = paymentId,
+                InvoiceId = invoiceId,
+                PaymentDate = new DateOnly(2026, 6, 23),
+                Amount = 100m,
+                Note = "deleted invoice payment"
+            }, session);
+
+            Assert.False(result.Success);
+            Assert.Empty(await db.Payments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(current => current.Id == paymentId)
+                .ToListAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static LocalCustomer CreateCustomer(Guid id, string name)
         => new()
         {
