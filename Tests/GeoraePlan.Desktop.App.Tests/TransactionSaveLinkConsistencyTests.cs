@@ -172,6 +172,59 @@ public sealed class TransactionSaveLinkConsistencyTests
         }
     }
 
+    [Fact]
+    public async Task SaveTransactionAsync_RejectsRentalReceiptAboveLinkedInvoiceOutstanding()
+    {
+        PrepareAppRoot("georaeplan-transaction-rental-over-outstanding");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var profileId = Guid.NewGuid();
+            var runId = Guid.NewGuid();
+            var invoiceId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(customerId, "Rental over outstanding customer"));
+            db.RentalBillingProfiles.Add(CreateProfile(profileId, customerId, "Rental over outstanding profile"));
+            db.Invoices.Add(CreateInvoice(invoiceId, customerId, profileId, runId));
+            await db.SaveChangesAsync();
+
+            var session = CreatePaymentEditorSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var transactionId = Guid.NewGuid();
+
+            var result = await local.SaveTransactionAsync(new LocalTransaction
+            {
+                Id = transactionId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 23),
+                TransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt,
+                LinkedInvoiceId = invoiceId,
+                LinkedRentalBillingProfileId = profileId,
+                LinkedRentalBillingRunId = runId,
+                BankReceipt = 1500m,
+                ReceiptTotal = 1500m,
+                SettlementAmount = 1500m,
+                Note = "rental over outstanding"
+            }, session);
+
+            Assert.False(result.Success);
+            Assert.Empty(await db.Transactions.IgnoreQueryFilters().AsNoTracking().Where(current => current.Id == transactionId).ToListAsync());
+            Assert.Empty(await db.Payments.IgnoreQueryFilters().AsNoTracking().Where(current => current.Id == transactionId).ToListAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static LocalCustomer CreateCustomer(Guid id, string name)
         => new()
         {

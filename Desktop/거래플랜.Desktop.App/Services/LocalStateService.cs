@@ -5007,6 +5007,11 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 								{
 									return OfficeMutationResult.Denied("렌탈 수금 금액을 입력하세요.");
 								}
+								if (linkedInvoice != null && transaction.SettlementAmount > linkedInvoiceRemainingAmount)
+								{
+									return OfficeMutationResult.Denied(
+										$"입력 금액이 현재 청구 잔액보다 {transaction.SettlementAmount - linkedInvoiceRemainingAmount:N0}원 많습니다. 최신 전표/청구 내역을 다시 조회한 뒤 금액을 확인하세요.");
+								}
 							}
 							else
 							{

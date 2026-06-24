@@ -1649,6 +1649,79 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     [Fact]
+    public async Task RegisterBillingSettlement_RejectsAmountAboveBillingRunOutstandingBeforeCreatingEvidence()
+    {
+        PrepareAppRoot("georaeplan-rental-register-settlement-over-outstanding");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Over outstanding settlement customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "\uCCAD\uAD6C\uB300\uC0C1"));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+            var start = await rental.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+            Assert.True(start.Success, start.Message);
+
+            var invoice = await db.Invoices.AsNoTracking().SingleAsync(current => current.Id == start.RelatedEntityId);
+            var runId = Assert.IsType<Guid>(invoice.LinkedRentalBillingRunId);
+            var overAmount = invoice.TotalAmount + 1_000m;
+
+            var register = await rental.RegisterBillingSettlementAsync(
+                profileId,
+                new DateOnly(2026, 5, 27),
+                overAmount,
+                "over outstanding settlement",
+                session,
+                billingRunId: runId);
+
+            Assert.False(register.Success);
+            Assert.Contains("현재 청구 잔액", register.Message);
+
+            Assert.Empty(await db.Transactions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(current =>
+                    !current.IsDeleted &&
+                    current.LinkedRentalBillingProfileId == profileId &&
+                    current.LinkedRentalBillingRunId == runId)
+                .ToListAsync());
+            Assert.Empty(await db.Payments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(current => !current.IsDeleted && current.InvoiceId == invoice.Id)
+                .ToListAsync());
+
+            var unchangedProfile = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == profileId);
+            Assert.Equal(0m, unchangedProfile.SettledAmount);
+            Assert.Equal(invoice.TotalAmount, unchangedProfile.OutstandingAmount);
+            var unchangedRun = DeserializeRuns(unchangedProfile).Single(current => current.RunId == runId);
+            Assert.Equal(0m, unchangedRun.SettledAmount);
+            Assert.Equal(invoice.TotalAmount, unchangedRun.BilledAmount);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task PaymentViewModel_RentalBillingSettlementWindow_SaveCreatesTransactionPaymentAndRunSettlement()
     {
         PrepareAppRoot("georaeplan-rental-payment-window-save-settlement");

@@ -5228,6 +5228,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return LocalMutationResult.Denied(
                 $"이미 등록된 입금액 {existingSettledAmount:N0}원보다 낮게 수금액을 조정할 수 없습니다. 청구/입금 내역 삭제 후 다시 등록하세요.");
 
+        var currentOutstandingAmount = Math.Max(0m, billedAmount - existingSettledAmount);
+        var requestedDeltaAmount = amount - existingSettledAmount;
+        if (requestedDeltaAmount > currentOutstandingAmount)
+            return LocalMutationResult.Denied(
+                $"입력 수금액이 현재 청구 잔액보다 {requestedDeltaAmount - currentOutstandingAmount:N0}원 많습니다. 최신 청구/입금 내역을 다시 조회한 뒤 금액을 확인하세요.");
+
         var settlementDelta = amount - existingSettledAmount;
         if (settlementDelta > 0m)
         {
