@@ -9236,6 +9236,89 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task SyncService_FlushPendingChangesAsync_ReconcilesWarehouseStockSnapshotFromPull()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-stock-reconcile-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateOnlineAdminSession();
+            var itemId = Guid.Parse("82434444-4444-4444-4444-444444444444");
+            var localUpdatedAt = DateTime.UtcNow.AddMinutes(-10);
+            var serverUpdatedAt = DateTime.UtcNow;
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Warehouse stock reconcile item",
+                NameMatchKey = "WAREHOUSESTOCKRECONCILEITEM",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                CurrentStock = 2m,
+                Revision = 7,
+                UpdatedAtUtc = localUpdatedAt,
+                IsDirty = false
+            });
+            db.ItemWarehouseStocks.Add(new LocalItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 2m,
+                Revision = 7,
+                UpdatedAtUtc = localUpdatedAt
+            });
+            await db.SaveChangesAsync();
+
+            var dispatcher = new SyncRequestDispatcher();
+            var localState = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
+            var rental = new RentalStateService(db);
+            var handler = new WarehouseStockPushThenPullHandler(itemId, serverQuantity: 5m, serverRevision: 12, serverUpdatedAt);
+            var api = new ErpApiClient(new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") }, session);
+            var diagnostics = new SyncDiagnosticsService(session);
+            using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
+
+            var synced = await sync.FlushPendingChangesAsync();
+
+            var pendingSummary = await localState.GetPendingSyncSummaryAsync();
+            var pendingMessage = string.Join(
+                ", ",
+                pendingSummary.Buckets.Select(bucket => $"{bucket.ScopeDisplayName}/{bucket.EntityDisplayName}:{bucket.Count}"));
+            var lastError = await localState.GetSettingAsync("Sync.LastError");
+            Assert.True(
+                synced,
+                $"lastError={lastError}; pending={pendingMessage}; push={handler.PushCount}; pull={handler.PullCount}");
+            Assert.Equal(1, handler.PushCount);
+            Assert.Equal(1, handler.PullCount);
+            Assert.NotNull(handler.LastPushRequest);
+            var pushedStock = Assert.Single(handler.LastPushRequest!.ItemWarehouseStocks);
+            Assert.Equal(itemId, pushedStock.ItemId);
+            Assert.Equal(OfficeCodeCatalog.UsenetMainWarehouse, pushedStock.WarehouseCode);
+            Assert.Equal(2m, pushedStock.Quantity);
+            Assert.Equal(7, pushedStock.ExpectedRevision);
+
+            var storedStock = await db.ItemWarehouseStocks.AsNoTracking()
+                .SingleAsync(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse);
+            Assert.Equal(5m, storedStock.Quantity);
+            Assert.Equal(12, storedStock.Revision);
+            Assert.Equal(serverUpdatedAt, storedStock.UpdatedAtUtc);
+            Assert.Empty(await db.SyncOutboxEntries.AsNoTracking().ToListAsync());
+            Assert.Equal("20", await localState.GetSettingAsync("LastSyncRevision"));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public void SyncService_IsPushRequestEmpty_TreatsWarehouseStockSnapshotsAsPayload()
     {
         var request = new SyncPushRequest();
@@ -11658,6 +11741,91 @@ public sealed class LocalStateServicePartialsTests
                 {
                     AcceptedCount = LastPushRequest?.ItemWarehouseStocks.Count ?? 0,
                     CurrentServerRevision = 1
+                });
+
+                return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent(json, Encoding.UTF8, "application/json")
+                };
+            }
+
+            return new HttpResponseMessage(System.Net.HttpStatusCode.NotFound)
+            {
+                Content = new StringContent("{}", Encoding.UTF8, "application/json")
+            };
+        }
+    }
+
+    private sealed class WarehouseStockPushThenPullHandler : HttpMessageHandler
+    {
+        private readonly Guid _itemId;
+        private readonly decimal _serverQuantity;
+        private readonly long _serverRevision;
+        private readonly DateTime _serverUpdatedAt;
+
+        public WarehouseStockPushThenPullHandler(Guid itemId, decimal serverQuantity, long serverRevision, DateTime serverUpdatedAt)
+        {
+            _itemId = itemId;
+            _serverQuantity = serverQuantity;
+            _serverRevision = serverRevision;
+            _serverUpdatedAt = serverUpdatedAt;
+        }
+
+        public int PushCount { get; private set; }
+        public int PullCount { get; private set; }
+        public SyncPushRequest? LastPushRequest { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri?.AbsolutePath.Equals("/sync/push", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                PushCount++;
+                LastPushRequest = await request.Content!.ReadFromJsonAsync<SyncPushRequest>(cancellationToken: cancellationToken);
+                var json = JsonSerializer.Serialize(new SyncPushResult
+                {
+                    AcceptedCount = LastPushRequest?.ItemWarehouseStocks.Count ?? 0,
+                    CurrentServerRevision = 20
+                });
+
+                return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent(json, Encoding.UTF8, "application/json")
+                };
+            }
+
+            if (request.RequestUri?.AbsolutePath.Equals("/sync/pull", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                PullCount++;
+                var json = JsonSerializer.Serialize(new SyncPullResponse
+                {
+                    CurrentServerRevision = 20,
+                    Items =
+                    [
+                        new ItemDto
+                        {
+                            Id = _itemId,
+                            TenantCode = TenantScopeCatalog.UsenetGroup,
+                            OfficeCode = OfficeCodeCatalog.Usenet,
+                            NameOriginal = "Warehouse stock reconcile item",
+                            NameMatchKey = "WAREHOUSESTOCKRECONCILEITEM",
+                            TrackingType = ItemTrackingTypes.Stock,
+                            Unit = "EA",
+                            CurrentStock = _serverQuantity,
+                            Revision = _serverRevision,
+                            UpdatedAtUtc = _serverUpdatedAt
+                        }
+                    ],
+                    ItemWarehouseStocks =
+                    [
+                        new ItemWarehouseStockDto
+                        {
+                            ItemId = _itemId,
+                            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                            Quantity = _serverQuantity,
+                            Revision = _serverRevision,
+                            UpdatedAtUtc = _serverUpdatedAt
+                        }
+                    ]
                 });
 
                 return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
