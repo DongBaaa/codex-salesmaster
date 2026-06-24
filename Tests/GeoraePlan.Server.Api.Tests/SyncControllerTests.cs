@@ -13178,6 +13178,180 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsPriceGradeOptionDelete_WhenReferencedByCustomer()
+    {
+        var optionId = Guid.NewGuid();
+        _dbContext.PriceGradeOptions.Add(new PriceGradeOption
+        {
+            Id = optionId,
+            Name = "VIP",
+            PriceSource = "Sales",
+            SortOrder = 10,
+            IsActive = true,
+            IsDeleted = false,
+            UpdatedAtUtc = new DateTime(2026, 6, 24, 0, 2, 0, DateTimeKind.Utc)
+        });
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-PRICE-GRADE-REFERENCE-CUSTOMER",
+            NameMatchKey = "SYNCPRICEGRADEREFERENCECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            PriceGrade = "VIP"
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var stored = await _dbContext.PriceGradeOptions.IgnoreQueryFilters().AsNoTracking().SingleAsync(option => option.Id == optionId);
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-price-grade-delete-referenced",
+            PriceGradeOptions =
+            [
+                new PriceGradeOptionDto
+                {
+                    Id = optionId,
+                    Name = " VIP ",
+                    PriceSource = "Sales",
+                    SortOrder = 10,
+                    IsActive = false,
+                    IsDeleted = true,
+                    ExpectedRevision = stored.Revision,
+                    UpdatedAtUtc = stored.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict => conflict.EntityName == nameof(PriceGradeOption));
+        Assert.False(await _dbContext.PriceGradeOptions.IgnoreQueryFilters()
+            .Where(option => option.Id == optionId)
+            .Select(option => option.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_RejectsTradeTypeOptionDelete_WhenCanonicalDefault()
+    {
+        var optionId = Guid.NewGuid();
+        _dbContext.TradeTypeOptions.Add(new TradeTypeOption
+        {
+            Id = optionId,
+            Name = CustomerClassificationNormalizer.Sales,
+            AllowsSales = true,
+            AllowsPurchase = false,
+            SortOrder = 10,
+            IsActive = true,
+            IsDeleted = false,
+            UpdatedAtUtc = new DateTime(2026, 6, 24, 0, 3, 0, DateTimeKind.Utc)
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var stored = await _dbContext.TradeTypeOptions.IgnoreQueryFilters().AsNoTracking().SingleAsync(option => option.Id == optionId);
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-trade-type-delete-canonical",
+            TradeTypeOptions =
+            [
+                new TradeTypeOptionDto
+                {
+                    Id = optionId,
+                    Name = CustomerClassificationNormalizer.Sales,
+                    AllowsSales = true,
+                    AllowsPurchase = false,
+                    SortOrder = 10,
+                    IsActive = false,
+                    IsDeleted = true,
+                    ExpectedRevision = stored.Revision,
+                    UpdatedAtUtc = stored.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict => conflict.EntityName == nameof(TradeTypeOption));
+        Assert.False(await _dbContext.TradeTypeOptions.IgnoreQueryFilters()
+            .Where(option => option.Id == optionId)
+            .Select(option => option.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_RejectsItemCategoryOptionDelete_WhenReferencedByItemOrRentalAsset()
+    {
+        var optionId = Guid.NewGuid();
+        _dbContext.ItemCategoryOptions.Add(new ItemCategoryOption
+        {
+            Id = optionId,
+            Name = "복합기",
+            SortOrder = 10,
+            IsActive = true,
+            IsDeleted = false,
+            UpdatedAtUtc = new DateTime(2026, 6, 24, 0, 4, 0, DateTimeKind.Utc)
+        });
+        _dbContext.Items.Add(new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "SYNC-ITEM-CATEGORY-REFERENCE-ITEM",
+            NameMatchKey = "SYNCITEMCATEGORYREFERENCEITEM",
+            CategoryName = " 복합기 ",
+            Unit = "개",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock
+        });
+        _dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "SYNC-ITEM-CATEGORY-REFERENCE-ASSET",
+            ItemCategoryName = "복합기",
+            ManagementId = "SYNC-ITEM-CATEGORY-REFERENCE-ASSET"
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var stored = await _dbContext.ItemCategoryOptions.IgnoreQueryFilters().AsNoTracking().SingleAsync(option => option.Id == optionId);
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-item-category-delete-referenced",
+            ItemCategoryOptions =
+            [
+                new ItemCategoryOptionDto
+                {
+                    Id = optionId,
+                    Name = " 복합기 ",
+                    SortOrder = 10,
+                    IsActive = false,
+                    IsDeleted = true,
+                    ExpectedRevision = stored.Revision,
+                    UpdatedAtUtc = stored.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict => conflict.EntityName == nameof(ItemCategoryOption));
+        Assert.False(await _dbContext.ItemCategoryOptions.IgnoreQueryFilters()
+            .Where(option => option.Id == optionId)
+            .Select(option => option.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task Push_RejectsSelectionOptionDeleteWhenOnlyNameMatchesDifferentActiveId()
     {
         var existingId = Guid.NewGuid();

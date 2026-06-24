@@ -1188,6 +1188,20 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
+            if (dto.IsDeleted && entity is not null && !entity.IsDeleted)
+            {
+                var referenceBlockMessage = await SelectionOptionDeletionReferenceGuard.BuildBlockMessageAsync(
+                    _dbContext,
+                    entityName,
+                    entityNameSelector(entity),
+                    cancellationToken);
+                if (referenceBlockMessage is not null)
+                {
+                    AddClientConflict(dto, entityName, referenceBlockMessage, result);
+                    continue;
+                }
+            }
+
             if (!dto.IsDeleted && duplicateByName is not null)
             {
                 var duplicateIsActive = !duplicateByName.IsDeleted && entityActiveSelector(duplicateByName);
