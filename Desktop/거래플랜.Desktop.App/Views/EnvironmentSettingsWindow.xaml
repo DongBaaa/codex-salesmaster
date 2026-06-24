@@ -934,7 +934,7 @@
                         <DockPanel>
                             <Border DockPanel.Dock="Top" Background="#102039" Padding="12" CornerRadius="6,6,0,0">
                                 <StackPanel Orientation="Horizontal">
-                                    <Button Content="신규 사용자" Background="#1565C0" Margin="0,0,6,0" Command="{Binding NewUserCommand}"/>
+                                    <Button Content="신규 사용자" Background="#1565C0" Margin="0,0,6,0" Command="{Binding NewUserCommand}" IsEnabled="{Binding CanManageUsers}"/>
                                     <Button Content="저장" Background="#1B5E20" Margin="0,0,6,0" Command="{Binding SaveUserCommand}" IsEnabled="{Binding CanManageUsers}"/>
                                     <Button Content="삭제" Background="#C62828" Margin="0,0,6,0" Command="{Binding DeleteUserCommand}" IsEnabled="{Binding CanManageUsers}"/>
                                     <Button Content="새로고침" Background="#455A64" Command="{Binding ReloadUsersCommand}" IsEnabled="{Binding CanManageUsers}"/>

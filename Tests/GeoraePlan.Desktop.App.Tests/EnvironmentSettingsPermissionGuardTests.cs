@@ -32,6 +32,35 @@ public sealed class EnvironmentSettingsPermissionGuardTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void EnvironmentSettings_UserManagementNewCommand_IsGuardedLikeSaveDeleteReload()
+    {
+        var root = FindRepositoryRoot();
+        var desktopAppDir = Directory.GetDirectories(Path.Combine(root, "Desktop"), "*.Desktop.App").Single();
+        var viewModelSource = File.ReadAllText(Path.Combine(
+            desktopAppDir,
+            "ViewModels",
+            "EnvironmentSettingsViewModel.cs"));
+        var windowSource = File.ReadAllText(Path.Combine(
+            desktopAppDir,
+            "Views",
+            "EnvironmentSettingsWindow.xaml"));
+        var normalizedViewModelSource = viewModelSource.Replace("\r\n", "\n");
+
+        Assert.Contains(
+            "Command=\"{Binding NewUserCommand}\" IsEnabled=\"{Binding CanManageUsers}\"",
+            windowSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "private void NewUser()\n    {\n        if (!CanManageUsers)",
+            normalizedViewModelSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "사용자 관리는 관리자 권한이 있는 계정만 사용할 수 있습니다.",
+            viewModelSource,
+            StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);

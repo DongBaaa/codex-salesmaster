@@ -545,6 +545,14 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     [RelayCommand]
     private void NewUser()
     {
+        if (!CanManageUsers)
+        {
+            StatusMessage = _session.IsOfflineMode
+                ? "오프라인 모드에서는 사용자 관리를 사용할 수 없습니다."
+                : "사용자 관리는 관리자 권한이 있는 계정만 사용할 수 있습니다.";
+            return;
+        }
+
         SelectedUser = null;
         EditingUserId = Guid.Empty;
         EditingUsername = string.Empty;
