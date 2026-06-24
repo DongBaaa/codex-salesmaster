@@ -2203,6 +2203,68 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_DeletesSavedContractFile_WhenTransactionRollsBackAfterStorageWrite()
+    {
+        var customerId = Guid.NewGuid();
+        var contractId = Guid.NewGuid();
+        var customer = new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-CONTRACT-ROLLBACK-FILE-CUSTOMER",
+            NameMatchKey = "SYNCCONTRACTROLLBACKFILECUSTOMER",
+            TradeType = "매출"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        using var cancellation = new CancellationTokenSource();
+        var fileStorage = new CancellingAfterSaveCentralFileStorage(cancellation);
+        var controller = CreateController(_dbContext, new TestCurrentUserContext
+        {
+            Username = "admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        }, fileStorage);
+        var content = new byte[] { 0x25, 0x50, 0x44, 0x46, 0x2D, 0x31 };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-contract-storage-rollback-cleanup",
+            CustomerContracts =
+            [
+                new CustomerContractDto
+                {
+                    Id = contractId,
+                    CustomerId = customerId,
+                    ContractType = "거래계약서",
+                    FileName = "rollback-contract.pdf",
+                    MimeType = "application/pdf",
+                    FileSize = content.LongLength,
+                    FileHash = ComputeTestSha256Hex(content),
+                    Description = "file must be deleted when transaction rolls back",
+                    MutationId = $"device-contract-storage-rollback-cleanup:CustomerContract:{contractId:N}:1",
+                    MutationCreatedAtUtc = new DateTime(2026, 6, 24, 12, 0, 0, DateTimeKind.Utc),
+                    UploadedAtUtc = new DateTime(2026, 6, 24, 12, 1, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = new DateTime(2026, 6, 24, 12, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 24, 12, 1, 0, DateTimeKind.Utc),
+                    FileContent = content
+                }
+            ]
+        }, cancellation.Token));
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.False(await _dbContext.CustomerContracts.IgnoreQueryFilters().AnyAsync(current => current.Id == contractId));
+        var saveCall = Assert.Single(fileStorage.SaveCalls);
+        Assert.NotEqual(contractId, saveCall.FileId);
+        Assert.Contains(saveCall.StoredPath, fileStorage.DeletedPaths);
+    }
+
+    [Fact]
     public async Task ConflictLogsController_HidesResolvedByDefault_AndResolveMarksStatus()
     {
         var openConflict = new ConflictLog
@@ -11754,6 +11816,82 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_DeletesSavedTransactionAttachmentFile_WhenTransactionRollsBackAfterStorageWrite()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "TRANSACTION-ATTACHMENT-ROLLBACK-FILE-CUSTOMER",
+            NameMatchKey = "TRANSACTIONATTACHMENTROLLBACKFILECUSTOMER",
+            TradeType = "Sales"
+        };
+        var transaction = new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 24),
+            TransactionKind = "일반수금",
+            CashReceipt = 1000m,
+            ReceiptTotal = 1000m,
+            SettlementAmount = 1000m,
+            CreatedAtUtc = new DateTime(2026, 6, 24, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 24, 0, 0, 0, DateTimeKind.Utc)
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.Transactions.Add(transaction);
+        await _dbContext.SaveChangesAsync();
+
+        using var cancellation = new CancellationTokenSource();
+        var fileStorage = new CancellingAfterSaveCentralFileStorage(cancellation);
+        var controller = CreateController(_dbContext, new TestCurrentUserContext
+        {
+            Username = "admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        }, fileStorage);
+        var attachmentId = Guid.NewGuid();
+        var fileBytes = TestPdfBytes();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-transaction-attachment-storage-rollback-cleanup",
+            TransactionAttachments =
+            [
+                new TransactionAttachmentDto
+                {
+                    Id = attachmentId,
+                    TransactionId = transaction.Id,
+                    AttachmentType = "기타",
+                    FileName = "rollback-receipt.pdf",
+                    MimeType = "application/pdf",
+                    FileSize = fileBytes.LongLength,
+                    FileHash = ComputeTestSha256Hex(fileBytes),
+                    Description = "file must be deleted when transaction rolls back",
+                    UploadedByUsername = "admin",
+                    UploadedAtUtc = new DateTime(2026, 6, 24, 0, 1, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = new DateTime(2026, 6, 24, 0, 1, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 6, 24, 0, 2, 0, DateTimeKind.Utc),
+                    FileContent = fileBytes
+                }
+            ]
+        }, cancellation.Token));
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.False(await _dbContext.TransactionAttachments.IgnoreQueryFilters().AnyAsync(current => current.Id == attachmentId));
+        var saveCall = Assert.Single(fileStorage.SaveCalls);
+        Assert.NotEqual(attachmentId, saveCall.FileId);
+        Assert.Contains(saveCall.StoredPath, fileStorage.DeletedPaths);
+    }
+
+    [Fact]
     public async Task Push_DoesNotPersistTransactionAttachmentFile_WhenAttachmentUpdateIsRejected()
     {
         var customer = new Customer
@@ -13070,12 +13208,14 @@ public sealed class SyncControllerTests : IDisposable
     private sealed class RecordingCentralFileStorage : ICentralFileStorage
     {
         public string RootPath => Path.GetTempPath();
-        public List<(string Area, string OwnerId, Guid FileId, string FileName, byte[] Content)> SaveCalls { get; } = [];
+        public List<(string Area, string OwnerId, Guid FileId, string FileName, byte[] Content, string StoredPath)> SaveCalls { get; } = [];
+        public List<string> DeletedPaths { get; } = [];
 
         public Task<string> SaveBytesAsync(string area, string ownerId, Guid fileId, string fileName, byte[] content, CancellationToken cancellationToken = default)
         {
-            SaveCalls.Add((area, ownerId, fileId, fileName, content.ToArray()));
-            return Task.FromResult(Path.Combine(RootPath, area, ownerId, fileId.ToString("N"), fileName));
+            var storedPath = Path.Combine(RootPath, area, ownerId, fileId.ToString("N"), fileName);
+            SaveCalls.Add((area, ownerId, fileId, fileName, content.ToArray(), storedPath));
+            return Task.FromResult(storedPath);
         }
 
         public byte[] ReadBytes(string? storedPath, byte[]? fallback = null)
@@ -13083,6 +13223,37 @@ public sealed class SyncControllerTests : IDisposable
 
         public void DeleteIfExists(string? storedPath)
         {
+            if (!string.IsNullOrWhiteSpace(storedPath))
+                DeletedPaths.Add(storedPath);
+        }
+    }
+
+    private sealed class CancellingAfterSaveCentralFileStorage : ICentralFileStorage
+    {
+        private readonly CancellationTokenSource _cancellation;
+
+        public CancellingAfterSaveCentralFileStorage(CancellationTokenSource cancellation)
+            => _cancellation = cancellation;
+
+        public string RootPath => Path.GetTempPath();
+        public List<(string Area, string OwnerId, Guid FileId, string FileName, byte[] Content, string StoredPath)> SaveCalls { get; } = [];
+        public List<string> DeletedPaths { get; } = [];
+
+        public Task<string> SaveBytesAsync(string area, string ownerId, Guid fileId, string fileName, byte[] content, CancellationToken cancellationToken = default)
+        {
+            var storedPath = Path.Combine(RootPath, area, ownerId, fileId.ToString("N"), fileName);
+            SaveCalls.Add((area, ownerId, fileId, fileName, content.ToArray(), storedPath));
+            _cancellation.Cancel();
+            return Task.FromResult(storedPath);
+        }
+
+        public byte[] ReadBytes(string? storedPath, byte[]? fallback = null)
+            => fallback ?? [];
+
+        public void DeleteIfExists(string? storedPath)
+        {
+            if (!string.IsNullOrWhiteSpace(storedPath))
+                DeletedPaths.Add(storedPath);
         }
     }
 
