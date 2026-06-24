@@ -217,6 +217,8 @@ public sealed class CustomersController : ControllerBase
             return Forbid();
         if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Customer)) is { } conflict)
             return conflict;
+        if (dto.IsDeleted)
+            return SoftDeleteMutationGuard.RejectUpdate("거래처");
 
         PreserveCustomerTextWhenIncomingLooksLossy(dto, entity);
         NormalizeCustomerClassification(dto);

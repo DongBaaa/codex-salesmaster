@@ -237,6 +237,57 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task CustomersController_Update_RejectsSoftDeleteMutationViaPut()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "PUT-SOFT-DELETE-CUSTOMER",
+            NameMatchKey = "PUTSOFTDELETECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            InvoiceNumber = "PUT-CUSTOMER-DELETE-BYPASS",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 24)
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(invoice);
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Customers.IgnoreQueryFilters().AsNoTracking().SingleAsync(row => row.Id == customer.Id);
+        var dto = stored.ToDto();
+        dto.IsDeleted = true;
+        dto.ExpectedRevision = stored.Revision;
+        var controller = new CustomersController(dbContext, new OfficeScopeService(currentUser, dbContext), new StubCentralFileStorage());
+
+        var response = await controller.Update(stored.Id, dto, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(response.Result);
+        AssertSoftDeletePutRejected(badRequest);
+        Assert.False(await dbContext.Customers.IgnoreQueryFilters()
+            .Where(row => row.Id == customer.Id)
+            .Select(row => row.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.Invoices.IgnoreQueryFilters()
+            .Where(row => row.Id == invoice.Id)
+            .Select(row => row.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task ItemsController_Update_ReturnsConflict_WhenRevisionFallbackDoesNotMatch()
     {
         var currentUser = CreateAdminUser();
@@ -265,6 +316,49 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         var conflict = Assert.IsType<ConflictObjectResult>(response.Result);
         var payload = Assert.IsType<ExpectedRevisionConflictResponse>(conflict.Value);
         Assert.Equal(nameof(Item), payload.EntityName);
+    }
+
+    [Fact]
+    public async Task ItemsController_Update_RejectsSoftDeleteMutationViaPutAndKeepsWarehouseStocks()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "PUT-SOFT-DELETE-ITEM",
+            NameMatchKey = "PUTSOFTDELETEITEM",
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 7m
+        };
+        dbContext.Items.Add(item);
+        dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 7m,
+            Revision = 1
+        });
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Items.IgnoreQueryFilters().AsNoTracking().SingleAsync(row => row.Id == item.Id);
+        var dto = stored.ToDto();
+        dto.IsDeleted = true;
+        dto.ExpectedRevision = stored.Revision;
+        var controller = new ItemsController(dbContext, new OfficeScopeService(currentUser, dbContext));
+
+        var response = await controller.Update(stored.Id, dto, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(response.Result);
+        AssertSoftDeletePutRejected(badRequest);
+        Assert.False(await dbContext.Items.IgnoreQueryFilters()
+            .Where(row => row.Id == item.Id)
+            .Select(row => row.IsDeleted)
+            .SingleAsync());
+        Assert.True(await dbContext.ItemWarehouseStocks.AnyAsync(stock => stock.ItemId == item.Id));
     }
 
     [Fact]
@@ -685,6 +779,107 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         var conflict = Assert.IsType<ConflictObjectResult>(response.Result);
         var payload = Assert.IsType<ExpectedRevisionConflictResponse>(conflict.Value);
         Assert.Equal(nameof(Invoice), payload.EntityName);
+    }
+
+    [Fact]
+    public async Task InvoicesController_Update_RejectsSoftDeleteMutationViaPutAndKeepsLinkedRows()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "PUT-SOFT-DELETE-INVOICE-CUSTOMER",
+            NameMatchKey = "PUTSOFTDELETEINVOICECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var invoiceId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "PUT-INVOICE-DELETE-BYPASS",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 24),
+            TotalAmount = 100m,
+            SupplyAmount = 91m,
+            VatAmount = 9m
+        });
+        dbContext.InvoiceLines.Add(new InvoiceLine
+        {
+            Id = lineId,
+            InvoiceId = invoiceId,
+            ItemNameOriginal = "PUT soft delete line",
+            Unit = "EA",
+            Quantity = 1m,
+            UnitPrice = 100m,
+            LineAmount = 100m,
+            OrderIndex = 1
+        });
+        dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 6, 24),
+            Amount = 10m
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = transactionId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 24),
+            TransactionKind = "invoice-linked-receipt",
+            LinkedInvoiceId = invoiceId,
+            ReceiptTotal = 10m
+        });
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Include(x => x.Customer)
+            .Include(x => x.Lines)
+            .Include(x => x.Payments)
+            .FirstAsync(x => x.Id == invoiceId);
+        var dto = stored.ToDto();
+        dto.IsDeleted = true;
+        dto.ExpectedRevision = stored.Revision;
+        var controller = CreateInvoicesController(dbContext, currentUser);
+
+        var response = await controller.Update(stored.Id, dto, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(response.Result);
+        AssertSoftDeletePutRejected(badRequest);
+        Assert.False(await dbContext.Invoices.IgnoreQueryFilters()
+            .Where(row => row.Id == invoiceId)
+            .Select(row => row.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.InvoiceLines.IgnoreQueryFilters()
+            .Where(row => row.Id == lineId)
+            .Select(row => row.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.Payments.IgnoreQueryFilters()
+            .Where(row => row.Id == paymentId)
+            .Select(row => row.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.Transactions.IgnoreQueryFilters()
+            .Where(row => row.Id == transactionId)
+            .Select(row => row.IsDeleted)
+            .SingleAsync());
     }
 
     [Fact]
@@ -3377,6 +3572,115 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PaymentsController_Update_RejectsSoftDeleteMutationViaPutAndKeepsLinkedRows()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "PUT-SOFT-DELETE-PAYMENT-CUSTOMER",
+            NameMatchKey = "PUTSOFTDELETEPAYMENTCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var attachmentId = Guid.NewGuid();
+        var transactionAttachmentId = Guid.NewGuid();
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "PUT-PAYMENT-DELETE-BYPASS",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 24),
+            TotalAmount = 100m,
+            SupplyAmount = 91m,
+            VatAmount = 9m
+        });
+        dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 6, 24),
+            Amount = 40m,
+            Note = "before PUT delete bypass"
+        });
+        dbContext.PaymentAttachments.Add(new PaymentAttachment
+        {
+            Id = attachmentId,
+            PaymentId = paymentId,
+            AttachmentType = "receipt",
+            FileName = "receipt.pdf",
+            MimeType = "application/pdf",
+            FileHash = "hash",
+            FileSize = 1
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = paymentId,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 24),
+            TransactionKind = "linked-payment",
+            LinkedInvoiceId = invoiceId,
+            ReceiptTotal = 40m
+        });
+        dbContext.TransactionAttachments.Add(new TransactionAttachment
+        {
+            Id = transactionAttachmentId,
+            TransactionId = paymentId,
+            AttachmentType = "receipt",
+            FileName = "receipt.pdf",
+            MimeType = "application/pdf",
+            FileHash = "hash",
+            FileSize = 1
+        });
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Payments
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Include(payment => payment.Attachments)
+            .FirstAsync(payment => payment.Id == paymentId);
+        var dto = stored.ToDto();
+        dto.IsDeleted = true;
+        dto.ExpectedRevision = stored.Revision;
+        var controller = CreatePaymentsController(dbContext, currentUser);
+
+        var response = await controller.Update(paymentId, dto, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(response.Result);
+        AssertSoftDeletePutRejected(badRequest);
+        Assert.False(await dbContext.Payments.IgnoreQueryFilters()
+            .Where(row => row.Id == paymentId)
+            .Select(row => row.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.PaymentAttachments.IgnoreQueryFilters()
+            .Where(row => row.Id == attachmentId)
+            .Select(row => row.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.Transactions.IgnoreQueryFilters()
+            .Where(row => row.Id == paymentId)
+            .Select(row => row.IsDeleted)
+            .SingleAsync());
+        Assert.False(await dbContext.TransactionAttachments.IgnoreQueryFilters()
+            .Where(row => row.Id == transactionAttachmentId)
+            .Select(row => row.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task PaymentsController_Update_RentalBillingDirectPayment_RecalculatesSettlement()
     {
         var currentUser = CreateAdminUser();
@@ -5146,6 +5450,16 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         return Assert.IsType<TDto>(ok.Value);
     }
 
+    private static void AssertSoftDeletePutRejected(BadRequestObjectResult badRequest)
+    {
+        var payload = badRequest.Value;
+        Assert.NotNull(payload);
+        var payloadType = payload!.GetType();
+        Assert.Equal(SoftDeleteMutationGuard.ErrorCode, payloadType.GetProperty("error")?.GetValue(payload));
+        var message = Assert.IsType<string>(payloadType.GetProperty("message")?.GetValue(payload));
+        Assert.Contains("전용 삭제 API", message, StringComparison.Ordinal);
+    }
+
     private static SyncPushResult AssertSyncOk(ActionResult<SyncPushResult> response)
     {
         var ok = Assert.IsType<OkObjectResult>(response.Result);
@@ -5163,6 +5477,16 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             new InventoryLedgerService(dbContext),
             new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
             new RentalAssignmentHistoryService(dbContext),
+            new RentalSettlementRecalculationService(dbContext));
+
+    private static InvoicesController CreateInvoicesController(AppDbContext dbContext, TestCurrentUserContext currentUser)
+        => new(
+            dbContext,
+            currentUser,
+            new StubInvoiceNumberService(),
+            new OfficeScopeService(currentUser, dbContext),
+            new InventoryLedgerService(dbContext),
+            new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
             new RentalSettlementRecalculationService(dbContext));
 
     private static PaymentsController CreatePaymentsController(AppDbContext dbContext, TestCurrentUserContext currentUser)

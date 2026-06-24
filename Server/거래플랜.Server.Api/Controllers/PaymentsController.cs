@@ -327,6 +327,8 @@ public sealed class PaymentsController : ControllerBase
             return Forbid();
         if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Payment)) is { } conflict)
             return conflict;
+        if (dto.IsDeleted)
+            return SoftDeleteMutationGuard.RejectUpdate("수금/지급");
         if (await ValidateWritableInvoiceRentalBillingProfileAsync(entity.Invoice, allowMissingOrDeleted: true, cancellationToken) is { } existingRentalProfileScopeError)
             return existingRentalProfileScopeError;
 

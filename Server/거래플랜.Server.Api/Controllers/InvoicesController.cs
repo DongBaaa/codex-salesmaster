@@ -194,6 +194,8 @@ public sealed class InvoicesController : ControllerBase
             return Forbid();
         if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Invoice)) is { } conflict)
             return conflict;
+        if (dto.IsDeleted)
+            return SoftDeleteMutationGuard.RejectUpdate("전표");
         if (await ValidateExistingLinkedRentalBillingProfileScopeAsync(entity.LinkedRentalBillingProfileId, cancellationToken) is { } existingRentalProfileScopeError)
             return existingRentalProfileScopeError;
 

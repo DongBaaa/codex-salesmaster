@@ -215,6 +215,8 @@ public sealed class ItemsController : ControllerBase
             return Forbid();
         if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Item)) is { } conflict)
             return conflict;
+        if (dto.IsDeleted)
+            return SoftDeleteMutationGuard.RejectUpdate("품목");
 
         dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, entity.TenantCode, entity.OfficeCode);
         dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, entity.OfficeCode);
