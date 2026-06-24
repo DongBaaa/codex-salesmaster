@@ -80,16 +80,16 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
 
     public bool CanManageUsers => _session.HasAdministrativePrivileges && !_session.IsOfflineMode;
     public bool CanManageTenantConfiguration => _session.HasSystemConfigurationScope && !_session.IsOfflineMode;
-    public bool CanManageSelectionOptions => _session.HasAdministrativePrivileges;
-    public bool CanEditCompanyProfiles => _session.HasAdministrativePrivileges;
+    public bool CanManageSelectionOptions => _session.HasPermission(AppPermissionNames.SettingsEdit);
+    public bool CanEditCompanyProfiles => _session.HasPermission(AppPermissionNames.CompanyProfileEdit);
     public string UserManagementHint => CanManageUsers
         ? "사용자 ID, 담당지점, 권한, 비밀번호를 관리합니다."
         : _session.IsOfflineMode
             ? "오프라인 모드에서는 사용자 관리를 사용할 수 없습니다."
             : "관리자 계정으로 로그인해야 사용자 관리를 사용할 수 있습니다.";
     public string CompanyProfileManagementHint => CanEditCompanyProfiles
-        ? "관리자 계정은 회사설정을 추가/수정/삭제할 수 있습니다."
-        : "일반 사용자는 회사설정을 추가/수정/삭제할 수 없고, 기존 회사설정만 선택해 사용할 수 있습니다.";
+        ? "회사설정 편집 권한이 있는 계정은 회사설정을 추가/수정/삭제할 수 있습니다."
+        : "회사설정 편집 권한이 없는 계정은 회사설정을 추가/수정/삭제할 수 없고, 기존 회사설정만 선택해 사용할 수 있습니다.";
 
     public EnvironmentSettingsViewModel(
         LocalStateService local,
@@ -157,7 +157,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     {
         if (!CanEditCompanyProfiles)
         {
-            StatusMessage = "회사 정보는 관리자 권한이 있는 계정만 수정할 수 있습니다.";
+            StatusMessage = "회사 정보는 회사설정 편집 권한이 있는 계정만 수정할 수 있습니다.";
             return;
         }
 
@@ -206,7 +206,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     {
         if (!CanEditCompanyProfiles)
         {
-            StatusMessage = "일반 사용자는 회사설정을 새로 만들 수 없습니다.";
+            StatusMessage = "회사설정 편집 권한이 없는 계정은 회사설정을 새로 만들 수 없습니다.";
             return;
         }
 
@@ -243,7 +243,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
 
         if (!CanEditCompanyProfiles)
         {
-            StatusMessage = "회사 정보는 관리자 권한이 있는 계정만 수정할 수 있습니다.";
+            StatusMessage = "회사 정보는 회사설정 편집 권한이 있는 계정만 수정할 수 있습니다.";
             return;
         }
 
@@ -313,7 +313,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     {
         if (!CanEditCompanyProfiles)
         {
-            StatusMessage = "일반 사용자는 회사설정 이미지를 수정할 수 없습니다.";
+            StatusMessage = "회사설정 편집 권한이 없는 계정은 회사설정 이미지를 수정할 수 없습니다.";
             return;
         }
 
@@ -336,7 +336,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     {
         if (!CanEditCompanyProfiles)
         {
-            StatusMessage = "일반 사용자는 회사설정 이미지를 삭제할 수 없습니다.";
+            StatusMessage = "회사설정 편집 권한이 없는 계정은 회사설정 이미지를 삭제할 수 없습니다.";
             return;
         }
 
