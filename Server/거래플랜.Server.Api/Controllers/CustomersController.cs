@@ -83,12 +83,18 @@ public sealed class CustomersController : ControllerBase
             .Select(invoice => invoice.ToDto())
             .ToListAsync(cancellationToken);
 
+        var readableInvoiceIds = _officeScopeService.ApplySyncInvoiceScope(_dbContext.Invoices
+            .AsNoTracking()
+            .Where(invoice => invoice.CustomerId == id))
+            .Select(invoice => invoice.Id);
+
         var recentPayments = await _officeScopeService.ApplyPaymentScope(_dbContext.Payments
             .AsNoTracking()
             .Include(payment => payment.Attachments)
             .Include(payment => payment.Invoice)
             .ThenInclude(invoice => invoice!.Customer)
             .Where(payment => payment.Invoice != null && payment.Invoice.CustomerId == id))
+            .Where(payment => readableInvoiceIds.Contains(payment.InvoiceId))
             .OrderByDescending(payment => payment.PaymentDate)
             .ThenByDescending(payment => payment.UpdatedAtUtc)
             .Take(50)

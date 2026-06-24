@@ -1077,6 +1077,103 @@ public sealed class OfficeScopeAndPagingTests : IDisposable
     }
 
     [Fact]
+    public async Task CustomersController_GetDetail_DoesNotReturnRecentPayment_WhenParentInvoiceIsNotReadable()
+    {
+        var adminUser = CreateAdminUser();
+        await using (var seedDb = CreateDbContext(adminUser))
+        {
+            seedDb.DataSharingPolicies.Add(new DataSharingPolicy
+            {
+                Id = Guid.NewGuid(),
+                SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+                SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+                TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                ShareCustomers = true,
+                ShareItems = false,
+                ShareInvoices = false,
+                SharePayments = true,
+                ShareContracts = false,
+                ShareReports = false,
+                ShareRentals = false,
+                ShareDeliveries = false,
+                AllowTargetWrite = false,
+                IsActive = true
+            });
+
+            var customer = new Customer
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "DETAIL-HIDDEN-INVOICE-PAYMENT-CUSTOMER",
+                NameMatchKey = "DETAILHIDDENINVOICEPAYMENTCUSTOMER",
+                TradeType = "매출"
+            };
+            var invoice = new Invoice
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customer.Id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "DETAIL-HIDDEN-INVOICE",
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 24),
+                TotalAmount = 30000m
+            };
+            var payment = new Payment
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = invoice.Id,
+                PaymentDate = new DateOnly(2026, 6, 24),
+                Amount = 15000m,
+                Note = "hidden invoice payment in customer detail"
+            };
+            var attachment = new PaymentAttachment
+            {
+                Id = Guid.NewGuid(),
+                PaymentId = payment.Id,
+                AttachmentType = "PDF",
+                FileName = "hidden-detail-payment.pdf",
+                MimeType = "application/pdf",
+                FileSize = 12,
+                FileHash = "hash",
+                Description = "hidden detail evidence",
+                UploadedAtUtc = new DateTime(2026, 6, 24, 2, 0, 0, DateTimeKind.Utc)
+            };
+
+            seedDb.Customers.Add(customer);
+            seedDb.Invoices.Add(invoice);
+            seedDb.Payments.Add(payment);
+            seedDb.PaymentAttachments.Add(attachment);
+            await seedDb.SaveChangesAsync();
+
+            var scopedUser = new TestCurrentUserContext
+            {
+                Username = "yeonsu-detail-payment-only-reader",
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+            };
+            await using var scopedDb = CreateDbContext(scopedUser);
+            var controller = new CustomersController(
+                scopedDb,
+                new OfficeScopeService(scopedUser, scopedDb),
+                new StubCentralFileStorage());
+
+            var response = await controller.GetDetail(customer.Id, CancellationToken.None);
+            var ok = Assert.IsType<OkObjectResult>(response.Result);
+            var detail = Assert.IsType<CustomerDetailDto>(ok.Value);
+
+            Assert.Equal(customer.Id, detail.Customer.Id);
+            Assert.Empty(detail.RecentInvoices);
+            Assert.Empty(detail.RecentPayments);
+        }
+    }
+
+    [Fact]
     public async Task InvoicesController_Create_RejectsDeletedLineItemReference()
     {
         var currentUser = CreateAdminUser();
