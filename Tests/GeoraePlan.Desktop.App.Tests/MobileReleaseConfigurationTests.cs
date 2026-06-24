@@ -56,6 +56,28 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void AndroidReleaseBuildScript_RetriesKnownAotResponseFileFailureWithoutAot()
+    {
+        var source = File.ReadAllText(Path.Combine(
+                FindRepositoryRoot(),
+                "tools",
+                "mobile",
+                "Build-GeoraePlanAndroidApk.ps1"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains("Test-KnownAndroidAotResponseFileFailure", source, StringComparison.Ordinal);
+        Assert.Contains("IndexOf('Precompiling failed for', [System.StringComparison]::OrdinalIgnoreCase) -ge 0", source, StringComparison.Ordinal);
+        Assert.Contains("Precompiling failed for", source, StringComparison.Ordinal);
+        Assert.Contains("The specified response file can not be read", source, StringComparison.Ordinal);
+        Assert.Contains("android_profiled_aot_fallback=known_response_file_failure", source, StringComparison.Ordinal);
+        Assert.Contains("Get-AndroidPublishArgumentsWithoutAot", source, StringComparison.Ordinal);
+        Assert.Contains("'-p:RunAOTCompilation=false'", source, StringComparison.Ordinal);
+        Assert.Contains("'-p:AndroidEnableProfiledAot=false'", source, StringComparison.Ordinal);
+        Assert.Contains("Remove-Item -LiteralPath $publishDirectory -Recurse -Force -ErrorAction Stop", source, StringComparison.Ordinal);
+        Assert.Contains("$publishResult.ExitCode -ne 0 -and $shouldEnableAot", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MobileInvoiceRecentItemSelection_BlocksUnresolvedOrOutOfScopeStaleItems()
     {
         var source = File.ReadAllText(Path.Combine(

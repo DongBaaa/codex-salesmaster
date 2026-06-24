@@ -375,9 +375,73 @@ if ($VersionCode -gt 0) {
     $arguments += "-p:ApplicationVersion=$VersionCode"
 }
 
-& $resolvedDotNetPath @arguments
-if ($LASTEXITCODE -ne 0) {
-    throw "dotnet publish failed with exit code $LASTEXITCODE"
+function Invoke-DotnetPublishAndRelay {
+    param(
+        [Parameter(Mandatory = $true)][string]$DotNetPath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & $DotNetPath @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    foreach ($line in $output) {
+        Write-Host $line
+    }
+
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        OutputText = (($output | ForEach-Object { [string]$_ }) -join "`n")
+    }
+}
+
+function Test-KnownAndroidAotResponseFileFailure {
+    param([string]$OutputText)
+
+    if ([string]::IsNullOrWhiteSpace($OutputText)) {
+        return $false
+    }
+
+    return $OutputText.IndexOf('Precompiling failed for', [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+        $OutputText.IndexOf('The specified response file can not be read', [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+}
+
+function Get-AndroidPublishArgumentsWithoutAot {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    $retryArguments = $Arguments |
+        Where-Object {
+            $_ -ne '-p:RunAOTCompilation=true' -and
+            $_ -ne '-p:AndroidEnableProfiledAot=true'
+        }
+
+    $retryArguments += '-p:RunAOTCompilation=false'
+    $retryArguments += '-p:AndroidEnableProfiledAot=false'
+    return [string[]]$retryArguments
+}
+
+$publishResult = Invoke-DotnetPublishAndRelay -DotNetPath $resolvedDotNetPath -Arguments $arguments
+if ($publishResult.ExitCode -ne 0 -and $shouldEnableAot -and (Test-KnownAndroidAotResponseFileFailure -OutputText $publishResult.OutputText)) {
+    Write-Warning 'Android AOT publish failed with a known response-file path issue. Retrying once with AOT disabled so the signed release package can still be produced.'
+    Write-Host 'android_profiled_aot_fallback=known_response_file_failure'
+
+    if (Test-Path -LiteralPath $publishDirectory) {
+        Remove-Item -LiteralPath $publishDirectory -Recurse -Force -ErrorAction Stop
+    }
+    New-Item -ItemType Directory -Force -Path $publishDirectory | Out-Null
+
+    $arguments = Get-AndroidPublishArgumentsWithoutAot -Arguments $arguments
+    $publishResult = Invoke-DotnetPublishAndRelay -DotNetPath $resolvedDotNetPath -Arguments $arguments
+}
+
+if ($publishResult.ExitCode -ne 0) {
+    throw "dotnet publish failed with exit code $($publishResult.ExitCode)"
 }
 
 function Write-PackageHash {

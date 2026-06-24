@@ -276,7 +276,7 @@ public sealed class ReleaseTempPathGuardTests
             "$ProjectRoot = Resolve-DefaultProjectRoot -ScriptPath $MyInvocation.MyCommand.Path",
             "$tempInitializer = Join-Path $ProjectRoot 'tools\\common\\Initialize-GeoraePlanTemp.ps1'",
             "$resolvedDotNetPath = Get-ResolvedDotNetPath -ProjectRoot $ProjectRoot -RequestedPath $DotNetPath",
-            "& $resolvedDotNetPath @arguments");
+            "$publishResult = Invoke-DotnetPublishAndRelay -DotNetPath $resolvedDotNetPath -Arguments $arguments");
 
         var fullReleaseSource = ReadRepositoryFile(
             "tools",
