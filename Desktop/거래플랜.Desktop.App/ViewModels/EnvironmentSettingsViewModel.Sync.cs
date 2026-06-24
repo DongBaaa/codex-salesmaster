@@ -56,6 +56,8 @@ public sealed partial class EnvironmentSettingsViewModel
 
     public ObservableCollection<SyncStoredCredentialRow> StoredSyncCredentials { get; } = new();
     public ObservableCollection<SyncScopeStatusRow> SyncScopeStatuses { get; } = new();
+    public ObservableCollection<DisplayOption> SyncCredentialOfficeOptions { get; } = new();
+    public bool CanManageSyncCredentials => _session.IsLoggedIn && !_session.IsOfflineMode;
 
     private void InitializeSyncState()
     {
@@ -75,6 +77,7 @@ public sealed partial class EnvironmentSettingsViewModel
         SyncCredentialPassword = string.Empty;
         StoredSyncCredentials.Clear();
         SyncScopeStatuses.Clear();
+        RefreshSyncCredentialOfficeOptions();
     }
 
     partial void OnSelectedStoredSyncCredentialChanged(SyncStoredCredentialRow? value)
@@ -107,13 +110,15 @@ public sealed partial class EnvironmentSettingsViewModel
     {
         SyncModeText = _session.IsOfflineMode ? "오프라인 모드" : "온라인 동기화";
         SyncDatabaseText = _session.SelectedBusinessDatabaseLabel;
+        RefreshSyncCredentialOfficeOptions();
 
         await _local.ClearInvalidOfficeSyncCredentialsAsync();
 
         var pendingSummary = await _local.GetPendingSyncSummaryAsync();
-        SyncPendingChangesText = pendingSummary.TotalCount == 0
+        var visiblePendingSummary = FilterPendingSyncSummaryForCurrentSession(pendingSummary);
+        SyncPendingChangesText = visiblePendingSummary.TotalCount == 0
             ? "미동기화 변경 없음"
-            : pendingSummary.BuildWaitingMessage();
+            : visiblePendingSummary.BuildWaitingMessage();
 
         var summary = await _diagnostics.GetSummaryAsync();
         var manualReviewIssueCount = Math.Max(0, summary.OpenIssueCount - summary.RecoverableIssueCount);
@@ -131,13 +136,15 @@ public sealed partial class EnvironmentSettingsViewModel
 
         var storedCredentials = await _local.GetStoredSyncCredentialsAsync();
         ApplyStoredSyncCredentials(storedCredentials);
-        ApplySyncScopeStatuses(pendingSummary, storedCredentials);
+        ApplySyncScopeStatuses(visiblePendingSummary, storedCredentials);
     }
 
     private void ApplyStoredSyncCredentials(IReadOnlyList<StoredSyncCredential> credentials)
     {
         StoredSyncCredentials.Clear();
-        foreach (var credential in credentials.OrderByDescending(current => current.SavedAtUtc))
+        foreach (var credential in credentials
+                     .Where(credential => CanManageSyncCredentialOffice(credential.OfficeCode))
+                     .OrderByDescending(current => current.SavedAtUtc))
         {
             var officeDisplayName = OfficeCodeCatalog.GetOfficeDisplayName(credential.OfficeCode);
             var isCurrentOffice = string.Equals(
@@ -168,11 +175,16 @@ public sealed partial class EnvironmentSettingsViewModel
     {
         SyncScopeStatuses.Clear();
 
-        var credentialMap = storedCredentials
+        var visibleStoredCredentials = storedCredentials
+            .Where(credential => CanManageSyncCredentialOffice(credential.OfficeCode))
+            .ToList();
+
+        var credentialMap = visibleStoredCredentials
             .GroupBy(current => current.OfficeCode, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.OrderByDescending(current => current.SavedAtUtc).First(), StringComparer.OrdinalIgnoreCase);
 
         var groupedBuckets = pendingSummary.Buckets
+            .Where(bucket => CanManageSyncScope(bucket.ScopeKey))
             .GroupBy(bucket => bucket.ScopeKey, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
 
@@ -182,10 +194,11 @@ public sealed partial class EnvironmentSettingsViewModel
 
         var currentOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, string.Empty);
         var currentTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(_session.TenantCode, _session.OfficeCode);
-        if (!string.IsNullOrWhiteSpace(currentOfficeCode))
+        if (!string.IsNullOrWhiteSpace(currentOfficeCode) && CanManageSyncCredentialOffice(currentOfficeCode))
             scopeKeys.Add($"OFFICE:{currentOfficeCode}");
 
-        if (pendingSummary.Buckets.Any(bucket => string.Equals(bucket.ScopeKey, "SHARED", StringComparison.OrdinalIgnoreCase)))
+        if (CanManageSyncScope("SHARED") &&
+            pendingSummary.Buckets.Any(bucket => string.Equals(bucket.ScopeKey, "SHARED", StringComparison.OrdinalIgnoreCase)))
             scopeKeys.Add("SHARED");
 
         foreach (var scopeKey in scopeKeys
@@ -207,7 +220,7 @@ public sealed partial class EnvironmentSettingsViewModel
             var scopeMetadata = ResolveSyncScopeMetadata(scopeKey);
             credentialMap.TryGetValue(scopeMetadata.RequiredOfficeCode, out var storedCredential);
             var isCurrentScope = scopeMetadata.IsShared
-                ? _session.HasAdministrativePrivileges
+                ? CanManageSharedSyncScope()
                 : scopeMetadata.IsOfficeScope
                     ? !string.IsNullOrWhiteSpace(currentOfficeCode) &&
                       string.Equals(currentOfficeCode, scopeMetadata.RequiredOfficeCode, StringComparison.OrdinalIgnoreCase)
@@ -257,10 +270,10 @@ public sealed partial class EnvironmentSettingsViewModel
     {
         if (isShared)
         {
-            if (_session.HasAdministrativePrivileges)
-                return pendingCount > 0 ? "현재 관리자 세션으로 처리" : "공용 변경 없음";
+            if (isCurrentScope)
+                return pendingCount > 0 ? "현재 로그인 권한으로 처리" : "공용 변경 없음";
 
-            return pendingCount > 0 ? "관리자 로그인 필요" : "공용 변경 없음";
+            return pendingCount > 0 ? "공용 편집 권한 필요" : "공용 변경 없음";
         }
 
         if (isCurrentScope)
@@ -299,6 +312,131 @@ public sealed partial class EnvironmentSettingsViewModel
         return (false, false, string.Empty, string.Empty, scopeKey, "범위");
     }
 
+    private PendingSyncSummary FilterPendingSyncSummaryForCurrentSession(PendingSyncSummary pendingSummary)
+    {
+        var visibleBuckets = pendingSummary.Buckets
+            .Where(bucket => CanManageSyncScope(bucket.ScopeKey))
+            .ToList();
+
+        return new PendingSyncSummary(
+            visibleBuckets.Sum(bucket => bucket.Count),
+            visibleBuckets);
+    }
+
+    private void RefreshSyncCredentialOfficeOptions()
+    {
+        var officeCodes = GetManageableSyncCredentialOfficeCodes()
+            .Where(officeCode => !string.IsNullOrWhiteSpace(officeCode))
+            .OrderBy(GetOfficeSortOrder)
+            .ThenBy(officeCode => officeCode, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        SyncCredentialOfficeOptions.Clear();
+        foreach (var officeCode in officeCodes)
+        {
+            SyncCredentialOfficeOptions.Add(new DisplayOption
+            {
+                Value = officeCode,
+                DisplayName = OfficeCodeCatalog.GetOfficeDisplayName(officeCode)
+            });
+        }
+
+        var selectedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(SyncCredentialOfficeCode, string.Empty);
+        if (SyncCredentialOfficeOptions.Any(option => string.Equals(option.Value, selectedOfficeCode, StringComparison.OrdinalIgnoreCase)))
+        {
+            if (!string.Equals(SyncCredentialOfficeCode, selectedOfficeCode, StringComparison.OrdinalIgnoreCase))
+                SyncCredentialOfficeCode = selectedOfficeCode;
+            return;
+        }
+
+        var currentOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, string.Empty);
+        var fallbackOffice = SyncCredentialOfficeOptions.FirstOrDefault(option => string.Equals(option.Value, currentOfficeCode, StringComparison.OrdinalIgnoreCase))
+            ?? SyncCredentialOfficeOptions.FirstOrDefault();
+        SyncCredentialOfficeCode = fallbackOffice?.Value ?? string.Empty;
+    }
+
+    private HashSet<string> GetManageableSyncCredentialOfficeCodes()
+    {
+        if (!_session.IsLoggedIn)
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            _session.AuthenticatedTenantCode,
+            _session.OfficeCode);
+
+        return TenantScopeCatalog.ResolveScopedOfficeCodes(
+            _session.OfficeCode,
+            tenantCode,
+            _session.ScopeType,
+            _session.HasGlobalDataScope,
+            _session.HasAdministrativePrivileges);
+    }
+
+    private bool CanManageSyncCredentialOffice(string? officeCode)
+    {
+        if (!CanManageSyncCredentials)
+            return false;
+
+        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, string.Empty);
+        return !string.IsNullOrWhiteSpace(normalizedOfficeCode) &&
+               GetManageableSyncCredentialOfficeCodes().Contains(normalizedOfficeCode);
+    }
+
+    private bool CanManageSyncScope(string? scopeKey)
+    {
+        if (!CanManageSyncCredentials || string.IsNullOrWhiteSpace(scopeKey))
+            return false;
+
+        if (string.Equals(scopeKey, "SHARED", StringComparison.OrdinalIgnoreCase))
+            return CanManageSharedSyncScope();
+
+        var manageableOfficeCodes = GetManageableSyncCredentialOfficeCodes();
+        if (scopeKey.StartsWith("OFFICE:", StringComparison.OrdinalIgnoreCase))
+        {
+            var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(scopeKey[7..], string.Empty);
+            return !string.IsNullOrWhiteSpace(officeCode) && manageableOfficeCodes.Contains(officeCode);
+        }
+
+        if (scopeKey.StartsWith("TENANT:", StringComparison.OrdinalIgnoreCase))
+        {
+            var tenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(scopeKey[7..], string.Empty);
+            return TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode)
+                .Any(manageableOfficeCodes.Contains);
+        }
+
+        return false;
+    }
+
+    private bool CanManageSharedSyncScope()
+        => _session.HasAdministrativePrivileges ||
+           _session.HasPermission(AppPermissionNames.CompanyProfileEdit) ||
+           _session.HasPermission(AppPermissionNames.SettingsEdit) ||
+           _session.HasPermission(AppPermissionNames.RentalSettingsEdit);
+
+    private bool EnsureCanManageSyncCredentialOffice(string? officeCode, string action)
+    {
+        if (CanManageSyncCredentialOffice(officeCode))
+            return true;
+
+        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, string.Empty);
+        var officeDisplayName = string.IsNullOrWhiteSpace(normalizedOfficeCode)
+            ? "선택한 지점"
+            : OfficeCodeCatalog.GetOfficeDisplayName(normalizedOfficeCode);
+        StatusMessage = $"현재 계정은 {officeDisplayName} 동기화 계정을 {action}할 권한이 없습니다.";
+        return false;
+    }
+
+    private bool EnsureCanManageSyncScope(SyncScopeStatusRow? target, string action)
+    {
+        if (target is not null && CanManageSyncScope(target.ScopeKey))
+            return true;
+
+        StatusMessage = target is null
+            ? $"{action}할 동기화 범위를 선택하세요."
+            : $"현재 계정은 {target.ScopeDisplayName} 범위의 동기화 {action} 권한이 없습니다.";
+        return false;
+    }
+
     [RelayCommand]
     private async Task SaveSyncCredentialAsync()
     {
@@ -311,6 +449,9 @@ public sealed partial class EnvironmentSettingsViewModel
             StatusMessage = "저장할 지점을 선택하세요.";
             return;
         }
+
+        if (!EnsureCanManageSyncCredentialOffice(officeCode, "저장"))
+            return;
 
         var username = (SyncCredentialUsername ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(SyncCredentialPassword))
@@ -358,6 +499,9 @@ public sealed partial class EnvironmentSettingsViewModel
             StatusMessage = "삭제할 저장 지점 로그인을 선택하세요.";
             return;
         }
+
+        if (!EnsureCanManageSyncCredentialOffice(target.OfficeCode, "삭제"))
+            return;
 
         await _local.ClearOfficeSyncCredentialAsync(target.OfficeCode);
         SelectedStoredSyncCredential = null;
@@ -411,6 +555,9 @@ public sealed partial class EnvironmentSettingsViewModel
             return;
         }
 
+        if (!EnsureCanManageSyncScope(target, "계정 저장"))
+            return;
+
         if (string.Equals(target.ScopeKey, "SHARED", StringComparison.OrdinalIgnoreCase))
         {
             StatusMessage = "공용 마스터 범위는 별도 지점 계정 저장 대상이 아닙니다. 관리자 전체 범위 로그인으로 처리합니다.";
@@ -443,6 +590,9 @@ public sealed partial class EnvironmentSettingsViewModel
             StatusMessage = "동기화할 범위를 선택하세요.";
             return;
         }
+
+        if (!EnsureCanManageSyncScope(target, "실행"))
+            return;
 
         if (_session.IsOfflineMode)
         {
@@ -484,6 +634,9 @@ public sealed partial class EnvironmentSettingsViewModel
             StatusMessage = "확인할 범위를 선택하세요.";
             return;
         }
+
+        if (!EnsureCanManageSyncScope(target, "확인"))
+            return;
 
         if (target.PendingCount <= 0)
         {

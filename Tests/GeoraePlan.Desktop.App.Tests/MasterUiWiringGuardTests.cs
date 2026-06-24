@@ -136,6 +136,51 @@ public sealed class MasterUiWiringGuardTests
         Assert.Equal(8, CountOccurrences(masterViewModel, "if (!EnsureCanManageSelectionOptions())"));
     }
 
+    [Fact]
+    public void EnvironmentSettingsWindow_SyncCredentialScopeActionsStayWithinCurrentSessionScope()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var xaml = ReadAppFile(appRoot, "Views", "EnvironmentSettingsWindow.xaml");
+        var syncViewModel = ReadAppFile(appRoot, "ViewModels", "EnvironmentSettingsViewModel.Sync.cs");
+        var syncService = ReadAppFile(appRoot, "Services", "SyncService.cs");
+
+        AssertContainsAll(
+            xaml,
+            "ItemsSource=\"{Binding SyncCredentialOfficeOptions}\"",
+            "SelectedValue=\"{Binding SyncCredentialOfficeCode}\"",
+            "Command=\"{Binding SaveSyncCredentialCommand}\"",
+            "Command=\"{Binding DeleteSyncCredentialCommand}\"",
+            "Command=\"{Binding SaveSelectedSyncScopeCredentialCommand}\"",
+            "Command=\"{Binding RunSelectedSyncScopeSyncCommand}\"",
+            "Command=\"{Binding ViewSelectedSyncScopePendingCommand}\"");
+        Assert.True(
+            CountOccurrences(xaml, "IsEnabled=\"{Binding CanManageSyncCredentials}\"") >= 8,
+            "동기화 자격증명 입력/실행 컨트롤은 온라인 로그인 세션에서만 활성화되어야 합니다.");
+
+        AssertContainsAll(
+            syncViewModel,
+            "public ObservableCollection<DisplayOption> SyncCredentialOfficeOptions { get; } = new();",
+            "public bool CanManageSyncCredentials =>",
+            "private PendingSyncSummary FilterPendingSyncSummaryForCurrentSession(PendingSyncSummary pendingSummary)",
+            ".Where(bucket => CanManageSyncScope(bucket.ScopeKey))",
+            ".Where(credential => CanManageSyncCredentialOffice(credential.OfficeCode))",
+            "private bool CanManageSyncCredentialOffice(string? officeCode)",
+            "private bool CanManageSyncScope(string? scopeKey)",
+            "private bool EnsureCanManageSyncCredentialOffice(string? officeCode, string action)",
+            "private bool EnsureCanManageSyncScope(SyncScopeStatusRow? target, string action)",
+            "if (!EnsureCanManageSyncCredentialOffice(officeCode, \"저장\"))",
+            "if (!EnsureCanManageSyncCredentialOffice(target.OfficeCode, \"삭제\"))",
+            "if (!EnsureCanManageSyncScope(target, \"계정 저장\"))",
+            "if (!EnsureCanManageSyncScope(target, \"실행\"))",
+            "if (!EnsureCanManageSyncScope(target, \"확인\"))");
+
+        AssertContainsAll(
+            syncService,
+            "if (string.Equals(scopeKey, \"SHARED\", StringComparison.OrdinalIgnoreCase))",
+            "if (!blockingReason.IsCurrentScope)",
+            "SetStatus(\"공용 마스터 범위를 동기화하는 중...\");");
+    }
+
     private static void AssertContainsAll(string source, params string[] expectedMarkers)
     {
         foreach (var marker in expectedMarkers)

@@ -1159,20 +1159,23 @@
                                     <TextBlock Grid.Row="0" Grid.Column="0" Text="지점" VerticalAlignment="Center"/>
                                     <ComboBox Grid.Row="0"
                                               Grid.Column="1"
-                                              ItemsSource="{Binding UserOfficeOptions}"
+                                              ItemsSource="{Binding SyncCredentialOfficeOptions}"
                                               DisplayMemberPath="DisplayName"
                                               SelectedValuePath="Value"
                                               SelectedValue="{Binding SyncCredentialOfficeCode}"
+                                              IsEnabled="{Binding CanManageSyncCredentials}"
                                               Margin="0,0,0,8"/>
 
                                     <TextBlock Grid.Row="1" Grid.Column="0" Text="아이디" VerticalAlignment="Center"/>
                                     <TextBox Grid.Row="1" Grid.Column="1"
                                              Text="{Binding SyncCredentialUsername, UpdateSourceTrigger=PropertyChanged}"
+                                             IsEnabled="{Binding CanManageSyncCredentials}"
                                              Margin="0,0,0,8"/>
 
                                     <TextBlock Grid.Row="2" Grid.Column="0" Text="비밀번호" VerticalAlignment="Center"/>
                                     <TextBox Grid.Row="2" Grid.Column="1"
                                              Text="{Binding SyncCredentialPassword, UpdateSourceTrigger=PropertyChanged}"
+                                             IsEnabled="{Binding CanManageSyncCredentials}"
                                              Margin="0,0,0,8"/>
                                 </Grid>
 
@@ -1180,10 +1183,12 @@
                                     <Button Content="지점 로그인 저장"
                                             Background="#1565C0"
                                             Margin="0,0,8,0"
-                                            Command="{Binding SaveSyncCredentialCommand}"/>
+                                            Command="{Binding SaveSyncCredentialCommand}"
+                                            IsEnabled="{Binding CanManageSyncCredentials}"/>
                                     <Button Content="선택 삭제"
                                             Background="#C62828"
-                                            Command="{Binding DeleteSyncCredentialCommand}"/>
+                                            Command="{Binding DeleteSyncCredentialCommand}"
+                                            IsEnabled="{Binding CanManageSyncCredentials}"/>
                                 </WrapPanel>
 
                                 <TextBlock Text="현재 지점/계정으로 로그인 검증 후 암호화 저장합니다. 저장된 지점 계정은 office별 dirty 추가 업로드에 사용됩니다."
@@ -1237,14 +1242,17 @@
                                     <Button Content="선택 범위 계정 저장"
                                             Background="#1565C0"
                                             Margin="0,0,8,0"
-                                            Command="{Binding SaveSelectedSyncScopeCredentialCommand}"/>
+                                            Command="{Binding SaveSelectedSyncScopeCredentialCommand}"
+                                            IsEnabled="{Binding CanManageSyncCredentials}"/>
                                     <Button Content="선택 범위 동기화"
                                             Background="#00897B"
                                             Margin="0,0,8,0"
-                                            Command="{Binding RunSelectedSyncScopeSyncCommand}"/>
+                                            Command="{Binding RunSelectedSyncScopeSyncCommand}"
+                                            IsEnabled="{Binding CanManageSyncCredentials}"/>
                                     <Button Content="남은 dirty 보기"
                                             Background="#546E7A"
-                                            Command="{Binding ViewSelectedSyncScopePendingCommand}"/>
+                                            Command="{Binding ViewSelectedSyncScopePendingCommand}"
+                                            IsEnabled="{Binding CanManageSyncCredentials}"/>
                                 </WrapPanel>
                                 <DataGrid ItemsSource="{Binding SyncScopeStatuses}"
                                           SelectedItem="{Binding SelectedSyncScopeStatus}"

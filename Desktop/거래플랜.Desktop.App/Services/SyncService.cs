@@ -228,7 +228,7 @@ public sealed class SyncService : IDisposable
         {
             if (string.Equals(scopeKey, "SHARED", StringComparison.OrdinalIgnoreCase))
             {
-                if (!_session.HasAdministrativePrivileges)
+                if (!blockingReason.IsCurrentScope)
                     return new SyncScopeExecutionResult(scopeKey, blockingReason.ScopeDisplayName, blockingReason.PendingCount, blockingReason.PendingCount, false, false, false, false, blockingReason.Message);
 
                 SetStatus("공용 마스터 범위를 동기화하는 중...");
