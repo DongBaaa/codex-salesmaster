@@ -666,6 +666,82 @@ public sealed class SyncControllerTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Push_ReturnsForbidden_WhenOnlyAdjacentModulePermissionExists()
+    {
+        foreach (var testCase in CreatePermissionMismatchPushCases())
+        {
+            var currentUser = new TestCurrentUserContext
+            {
+                Username = $"mismatch-{testCase.Name}",
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+                Permissions = testCase.GrantedPermissions
+            };
+
+            await using var scopedDb = CreateDbContext(currentUser);
+            var controller = CreateController(scopedDb, currentUser);
+            var request = testCase.CreateRequest();
+            request.DeviceId = $"device-permission-mismatch-{testCase.Name}";
+
+            var response = await controller.Push(request, CancellationToken.None);
+            var forbidden = Assert.IsType<ObjectResult>(response.Result);
+            var message = forbidden.Value?.GetType().GetProperty("message")?.GetValue(forbidden.Value) as string;
+
+            Assert.Equal(StatusCodes.Status403Forbidden, forbidden.StatusCode);
+            Assert.False(string.IsNullOrWhiteSpace(message));
+            Assert.Contains(testCase.ExpectedLabel, message);
+            Assert.DoesNotContain(scopedDb.ChangeTracker.Entries(),
+                entry => entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted);
+        }
+    }
+
+    private static IReadOnlyList<PermissionMismatchPushCase> CreatePermissionMismatchPushCases()
+        =>
+        [
+            new PermissionMismatchPushCase(
+                "rental-asset-editor-cannot-push-billing-logs",
+                [PermissionNames.RentalAssetEdit],
+                () => new SyncPushRequest { RentalBillingLogs = [CreateSyncDto<RentalBillingLogDto>()] },
+                "렌탈 청구"),
+            new PermissionMismatchPushCase(
+                "rental-profile-editor-cannot-push-assets",
+                [PermissionNames.RentalProfileEdit],
+                () => new SyncPushRequest { RentalAssets = [CreateSyncDto<RentalAssetDto>()] },
+                "렌탈 자산"),
+            new PermissionMismatchPushCase(
+                "invoice-editor-cannot-push-payments",
+                [PermissionNames.InvoiceEdit],
+                () => new SyncPushRequest { Payments = [CreateSyncDto<PaymentDto>()] },
+                "수금/지급"),
+            new PermissionMismatchPushCase(
+                "payment-editor-cannot-push-invoices",
+                [PermissionNames.PaymentEdit],
+                () => new SyncPushRequest { Invoices = [CreateSyncDto<InvoiceDto>()] },
+                "전표"),
+            new PermissionMismatchPushCase(
+                "customer-editor-cannot-push-items",
+                [PermissionNames.CustomerEdit],
+                () => new SyncPushRequest { Items = [CreateSyncDto<ItemDto>()] },
+                "품목/재고"),
+            new PermissionMismatchPushCase(
+                "item-editor-cannot-push-customers",
+                [PermissionNames.ItemEdit],
+                () => new SyncPushRequest { Customers = [CreateSyncDto<CustomerDto>()] },
+                "거래처"),
+            new PermissionMismatchPushCase(
+                "settings-editor-cannot-push-rental-settings",
+                [PermissionNames.SettingsEdit],
+                () => new SyncPushRequest { RentalManagementCompanies = [CreateSyncDto<RentalManagementCompanyDto>()] },
+                "렌탈 관리업체"),
+            new PermissionMismatchPushCase(
+                "rental-settings-editor-cannot-push-rental-billing",
+                [PermissionNames.RentalSettingsEdit],
+                () => new SyncPushRequest { RentalBillingProfiles = [CreateSyncDto<RentalBillingProfileDto>()] },
+                "렌탈 청구")
+        ];
+
     private static IReadOnlyList<UnauthorizedPushCase> CreateUnauthorizedPushCases()
     {
         return
@@ -781,6 +857,12 @@ public sealed class SyncControllerTests : IDisposable
 
     private sealed record UnauthorizedPushCase(
         string Name,
+        Func<SyncPushRequest> CreateRequest,
+        string ExpectedLabel);
+
+    private sealed record PermissionMismatchPushCase(
+        string Name,
+        IReadOnlyCollection<string> GrantedPermissions,
         Func<SyncPushRequest> CreateRequest,
         string ExpectedLabel);
 
