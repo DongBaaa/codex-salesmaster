@@ -269,6 +269,16 @@ public sealed class SyncOutboxPendingStateTests
             Assert.Contains(permissionMessage, outbox.ErrorMessage);
             Assert.DoesNotContain("{\"message\"", outbox.ErrorMessage, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("\\u", outbox.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+
+            var lastError = await db.Settings
+                .AsNoTracking()
+                .Where(setting => setting.Key == "Sync.LastError")
+                .Select(setting => setting.Value)
+                .SingleAsync();
+            Assert.Contains("동기화 업로드(sync/push) 실패", lastError);
+            Assert.Contains(permissionMessage, lastError);
+            Assert.DoesNotContain("{\"message\"", lastError, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("\\u", lastError, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
