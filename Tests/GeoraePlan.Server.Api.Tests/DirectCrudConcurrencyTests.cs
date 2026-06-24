@@ -5657,6 +5657,59 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             .SingleAsync());
     }
 
+    [Fact]
+    public async Task CustomerCategoriesController_Delete_RejectsReferencedCategoryAndKeepsActive()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var categoryId = Guid.NewGuid();
+        var customerId = Guid.NewGuid();
+        dbContext.CustomerCategories.Add(new CustomerCategory
+        {
+            Id = categoryId,
+            Name = "참조분류"
+        });
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "CATEGORY-REFERENCE-CUSTOMER",
+            NameMatchKey = "CATEGORYREFERENCECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            CategoryId = categoryId
+        });
+        dbContext.CustomerMasters.Add(new CustomerMaster
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "CATEGORY-REFERENCE-MASTER",
+            NameMatchKey = "CATEGORYREFERENCEMASTER",
+            CategoryId = categoryId
+        });
+        await dbContext.SaveChangesAsync();
+
+        var storedCategory = await dbContext.CustomerCategories.IgnoreQueryFilters().FirstAsync(category => category.Id == categoryId);
+        var controller = new CustomerCategoriesController(dbContext);
+
+        var deleteResult = await controller.Delete(categoryId, storedCategory.Revision, CancellationToken.None);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(deleteResult);
+        var payload = conflict.Value;
+        Assert.NotNull(payload);
+        var payloadType = payload!.GetType();
+        Assert.Equal(CustomerCategoryDeletionReferenceGuard.ConflictCode, payloadType.GetProperty("error")?.GetValue(payload));
+        var message = Assert.IsType<string>(payloadType.GetProperty("message")?.GetValue(payload));
+        Assert.Contains("거래처", message, StringComparison.Ordinal);
+        Assert.False(await dbContext.CustomerCategories.IgnoreQueryFilters()
+            .Where(category => category.Id == categoryId)
+            .Select(category => category.IsDeleted)
+            .SingleAsync());
+    }
+
     private static TDto AssertOk<TDto>(ActionResult<TDto> response)
     {
         var ok = Assert.IsType<OkObjectResult>(response.Result);

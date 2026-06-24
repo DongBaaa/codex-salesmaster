@@ -13089,6 +13089,95 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsCustomerCategoryDelete_WhenReferencedByCustomerOrMaster()
+    {
+        var categoryId = Guid.NewGuid();
+        _dbContext.CustomerCategories.Add(new CustomerCategory
+        {
+            Id = categoryId,
+            Name = "참조분류",
+            UpdatedAtUtc = new DateTime(2026, 6, 24, 0, 0, 0, DateTimeKind.Utc)
+        });
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-CATEGORY-REFERENCE-CUSTOMER",
+            NameMatchKey = "SYNCCATEGORYREFERENCECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            CategoryId = categoryId
+        });
+        _dbContext.CustomerMasters.Add(new CustomerMaster
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-CATEGORY-REFERENCE-MASTER",
+            NameMatchKey = "SYNCCATEGORYREFERENCEMASTER",
+            CategoryId = categoryId
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var stored = await _dbContext.CustomerCategories.IgnoreQueryFilters().AsNoTracking().SingleAsync(category => category.Id == categoryId);
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-customer-category-delete-referenced",
+            CustomerCategories =
+            [
+                new CustomerCategoryDto
+                {
+                    Id = categoryId,
+                    Name = " 참조분류 ",
+                    IsDeleted = true,
+                    ExpectedRevision = stored.Revision,
+                    UpdatedAtUtc = stored.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict => conflict.EntityName == nameof(CustomerCategory));
+        Assert.False(await _dbContext.CustomerCategories.IgnoreQueryFilters()
+            .Where(category => category.Id == categoryId)
+            .Select(category => category.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_RejectsCustomerCategoryDelete_WhenServerRowIsMissing()
+    {
+        var missingCategoryId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-customer-category-delete-missing",
+            CustomerCategories =
+            [
+                new CustomerCategoryDto
+                {
+                    Id = missingCategoryId,
+                    Name = "서버미존재분류",
+                    IsDeleted = true,
+                    UpdatedAtUtc = new DateTime(2026, 6, 24, 0, 1, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(CustomerCategory) &&
+            conflict.Reason.Contains("does not exist", StringComparison.OrdinalIgnoreCase));
+        Assert.False(await _dbContext.CustomerCategories.IgnoreQueryFilters().AnyAsync(category => category.Id == missingCategoryId));
+    }
+
+    [Fact]
     public async Task Push_RejectsSelectionOptionDeleteWhenOnlyNameMatchesDifferentActiveId()
     {
         var existingId = Guid.NewGuid();

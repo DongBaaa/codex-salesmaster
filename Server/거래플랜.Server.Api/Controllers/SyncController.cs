@@ -956,7 +956,26 @@ public sealed class SyncController : ControllerBase
                         string.Equals(
                             DefaultCustomerCategories.NormalizeName(current.Name),
                             normalizedName,
-                            StringComparison.CurrentCultureIgnoreCase));
+                        StringComparison.CurrentCultureIgnoreCase));
+
+            if (entity is null && dto.IsDeleted)
+            {
+                AddClientConflict(dto, nameof(CustomerCategory), "Customer category does not exist on server.", result);
+                continue;
+            }
+
+            if (dto.IsDeleted && entity is not null && !entity.IsDeleted)
+            {
+                var referenceBlockMessage = await CustomerCategoryDeletionReferenceGuard.BuildReferenceBlockMessageAsync(
+                    _dbContext,
+                    entity.Id,
+                    cancellationToken);
+                if (referenceBlockMessage is not null)
+                {
+                    AddClientConflict(dto, nameof(CustomerCategory), referenceBlockMessage, result);
+                    continue;
+                }
+            }
 
             if (activeDuplicate is not null)
             {
