@@ -1360,6 +1360,65 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
             .AnyAsync(current => current.Kind == "customer-category" && current.EntityId == category.Id));
     }
 
+    [Theory]
+    [InlineData("restore")]
+    [InlineData("purge")]
+    public async Task RentalManagementCompanyMutation_NonAdminDirectId_DoesNotRestoreOrPurgeRow(string action)
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var company = new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = "DIRECT-NONADMIN-RENTAL-MGMT",
+            Name = "Non-admin direct rental management company",
+            IsActive = false,
+            IsDeleted = true
+        };
+        dbContext.RentalManagementCompanies.Add(company);
+        await dbContext.SaveChangesAsync();
+
+        var storedBefore = await dbContext.RentalManagementCompanies.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == company.Id);
+        var controller = CreateController(dbContext, currentUser);
+        var request = new RecycleBinMutationRequest
+        {
+            Items =
+            [
+                new RecycleBinMutationTargetDto
+                {
+                    EntityId = company.Id,
+                    Kind = "rental-management-company",
+                    ExpectedRevision = storedBefore.Revision
+                }
+            ]
+        };
+
+        var response = string.Equals(action, "restore", StringComparison.Ordinal)
+            ? await controller.Restore(request, CancellationToken.None)
+            : await controller.Purge(request, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var result = Assert.Single(payload.Results);
+        Assert.False(result.Success);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        var storedAfter = await dbContext.RentalManagementCompanies.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == company.Id);
+        Assert.True(storedAfter.IsDeleted);
+        Assert.False(storedAfter.IsActive);
+        Assert.Equal(storedBefore.Revision, storedAfter.Revision);
+        Assert.False(await dbContext.RecycleBinPurgeRecords
+            .IgnoreQueryFilters()
+            .AnyAsync(current => current.Kind == "rental-management-company" && current.EntityId == company.Id));
+    }
+
     [Fact]
     public async Task GetAll_RentalBillingLog_UsesLogScopeAndDoesNotLeakHiddenProfile()
     {
