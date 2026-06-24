@@ -1081,7 +1081,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 targetId,
                 history.BillingRunId,
                 _session,
-                SelectedRow.Source.Revision);
+                expectedRevision: SelectedRow.Source.Revision,
+                expectedInvoiceRevision: history.InvoiceRevision);
             StatusMessage = result.Message;
             if (!result.Success)
             {

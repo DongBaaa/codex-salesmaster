@@ -417,6 +417,7 @@ public sealed class RentalBillingHistoryRow
     public string SettlementStatus { get; init; } = string.Empty;
     public bool HasInvoice { get; init; }
     public Guid? InvoiceId { get; init; }
+    public long? InvoiceRevision { get; init; }
     public bool IsPastUnresolved { get; init; }
     public bool CanRegisterSettlement => BillingRunId != Guid.Empty && OutstandingAmount > 0m;
     public bool HasSettlement => SettledAmount > 0m;

@@ -1965,6 +1965,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .Select(invoice => new RentalBillingRunInvoiceLookup(
                     invoice.LinkedRentalBillingRunId!.Value,
                     invoice.Id,
+                    invoice.Revision,
                     invoice.TotalAmount,
                     invoice.UpdatedAtUtc))
                 .ToListAsync(ct);
@@ -1980,7 +1981,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var invoiceByRun = invoiceCandidatesByRun.ToDictionary(
             pair => pair.Key,
-            pair => new RentalBillingRunInvoiceInfo(pair.Value.InvoiceId, pair.Value.TotalAmount));
+            pair => new RentalBillingRunInvoiceInfo(
+                pair.Value.InvoiceId,
+                pair.Value.InvoiceRevision,
+                pair.Value.TotalAmount));
 
         return (settlementByRun, invoiceByRun);
     }
@@ -1992,11 +1996,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
     private readonly record struct RentalBillingRunSettlementInfo(decimal SettledAmount, DateOnly? LastSettledDate);
 
-    private readonly record struct RentalBillingRunInvoiceInfo(Guid InvoiceId, decimal TotalAmount);
+    private readonly record struct RentalBillingRunInvoiceInfo(Guid InvoiceId, long InvoiceRevision, decimal TotalAmount);
 
     private readonly record struct RentalBillingRunInvoiceLookup(
         Guid RunId,
         Guid InvoiceId,
+        long InvoiceRevision,
         decimal TotalAmount,
         DateTime UpdatedAtUtc);
 
@@ -2160,6 +2165,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 SettlementStatus = settlementStatus,
                 HasInvoice = hasInvoice,
                 InvoiceId = hasInvoice ? invoice.InvoiceId : null,
+                InvoiceRevision = hasInvoice ? invoice.InvoiceRevision : null,
                 IsPastUnresolved = isPastUnresolved
             });
         }
@@ -5364,6 +5370,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         Guid billingRunId,
         SessionState session,
         long? expectedRevision = null,
+        long? expectedInvoiceRevision = null,
         CancellationToken ct = default)
     {
         if (billingProfileId == Guid.Empty || billingRunId == Guid.Empty)
@@ -5404,6 +5411,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 invoice.Id,
                 invoice.VersionGroupId,
                 invoice.IsLatestVersion,
+                invoice.Revision,
                 invoice.UpdatedAtUtc
             })
             .ToListAsync(ct);
@@ -5411,13 +5419,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Select(invoice => invoice.Id)
             .Distinct()
             .ToList();
-        var invoiceDeleteTargetIds = linkedInvoices
+        var invoiceDeleteTargets = linkedInvoices
             .GroupBy(invoice => invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId)
             .Select(group => group
                 .OrderByDescending(invoice => invoice.IsLatestVersion)
                 .ThenByDescending(invoice => invoice.UpdatedAtUtc)
-                .First()
-                .Id)
+                .First())
+            .Select(invoice => new RentalBillingHistoryDeleteInvoiceTarget(invoice.Id, invoice.Revision))
             .ToList();
 
         var linkedTransactions = await LoadBillingHistoryDeleteTransactionsAsync(
@@ -5429,12 +5437,18 @@ WHERE ""AssignedUsername"" <> '';", ct);
             linkedInvoiceIds,
             ct);
 
-        if ((linkedTransactions.Count > 0 || linkedPaymentIds.Count > 0 || invoiceDeleteTargetIds.Count > 0) && _local is null)
+        if ((linkedTransactions.Count > 0 || linkedPaymentIds.Count > 0 || invoiceDeleteTargets.Count > 0) && _local is null)
             return LocalMutationResult.Denied("연결된 판매전표/입금 내역 삭제 서비스를 사용할 수 없습니다.");
-        if (invoiceDeleteTargetIds.Count > 0 && !CanDeleteRentalBillingInvoices(session))
+        if (invoiceDeleteTargets.Count > 0 && !CanDeleteRentalBillingInvoices(session))
             return LocalMutationResult.Denied("권한이 없어 연결된 판매전표를 삭제할 수 없습니다. 전표 편집 권한이 필요합니다.");
         if ((linkedTransactions.Count > 0 || linkedPaymentIds.Count > 0) && !CanDeleteRentalBillingTransactions(session))
             return LocalMutationResult.Denied("권한이 없어 연결된 입금 내역을 삭제할 수 없습니다. 수금/지급 편집 권한이 필요합니다.");
+        if (expectedInvoiceRevision.HasValue &&
+            invoiceDeleteTargets.Any(target => target.Revision != expectedInvoiceRevision.Value))
+        {
+            return LocalMutationResult.Conflict("연결된 판매전표가 다른 위치에서 먼저 수정되었습니다. 최신 목록을 다시 불러온 뒤 청구/입금 내역 삭제를 다시 시도하세요.");
+        }
+
         if (linkedTransactions.Count > 0 && !session.HasAdministrativePrivileges)
         {
             var transactionIds = linkedTransactions.Select(transaction => transaction.Id).ToList();
@@ -5443,59 +5457,69 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 return LocalMutationResult.Denied("확인완료된 증빙이 있는 입금 내역은 관리자만 삭제할 수 있습니다.");
         }
 
-        foreach (var transaction in linkedTransactions)
+        int removedRunCount;
+        int deletedLogCount;
+        await using (var deleteScope = await _db.Database.BeginTransactionAsync(ct))
         {
-            var deleteTransactionResult = await _local!.DeleteTransactionAsync(transaction.Id, session, transaction.Revision, ct);
-            if (!deleteTransactionResult.Success)
-                return ConvertOfficeMutationResult(deleteTransactionResult, "연결된 입금 내역을 삭제할 수 없습니다.");
+            foreach (var transaction in linkedTransactions)
+            {
+                var deleteTransactionResult = await _local!.DeleteTransactionAsync(transaction.Id, session, transaction.Revision, ct);
+                if (!deleteTransactionResult.Success)
+                    return ConvertOfficeMutationResult(deleteTransactionResult, "연결된 입금 내역을 삭제할 수 없습니다.");
+            }
+
+            foreach (var invoiceTarget in invoiceDeleteTargets)
+            {
+                var deleteInvoiceResult = await _local!.DeleteInvoiceAsync(
+                    invoiceTarget.Id,
+                    session,
+                    expectedRevision: expectedInvoiceRevision ?? invoiceTarget.Revision,
+                    ct: ct);
+                if (!deleteInvoiceResult.Success)
+                    return ConvertOfficeMutationResult(deleteInvoiceResult, "연결된 판매전표를 삭제할 수 없습니다.");
+            }
+
+            profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
+            if (profile is null)
+                return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
+
+            var now = DateTime.UtcNow;
+            var runs = GetBillingRuns(profile);
+            removedRunCount = runs.RemoveAll(current => current.RunId == billingRunId);
+            await RefreshBillingProfileAfterHistoryDeleteAsync(profile, runs, ct);
+
+            var billingYearMonth = $"{run.ScheduledDate.Year:0000}-{run.ScheduledDate.Month:00}";
+            var logs = await _db.RentalBillingLogs.IgnoreQueryFilters()
+                .Where(log => log.BillingProfileId == billingProfileId && log.BillingYearMonth == billingYearMonth)
+                .ToListAsync(ct);
+            deletedLogCount = 0;
+            foreach (var log in logs)
+            {
+                if (!log.IsDeleted)
+                    deletedLogCount++;
+
+                ApplyBillingLogScopeFromProfile(log, profile);
+                log.IsDeleted = true;
+                log.IsDirty = true;
+                log.UpdatedAtUtc = now;
+            }
+
+            profile.IsDirty = true;
+            profile.UpdatedAtUtc = now;
+            await _db.SaveChangesAsync(ct);
+            await deleteScope.CommitAsync(ct);
         }
-
-        foreach (var invoiceId in invoiceDeleteTargetIds)
-        {
-            var deleteInvoiceResult = await _local!.DeleteInvoiceAsync(invoiceId, session, expectedRevision: null, ct);
-            if (!deleteInvoiceResult.Success)
-                return ConvertOfficeMutationResult(deleteInvoiceResult, "연결된 판매전표를 삭제할 수 없습니다.");
-        }
-
-        profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
-            .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
-        if (profile is null)
-            return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
-
-        var now = DateTime.UtcNow;
-        var runs = GetBillingRuns(profile);
-        var removedRunCount = runs.RemoveAll(current => current.RunId == billingRunId);
-        await RefreshBillingProfileAfterHistoryDeleteAsync(profile, runs, ct);
-
-        var billingYearMonth = $"{run.ScheduledDate.Year:0000}-{run.ScheduledDate.Month:00}";
-        var logs = await _db.RentalBillingLogs.IgnoreQueryFilters()
-            .Where(log => log.BillingProfileId == billingProfileId && log.BillingYearMonth == billingYearMonth)
-            .ToListAsync(ct);
-        var deletedLogCount = 0;
-        foreach (var log in logs)
-        {
-            if (!log.IsDeleted)
-                deletedLogCount++;
-
-            ApplyBillingLogScopeFromProfile(log, profile);
-            log.IsDeleted = true;
-            log.IsDirty = true;
-            log.UpdatedAtUtc = now;
-        }
-
-        profile.IsDirty = true;
-        profile.UpdatedAtUtc = now;
-        await _db.SaveChangesAsync(ct);
 
         if (removedRunCount == 0 &&
             linkedTransactions.Count == 0 &&
-            invoiceDeleteTargetIds.Count == 0 &&
+            invoiceDeleteTargets.Count == 0 &&
             deletedLogCount == 0)
             return LocalMutationResult.Missing("삭제할 청구/입금 내역을 찾을 수 없습니다.");
 
         var deletedParts = new List<string>();
-        if (invoiceDeleteTargetIds.Count > 0)
-            deletedParts.Add($"판매전표 {invoiceDeleteTargetIds.Count:N0}건");
+        if (invoiceDeleteTargets.Count > 0)
+            deletedParts.Add($"판매전표 {invoiceDeleteTargets.Count:N0}건");
         if (linkedTransactions.Count > 0)
             deletedParts.Add($"입금 내역 {linkedTransactions.Count:N0}건");
         var directPaymentCount = linkedPaymentIds.Except(linkedTransactions.Select(transaction => transaction.Id)).Count();
@@ -5506,6 +5530,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var deletedSummary = deletedParts.Count == 0 ? "선택 내역" : string.Join(", ", deletedParts);
         return LocalMutationResult.Ok(billingProfileId, $"{deletedSummary}을 삭제했습니다.");
     }
+
+    private readonly record struct RentalBillingHistoryDeleteInvoiceTarget(Guid Id, long Revision);
 
     private async Task<List<Guid>> LoadBillingHistoryDeletePaymentIdsAsync(
         IReadOnlyCollection<Guid> linkedInvoiceIds,
