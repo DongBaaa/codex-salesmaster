@@ -359,7 +359,7 @@ public static class DtoMappings
             IsPrimary = entity.IsPrimary,
             UploadedByUsername = entity.UploadedByUsername,
             UploadedAtUtc = entity.UploadedAtUtc,
-            FileContent = includeContent ? ReadStoredContent(entity.StoragePath, entity.FileContent) : []
+            FileContent = includeContent ? ReadStoredContent(entity.StoragePath, entity.FileContent, entity.FileSize, entity.FileHash) : []
         };
 
     public static void Apply(this CustomerContract entity, CustomerContractDto dto)
@@ -538,7 +538,7 @@ public static class DtoMappings
             VerifiedAtUtc = entity.VerifiedAtUtc,
             VerificationMemo = entity.VerificationMemo,
             SortOrder = entity.SortOrder,
-            FileContent = includeContent ? ReadStoredContent(entity.StoragePath, entity.FileContent) : []
+            FileContent = includeContent ? ReadStoredContent(entity.StoragePath, entity.FileContent, entity.FileSize, entity.FileHash) : []
         };
 
     public static void Apply(this TransactionAttachment entity, TransactionAttachmentDto dto)
@@ -1207,7 +1207,7 @@ public static class DtoMappings
             FileHash = entity.FileHash,
             Description = entity.Description,
             UploadedAtUtc = entity.UploadedAtUtc,
-            FileContent = includeContent ? ReadStoredContent(entity.StoragePath, entity.FileContent) : []
+            FileContent = includeContent ? ReadStoredContent(entity.StoragePath, entity.FileContent, entity.FileSize, entity.FileHash) : []
         };
 
     public static void Apply(this PaymentAttachment entity, PaymentAttachmentDto dto)
@@ -1240,13 +1240,15 @@ public static class DtoMappings
     private static DateTime? NormalizeUtc(DateTime? value)
         => value.HasValue ? NormalizeUtc(value.Value) : null;
 
-    private static byte[] ReadStoredContent(string? storedPath, byte[]? fallback)
+    private static byte[] ReadStoredContent(string? storedPath, byte[]? fallback, long expectedSize, string? expectedHash)
     {
         if (!string.IsNullOrWhiteSpace(storedPath) && File.Exists(storedPath))
         {
             try
             {
-                return File.ReadAllBytes(storedPath);
+                var storedContent = File.ReadAllBytes(storedPath);
+                if (FileContentIntegrityVerifier.HasExpectedIntegrity(storedContent, expectedSize, expectedHash))
+                    return storedContent;
             }
             catch
             {
@@ -1254,7 +1256,9 @@ public static class DtoMappings
             }
         }
 
-        return fallback ?? [];
+        return FileContentIntegrityVerifier.HasExpectedIntegrity(fallback, expectedSize, expectedHash)
+            ? fallback ?? []
+            : [];
     }
 
     public static ItemWarehouseStockDto ToDto(this ItemWarehouseStock entity) =>

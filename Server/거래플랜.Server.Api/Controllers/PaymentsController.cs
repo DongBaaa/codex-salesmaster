@@ -107,8 +107,12 @@ public sealed class PaymentsController : ControllerBase
         if (!EvidenceAttachmentFilePolicy.IsAllowedFileType(fileName, contentType))
             contentType = "application/octet-stream";
 
-        var bytes = _fileStorage.ReadBytes(attachment.StoragePath, attachment.FileContent);
-        if (attachment.FileSize > 0 && bytes.LongLength != attachment.FileSize)
+        var bytes = FileContentIntegrityVerifier.SelectVerifiedOrEmpty(
+            _fileStorage.ReadBytes(attachment.StoragePath, attachment.FileContent),
+            attachment.FileContent,
+            attachment.FileSize,
+            attachment.FileHash);
+        if (!FileContentIntegrityVerifier.HasExpectedIntegrity(bytes, attachment.FileSize, attachment.FileHash))
         {
             return NotFound(new
             {

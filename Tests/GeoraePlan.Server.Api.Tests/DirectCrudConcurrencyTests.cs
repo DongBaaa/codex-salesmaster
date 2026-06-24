@@ -4537,6 +4537,107 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PaymentsController_GetAttachmentContent_ReturnsNotFound_WhenStoredContentHashDiffers()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Hash drift payment attachment customer",
+            NameMatchKey = "HASHDRIFTPAYMENTATTACHMENTCUSTOMER",
+            TradeType = "Sales"
+        };
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "HASH-DRIFT-PAYMENT-ATTACHMENT",
+            InvoiceDate = new DateOnly(2026, 6, 24)
+        };
+        var payment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoice.Id,
+            PaymentDate = new DateOnly(2026, 6, 24),
+            Amount = 5000m,
+            Note = "hash drift attachment content"
+        };
+        var expectedContent = TestPdfBytes("payment hash drift expected");
+        var wrongSameLengthContent = MutateSameLength(expectedContent);
+        var attachment = new PaymentAttachment
+        {
+            Id = Guid.NewGuid(),
+            PaymentId = payment.Id,
+            AttachmentType = "내역첨부",
+            FileName = "hash-drift-receipt.pdf",
+            MimeType = "application/pdf",
+            FileSize = expectedContent.LongLength,
+            FileHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(expectedContent)),
+            StoragePath = "payment-attachments/hash-drift-receipt.pdf",
+            FileContent = []
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(invoice);
+        dbContext.Payments.Add(payment);
+        dbContext.PaymentAttachments.Add(attachment);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreatePaymentsController(
+            dbContext,
+            currentUser,
+            new FixedReadCentralFileStorage(wrongSameLengthContent));
+
+        var result = await controller.GetAttachmentContent(attachment.Id, CancellationToken.None);
+
+        var notFound = Assert.IsType<NotFoundObjectResult>(result);
+        Assert.Contains("attachment_content_unavailable", notFound.Value?.ToString(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TransactionAttachment_ToDto_DoesNotExposeStoredContent_WhenStoredContentHashDiffers()
+    {
+        var expectedContent = TestPdfBytes("transaction hash drift expected");
+        var wrongSameLengthContent = MutateSameLength(expectedContent);
+        var tempRoot = Path.Combine(Path.GetTempPath(), "georaeplan-hash-drift-tests", Guid.NewGuid().ToString("N"));
+        var storedPath = Path.Combine(tempRoot, "wrong-transaction-attachment.pdf");
+        Directory.CreateDirectory(tempRoot);
+        File.WriteAllBytes(storedPath, wrongSameLengthContent);
+
+        try
+        {
+            var attachment = new TransactionAttachment
+            {
+                Id = Guid.NewGuid(),
+                TransactionId = Guid.NewGuid(),
+                AttachmentType = "기타",
+                FileName = "wrong-transaction-attachment.pdf",
+                MimeType = "application/pdf",
+                FileSize = expectedContent.LongLength,
+                FileHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(expectedContent)),
+                StoragePath = storedPath,
+                FileContent = []
+            };
+
+            var dto = attachment.ToDto(includeContent: true);
+
+            Assert.Empty(dto.FileContent);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+                Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task CustomersController_DownloadContractContent_ReturnsNotFound_WhenStoredContentIsMissing()
     {
         var currentUser = CreateAdminUser();
@@ -4573,6 +4674,51 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         var result = await controller.DownloadContractContent(contract.Id, CancellationToken.None);
 
         Assert.IsType<NotFoundObjectResult>(result);
+    }
+
+    [Fact]
+    public async Task CustomersController_DownloadContractContent_ReturnsNotFound_WhenStoredContentHashDiffers()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Hash drift contract customer",
+            NameMatchKey = "HASHDRIFTCONTRACTCUSTOMER",
+            TradeType = "Sales"
+        };
+        var expectedContent = TestPdfBytes("contract hash drift expected");
+        var wrongSameLengthContent = MutateSameLength(expectedContent);
+        var contract = new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            ContractType = "거래계약서",
+            FileName = "hash-drift-contract.pdf",
+            MimeType = "application/pdf",
+            FileSize = expectedContent.LongLength,
+            FileHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(expectedContent)),
+            StoragePath = "customer-contracts/hash-drift-contract.pdf",
+            FileContent = []
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.CustomerContracts.Add(contract);
+        await dbContext.SaveChangesAsync();
+
+        var controller = new CustomersController(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext),
+            new FixedReadCentralFileStorage(wrongSameLengthContent));
+
+        var result = await controller.DownloadContractContent(contract.Id, CancellationToken.None);
+
+        var notFound = Assert.IsType<NotFoundObjectResult>(result);
+        Assert.Contains("contract_content_unavailable", notFound.Value?.ToString(), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -5435,6 +5581,13 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     private static byte[] TestPdfBytes(string marker)
         => System.Text.Encoding.UTF8.GetBytes($"%PDF-1.4\n% {marker}\n1 0 obj\n<<>>\nendobj\n%%EOF\n");
 
+    private static byte[] MutateSameLength(byte[] content)
+    {
+        var mutated = content.ToArray();
+        mutated[^6] = mutated[^6] == (byte)'O' ? (byte)'X' : (byte)'O';
+        return mutated;
+    }
+
     private AppDbContext CreateDbContext(TestCurrentUserContext currentUser)
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
@@ -5516,6 +5669,21 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
 
         public byte[] ReadBytes(string? storedPath, byte[]? fallbackContent)
             => fallbackContent ?? Array.Empty<byte>();
+
+        public void DeleteIfExists(string? storedPath)
+        {
+        }
+    }
+
+    private sealed class FixedReadCentralFileStorage(byte[] bytes) : ICentralFileStorage
+    {
+        public string RootPath => Path.GetTempPath();
+
+        public Task<string> SaveBytesAsync(string category, string tenantKey, Guid fileId, string? fileName, byte[] content, CancellationToken cancellationToken = default)
+            => Task.FromResult(Path.Combine(RootPath, category, tenantKey, fileId.ToString("N"), fileName ?? "file.bin"));
+
+        public byte[] ReadBytes(string? storedPath, byte[]? fallbackContent)
+            => bytes;
 
         public void DeleteIfExists(string? storedPath)
         {

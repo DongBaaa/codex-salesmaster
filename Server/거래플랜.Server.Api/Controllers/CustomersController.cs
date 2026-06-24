@@ -164,8 +164,12 @@ public sealed class CustomersController : ControllerBase
         var contentType = string.Equals(contract.MimeType?.Trim(), "application/pdf", StringComparison.OrdinalIgnoreCase)
             ? "application/pdf"
             : "application/octet-stream";
-        var bytes = _fileStorage.ReadBytes(contract.StoragePath, contract.FileContent);
-        if (contract.FileSize > 0 && bytes.LongLength != contract.FileSize)
+        var bytes = FileContentIntegrityVerifier.SelectVerifiedOrEmpty(
+            _fileStorage.ReadBytes(contract.StoragePath, contract.FileContent),
+            contract.FileContent,
+            contract.FileSize,
+            contract.FileHash);
+        if (!FileContentIntegrityVerifier.HasExpectedIntegrity(bytes, contract.FileSize, contract.FileHash))
         {
             return NotFound(new
             {
