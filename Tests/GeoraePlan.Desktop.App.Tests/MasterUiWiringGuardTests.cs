@@ -1,4 +1,5 @@
-﻿using Xunit;
+﻿using System.Text.RegularExpressions;
+using Xunit;
 
 namespace GeoraePlan.Desktop.App.Tests;
 
@@ -181,6 +182,91 @@ public sealed class MasterUiWiringGuardTests
             "SetStatus(\"공용 마스터 범위를 동기화하는 중...\");");
     }
 
+    [Fact]
+    public void HighRiskWorkflowWindows_CommandBindingsResolveToViewModelCommands()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var targets = new[]
+        {
+            new WpfCommandBindingTarget(
+                ["MainWindow.xaml"],
+                [
+                    ["ViewModels", "MainViewModel.cs"],
+                    ["ViewModels", "MainViewModel.Update.cs"],
+                    ["ViewModels", "MainViewModel.CustomerContracts.cs"],
+                    ["ViewModels", "MainViewModel.SyncDiagnostics.cs"],
+                    ["ViewModels", "MainViewModel.BusinessDatabase.cs"],
+                    ["ViewModels", "MainViewModel.RecycleBin.cs"],
+                    ["ViewModels", "MainViewModel.ContractAlerts.cs"]
+                ]),
+            new WpfCommandBindingTarget(["Views", "SalesWindow.xaml"], [["ViewModels", "SalesViewModel.cs"]]),
+            new WpfCommandBindingTarget(["Views", "PaymentWindow.xaml"], [["ViewModels", "PaymentViewModel.cs"]]),
+            new WpfCommandBindingTarget(["Views", "PeriodLedgerWindow.xaml"], [["ViewModels", "PeriodLedgerViewModel.cs"]]),
+            new WpfCommandBindingTarget(["Views", "PrintEditWindow.xaml"], [["ViewModels", "PrintEditViewModel.cs"]]),
+            new WpfCommandBindingTarget(["Views", "CustomerEditWindow.xaml"], [["ViewModels", "CustomerEditViewModel.cs"]]),
+            new WpfCommandBindingTarget(["Views", "CustomerManagementWindow.xaml"], [["ViewModels", "CustomerManagementViewModel.cs"]]),
+            new WpfCommandBindingTarget(["Views", "InventoryWindow.xaml"], [["ViewModels", "InventoryViewModel.cs"]]),
+            new WpfCommandBindingTarget(
+                ["Views", "EnvironmentSettingsWindow.xaml"],
+                [
+                    ["ViewModels", "EnvironmentSettingsViewModel.cs"],
+                    ["ViewModels", "EnvironmentSettingsViewModel.Backup.cs"],
+                    ["ViewModels", "EnvironmentSettingsViewModel.BusinessDatabase.cs"],
+                    ["ViewModels", "EnvironmentSettingsViewModel.Masters.cs"],
+                    ["ViewModels", "EnvironmentSettingsViewModel.RecycleBin.cs"],
+                    ["ViewModels", "EnvironmentSettingsViewModel.Sync.cs"],
+                    ["ViewModels", "EnvironmentSettingsViewModel.TenantPolicies.cs"],
+                    ["ViewModels", "EnvironmentSettingsViewModel.Update.cs"]
+                ]),
+            new WpfCommandBindingTarget(
+                ["Views", "RentalBillingWindow.xaml"],
+                [
+                    ["ViewModels", "RentalBillingViewModel.cs"],
+                    ["ViewModels", "RentalBillingViewModel.AutoSave.cs"]
+                ]),
+            new WpfCommandBindingTarget(["Views", "RentalAssetWindow.xaml"], [["ViewModels", "RentalAssetViewModel.cs"]]),
+            new WpfCommandBindingTarget(["Views", "InventoryTransferWindow.xaml"], [["ViewModels", "InventoryTransferViewModel.cs"]]),
+            new WpfCommandBindingTarget(
+                ["Views", "RentalCustomerOnboardingWindow.xaml"],
+                [
+                    ["ViewModels", "RentalCustomerOnboardingViewModel.cs"],
+                    ["ViewModels", "RentalCustomerOnboardingViewModel.AutoSave.cs"]
+                ]),
+            new WpfCommandBindingTarget(["Views", "RentalContractEditorWindow.xaml"], [["ViewModels", "RentalContractEditorViewModel.cs"]]),
+            new WpfCommandBindingTarget(["Views", "RentalSettingsWindow.xaml"], [["ViewModels", "RentalSettingsViewModel.cs"]]),
+            new WpfCommandBindingTarget(["Views", "YeonsuDeliveryWindow.xaml"], [["ViewModels", "YeonsuDeliveryViewModel.cs"]]),
+            new WpfCommandBindingTarget(
+                ["Views", "SyncDiagnosticsWindow.xaml"],
+                [
+                    ["ViewModels", "SyncDiagnosticsViewModel.cs"],
+                    ["ViewModels", "SyncDiagnosticsViewModel.Export.cs"],
+                    ["ViewModels", "SyncDiagnosticsViewModel.Integrity.cs"]
+                ])
+        };
+
+        foreach (var target in targets)
+        {
+            var xaml = ReadAppFile(appRoot, target.XamlPath);
+            var boundCommands = WpfCommandBindingRegex.Matches(xaml)
+                .Select(match => match.Groups["command"].Value)
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(command => command, StringComparer.Ordinal)
+                .ToArray();
+            var viewModelCommands = target.ViewModelPaths
+                .Select(path => ReadAppFile(appRoot, path))
+                .SelectMany(ExtractViewModelCommandNames)
+                .ToHashSet(StringComparer.Ordinal);
+            var missingCommands = boundCommands
+                .Where(command => !viewModelCommands.Contains(command))
+                .ToArray();
+
+            Assert.NotEmpty(boundCommands);
+            Assert.True(
+                missingCommands.Length == 0,
+                $"{string.Join(Path.DirectorySeparatorChar, target.XamlPath)} has unresolved Command binding(s): {string.Join(", ", missingCommands)}");
+        }
+    }
+
     private static void AssertContainsAll(string source, params string[] expectedMarkers)
     {
         foreach (var marker in expectedMarkers)
@@ -192,6 +278,21 @@ public sealed class MasterUiWiringGuardTests
 
     private static string ReadAppFile(string appRoot, params string[] pathParts)
         => File.ReadAllText(Path.Combine([appRoot, .. pathParts]));
+
+    private static IEnumerable<string> ExtractViewModelCommandNames(string source)
+    {
+        foreach (Match match in RelayCommandMethodRegex.Matches(source))
+        {
+            var methodName = match.Groups["method"].Value;
+            var commandName = methodName.EndsWith("Async", StringComparison.Ordinal)
+                ? methodName[..^"Async".Length]
+                : methodName;
+            yield return $"{commandName}Command";
+        }
+
+        foreach (Match match in ExplicitCommandPropertyRegex.Matches(source))
+            yield return match.Groups["command"].Value;
+    }
 
     private static string FindDesktopAppRoot()
     {
@@ -216,4 +317,18 @@ public sealed class MasterUiWiringGuardTests
 
         throw new DirectoryNotFoundException("Repository root was not found.");
     }
+
+    private sealed record WpfCommandBindingTarget(string[] XamlPath, string[][] ViewModelPaths);
+
+    private static readonly Regex WpfCommandBindingRegex = new(
+        "Command=\"\\{Binding\\s+(?:DataContext\\.)?(?<command>[A-Za-z_][A-Za-z0-9_]*)",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    private static readonly Regex RelayCommandMethodRegex = new(
+        @"\[RelayCommand[^\]]*\]\s*(?:\r?\n\s*(?:\[[^\]]+\]\s*)?)*\s*(?:private|public|protected|internal)\s+(?:async\s+)?[\w<>,?\[\]\s.]+\s+(?<method>[A-Z][A-Za-z0-9_]*)\s*\(",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    private static readonly Regex ExplicitCommandPropertyRegex = new(
+        @"public\s+[\w<>,?\[\]\s.]+Command\s+(?<command>[A-Z][A-Za-z0-9_]*Command)\s*\{",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
 }
