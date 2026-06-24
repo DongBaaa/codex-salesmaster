@@ -9,6 +9,8 @@
     [switch]$SkipInstall,
     [switch]$IncludeDraftScreens,
     [switch]$ExerciseSyncNow,
+    [ValidateSet('', '400', '401', '403', '404', '422')]
+    [string]$ExerciseMasterDataNonRetryableSaveFaultStatus = '',
     [string]$SyncExerciseBaseUrl = 'http://127.0.0.1:19080'
 )
 
@@ -113,6 +115,29 @@ function Invoke-Adb {
         throw "adb 실패: adb $($Arguments -join ' ')`n$output"
     }
     return $output
+}
+
+function Set-MobileDiagnosticFault {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$PackageName,
+        [ValidateSet('NETWORK', '400', '401', '403', '404', '422', '500')]
+        [string]$Mode = 'NETWORK',
+        [string]$Target
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Target)) {
+        throw 'Mobile diagnostic fault target endpoint is empty.'
+    }
+
+    $normalizedMode = $Mode.Trim().ToUpperInvariant()
+    $script = "mkdir -p files/diagnostics && printf $normalizedMode\|$Target > files/diagnostics/next-fault.txt && cat files/diagnostics/next-fault.txt"
+    $quotedScript = "'$script'"
+    $output = Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'run-as', $PackageName, 'sh', '-c', $quotedScript)
+    if (($output -join "`n") -notmatch "$normalizedMode\|$([regex]::Escape($Target))") {
+        throw "Mobile diagnostic fault setup failed($normalizedMode): $($output -join ' ')"
+    }
 }
 
 function Install-MobileApk {
@@ -432,6 +457,145 @@ function Tap-Point {
     Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'input', 'tap', "$X", "$Y") | Out-Null
 }
 
+function Get-UiTextPoint {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$EvidenceDirectory,
+        [string]$Name,
+        [string]$Text,
+        [string]$ClassName,
+        [object]$Screen,
+        [int]$MinY = 0,
+        [switch]$AllowScroll,
+        [int]$MaxScrolls = 4
+    )
+
+    $attemptLimit = if ($AllowScroll) { [Math]::Max(0, $MaxScrolls) } else { 0 }
+    $lastDump = $null
+
+    for ($attempt = 0; $attempt -le $attemptLimit; $attempt++) {
+        $dump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "$Name-$attempt"
+        $lastDump = $dump
+        if (Dismiss-AndroidAnrDialog -AdbPath $AdbPath -DeviceId $DeviceId -Content $dump.Content) {
+            Start-Sleep -Seconds 3
+            continue
+        }
+
+        $point = Get-NodeCenterByText -Content $dump.Content -Text $Text -ClassName $ClassName -MinY $MinY
+        if (-not $point -and -not [string]::IsNullOrWhiteSpace($ClassName)) {
+            $point = Get-NodeCenterByText -Content $dump.Content -Text $Text -ClassName '' -MinY $MinY
+        }
+
+        if ($point) {
+            return [pscustomobject]@{
+                Point = $point
+                Dump = $dump
+            }
+        }
+
+        if (-not $AllowScroll -or $attempt -eq $attemptLimit) {
+            break
+        }
+
+        $x = [int]($Screen.Width * 0.50)
+        $startY = [int]($Screen.Height * 0.80)
+        $endY = [int]($Screen.Height * 0.30)
+        Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'input', 'swipe', "$x", "$startY", "$x", "$endY", '450') | Out-Null
+        Start-Sleep -Milliseconds 700
+    }
+
+    $detail = if ($lastDump) { $lastDump.Path } else { 'UI dump 없음' }
+    throw "UI에서 '$Text' 항목을 찾지 못했습니다. 덤프: $detail"
+}
+
+function Tap-UiText {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$EvidenceDirectory,
+        [string]$Name,
+        [string]$Text,
+        [string]$ClassName,
+        [object]$Screen,
+        [int]$MinY = 0,
+        [switch]$AllowScroll,
+        [int]$MaxScrolls = 4
+    )
+
+    $result = Get-UiTextPoint `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name $Name `
+        -Text $Text `
+        -ClassName $ClassName `
+        -Screen $Screen `
+        -MinY $MinY `
+        -AllowScroll:$AllowScroll `
+        -MaxScrolls $MaxScrolls
+
+    Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $result.Point.X -Y $result.Point.Y
+    Start-Sleep -Milliseconds 500
+    return $result.Dump
+}
+
+function Set-MobileTextEntry {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$EvidenceDirectory,
+        [string]$Timestamp,
+        [string]$FieldName,
+        [string]$Value,
+        [object]$Screen
+    )
+
+    Tap-UiText `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-smoke-$Timestamp-field-$FieldName" `
+        -Text $FieldName `
+        -ClassName 'android.widget.EditText' `
+        -Screen $Screen | Out-Null
+    Clear-AndroidTextField -AdbPath $AdbPath -DeviceId $DeviceId
+    Set-AndroidTextSlow -AdbPath $AdbPath -DeviceId $DeviceId -Text $Value
+    Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'input', 'keyevent', 'KEYCODE_ESCAPE') | Out-Null
+    Start-Sleep -Milliseconds 800
+}
+
+function Dismiss-MobileAlert {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$EvidenceDirectory,
+        [string]$Timestamp,
+        [string]$AlertTitle,
+        [object]$Screen
+    )
+
+    $dump = Wait-UiContainsAll `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-smoke-$Timestamp-alert-$AlertTitle" `
+        -Needles @($AlertTitle, '확인') `
+        -StepName "$AlertTitle 알림 확인" `
+        -TimeoutSeconds 20
+
+    Tap-UiText `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-smoke-$Timestamp-alert-$AlertTitle-confirm" `
+        -Text '확인' `
+        -ClassName 'android.widget.Button' `
+        -Screen $Screen | Out-Null
+
+    return $dump
+}
+
 function Set-AndroidTextSlow {
     param(
         [string]$AdbPath,
@@ -624,6 +788,193 @@ function Open-BottomTabAndAssert {
     return $dump
 }
 
+function Invoke-MasterDataNonRetryableSaveRejection {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$PackageName,
+        [string]$EvidenceDirectory,
+        [string]$Timestamp,
+        [object]$Screen,
+        [string]$FaultStatus,
+        [System.Collections.Generic.List[object]]$Steps
+    )
+
+    if ([string]::IsNullOrWhiteSpace($FaultStatus)) {
+        return
+    }
+
+    $uniqueSuffix = Get-Date -Format 'HHmmssfff'
+
+    Open-BottomTabAndAssert `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Timestamp $Timestamp `
+        -Screen $Screen `
+        -TabText '거래처' `
+        -FallbackXRatio 0.30 `
+        -StepName 'mobile-nonretryable-customer-tab' `
+        -Needles @('거래처', '거래처명 / 전화 / 사업자번호') `
+        -Steps $Steps | Out-Null
+
+    Tap-UiText `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-smoke-$Timestamp-customer-new-button" `
+        -Text '신규' `
+        -ClassName 'android.widget.Button' `
+        -Screen $Screen | Out-Null
+
+    Wait-UiContainsAll `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-smoke-$Timestamp-customer-edit-new" `
+        -Needles @('새 거래처 등록', '거래처명', '저장') `
+        -StepName 'mobile-nonretryable-customer-edit-open' | Out-Null
+
+    Set-MobileTextEntry `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Timestamp $Timestamp `
+        -FieldName '거래처명' `
+        -Value "GP${FaultStatus}Customer$uniqueSuffix" `
+        -Screen $Screen
+
+    Set-MobileDiagnosticFault -AdbPath $AdbPath -DeviceId $DeviceId -PackageName $PackageName -Mode $FaultStatus -Target 'customers'
+    $Steps.Add([pscustomobject]@{ Step = 'mobile-nonretryable-customer-fault-before-save'; Result = 'PASS'; Detail = "$FaultStatus|customers" })
+
+    Tap-UiText `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-smoke-$Timestamp-customer-save-button" `
+        -Text '저장' `
+        -ClassName 'android.widget.Button' `
+        -Screen $Screen `
+        -AllowScroll | Out-Null
+
+    Wait-UiContainsAll `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-smoke-$Timestamp-customer-save-rejected" `
+        -Needles @('거래처 저장 실패') `
+        -StepName 'mobile-nonretryable-customer-save-rejected' `
+        -TimeoutSeconds 30 | Out-Null
+    $Steps.Add([pscustomobject]@{ Step = 'mobile-nonretryable-customer-save-rejected'; Result = 'PASS'; Detail = '거래처 저장 실패' })
+    Dismiss-MobileAlert -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Timestamp $Timestamp -AlertTitle '거래처 저장 실패' -Screen $Screen | Out-Null
+
+    Tap-UiText `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-smoke-$Timestamp-customer-cancel-button" `
+        -Text '취소' `
+        -ClassName 'android.widget.Button' `
+        -Screen $Screen `
+        -AllowScroll | Out-Null
+
+    Open-BottomTabAndAssert `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Timestamp $Timestamp `
+        -Screen $Screen `
+        -TabText '품목' `
+        -FallbackXRatio 0.50 `
+        -StepName 'mobile-nonretryable-item-tab' `
+        -Needles @('품목 검색', '품목분류') `
+        -Steps $Steps | Out-Null
+
+    try {
+        Tap-UiText `
+            -AdbPath $AdbPath `
+            -DeviceId $DeviceId `
+            -EvidenceDirectory $EvidenceDirectory `
+            -Name "mobile-smoke-$Timestamp-item-new-category-button" `
+            -Text '신규 품목' `
+            -ClassName 'android.widget.Button' `
+            -Screen $Screen | Out-Null
+    }
+    catch {
+        Tap-UiText `
+            -AdbPath $AdbPath `
+            -DeviceId $DeviceId `
+            -EvidenceDirectory $EvidenceDirectory `
+            -Name "mobile-smoke-$Timestamp-item-new-button" `
+            -Text '신규' `
+            -ClassName 'android.widget.Button' `
+            -Screen $Screen | Out-Null
+    }
+
+    Wait-UiContainsAll `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-smoke-$Timestamp-item-edit-new" `
+        -Needles @('새 품목 등록', '품명', '저장') `
+        -StepName 'mobile-nonretryable-item-edit-open' | Out-Null
+
+    Set-MobileTextEntry `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Timestamp $Timestamp `
+        -FieldName '품명' `
+        -Value "GP${FaultStatus}Item$uniqueSuffix" `
+        -Screen $Screen
+
+    Set-MobileDiagnosticFault -AdbPath $AdbPath -DeviceId $DeviceId -PackageName $PackageName -Mode $FaultStatus -Target 'items'
+    $Steps.Add([pscustomobject]@{ Step = 'mobile-nonretryable-item-fault-before-save'; Result = 'PASS'; Detail = "$FaultStatus|items" })
+
+    Tap-UiText `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-smoke-$Timestamp-item-save-button" `
+        -Text '저장' `
+        -ClassName 'android.widget.Button' `
+        -Screen $Screen `
+        -AllowScroll | Out-Null
+
+    Wait-UiContainsAll `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-smoke-$Timestamp-item-save-rejected" `
+        -Needles @('품목 저장 실패') `
+        -StepName 'mobile-nonretryable-item-save-rejected' `
+        -TimeoutSeconds 30 | Out-Null
+    $Steps.Add([pscustomobject]@{ Step = 'mobile-nonretryable-item-save-rejected'; Result = 'PASS'; Detail = '품목 저장 실패' })
+    Dismiss-MobileAlert -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Timestamp $Timestamp -AlertTitle '품목 저장 실패' -Screen $Screen | Out-Null
+
+    Tap-UiText `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-smoke-$Timestamp-item-cancel-button" `
+        -Text '취소' `
+        -ClassName 'android.widget.Button' `
+        -Screen $Screen `
+        -AllowScroll | Out-Null
+
+    Open-BottomTabAndAssert `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Timestamp $Timestamp `
+        -Screen $Screen `
+        -TabText '동기화' `
+        -FallbackXRatio 0.84 `
+        -StepName 'mobile-nonretryable-master-data-rejection-not-dirty' `
+        -Needles @('동기화 상태', '저장 대기', '거래처 0건', '품목 0건') `
+        -Steps $Steps | Out-Null
+}
+
 function Invoke-SyncNowAndAssert {
     param(
         [string]$AdbPath,
@@ -700,7 +1051,11 @@ if ([string]::IsNullOrWhiteSpace($EvidenceDirectory)) {
 }
 New-Item -ItemType Directory -Force -Path $EvidenceDirectory | Out-Null
 
-if ($ExerciseSyncNow) {
+if (-not [string]::IsNullOrWhiteSpace($ExerciseMasterDataNonRetryableSaveFaultStatus) -and $SkipInstall) {
+    throw '거래처/품목 비재시도성 저장 실패 검증은 dirty 0건 보장을 위해 fresh install/app-data-clear 상태에서만 실행하세요. -SkipInstall을 제거하세요.'
+}
+
+if ($ExerciseSyncNow -or -not [string]::IsNullOrWhiteSpace($ExerciseMasterDataNonRetryableSaveFaultStatus)) {
     Assert-LocalSyncExerciseTarget -BaseUrl $SyncExerciseBaseUrl
 }
 
@@ -737,6 +1092,10 @@ if ($freshInstall) {
     # Wait once more before sending text so the smoke validates the app flow instead of emulator warm-up timing.
     Start-Sleep -Seconds 20
     $dump = Get-UiDump -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-smoke-$timestamp-login-stable"
+    if (Dismiss-AndroidAnrDialog -AdbPath $resolvedAdb -DeviceId $deviceId -Content $dump.Content) {
+        Start-Sleep -Seconds 5
+        $dump = Wait-UiForAppReady -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Timestamp "$timestamp-login-stable-after-anr" -PackageName $PackageName -TimeoutSeconds 60
+    }
 }
 
 if ($dump.Content.Contains('계정 로그인') -or ($dump.Content.Contains('로그인') -and $dump.Content.Contains('비밀번호'))) {
@@ -852,6 +1211,18 @@ Open-BottomTabAndAssert `
     -Needles @('거래처', '거래처명 / 전화 / 사업자번호') `
     -Steps $steps | Out-Null
 
+if (-not [string]::IsNullOrWhiteSpace($ExerciseMasterDataNonRetryableSaveFaultStatus)) {
+    Invoke-MasterDataNonRetryableSaveRejection `
+        -AdbPath $resolvedAdb `
+        -DeviceId $deviceId `
+        -PackageName $PackageName `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Timestamp $timestamp `
+        -Screen $screen `
+        -FaultStatus $ExerciseMasterDataNonRetryableSaveFaultStatus `
+        -Steps $steps
+}
+
 Open-BottomTabAndAssert `
     -AdbPath $resolvedAdb `
     -DeviceId $deviceId `
@@ -904,6 +1275,7 @@ $result = [pscustomobject]@{
     DeviceId = $deviceId
     ApkPath = $resolvedApk
     ExerciseSyncNow = [bool]$ExerciseSyncNow
+    ExerciseMasterDataNonRetryableSaveFaultStatus = $ExerciseMasterDataNonRetryableSaveFaultStatus
     Result = 'PASS'
     Steps = $steps
 }
@@ -920,6 +1292,7 @@ $mdLines = @(
     "- 패키지: $PackageName",
     "- APK: $resolvedApk",
     "- 수동 동기화 실행: $([bool]$ExerciseSyncNow)",
+    "- 거래처/품목 비재시도성 저장 실패 검증: $ExerciseMasterDataNonRetryableSaveFaultStatus",
     "- 결과: PASS",
     '',
     '## 단계',

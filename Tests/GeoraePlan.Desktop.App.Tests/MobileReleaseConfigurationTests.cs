@@ -2013,6 +2013,39 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("sync-now-before-tap", source, StringComparison.Ordinal);
         Assert.Contains("'권장 동기화 완료'", source, StringComparison.Ordinal);
         Assert.Contains("수동 동기화 실기동 검증은 로컬 테스트 API에서만 허용됩니다.", source, StringComparison.Ordinal);
+        Assert.Contains("mobile-smoke-$timestamp-login-stable", source, StringComparison.Ordinal);
+        Assert.Contains("Dismiss-AndroidAnrDialog -AdbPath $resolvedAdb -DeviceId $deviceId -Content $dump.Content", source, StringComparison.Ordinal);
+        Assert.Contains("$timestamp-login-stable-after-anr", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AndroidSmoke_CoversMasterDataNonRetryableSaveRejection()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "mobile",
+            "Invoke-GeoraePlanAndroidSmoke.ps1"));
+
+        Assert.Contains("[ValidateSet('', '400', '401', '403', '404', '422')]", source, StringComparison.Ordinal);
+        Assert.Contains("[string]$ExerciseMasterDataNonRetryableSaveFaultStatus = ''", source, StringComparison.Ordinal);
+        Assert.Contains("function Set-MobileDiagnosticFault", source, StringComparison.Ordinal);
+        Assert.Contains("function Invoke-MasterDataNonRetryableSaveRejection", source, StringComparison.Ordinal);
+        Assert.Contains("dirty 0건 보장을 위해 fresh install/app-data-clear", source, StringComparison.Ordinal);
+        Assert.Contains("$ExerciseSyncNow -or -not [string]::IsNullOrWhiteSpace($ExerciseMasterDataNonRetryableSaveFaultStatus)", source, StringComparison.Ordinal);
+        Assert.Contains("-Target 'customers'", source, StringComparison.Ordinal);
+        Assert.Contains("-Target 'items'", source, StringComparison.Ordinal);
+        Assert.Contains("'새 거래처 등록'", source, StringComparison.Ordinal);
+        Assert.Contains("'새 품목 등록'", source, StringComparison.Ordinal);
+        Assert.Contains("'mobile-nonretryable-customer-fault-before-save'", source, StringComparison.Ordinal);
+        Assert.Contains("'mobile-nonretryable-customer-save-rejected'", source, StringComparison.Ordinal);
+        Assert.Contains("'mobile-nonretryable-item-fault-before-save'", source, StringComparison.Ordinal);
+        Assert.Contains("'mobile-nonretryable-item-save-rejected'", source, StringComparison.Ordinal);
+        Assert.Contains("'mobile-nonretryable-master-data-rejection-not-dirty'", source, StringComparison.Ordinal);
+        Assert.Contains("'거래처 저장 실패'", source, StringComparison.Ordinal);
+        Assert.Contains("'품목 저장 실패'", source, StringComparison.Ordinal);
+        Assert.Contains("'거래처 0건'", source, StringComparison.Ordinal);
+        Assert.Contains("'품목 0건'", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2394,6 +2427,46 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("품목 {summary.PendingItemCount}건 / 재고 {summary.PendingItemWarehouseStockCount}건", syncViewSource, StringComparison.Ordinal);
         Assert.Contains("거래처기준 {pendingSummary.PendingCustomerMasterCount:N0}건 / 거래처 {pendingSummary.PendingCustomerCount:N0}건 / 계약 {pendingSummary.PendingCustomerContractCount:N0}건", homeViewSource, StringComparison.Ordinal);
         Assert.Contains("품목 {pendingSummary.PendingItemCount:N0}건 / 재고 {pendingSummary.PendingItemWarehouseStockCount:N0}건", homeViewSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MobileCustomerItemEdit_NonRetryableAuthenticationFailureDoesNotQueueDirty()
+    {
+        var root = FindRepositoryRoot();
+        var customerPageSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Pages",
+            "CustomerEditPage.cs"));
+        var itemPageSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Pages",
+            "ItemEditPage.cs"));
+        var retryPolicySource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "MobileRetryableNetworkFailure.cs"));
+
+        Assert.Contains("catch (Exception ex) when (dto is not null && MobileRetryableNetworkFailure.IsRetryable(ex))", customerPageSource, StringComparison.Ordinal);
+        Assert.Contains("await QueuePendingSaveAsync(dto, ex);", customerPageSource, StringComparison.Ordinal);
+        Assert.Contains("_statusLabel.Text = $\"거래처 저장 실패: {ex.Message}\";", customerPageSource, StringComparison.Ordinal);
+        Assert.Contains("await DisplayAlert(\"거래처 저장 실패\", ex.Message, \"확인\");", customerPageSource, StringComparison.Ordinal);
+
+        Assert.Contains("catch (Exception ex) when (dto is not null && MobileRetryableNetworkFailure.IsRetryable(ex))", itemPageSource, StringComparison.Ordinal);
+        Assert.Contains("await QueuePendingSaveAsync(dto, ex);", itemPageSource, StringComparison.Ordinal);
+        Assert.Contains("_statusLabel.Text = $\"품목 저장 실패: {ex.Message}\";", itemPageSource, StringComparison.Ordinal);
+        Assert.Contains("await DisplayAlert(\"품목 저장 실패\", ex.Message, \"확인\");", itemPageSource, StringComparison.Ordinal);
+
+        Assert.Contains("HttpStatusCode.RequestTimeout", retryPolicySource, StringComparison.Ordinal);
+        Assert.Contains("HttpStatusCode.TooManyRequests", retryPolicySource, StringComparison.Ordinal);
+        Assert.Contains("HttpStatusCode.InternalServerError", retryPolicySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("HttpStatusCode.Unauthorized", retryPolicySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("MobileAuthenticationException", retryPolicySource, StringComparison.Ordinal);
     }
 
     [Fact]
