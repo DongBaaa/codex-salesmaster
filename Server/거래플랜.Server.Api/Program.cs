@@ -126,6 +126,7 @@ builder.Services.AddDbContext<AppDbContext>((serviceProvider, options) =>
 
 builder.Services.AddScoped<ICurrentUserContext, HttpCurrentUserContext>();
 builder.Services.AddScoped<OfficeScopeService>();
+builder.Services.AddScoped<OperationalLogScopeService>();
 builder.Services.AddScoped<InventoryLedgerService>();
 builder.Services.AddScoped<InvoiceStockSnapshotService>();
 builder.Services.AddScoped<RentalSettlementRecalculationService>();

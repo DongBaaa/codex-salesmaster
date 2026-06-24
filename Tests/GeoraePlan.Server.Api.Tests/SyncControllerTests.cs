@@ -2144,7 +2144,17 @@ public sealed class SyncControllerTests : IDisposable
         _dbContext.ConflictLogs.AddRange(openConflict, resolvedConflict);
         await _dbContext.SaveChangesAsync();
 
-        var controller = new ConflictLogsController(_dbContext);
+        var conflictLogScopeService = new OperationalLogScopeService(
+            _dbContext,
+            new OfficeScopeService(
+                new TestCurrentUserContext
+                {
+                    Username = "admin",
+                    ScopeType = TenantScopeCatalog.ScopeAdmin,
+                    IsAdmin = true
+                },
+                _dbContext));
+        var controller = new ConflictLogsController(_dbContext, conflictLogScopeService);
 
         var defaultResponse = await controller.GetAll(cancellationToken: CancellationToken.None);
         var defaultOk = Assert.IsType<OkObjectResult>(defaultResponse.Result);

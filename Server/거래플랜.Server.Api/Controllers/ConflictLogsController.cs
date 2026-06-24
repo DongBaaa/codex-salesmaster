@@ -1,5 +1,6 @@
-﻿using 거래플랜.Server.Api.Data;
+using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Mappings;
+using 거래플랜.Server.Api.Services;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -13,7 +14,15 @@ namespace 거래플랜.Server.Api.Controllers;
 public sealed class ConflictLogsController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
-    public ConflictLogsController(AppDbContext dbContext) => _dbContext = dbContext;
+    private readonly OperationalLogScopeService _operationalLogScopeService;
+
+    public ConflictLogsController(
+        AppDbContext dbContext,
+        OperationalLogScopeService operationalLogScopeService)
+    {
+        _dbContext = dbContext;
+        _operationalLogScopeService = operationalLogScopeService;
+    }
 
     [HttpGet]
     public async Task<ActionResult<List<ConflictLogDto>>> GetAll(
@@ -27,14 +36,14 @@ public sealed class ConflictLogsController : ControllerBase
             query = query.Where(x => x.Status != "Resolved");
         }
 
-        var rows = await query
-            .OrderBy(x => x.Status == "Resolved" ? 1 : 0)
-            .ThenByDescending(x => x.CreatedAtUtc)
-            .Take(Math.Min(take, 500))
-            .Select(x => x.ToDto())
-            .ToListAsync(cancellationToken);
+        var rows = await _operationalLogScopeService.TakeVisibleConflictLogsAsync(
+            query
+                .OrderBy(x => x.Status == "Resolved" ? 1 : 0)
+                .ThenByDescending(x => x.CreatedAtUtc),
+            take,
+            cancellationToken);
 
-        return Ok(rows);
+        return Ok(rows.Select(x => x.ToDto()).ToList());
     }
 
     [HttpPost("{id:guid}/resolve")]
@@ -46,6 +55,14 @@ public sealed class ConflictLogsController : ControllerBase
         var entity = await _dbContext.ConflictLogs.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null)
             return NotFound();
+
+        if (!await _operationalLogScopeService.CanReadLogTargetAsync(
+                entity.EntityName,
+                entity.EntityId,
+                cancellationToken))
+        {
+            return NotFound();
+        }
 
         entity.Status = "Resolved";
         entity.ResolvedAtUtc = DateTime.UtcNow;
