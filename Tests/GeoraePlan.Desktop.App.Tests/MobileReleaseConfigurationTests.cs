@@ -868,7 +868,7 @@ public sealed class MobileReleaseConfigurationTests
         var savePaymentMethod = coordinatorSource[methodStart..methodEnd];
 
         Assert.Contains(
-            "StatusCode: HttpStatusCode.BadRequest\n                or HttpStatusCode.Forbidden\n                or HttpStatusCode.NotFound\n                or HttpStatusCode.UnprocessableEntity",
+            "StatusCode: HttpStatusCode.BadRequest\n                   or HttpStatusCode.Unauthorized\n                   or HttpStatusCode.Forbidden\n                   or HttpStatusCode.NotFound\n                   or HttpStatusCode.UnprocessableEntity",
             coordinatorSource,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -909,6 +909,74 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Matches(
             "if \\(state\\.PendingPaymentCount == 0 &&\\n\\s*SyncCoordinator\\.IsFailedImmediateSaveWithoutServerAcceptance\\(state\\)\\)\\n\\s*\\{\\n\\s*StatusMessage = \\$\"\\{PaymentActionText\\}[^\\n]+\\{state\\.LastError\\}\";\\n\\s*return;\\n\\s*\\}",
             paymentViewSource);
+    }
+
+    [Fact]
+    public void MobileImmediateAuthenticationFailure_DoesNotQueueDirtyOrReportSaved()
+    {
+        var root = FindRepositoryRoot();
+        var coordinatorSource = File.ReadAllText(Path.Combine(
+                root,
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "Services",
+                "SyncCoordinator.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var invoiceViewSource = File.ReadAllText(Path.Combine(
+                root,
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "ViewModels",
+                "InvoiceDraftViewModel.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var paymentViewSource = File.ReadAllText(Path.Combine(
+                root,
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "ViewModels",
+                "PaymentDraftViewModel.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        var saveInvoiceMethod = ExtractBetween(
+            coordinatorSource,
+            "public async Task<MobileSyncState> SaveInvoiceImmediatelyAsync",
+            "public async Task<MobileSyncState> SavePaymentImmediatelyAsync");
+        var savePaymentMethod = ExtractBetween(
+            coordinatorSource,
+            "public async Task<MobileSyncState> SavePaymentImmediatelyAsync",
+            "public async Task<MobileSyncState> TryBackgroundSyncAsync");
+
+        Assert.Contains("ex is MobileAuthenticationException ||", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("or HttpStatusCode.Unauthorized", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "MobileAuthenticationException => \"인증이 만료되었거나 복구되지 않았습니다. 다시 로그인해 주세요.\"",
+            coordinatorSource,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "catch (Exception ex) when (IsNonRetryableClientFailure(ex))\n            {\n                MarkFailure(state, ex);\n            }",
+            saveInvoiceMethod,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "catch (Exception ex) when (IsNonRetryableClientFailure(ex))\n            {\n                MarkFailure(state, ex);\n            }",
+            savePaymentMethod,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "catch (Exception ex) when (IsNonRetryableClientFailure(ex))\n            {\n                state.PendingPush.Invoices.Add(invoice);",
+            saveInvoiceMethod,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "catch (Exception ex) when (IsNonRetryableClientFailure(ex))\n            {\n                state.PendingPush.Payments.Add(payment);",
+            savePaymentMethod,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "if (state.PendingInvoiceCount == 0 &&\n                SyncCoordinator.IsFailedImmediateSaveWithoutServerAcceptance(state))\n            {\n                StatusMessage = $\"{DocumentKindText} 전표가 저장되지 않았습니다. {state.LastError}\";\n                return;\n            }",
+            invoiceViewSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "if (state.PendingPaymentCount == 0 &&\n                SyncCoordinator.IsFailedImmediateSaveWithoutServerAcceptance(state))\n            {\n                StatusMessage = $\"{PaymentActionText}이 저장되지 않았습니다. {state.LastError}\";\n                return;\n            }",
+            paymentViewSource,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2004,6 +2072,7 @@ public sealed class MobileReleaseConfigurationTests
             "Invoke-GeoraePlanAndroidWriteE2E.ps1"));
 
         Assert.Contains("[string]$ExerciseNonRetryableSaveFaultStatus = ''", source, StringComparison.Ordinal);
+        Assert.Contains("[ValidateSet('', '400', '401', '403', '404', '422')]", source, StringComparison.Ordinal);
         Assert.Contains("[ValidateSet('NETWORK', '400', '401', '403', '404', '422', '500')]", source, StringComparison.Ordinal);
         Assert.Contains("function Set-MobileDiagnosticFault", source, StringComparison.Ordinal);
         Assert.Contains("Set-MobileDiagnosticFault -AdbPath $resolvedAdb -DeviceId $deviceId -PackageName $PackageName -Mode $ExerciseNonRetryableSaveFaultStatus -Target 'invoices'", source, StringComparison.Ordinal);
@@ -2095,6 +2164,7 @@ public sealed class MobileReleaseConfigurationTests
             "Invoke-GeoraePlanAndroidPaymentE2E.ps1"));
 
         Assert.Contains("[string]$ExerciseNonRetryableSaveFaultStatus = ''", source, StringComparison.Ordinal);
+        Assert.Contains("[ValidateSet('', '400', '401', '403', '404', '422')]", source, StringComparison.Ordinal);
         Assert.Contains("[ValidateSet('NETWORK', '400', '401', '403', '404', '422', '500')]", source, StringComparison.Ordinal);
         Assert.Contains("function Set-MobileDiagnosticFault", source, StringComparison.Ordinal);
         Assert.Contains("Set-MobileDiagnosticFault -AdbPath $resolvedAdb -DeviceId $deviceId -PackageName $PackageName -Mode $ExerciseNonRetryableSaveFaultStatus -Target 'sync/push'", source, StringComparison.Ordinal);
@@ -2763,11 +2833,14 @@ public sealed class MobileReleaseConfigurationTests
 
         Assert.Contains("await MobileDiagnosticFaultInjector.ThrowIfConfiguredAsync(relative, ct);", apiClientSource, StringComparison.Ordinal);
         Assert.Contains("File.Delete(path);", injectorSource, StringComparison.Ordinal);
+        Assert.Contains("throw new MobileAuthenticationException(relative, \"401 Unauthorized (diagnostic fault)\");", injectorSource, StringComparison.Ordinal);
         Assert.Contains("\"403\" => HttpStatusCode.Forbidden", injectorSource, StringComparison.Ordinal);
         Assert.Contains("\"422\" => HttpStatusCode.UnprocessableEntity", injectorSource, StringComparison.Ordinal);
         Assert.Contains("throw new HttpRequestException(\n                    $\"{(int)statusCode} {statusCode} (diagnostic fault)\"", injectorSource, StringComparison.Ordinal);
 
         Assert.Contains("private static bool IsNonRetryableClientFailure(Exception ex)", syncCoordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("ex is MobileAuthenticationException ||", syncCoordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("or HttpStatusCode.Unauthorized", syncCoordinatorSource, StringComparison.Ordinal);
         Assert.Contains("or HttpStatusCode.Forbidden", syncCoordinatorSource, StringComparison.Ordinal);
         Assert.Contains("or HttpStatusCode.UnprocessableEntity", syncCoordinatorSource, StringComparison.Ordinal);
         Assert.Contains("var result = EnsurePushResult(await _api.PushAsync(request, ct));", syncCoordinatorSource, StringComparison.Ordinal);
@@ -2793,6 +2866,15 @@ public sealed class MobileReleaseConfigurationTests
             "var reason = firstConflict?.Reason?.Trim();",
             source,
             StringComparison.Ordinal);
+    }
+
+    private static string ExtractBetween(string source, string startNeedle, string endNeedle)
+    {
+        var start = source.IndexOf(startNeedle, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"start marker not found: {startNeedle}");
+        var end = source.IndexOf(endNeedle, start + startNeedle.Length, StringComparison.Ordinal);
+        Assert.True(end > start, $"end marker not found after {startNeedle}: {endNeedle}");
+        return source[start..end];
     }
 
     private static int CountOccurrences(string source, string value)

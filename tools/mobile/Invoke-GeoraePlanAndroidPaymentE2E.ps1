@@ -12,7 +12,7 @@
     [switch]$SkipInstall,
     [switch]$KeepTemporaryData,
     [switch]$ExerciseStoppedServerDirtySync,
-    [ValidateSet('', '400', '403', '404', '422')]
+    [ValidateSet('', '400', '401', '403', '404', '422')]
     [string]$ExerciseNonRetryableSaveFaultStatus = '',
     [switch]$ExerciseAttachmentUpload,
     [switch]$ExerciseCameraAttachmentUpload,

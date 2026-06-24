@@ -1009,13 +1009,15 @@ public sealed class SyncCoordinator
         => ex is HttpRequestException { StatusCode: HttpStatusCode.Conflict };
 
     private static bool IsNonRetryableClientFailure(Exception ex)
-        => ex is HttpRequestException
-        {
-            StatusCode: HttpStatusCode.BadRequest
-                or HttpStatusCode.Forbidden
-                or HttpStatusCode.NotFound
-                or HttpStatusCode.UnprocessableEntity
-        };
+        => ex is MobileAuthenticationException ||
+           ex is HttpRequestException
+           {
+               StatusCode: HttpStatusCode.BadRequest
+                   or HttpStatusCode.Unauthorized
+                   or HttpStatusCode.Forbidden
+                   or HttpStatusCode.NotFound
+                   or HttpStatusCode.UnprocessableEntity
+           };
 
     private static void MarkFailure(MobileSyncState state, Exception ex)
     {
