@@ -691,8 +691,10 @@ public sealed class SyncController : ControllerBase
             var requestedRentalProfiles = request.RentalBillingProfiles ?? [];
             var incomingRentalProfileIdMap = BuildIncomingRentalBillingProfileIdMap(requestedRentalProfiles);
             var scopedRentalProfiles = await PrepareScopedRentalBillingProfilesAsync(requestedRentalProfiles, result, cancellationToken);
+            var rentalProfileRestoreCustomerIds = await BuildRentalBillingProfileRestoreCustomerIdsAsync(scopedRentalProfiles, result, cancellationToken);
             var validRentalProfiles = await FilterValidRentalBillingProfilesAsync(scopedRentalProfiles, result, cancellationToken);
             var acceptedRentalProfiles = await UpsertRentalBillingProfilesAsync(validRentalProfiles, result, deviceId, cancellationToken);
+            await RestoreLinkedDeletedCustomerContractsForRentalBillingProfilesAsync(acceptedRentalProfiles, rentalProfileRestoreCustomerIds, cancellationToken);
             if (validRentalProfiles.Count > 0)
             {
                 await _dbContext.SaveChangesAsync(cancellationToken);
@@ -710,9 +712,11 @@ public sealed class SyncController : ControllerBase
             try
             {
                 var scopedRentalAssets = await PrepareScopedRentalAssetsAsync(request.RentalAssets ?? [], result, cancellationToken);
+                var rentalAssetRestoreCustomerIds = await BuildRentalAssetRestoreCustomerIdsAsync(scopedRentalAssets, result, cancellationToken);
                 var validRentalAssets = await FilterValidRentalAssetsAsync(scopedRentalAssets, resolvedRentalProfileIds, result, cancellationToken);
                 var acceptedRentalAssets = await UpsertEntitiesAsync(validRentalAssets, _dbContext.RentalAssets,
                     (e, d) => e.Apply(d), d => new RentalAsset { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+                await RestoreLinkedDeletedCustomerContractsForRentalAssetsAsync(acceptedRentalAssets, rentalAssetRestoreCustomerIds, cancellationToken);
                 if (validRentalAssets.Count > 0)
                     await _dbContext.SaveChangesAsync(cancellationToken);
                 var scopedRentalAssignmentHistories = await PrepareScopedRentalAssetAssignmentHistoriesAsync(request.RentalAssetAssignmentHistories ?? [], result, cancellationToken);
@@ -3511,6 +3515,91 @@ public sealed class SyncController : ControllerBase
         return result;
     }
 
+    private async Task<Dictionary<Guid, Guid>> BuildRentalBillingProfileRestoreCustomerIdsAsync(
+        List<RentalBillingProfileDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        var linkedCustomerIds = new Dictionary<Guid, Guid>();
+        var rejectedProfileIds = new HashSet<Guid>();
+
+        foreach (var dto in payload)
+        {
+            if (dto.Id == Guid.Empty || dto.IsDeleted)
+                continue;
+
+            var existing = await _dbContext.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .FirstOrDefaultAsync(profile => profile.Id == dto.Id, cancellationToken);
+            if (existing is null || !existing.IsDeleted)
+                continue;
+
+            var customerId = dto.CustomerId.HasValue && dto.CustomerId.Value != Guid.Empty
+                ? dto.CustomerId.Value
+                : existing.CustomerId.GetValueOrDefault();
+            if (customerId == Guid.Empty)
+                continue;
+
+            var customer = await _dbContext.Customers
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .FirstOrDefaultAsync(current => current.Id == customerId, cancellationToken);
+            if (customer is null || !customer.IsDeleted)
+                continue;
+
+            if (!_officeScopeService.CanWriteOfficeForCustomers(
+                    customer.ResponsibleOfficeCode,
+                    customer.TenantCode,
+                    customer.OfficeCode))
+            {
+                AddClientConflict(
+                    dto,
+                    nameof(RentalBillingProfile),
+                    $"Linked deleted customer cannot be restored in the current office scope: {customerId}.",
+                    result);
+                rejectedProfileIds.Add(dto.Id);
+                continue;
+            }
+
+            linkedCustomerIds[dto.Id] = customerId;
+        }
+
+        if (rejectedProfileIds.Count > 0)
+            payload.RemoveAll(dto => rejectedProfileIds.Contains(dto.Id));
+
+        return linkedCustomerIds;
+    }
+
+    private async Task RestoreLinkedDeletedCustomerContractsForRentalBillingProfilesAsync(
+        IEnumerable<RentalBillingProfileDto> acceptedProfiles,
+        IReadOnlyDictionary<Guid, Guid> linkedCustomerIds,
+        CancellationToken cancellationToken)
+    {
+        if (linkedCustomerIds.Count == 0)
+            return;
+
+        foreach (var dto in acceptedProfiles)
+        {
+            if (dto.IsDeleted || dto.Id == Guid.Empty || !linkedCustomerIds.TryGetValue(dto.Id, out var customerId))
+                continue;
+
+            var profile = await _dbContext.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == dto.Id, cancellationToken);
+            if (profile is null || profile.IsDeleted)
+                continue;
+
+            var customer = await RestoreDeletedLinkedCustomerAndContractsAsync(customerId, cancellationToken);
+            if (customer is null)
+                continue;
+
+            profile.CustomerId = customer.Id;
+            if (string.IsNullOrWhiteSpace(profile.CustomerName))
+                profile.CustomerName = customer.NameOriginal;
+        }
+    }
+
     private async Task<List<RentalBillingProfileDto>> UpsertRentalBillingProfilesAsync(
         IEnumerable<RentalBillingProfileDto> payload,
         SyncPushResult result,
@@ -3946,6 +4035,93 @@ public sealed class SyncController : ControllerBase
         }
 
         return scoped;
+    }
+
+    private async Task<Dictionary<Guid, Guid>> BuildRentalAssetRestoreCustomerIdsAsync(
+        List<RentalAssetDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        var linkedCustomerIds = new Dictionary<Guid, Guid>();
+        var rejectedAssetIds = new HashSet<Guid>();
+
+        foreach (var dto in payload)
+        {
+            if (dto.Id == Guid.Empty || dto.IsDeleted)
+                continue;
+
+            var existing = await _dbContext.RentalAssets
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .FirstOrDefaultAsync(asset => asset.Id == dto.Id, cancellationToken);
+            if (existing is null || !existing.IsDeleted)
+                continue;
+
+            var customerId = dto.CustomerId.HasValue && dto.CustomerId.Value != Guid.Empty
+                ? dto.CustomerId.Value
+                : existing.CustomerId.GetValueOrDefault();
+            if (customerId == Guid.Empty)
+                continue;
+
+            var customer = await _dbContext.Customers
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .FirstOrDefaultAsync(current => current.Id == customerId, cancellationToken);
+            if (customer is null || !customer.IsDeleted)
+                continue;
+
+            if (!_officeScopeService.CanWriteOfficeForCustomers(
+                    customer.ResponsibleOfficeCode,
+                    customer.TenantCode,
+                    customer.OfficeCode))
+            {
+                AddClientConflict(
+                    dto,
+                    nameof(RentalAsset),
+                    $"Linked deleted customer cannot be restored in the current office scope: {customerId}.",
+                    result);
+                rejectedAssetIds.Add(dto.Id);
+                continue;
+            }
+
+            linkedCustomerIds[dto.Id] = customerId;
+        }
+
+        if (rejectedAssetIds.Count > 0)
+            payload.RemoveAll(dto => rejectedAssetIds.Contains(dto.Id));
+
+        return linkedCustomerIds;
+    }
+
+    private async Task RestoreLinkedDeletedCustomerContractsForRentalAssetsAsync(
+        IEnumerable<RentalAssetDto> acceptedAssets,
+        IReadOnlyDictionary<Guid, Guid> linkedCustomerIds,
+        CancellationToken cancellationToken)
+    {
+        if (linkedCustomerIds.Count == 0)
+            return;
+
+        foreach (var dto in acceptedAssets)
+        {
+            if (dto.IsDeleted || dto.Id == Guid.Empty || !linkedCustomerIds.TryGetValue(dto.Id, out var customerId))
+                continue;
+
+            var asset = await _dbContext.RentalAssets
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == dto.Id, cancellationToken);
+            if (asset is null || asset.IsDeleted)
+                continue;
+
+            var customer = await RestoreDeletedLinkedCustomerAndContractsAsync(customerId, cancellationToken);
+            if (customer is null)
+                continue;
+
+            asset.CustomerId = customer.Id;
+            if (string.IsNullOrWhiteSpace(asset.CustomerName))
+                asset.CustomerName = customer.NameOriginal;
+            if (string.IsNullOrWhiteSpace(asset.CurrentCustomerName))
+                asset.CurrentCustomerName = customer.NameOriginal;
+        }
     }
 
     private async Task<List<RentalAssetAssignmentHistoryDto>> PrepareScopedRentalAssetAssignmentHistoriesAsync(
@@ -6514,6 +6690,76 @@ public sealed class SyncController : ControllerBase
             contract.IsDeleted = true;
             contract.UpdatedAtUtc = DateTime.UtcNow;
         }
+    }
+
+    private async Task<Customer?> RestoreDeletedLinkedCustomerAndContractsAsync(
+        Guid customerId,
+        CancellationToken cancellationToken)
+    {
+        if (customerId == Guid.Empty)
+            return null;
+
+        var customer = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == customerId, cancellationToken);
+        if (customer is null)
+            return null;
+
+        if (!customer.IsDeleted)
+            return customer;
+
+        if (!_officeScopeService.CanWriteOfficeForCustomers(
+                customer.ResponsibleOfficeCode,
+                customer.TenantCode,
+                customer.OfficeCode))
+            return null;
+
+        var customerDeletedAtUtc = customer.UpdatedAtUtc;
+        await RestoreContractsDeletedWithCustomerAsync(customer, customerDeletedAtUtc, cancellationToken);
+        customer.IsDeleted = false;
+        return customer;
+    }
+
+    private async Task<int> RestoreContractsDeletedWithCustomerAsync(
+        Customer customer,
+        DateTime customerDeletedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        if (!_officeScopeService.CanWriteOfficeForContracts(
+                customer.ResponsibleOfficeCode,
+                customer.TenantCode,
+                customer.OfficeCode))
+            return 0;
+
+        var contracts = await _dbContext.CustomerContracts
+            .IgnoreQueryFilters()
+            .Where(contract =>
+                contract.CustomerId == customer.Id &&
+                contract.IsDeleted &&
+                contract.UpdatedAtUtc == customerDeletedAtUtc)
+            .ToListAsync(cancellationToken);
+        if (contracts.Count == 0)
+            return 0;
+
+        if (contracts.Any(contract => contract.IsPrimary))
+        {
+            var restoringIds = contracts.Select(contract => contract.Id).ToHashSet();
+            var otherActivePrimaryContracts = await _dbContext.CustomerContracts
+                .IgnoreQueryFilters()
+                .Where(contract =>
+                    contract.CustomerId == customer.Id &&
+                    !restoringIds.Contains(contract.Id) &&
+                    !contract.IsDeleted &&
+                    contract.IsPrimary)
+                .ToListAsync(cancellationToken);
+            foreach (var other in otherActivePrimaryContracts)
+                other.IsPrimary = false;
+        }
+
+        foreach (var contract in contracts)
+            contract.IsDeleted = false;
+
+        return contracts.Count;
     }
 
     private async Task PersistCustomerContractsToStorageAsync(

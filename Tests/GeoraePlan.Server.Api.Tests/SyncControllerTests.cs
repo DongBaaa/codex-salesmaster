@@ -6204,6 +6204,222 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RestoresLinkedDeletedCustomerContracts_WhenRestoringRentalBillingProfile()
+    {
+        var customerId = Guid.NewGuid();
+        var contractId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        const string customerName = "SYNC-RESTORE-RENTAL-PROFILE-CUSTOMER";
+        const string profileKey = "USENET|SYNC-RESTORE-RENTAL-PROFILE-CUSTOMER|COPIER-A";
+
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "USENET rental"
+        });
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = customerName,
+            NameMatchKey = "SYNCRESTORERENTALPROFILECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true
+        });
+        _dbContext.CustomerContracts.Add(new CustomerContract
+        {
+            Id = contractId,
+            CustomerId = customerId,
+            ContractType = "Rental",
+            FileName = "sync-rental-profile-contract.pdf",
+            MimeType = "application/pdf",
+            FileSize = 0,
+            FileHash = string.Empty,
+            IsPrimary = true,
+            IsDeleted = true
+        });
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = profileKey,
+            CustomerId = customerId,
+            CustomerName = customerName,
+            ItemName = "COPIER-A",
+            BillingDay = 25,
+            MonthlyAmount = 100_000m,
+            IsDeleted = true
+        });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var deletedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-sync-rental-profile-restore-customer-contract",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = profileKey,
+                    CustomerId = customerId,
+                    CustomerName = customerName,
+                    ItemName = "COPIER-A",
+                    BillingDay = 25,
+                    MonthlyAmount = 100_000m,
+                    IsDeleted = false,
+                    Revision = deletedProfile.Revision,
+                    ExpectedRevision = deletedProfile.Revision,
+                    CreatedAtUtc = deletedProfile.CreatedAtUtc,
+                    UpdatedAtUtc = deletedProfile.UpdatedAtUtc
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(1, result.AcceptedCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .SingleAsync(profile => profile.Id == profileId);
+        var storedCustomer = await _dbContext.Customers.IgnoreQueryFilters()
+            .SingleAsync(customer => customer.Id == customerId);
+        var storedContract = await _dbContext.CustomerContracts.IgnoreQueryFilters()
+            .SingleAsync(contract => contract.Id == contractId);
+
+        Assert.False(storedProfile.IsDeleted);
+        Assert.Equal(customerId, storedProfile.CustomerId);
+        Assert.False(storedCustomer.IsDeleted);
+        Assert.False(storedContract.IsDeleted);
+        Assert.True(storedContract.IsPrimary);
+    }
+
+    [Fact]
+    public async Task Push_RestoresLinkedDeletedCustomerContracts_WhenRestoringRentalAsset()
+    {
+        var customerId = Guid.NewGuid();
+        var contractId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        const string customerName = "SYNC-RESTORE-RENTAL-ASSET-CUSTOMER";
+
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = customerName,
+            NameMatchKey = "SYNCRESTORERENTALASSETCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true
+        });
+        _dbContext.CustomerContracts.Add(new CustomerContract
+        {
+            Id = contractId,
+            CustomerId = customerId,
+            ContractType = "Rental",
+            FileName = "sync-rental-asset-contract.pdf",
+            MimeType = "application/pdf",
+            FileSize = 0,
+            FileHash = string.Empty,
+            IsPrimary = true,
+            IsDeleted = true
+        });
+        _dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "USENET|2606-RESTORE|RESTORE-01|SYNC-RESTORE-RENTAL-ASSET-CUSTOMER|COPIER-B",
+            ManagementId = "RESTORE-01",
+            ManagementNumber = "2606-RESTORE",
+            CustomerId = customerId,
+            CustomerName = customerName,
+            CurrentCustomerName = customerName,
+            ItemName = "COPIER-B",
+            MachineNumber = "SN-RESTORE-01",
+            CurrentLocation = "Warehouse",
+            AssetStatus = "Installed",
+            IsDeleted = true
+        });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var deletedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(asset => asset.Id == assetId);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-sync-rental-asset-restore-customer-contract",
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = deletedAsset.AssetKey,
+                    ManagementId = deletedAsset.ManagementId,
+                    ManagementNumber = deletedAsset.ManagementNumber,
+                    CustomerId = customerId,
+                    CustomerName = customerName,
+                    CurrentCustomerName = customerName,
+                    ItemName = deletedAsset.ItemName,
+                    MachineNumber = deletedAsset.MachineNumber,
+                    CurrentLocation = deletedAsset.CurrentLocation,
+                    AssetStatus = deletedAsset.AssetStatus,
+                    IsDeleted = false,
+                    Revision = deletedAsset.Revision,
+                    ExpectedRevision = deletedAsset.Revision,
+                    CreatedAtUtc = deletedAsset.CreatedAtUtc,
+                    UpdatedAtUtc = deletedAsset.UpdatedAtUtc
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(1, result.AcceptedCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(asset => asset.Id == assetId);
+        var storedCustomer = await _dbContext.Customers.IgnoreQueryFilters()
+            .SingleAsync(customer => customer.Id == customerId);
+        var storedContract = await _dbContext.CustomerContracts.IgnoreQueryFilters()
+            .SingleAsync(contract => contract.Id == contractId);
+
+        Assert.False(storedAsset.IsDeleted);
+        Assert.Equal(customerId, storedAsset.CustomerId);
+        Assert.False(storedCustomer.IsDeleted);
+        Assert.False(storedContract.IsDeleted);
+        Assert.True(storedContract.IsPrimary);
+    }
+
+    [Fact]
     public async Task Push_RejectsNewRentalBillingProfile_WhenLinkedCustomerResolvesToReadSharedOffice()
     {
         var sharedReadOnlyCustomerId = Guid.NewGuid();
