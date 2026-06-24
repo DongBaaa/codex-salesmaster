@@ -78,6 +78,33 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public void DesktopUpdaterFailureWindow_ProvidesCopyableLogDiagnosticsAndStaysOpen()
+    {
+        var windowSource = ReadRepositoryFile(
+            "Updater",
+            "거래플랜.Updater",
+            "UpdateProgressWindow.cs");
+        var programSource = ReadRepositoryFile(
+            "Updater",
+            "거래플랜.Updater",
+            "Program.cs");
+
+        Assert.Contains("public void ShowFailure(string title, string detail, string? logPath = null)", windowSource, StringComparison.Ordinal);
+        Assert.Contains("CreateActionButton(\"로그 복사\")", windowSource, StringComparison.Ordinal);
+        Assert.Contains("CreateActionButton(\"로그 위치 열기\")", windowSource, StringComparison.Ordinal);
+        Assert.Contains("CreateActionButton(\"닫기\")", windowSource, StringComparison.Ordinal);
+        Assert.Contains("Clipboard.SetText(content.ToString())", windowSource, StringComparison.Ordinal);
+        Assert.Contains("File.ReadAllText(_failureLogPath!, Encoding.UTF8)", windowSource, StringComparison.Ordinal);
+        Assert.Contains("FileName = \"explorer.exe\"", windowSource, StringComparison.Ordinal);
+        Assert.Contains("Arguments = \"/select,\" + QuoteExplorerArgument(_failureLogPath!)", windowSource, StringComparison.Ordinal);
+        Assert.Contains("app.ShutdownMode = ShutdownMode.OnExplicitShutdown;", programSource, StringComparison.Ordinal);
+        Assert.Contains("window.Closed += (_, _) => app.Shutdown(1);", programSource, StringComparison.Ordinal);
+        Assert.Contains("window.ShowFailure(\"업데이트를 완료하지 못했습니다.\", message, _sessionLogPath);", programSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("MessageBox.Show", programSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("MessageBoxButton.OK", programSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DesktopUpdater_CreatesRequestMetadataOnlyForDownloadPathAndDeletesItWhenLaunchFails()
     {
         var source = ReadRepositoryFile(

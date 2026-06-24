@@ -7,7 +7,7 @@
     <UseWPF>true</UseWPF>
     <AssemblyTitle>거래플랜 업데이터</AssemblyTitle>
     <Product>거래플랜 업데이터</Product>
-    <Version>1.1.35</Version>
-    <FileVersion>1.1.35.0</FileVersion>
+    <Version>1.1.36</Version>
+    <FileVersion>1.1.36.0</FileVersion>
   </PropertyGroup>
 </Project>

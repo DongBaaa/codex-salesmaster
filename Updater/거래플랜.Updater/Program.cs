@@ -52,13 +52,10 @@ internal static class Program
                 ? ex.Message
                 : $"{ex.Message}{Environment.NewLine}{Environment.NewLine}로그 파일: {_sessionLogPath}";
 
-            window.ShowFailure("업데이트를 완료하지 못했습니다.", message);
-            MessageBox.Show(
-                $"업데이트를 완료하지 못했습니다.{Environment.NewLine}{Environment.NewLine}{message}",
-                "거래플랜 업데이터",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
-            app.Shutdown(1);
+            app.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            window.Closed += (_, _) => app.Shutdown(1);
+            window.ShowFailure("업데이트를 완료하지 못했습니다.", message, _sessionLogPath);
+            window.Activate();
         }
     }
 
