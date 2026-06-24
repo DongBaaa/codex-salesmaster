@@ -12,6 +12,8 @@
     [switch]$SkipInstall,
     [switch]$KeepTemporaryData,
     [switch]$ExerciseStoppedServerDirtySync,
+    [ValidateSet('', '400', '403', '404', '422')]
+    [string]$ExerciseNonRetryableSaveFaultStatus = '',
     [switch]$ExerciseAttachmentUpload,
     [switch]$ExerciseCameraAttachmentUpload,
     [switch]$ExerciseAttachmentOpenUi,
@@ -284,6 +286,29 @@ function Invoke-Adb {
     throw "adb failed after retry: adb $($Arguments -join ' ')`n$lastOutput"
 }
 
+function Set-MobileDiagnosticFault {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$PackageName,
+        [ValidateSet('NETWORK', '400', '401', '403', '404', '422', '500')]
+        [string]$Mode = 'NETWORK',
+        [string]$Target
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Target)) {
+        throw 'Mobile diagnostic fault target endpoint is empty.'
+    }
+
+    $normalizedMode = $Mode.Trim().ToUpperInvariant()
+    $script = "mkdir -p files/diagnostics && printf $normalizedMode\|$Target > files/diagnostics/next-fault.txt && cat files/diagnostics/next-fault.txt"
+    $quotedScript = "'$script'"
+    $output = Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'run-as', $PackageName, 'sh', '-c', $quotedScript)
+    if (($output -join "`n") -notmatch "$normalizedMode\|$([regex]::Escape($Target))") {
+        throw "Mobile diagnostic fault setup failed($normalizedMode): $($output -join ' ')"
+    }
+}
+
 function Set-MobileDiagnosticNetworkFault {
     param(
         [string]$AdbPath,
@@ -292,14 +317,8 @@ function Set-MobileDiagnosticNetworkFault {
         [string]$Target
     )
 
-    $script = "mkdir -p files/diagnostics && printf NETWORK\|$Target > files/diagnostics/next-fault.txt && cat files/diagnostics/next-fault.txt"
-    $quotedScript = "'$script'"
-    $output = Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'run-as', $PackageName, 'sh', '-c', $quotedScript)
-    if (($output -join "`n") -notmatch "NETWORK\|$([regex]::Escape($Target))") {
-        throw "모바일 진단 네트워크 fault 설정 확인 실패: $($output -join ' ')"
-    }
+    Set-MobileDiagnosticFault -AdbPath $AdbPath -DeviceId $DeviceId -PackageName $PackageName -Mode 'NETWORK' -Target $Target
 }
-
 function Install-MobileApk {
     param(
         [Parameter(Mandatory = $true)][string]$AdbPath,
@@ -1917,7 +1936,12 @@ $resultStatus = 'FAIL'
 $errorMessage = $null
 
 try {
-    if ($ExerciseStoppedServerDirtySync) {
+    $exerciseNonRetryableSaveFault = -not [string]::IsNullOrWhiteSpace($ExerciseNonRetryableSaveFaultStatus)
+    if ($exerciseNonRetryableSaveFault -and ($ExerciseStoppedServerDirtySync -or $ExerciseAttachmentUpload -or $ExerciseCameraAttachmentUpload -or $ExerciseAttachmentOpenUi -or $ExerciseAttachmentListFallback)) {
+        throw 'Non-retryable save fault cannot run with stopped API or attachment exercises.'
+    }
+
+    if ($ExerciseStoppedServerDirtySync -or $exerciseNonRetryableSaveFault) {
         Assert-LocalDirtySyncTarget -BaseUrl $BaseUrl
     }
 
@@ -2063,6 +2087,10 @@ try {
         throw "$paymentSaveText 버튼을 찾지 못했습니다."
     }
 
+    if ($exerciseNonRetryableSaveFault) {
+        Set-MobileDiagnosticFault -AdbPath $resolvedAdb -DeviceId $deviceId -PackageName $PackageName -Mode $ExerciseNonRetryableSaveFaultStatus -Target 'sync/push'
+        $steps.Add([pscustomobject]@{ Step = 'mobile-nonretryable-payment-fault-before-save'; Result = 'PASS'; Detail = "$ExerciseNonRetryableSaveFaultStatus|sync/push" })
+    }
     if ($ExerciseStoppedServerDirtySync) {
         $stoppedProcesses = Stop-LocalApiForBaseUrl -BaseUrl $BaseUrl -ProjectRoot $ProjectRoot
         $localApiStoppedForExercise = $true
@@ -2144,6 +2172,39 @@ try {
             $createdTransaction = Wait-TestTransactionCreated -BaseUrl $BaseUrl -Headers $headers -TransactionId $createdPayment.id -InvoiceId $createdInvoice.id -VoucherKind $VoucherKind -ExpectedAmount $expectedAmount
             $steps.Add([pscustomobject]@{ Step = "mobile-$voucherSlug-payment-dirty-push"; Result = 'PASS'; Detail = "payment=$($createdPayment.id), transaction=$($createdTransaction.id), method=$expectedMethod, amount=$expectedAmount, dump=$($pendingDump.Path)" })
         }
+    }
+    elseif ($exerciseNonRetryableSaveFault) {
+        $rejectionDump = Wait-UiContainsAll `
+            -AdbPath $resolvedAdb `
+            -DeviceId $deviceId `
+            -EvidenceDirectory $EvidenceDirectory `
+            -Name "mobile-payment-e2e-$voucherSlug-$timestamp-after-payment-save-nonretryable-$ExerciseNonRetryableSaveFaultStatus" `
+            -Needles @($paymentAction, '저장되지 않았습니다') `
+            -StepName '비재시도 서버 거부 후 수금/지급 저장 실패 표시' `
+            -TimeoutSeconds 45
+
+        $matchesAfterRejection = @(Get-TestPayments -BaseUrl $BaseUrl -Headers $headers -InvoiceId $createdInvoice.id |
+            Where-Object {
+                [decimal]$_.amount -eq $expectedAmount -and
+                [string]$_.note -like "*$expectedMethod*"
+            })
+        if ($matchesAfterRejection.Count -gt 0) {
+            throw '비재시도 서버 거부 후 서버에서 테스트 수금/지급이 조회되었습니다.'
+        }
+        $steps.Add([pscustomobject]@{ Step = 'server-payment-absent-after-nonretryable-rejection'; Result = 'PASS'; Detail = $createdInvoice.id })
+
+        $syncDump = Open-BottomTabAndAssert `
+            -AdbPath $resolvedAdb `
+            -DeviceId $deviceId `
+            -EvidenceDirectory $EvidenceDirectory `
+            -Timestamp $timestamp `
+            -Screen $screen `
+            -TabText '동기화' `
+            -FallbackXRatio 0.84 `
+            -StepName 'sync-status-after-nonretryable-payment-rejection' `
+            -Needles @('동기화 상태', '수금·지급 0건') `
+            -Steps $steps
+        $steps.Add([pscustomobject]@{ Step = 'mobile-nonretryable-payment-rejection-not-dirty'; Result = 'PASS'; Detail = $syncDump.Path })
     }
     else {
         Start-Sleep -Seconds 12
@@ -2268,6 +2329,7 @@ $result = [pscustomobject]@{
     PackageName = $PackageName
     VoucherKind = $VoucherKind
     ExerciseStoppedServerDirtySync = [bool]$ExerciseStoppedServerDirtySync
+    ExerciseNonRetryableSaveFaultStatus = $ExerciseNonRetryableSaveFaultStatus
     ExerciseAttachmentOpenUi = [bool]$ExerciseAttachmentOpenUi
     ExerciseAttachmentListFallback = [bool]$ExerciseAttachmentListFallback
     Result = $resultStatus

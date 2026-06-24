@@ -13,6 +13,8 @@
     [switch]$KeepTemporaryData,
     [switch]$ExerciseOfflineDirtySync,
     [switch]$ExerciseStoppedServerDirtySync,
+    [ValidateSet('', '400', '403', '404', '422')]
+    [string]$ExerciseNonRetryableSaveFaultStatus = '',
     [string]$DotNetPath,
     [string]$LocalApiProjectFile,
     [int]$StoppedServerOfflineTimeoutSeconds = 45
@@ -257,6 +259,29 @@ function Invoke-Adb {
     return $output
 }
 
+function Set-MobileDiagnosticFault {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$PackageName,
+        [ValidateSet('NETWORK', '400', '401', '403', '404', '422', '500')]
+        [string]$Mode = 'NETWORK',
+        [string]$Target
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Target)) {
+        throw 'Mobile diagnostic fault target endpoint is empty.'
+    }
+
+    $normalizedMode = $Mode.Trim().ToUpperInvariant()
+    $script = "mkdir -p files/diagnostics && printf $normalizedMode\|$Target > files/diagnostics/next-fault.txt && cat files/diagnostics/next-fault.txt"
+    $quotedScript = "'$script'"
+    $output = Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'run-as', $PackageName, 'sh', '-c', $quotedScript)
+    if (($output -join "`n") -notmatch "$normalizedMode\|$([regex]::Escape($Target))") {
+        throw "Mobile diagnostic fault setup failed($normalizedMode): $($output -join ' ')"
+    }
+}
+
 function Set-MobileDiagnosticNetworkFault {
     param(
         [string]$AdbPath,
@@ -265,14 +290,8 @@ function Set-MobileDiagnosticNetworkFault {
         [string]$Target
     )
 
-    $script = "mkdir -p files/diagnostics && printf NETWORK\|$Target > files/diagnostics/next-fault.txt && cat files/diagnostics/next-fault.txt"
-    $quotedScript = "'$script'"
-    $output = Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'run-as', $PackageName, 'sh', '-c', $quotedScript)
-    if (($output -join "`n") -notmatch "NETWORK\|$([regex]::Escape($Target))") {
-        throw "모바일 진단 네트워크 fault 설정 확인 실패: $($output -join ' ')"
-    }
+    Set-MobileDiagnosticFault -AdbPath $AdbPath -DeviceId $DeviceId -PackageName $PackageName -Mode 'NETWORK' -Target $Target
 }
-
 function Install-MobileApk {
     param(
         [Parameter(Mandatory = $true)][string]$AdbPath,
@@ -1143,11 +1162,13 @@ $resultStatus = 'FAIL'
 $errorMessage = $null
 
 try {
-    if ($ExerciseOfflineDirtySync -and $ExerciseStoppedServerDirtySync) {
-        throw '진단 fault 방식과 실제 API 중단 방식은 동시에 실행할 수 없습니다.'
+    $exerciseNonRetryableSaveFault = -not [string]::IsNullOrWhiteSpace($ExerciseNonRetryableSaveFaultStatus)
+    if (($ExerciseOfflineDirtySync -and $ExerciseStoppedServerDirtySync) -or
+        ($exerciseNonRetryableSaveFault -and ($ExerciseOfflineDirtySync -or $ExerciseStoppedServerDirtySync))) {
+        throw 'Diagnostic fault mode, non-retryable rejection mode, and stopped API mode cannot run together.'
     }
 
-    if ($ExerciseOfflineDirtySync -or $ExerciseStoppedServerDirtySync) {
+    if ($ExerciseOfflineDirtySync -or $ExerciseStoppedServerDirtySync -or $exerciseNonRetryableSaveFault) {
         Assert-LocalDirtySyncTarget -BaseUrl $BaseUrl
     }
 
@@ -1313,6 +1334,10 @@ try {
         Set-MobileDiagnosticNetworkFault -AdbPath $resolvedAdb -DeviceId $deviceId -PackageName $PackageName -Target 'invoices'
         $steps.Add([pscustomobject]@{ Step = 'mobile-network-fault-before-save'; Result = 'PASS'; Detail = 'NETWORK|invoices' })
     }
+    if ($exerciseNonRetryableSaveFault) {
+        Set-MobileDiagnosticFault -AdbPath $resolvedAdb -DeviceId $deviceId -PackageName $PackageName -Mode $ExerciseNonRetryableSaveFaultStatus -Target 'invoices'
+        $steps.Add([pscustomobject]@{ Step = 'mobile-nonretryable-fault-before-save'; Result = 'PASS'; Detail = "$ExerciseNonRetryableSaveFaultStatus|invoices" })
+    }
     if ($ExerciseStoppedServerDirtySync) {
         $stoppedProcesses = Stop-LocalApiForBaseUrl -BaseUrl $BaseUrl -ProjectRoot $ProjectRoot
         $localApiStoppedForExercise = $true
@@ -1330,6 +1355,7 @@ try {
             -Needles @('오프라인/재시도 대기') `
             -StepName '실제 API 중단 후 오프라인 저장 dirty 대기' `
             -TimeoutSeconds $StoppedServerOfflineTimeoutSeconds
+        $afterSaveDump = $pendingDump
         $offlineElapsedSeconds = [Math]::Round(((Get-Date) - $saveTappedAt).TotalSeconds, 1)
         $steps.Add([pscustomobject]@{ Step = 'mobile-stopped-server-offline-pending'; Result = 'PASS'; Detail = "elapsed=${offlineElapsedSeconds}s, dump=$($afterSaveDump.Path)" })
 
@@ -1345,12 +1371,47 @@ try {
         $localApiStoppedForExercise = $false
         $steps.Add([pscustomobject]@{ Step = 'local-api-restart-before-sync'; Result = 'PASS'; Detail = "pid=$($restart.ProcessId), stdout=$($restart.StdOut), stderr=$($restart.StdErr)" })
     }
+    elseif ($exerciseNonRetryableSaveFault) {
+        $afterSaveDump = Wait-UiContainsAll `
+            -AdbPath $resolvedAdb `
+            -DeviceId $deviceId `
+            -EvidenceDirectory $EvidenceDirectory `
+            -Name "mobile-write-e2e-$timestamp-after-save-nonretryable-$ExerciseNonRetryableSaveFaultStatus" `
+            -Needles @('저장되지 않았습니다') `
+            -StepName '비재시도 서버 거부 후 전표 저장 실패 표시' `
+            -TimeoutSeconds 45
+    }
     else {
         Start-Sleep -Seconds 6
         $afterSaveDump = Get-UiDump -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-write-e2e-$timestamp-after-save"
     }
 
-    if ($ExerciseOfflineDirtySync -or $ExerciseStoppedServerDirtySync) {
+    if ($exerciseNonRetryableSaveFault) {
+        $matchesAfterRejection = Get-TestInvoices -BaseUrl $BaseUrl -Headers $headers -CustomerId $fixture.Customer.id -Query $fixture.CustomerName |
+            Where-Object {
+                $_.customerId -eq $fixture.Customer.id -and
+                $_.voucherType -eq $VoucherKind -and
+                @($_.lines) | Where-Object { $_.itemId -eq $fixture.Item.id -or $_.itemNameOriginal -eq $fixture.ItemName }
+            }
+        if (@($matchesAfterRejection).Count -gt 0) {
+            throw '비재시도 서버 거부 후 서버에서 테스트 전표가 조회되었습니다.'
+        }
+        $steps.Add([pscustomobject]@{ Step = 'server-invoice-absent-after-nonretryable-rejection'; Result = 'PASS'; Detail = $fixture.Customer.id })
+
+        $syncDump = Open-BottomTabAndAssert `
+            -AdbPath $resolvedAdb `
+            -DeviceId $deviceId `
+            -EvidenceDirectory $EvidenceDirectory `
+            -Timestamp $timestamp `
+            -Screen $screen `
+            -TabText '동기화' `
+            -FallbackXRatio 0.84 `
+            -StepName 'sync-status-after-nonretryable-invoice-rejection' `
+            -Needles @('동기화 상태', '전표 0건') `
+            -Steps $steps
+        $steps.Add([pscustomobject]@{ Step = 'mobile-nonretryable-invoice-rejection-not-dirty'; Result = 'PASS'; Detail = $syncDump.Path })
+    }
+    elseif ($ExerciseOfflineDirtySync -or $ExerciseStoppedServerDirtySync) {
         if ($ExerciseOfflineDirtySync) {
             Assert-UiContains -Content $afterSaveDump.Content -Needles @('오프라인/재시도 대기') -StepName '오프라인 저장 dirty 대기'
             $steps.Add([pscustomobject]@{ Step = 'mobile-offline-invoice-pending'; Result = 'PASS'; Detail = $afterSaveDump.Path })
@@ -1456,6 +1517,7 @@ $result = [pscustomobject]@{
     VoucherKind = $VoucherKind
     ExerciseOfflineDirtySync = [bool]$ExerciseOfflineDirtySync
     ExerciseStoppedServerDirtySync = [bool]$ExerciseStoppedServerDirtySync
+    ExerciseNonRetryableSaveFaultStatus = $ExerciseNonRetryableSaveFaultStatus
     Result = $resultStatus
     Error = $errorMessage
     Fixture = if ($fixture) { [pscustomobject]@{ CustomerId = $fixture.Customer.id; CustomerName = $fixture.CustomerName; ItemId = $fixture.Item.id; ItemName = $fixture.ItemName } } else { $null }

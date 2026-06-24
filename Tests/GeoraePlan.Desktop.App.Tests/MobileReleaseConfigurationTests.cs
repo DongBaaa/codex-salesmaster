@@ -1995,6 +1995,28 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void AndroidWriteE2E_CoversNonRetryableSaveRejection()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "mobile",
+            "Invoke-GeoraePlanAndroidWriteE2E.ps1"));
+
+        Assert.Contains("[string]$ExerciseNonRetryableSaveFaultStatus = ''", source, StringComparison.Ordinal);
+        Assert.Contains("[ValidateSet('NETWORK', '400', '401', '403', '404', '422', '500')]", source, StringComparison.Ordinal);
+        Assert.Contains("function Set-MobileDiagnosticFault", source, StringComparison.Ordinal);
+        Assert.Contains("Set-MobileDiagnosticFault -AdbPath $resolvedAdb -DeviceId $deviceId -PackageName $PackageName -Mode $ExerciseNonRetryableSaveFaultStatus -Target 'invoices'", source, StringComparison.Ordinal);
+        Assert.Contains("mobile-nonretryable-fault-before-save", source, StringComparison.Ordinal);
+        Assert.Contains("\uC800\uC7A5\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4", source, StringComparison.Ordinal);
+        Assert.Contains("server-invoice-absent-after-nonretryable-rejection", source, StringComparison.Ordinal);
+        Assert.Contains("sync-status-after-nonretryable-invoice-rejection", source, StringComparison.Ordinal);
+        Assert.Contains("mobile-nonretryable-invoice-rejection-not-dirty", source, StringComparison.Ordinal);
+        Assert.Contains("\uC804\uD45C 0\uAC74", source, StringComparison.Ordinal);
+        Assert.Contains("Diagnostic fault mode, non-retryable rejection mode, and stopped API mode cannot run together.", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AndroidPaymentE2E_CoversStoppedServerDirtySyncPush()
     {
         var source = File.ReadAllText(Path.Combine(
@@ -2061,6 +2083,28 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("AttachmentMimeType", source, StringComparison.Ordinal);
         Assert.Contains("image/", source, StringComparison.Ordinal);
         Assert.Contains("카메라", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AndroidPaymentE2E_CoversNonRetryableSaveRejection()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "mobile",
+            "Invoke-GeoraePlanAndroidPaymentE2E.ps1"));
+
+        Assert.Contains("[string]$ExerciseNonRetryableSaveFaultStatus = ''", source, StringComparison.Ordinal);
+        Assert.Contains("[ValidateSet('NETWORK', '400', '401', '403', '404', '422', '500')]", source, StringComparison.Ordinal);
+        Assert.Contains("function Set-MobileDiagnosticFault", source, StringComparison.Ordinal);
+        Assert.Contains("Set-MobileDiagnosticFault -AdbPath $resolvedAdb -DeviceId $deviceId -PackageName $PackageName -Mode $ExerciseNonRetryableSaveFaultStatus -Target 'sync/push'", source, StringComparison.Ordinal);
+        Assert.Contains("mobile-nonretryable-payment-fault-before-save", source, StringComparison.Ordinal);
+        Assert.Contains("\uC800\uC7A5\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4", source, StringComparison.Ordinal);
+        Assert.Contains("server-payment-absent-after-nonretryable-rejection", source, StringComparison.Ordinal);
+        Assert.Contains("sync-status-after-nonretryable-payment-rejection", source, StringComparison.Ordinal);
+        Assert.Contains("mobile-nonretryable-payment-rejection-not-dirty", source, StringComparison.Ordinal);
+        Assert.Contains("\uC218\uAE08\u00B7\uC9C0\uAE09 0\uAC74", source, StringComparison.Ordinal);
+        Assert.Contains("Non-retryable save fault cannot run with stopped API or attachment exercises.", source, StringComparison.Ordinal);
     }
 
     [Fact]
