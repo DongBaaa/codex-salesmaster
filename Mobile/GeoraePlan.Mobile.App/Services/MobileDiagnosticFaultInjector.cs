@@ -38,8 +38,14 @@ public static class MobileDiagnosticFaultInjector
                     throw new HttpRequestException("네트워크 연결을 확인한 후 다시 시도해 주세요.");
                 case "401":
                     throw new MobileAuthenticationException(relative, "401 Unauthorized (diagnostic fault)");
-                case "500":
-                    throw new HttpRequestException("500 Internal Server Error (diagnostic fault)", null, HttpStatusCode.InternalServerError);
+            }
+
+            if (TryGetDiagnosticStatusCode(mode, out var statusCode))
+            {
+                throw new HttpRequestException(
+                    $"{(int)statusCode} {statusCode} (diagnostic fault)",
+                    null,
+                    statusCode);
             }
         }
         catch (OperationCanceledException)
@@ -50,6 +56,21 @@ public static class MobileDiagnosticFaultInjector
         {
             MobileAppLogger.Warn("DIAG", $"진단 장애 주입 설정을 읽지 못했습니다: {ex.Message}");
         }
+    }
+
+    private static bool TryGetDiagnosticStatusCode(string mode, out HttpStatusCode statusCode)
+    {
+        statusCode = mode switch
+        {
+            "400" => HttpStatusCode.BadRequest,
+            "403" => HttpStatusCode.Forbidden,
+            "404" => HttpStatusCode.NotFound,
+            "422" => HttpStatusCode.UnprocessableEntity,
+            "500" => HttpStatusCode.InternalServerError,
+            _ => default
+        };
+
+        return statusCode != default;
     }
 #else
     public static Task ThrowIfConfiguredAsync(string relative, CancellationToken ct) => Task.CompletedTask;

@@ -2685,6 +2685,52 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void MobileDiagnosticFaultInjector_CanInjectNonRetryableSaveRejections()
+    {
+        var root = FindRepositoryRoot();
+        var injectorSource = File.ReadAllText(Path.Combine(
+                root,
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "Services",
+                "MobileDiagnosticFaultInjector.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var apiClientSource = File.ReadAllText(Path.Combine(
+                root,
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "Services",
+                "GeoraePlanApiClient.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var syncCoordinatorSource = File.ReadAllText(Path.Combine(
+                root,
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "Services",
+                "SyncCoordinator.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var paymentDraftSource = File.ReadAllText(Path.Combine(
+                root,
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "ViewModels",
+                "PaymentDraftViewModel.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains("await MobileDiagnosticFaultInjector.ThrowIfConfiguredAsync(relative, ct);", apiClientSource, StringComparison.Ordinal);
+        Assert.Contains("File.Delete(path);", injectorSource, StringComparison.Ordinal);
+        Assert.Contains("\"403\" => HttpStatusCode.Forbidden", injectorSource, StringComparison.Ordinal);
+        Assert.Contains("\"422\" => HttpStatusCode.UnprocessableEntity", injectorSource, StringComparison.Ordinal);
+        Assert.Contains("throw new HttpRequestException(\n                    $\"{(int)statusCode} {statusCode} (diagnostic fault)\"", injectorSource, StringComparison.Ordinal);
+
+        Assert.Contains("private static bool IsNonRetryableClientFailure(Exception ex)", syncCoordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("or HttpStatusCode.Forbidden", syncCoordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("or HttpStatusCode.UnprocessableEntity", syncCoordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("var result = EnsurePushResult(await _api.PushAsync(request, ct));", syncCoordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("SyncCoordinator.IsFailedImmediateSaveWithoutServerAcceptance(state)", paymentDraftSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MobileSyncCoordinator_TranslatesPushConflictReasonForDisplay()
     {
         var source = File.ReadAllText(Path.Combine(
