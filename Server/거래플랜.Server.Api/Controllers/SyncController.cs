@@ -4001,6 +4001,25 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
+            if (existing is not null && existing.IsDeleted && !dto.IsDeleted)
+            {
+                var activeConflict = await FindActiveRentalAssetRestoreConflictAsync(existing, cancellationToken);
+                if (activeConflict is not null)
+                {
+                    var message = "Cannot restore rental asset because an active asset uses the same rental asset identifiers.";
+                    if (_officeScopeService.CanReadOfficeForRentals(
+                            activeConflict.ResponsibleOfficeCode,
+                            activeConflict.TenantCode,
+                            activeConflict.OfficeCode))
+                    {
+                        message += $" Active asset: {BuildRentalAssetConflictDisplay(activeConflict)}.";
+                    }
+
+                    AddClientConflict(dto, nameof(RentalAsset), message, result);
+                    continue;
+                }
+            }
+
             var requestedResponsibleOfficeCode = TenantScopeCatalog.TryNormalizeTenantCode(dto.TenantCode, out var requestedTenantCodeForResponsible) &&
                                                  string.Equals(requestedTenantCodeForResponsible, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase)
                 ? OfficeCodeCatalog.Itworld
@@ -4423,6 +4442,40 @@ public sealed class SyncController : ControllerBase
 
         return $"{prefix}-{nextSequence:000}";
     }
+
+    private async Task<RentalAsset?> FindActiveRentalAssetRestoreConflictAsync(
+        RentalAsset target,
+        CancellationToken cancellationToken)
+    {
+        var candidates = await _dbContext.RentalAssets
+            .IgnoreQueryFilters()
+            .Where(current => current.Id != target.Id && !current.IsDeleted)
+            .ToListAsync(cancellationToken);
+
+        return candidates.FirstOrDefault(candidate =>
+            RentalAssetRestoreKeysMatch(candidate.ManagementNumber, target.ManagementNumber) ||
+            RentalAssetRestoreKeysMatch(candidate.ManagementId, target.ManagementId) ||
+            RentalAssetRestoreKeysMatch(candidate.AssetKey, target.AssetKey));
+    }
+
+    private static bool RentalAssetRestoreKeysMatch(string? left, string? right)
+    {
+        var normalizedLeft = (left ?? string.Empty).Trim();
+        var normalizedRight = (right ?? string.Empty).Trim();
+        return !string.IsNullOrWhiteSpace(normalizedLeft) &&
+               string.Equals(normalizedLeft, normalizedRight, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildRentalAssetConflictDisplay(RentalAsset asset)
+        => string.Join(
+            ", ",
+            new[]
+            {
+                string.IsNullOrWhiteSpace(asset.ManagementNumber) ? null : $"management number {asset.ManagementNumber}",
+                string.IsNullOrWhiteSpace(asset.ManagementId) ? null : $"management id {asset.ManagementId}",
+                string.IsNullOrWhiteSpace(asset.AssetKey) ? null : $"asset key {asset.AssetKey}",
+                string.IsNullOrWhiteSpace(asset.ItemName) ? null : asset.ItemName
+            }.Where(segment => !string.IsNullOrWhiteSpace(segment)));
 
     private async Task<bool> IsManagementIdAvailableAsync(
         string managementId,

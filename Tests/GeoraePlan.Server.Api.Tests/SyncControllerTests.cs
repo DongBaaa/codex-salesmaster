@@ -6420,6 +6420,109 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsRentalAssetRestore_WhenActiveAssetUsesSameIdentifiers()
+    {
+        var deletedAssetId = Guid.NewGuid();
+        var activeAssetId = Guid.NewGuid();
+        const string managementNumber = "2606-DUPLICATE";
+        const string managementId = "DUPLICATE-ID";
+        const string assetKey = "USENET|2606-DUPLICATE|DUPLICATE-ID|SYNC-DUPLICATE-CUSTOMER|COPIER-D";
+        const string activeAssetKey = "USENET|2606-DUPLICATE|DUPLICATE-ID|SYNC-DUPLICATE-CUSTOMER|COPIER-D-ACTIVE";
+
+        _dbContext.RentalAssets.AddRange(
+            new RentalAsset
+            {
+                Id = deletedAssetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = activeAssetKey,
+                ManagementId = managementId,
+                ManagementNumber = managementNumber,
+                CustomerName = "SYNC-DUPLICATE-CUSTOMER",
+                CurrentCustomerName = "SYNC-DUPLICATE-CUSTOMER",
+                ItemName = "COPIER-D",
+                MachineNumber = "SN-DUPLICATE",
+                CurrentLocation = "Warehouse",
+                AssetStatus = "Installed",
+                IsDeleted = true
+            },
+            new RentalAsset
+            {
+                Id = activeAssetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = assetKey,
+                ManagementId = managementId,
+                ManagementNumber = managementNumber,
+                CustomerName = "SYNC-DUPLICATE-CUSTOMER",
+                CurrentCustomerName = "SYNC-DUPLICATE-CUSTOMER",
+                ItemName = "COPIER-D",
+                MachineNumber = "SN-DUPLICATE-ACTIVE",
+                CurrentLocation = "Warehouse",
+                AssetStatus = "Installed",
+                IsDeleted = false
+            });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var deletedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(asset => asset.Id == deletedAssetId);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-sync-rental-asset-restore-duplicate-identifiers",
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = deletedAssetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = assetKey,
+                    ManagementId = managementId,
+                    ManagementNumber = managementNumber,
+                    CustomerName = "SYNC-DUPLICATE-CUSTOMER",
+                    CurrentCustomerName = "SYNC-DUPLICATE-CUSTOMER",
+                    ItemName = "COPIER-D",
+                    MachineNumber = "SN-DUPLICATE",
+                    CurrentLocation = "Warehouse",
+                    AssetStatus = "Installed",
+                    IsDeleted = false,
+                    Revision = deletedAsset.Revision,
+                    ExpectedRevision = deletedAsset.Revision,
+                    CreatedAtUtc = deletedAsset.CreatedAtUtc,
+                    UpdatedAtUtc = deletedAsset.UpdatedAtUtc
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalAsset) &&
+            conflict.Reason.Contains("same rental asset identifiers", StringComparison.OrdinalIgnoreCase));
+
+        _dbContext.ChangeTracker.Clear();
+        var storedDeletedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(asset => asset.Id == deletedAssetId);
+        var storedActiveAsset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(asset => asset.Id == activeAssetId);
+
+        Assert.True(storedDeletedAsset.IsDeleted);
+        Assert.False(storedActiveAsset.IsDeleted);
+        Assert.Equal(managementNumber, storedDeletedAsset.ManagementNumber);
+        Assert.Equal(managementId, storedDeletedAsset.ManagementId);
+    }
+
+    [Fact]
     public async Task Push_RejectsNewRentalBillingProfile_WhenLinkedCustomerResolvesToReadSharedOffice()
     {
         var sharedReadOnlyCustomerId = Guid.NewGuid();
