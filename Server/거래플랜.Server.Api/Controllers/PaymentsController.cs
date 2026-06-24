@@ -37,15 +37,20 @@ public sealed class PaymentsController : ControllerBase
 
     [HttpGet]
     public async Task<ActionResult<List<PaymentDto>>> GetByInvoice([FromQuery] Guid invoiceId, CancellationToken cancellationToken)
-        => Ok(await _officeScopeService.ApplyPaymentScope(_dbContext.Payments
-            .AsNoTracking()
-            .Include(x => x.Invoice)
-            .ThenInclude(invoice => invoice!.Customer)
-            .Include(x => x.Attachments))
+    {
+        if (!await CanReadInvoiceForPaymentApiAsync(invoiceId, cancellationToken))
+            return Ok(new List<PaymentDto>());
+
+        return Ok(await _officeScopeService.ApplyPaymentScope(_dbContext.Payments
+                .AsNoTracking()
+                .Include(x => x.Invoice)
+                .ThenInclude(invoice => invoice!.Customer)
+                .Include(x => x.Attachments))
             .Where(x => x.InvoiceId == invoiceId)
             .OrderByDescending(x => x.PaymentDate)
             .Select(x => x.ToDto())
             .ToListAsync(cancellationToken));
+    }
 
     [HttpGet("{paymentId:guid}/attachments")]
     public async Task<ActionResult<List<PaymentAttachmentDto>>> GetAttachments(Guid paymentId, CancellationToken cancellationToken)
@@ -53,8 +58,14 @@ public sealed class PaymentsController : ControllerBase
         var paymentExists = await _officeScopeService.ApplyPaymentScope(_dbContext.Payments.AsNoTracking()
             .Include(x => x.Invoice)
             .ThenInclude(invoice => invoice!.Customer))
-            .AnyAsync(x => x.Id == paymentId, cancellationToken);
-        if (!paymentExists)
+            .Where(x => x.Id == paymentId)
+            .Select(x => new
+            {
+                x.InvoiceId,
+                Invoice = x.Invoice
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (paymentExists is null || !CanReadInvoiceForPaymentApi(paymentExists.Invoice))
             return NotFound();
 
         var attachments = await _dbContext.PaymentAttachments
@@ -76,8 +87,15 @@ public sealed class PaymentsController : ControllerBase
             .ThenInclude(payment => payment!.Invoice)
             .ThenInclude(invoice => invoice!.Customer)
             .FirstOrDefaultAsync(x => x.Id == attachmentId, cancellationToken);
-        if (attachment is not null && !_officeScopeService.CanReadOfficeForPayments(attachment.Payment?.Invoice?.ResponsibleOfficeCode, attachment.Payment?.Invoice?.TenantCode, attachment.Payment?.Invoice?.OfficeCode))
+        if (attachment is not null &&
+            (!_officeScopeService.CanReadOfficeForPayments(
+                 attachment.Payment?.Invoice?.ResponsibleOfficeCode,
+                 attachment.Payment?.Invoice?.TenantCode,
+                 attachment.Payment?.Invoice?.OfficeCode) ||
+             !CanReadInvoiceForPaymentApi(attachment.Payment?.Invoice)))
+        {
             attachment = null;
+        }
         if (attachment is null)
             return NotFound();
 
@@ -101,6 +119,25 @@ public sealed class PaymentsController : ControllerBase
 
         return File(bytes, contentType, fileName);
     }
+
+    private async Task<bool> CanReadInvoiceForPaymentApiAsync(
+        Guid invoiceId,
+        CancellationToken cancellationToken)
+    {
+        if (invoiceId == Guid.Empty)
+            return false;
+
+        return await _officeScopeService
+            .ApplySyncInvoiceScope(_dbContext.Invoices.AsNoTracking())
+            .AnyAsync(invoice => invoice.Id == invoiceId, cancellationToken);
+    }
+
+    private bool CanReadInvoiceForPaymentApi(Invoice? invoice)
+        => invoice is not null &&
+           _officeScopeService.CanReadOfficeForSyncInvoices(
+               invoice.ResponsibleOfficeCode,
+               invoice.TenantCode,
+               invoice.OfficeCode);
 
     [HttpPost("{paymentId:guid}/attachments")]
     [Authorize(Policy = PermissionNames.PaymentEdit)]

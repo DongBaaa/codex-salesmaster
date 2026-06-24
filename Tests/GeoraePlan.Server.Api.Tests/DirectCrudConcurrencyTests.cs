@@ -4324,6 +4324,102 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PaymentsController_DoesNotExposePaymentAttachments_WhenParentInvoiceIsNotReadable()
+    {
+        var adminUser = CreateAdminUser();
+        await using (var seedDb = CreateDbContext(adminUser))
+        {
+            seedDb.DataSharingPolicies.Add(new DataSharingPolicy
+            {
+                Id = Guid.NewGuid(),
+                SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+                SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+                TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                ShareCustomers = false,
+                ShareItems = false,
+                ShareInvoices = false,
+                SharePayments = true,
+                ShareContracts = false,
+                ShareReports = false,
+                ShareRentals = false,
+                ShareDeliveries = false,
+                AllowTargetWrite = false,
+                IsActive = true
+            });
+
+            var customer = new Customer
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Hidden invoice payment attachment customer",
+                NameMatchKey = "HIDDENINVOICEPAYMENTATTACHMENTCUSTOMER",
+                TradeType = "Sales"
+            };
+            var invoice = new Invoice
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customer.Id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "PAYMENT-ONLY-HIDDEN-INVOICE-DIRECT",
+                InvoiceDate = new DateOnly(2026, 6, 24),
+                VoucherType = VoucherType.Sales
+            };
+            var payment = new Payment
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = invoice.Id,
+                PaymentDate = new DateOnly(2026, 6, 24),
+                Amount = 20_000m,
+                Note = "payment only hidden direct API"
+            };
+            var attachment = new PaymentAttachment
+            {
+                Id = Guid.NewGuid(),
+                PaymentId = payment.Id,
+                AttachmentType = "PDF",
+                FileName = "hidden-direct-payment.pdf",
+                MimeType = "application/pdf",
+                FileSize = TestPdfBytes("hidden direct payment attachment").LongLength,
+                FileHash = "hash",
+                FileContent = TestPdfBytes("hidden direct payment attachment"),
+                UploadedAtUtc = new DateTime(2026, 6, 24, 0, 1, 0, DateTimeKind.Utc)
+            };
+
+            seedDb.Customers.Add(customer);
+            seedDb.Invoices.Add(invoice);
+            seedDb.Payments.Add(payment);
+            seedDb.PaymentAttachments.Add(attachment);
+            await seedDb.SaveChangesAsync();
+
+            var scopedUser = new TestCurrentUserContext
+            {
+                Username = "yeonsu-payment-only-direct-reader",
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+            };
+            await using var scopedDb = CreateDbContext(scopedUser);
+            var controller = CreatePaymentsController(scopedDb, scopedUser);
+
+            var paymentsResponse = await controller.GetByInvoice(invoice.Id, CancellationToken.None);
+            var paymentsOk = Assert.IsType<OkObjectResult>(paymentsResponse.Result);
+            var payments = Assert.IsType<List<PaymentDto>>(paymentsOk.Value);
+            Assert.Empty(payments);
+
+            var attachmentsResponse = await controller.GetAttachments(payment.Id, CancellationToken.None);
+            Assert.IsType<NotFoundResult>(attachmentsResponse.Result);
+
+            var contentResponse = await controller.GetAttachmentContent(attachment.Id, CancellationToken.None);
+            Assert.IsType<NotFoundResult>(contentResponse);
+        }
+    }
+
+    [Fact]
     public async Task PaymentsController_GetAttachmentContent_ReturnsNotFound_WhenStoredContentIsMissing()
     {
         var currentUser = CreateAdminUser();
