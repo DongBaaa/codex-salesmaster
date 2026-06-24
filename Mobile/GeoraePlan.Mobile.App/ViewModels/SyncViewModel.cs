@@ -5,6 +5,7 @@ namespace GeoraePlan.Mobile.App.ViewModels;
 public sealed class SyncViewModel : ObservableObject
 {
     private readonly SyncCoordinator _syncCoordinator;
+    private readonly SessionStore _sessionStore;
 
     private string _lastRevisionText = "0";
     private string _lastPullSummary = "-";
@@ -15,9 +16,10 @@ public sealed class SyncViewModel : ObservableObject
     private bool _hasAttention;
     private bool _isBusy;
 
-    public SyncViewModel(SyncCoordinator syncCoordinator)
+    public SyncViewModel(SyncCoordinator syncCoordinator, SessionStore sessionStore)
     {
         _syncCoordinator = syncCoordinator;
+        _sessionStore = sessionStore;
         RefreshCommand = new AsyncCommand(RefreshAsync);
         PullCommand = new AsyncCommand(PullAsync);
         PushCommand = new AsyncCommand(PushAsync);
@@ -151,30 +153,42 @@ public sealed class SyncViewModel : ObservableObject
 
     private void ApplyState(Models.MobileSyncState state)
     {
+        var summary = MobilePendingScopeFilter.CreateSummary(_sessionStore.GetSnapshot(), state);
+        var excludedSuffix = summary.ExcludedTotalCount > 0
+            ? $" / 현재 계정 범위 밖 보류 {summary.ExcludedTotalCount:N0}건"
+            : string.Empty;
         LastRevisionText = state.LastRevision.ToString("N0");
         PendingText =
-            $"저장 대기: 설정 {state.PendingSettingCount}건 / 거래처기준 {state.PendingCustomerMasterCount}건 / 거래처 {state.PendingCustomerCount}건 / 계약 {state.PendingCustomerContractCount}건"
-            + $" / 품목 {state.PendingItemCount}건 / 재고 {state.PendingItemWarehouseStockCount}건 / 전표 {state.PendingInvoiceCount}건 / 수금·지급 {state.PendingPaymentCount}건 / 첨부 {state.PendingPaymentAttachmentCount}건"
-            + $" / 거래 {state.PendingTransactionCount}건 / 거래첨부 {state.PendingTransactionAttachmentCount}건 / 재고이동 {state.PendingInventoryTransferCount}건"
-            + $" / 렌탈관리 {state.PendingRentalManagementCompanyCount}건 / 렌탈 {state.PendingRentalBillingProfileCount + state.PendingRentalAssetCount + state.PendingRentalAssetAssignmentHistoryCount + state.PendingRentalBillingLogCount}건";
+            $"저장 대기: 설정 {summary.PendingSettingCount}건 / 거래처기준 {summary.PendingCustomerMasterCount}건 / 거래처 {summary.PendingCustomerCount}건 / 계약 {summary.PendingCustomerContractCount}건"
+            + $" / 품목 {summary.PendingItemCount}건 / 재고 {summary.PendingItemWarehouseStockCount}건 / 전표 {summary.PendingInvoiceCount}건 / 수금·지급 {summary.PendingPaymentCount}건 / 첨부 {summary.PendingPaymentAttachmentCount}건"
+            + $" / 거래 {summary.PendingTransactionCount}건 / 거래첨부 {summary.PendingTransactionAttachmentCount}건 / 재고이동 {summary.PendingInventoryTransferCount}건"
+            + $" / 렌탈관리 {summary.PendingRentalManagementCompanyCount}건 / 렌탈 {summary.PendingRentalBillingProfileCount + summary.PendingRentalAssetCount + summary.PendingRentalAssetAssignmentHistoryCount + summary.PendingRentalBillingLogCount}건"
+            + excludedSuffix;
         LastPullSummary =
             $"마지막 서버 받기: 거래처 {state.LastPulledCustomerCount} / 품목 {state.LastPulledItemCount} / 재고 {state.LastPulledItemWarehouseStockCount} / 전표 {state.LastPulledInvoiceCount} / 수금·지급 {state.LastPulledPaymentCount}"
             + $" / 거래 {state.LastPulledTransactionCount} / 거래첨부 {state.LastPulledTransactionAttachmentCount}"
             + $" / 재고이동 {state.LastPulledInventoryTransferCount} / 렌탈 {state.LastPulledRentalBillingProfileCount + state.LastPulledRentalAssetCount + state.LastPulledRentalAssetAssignmentHistoryCount + state.LastPulledRentalBillingLogCount}";
 
-        if (state.PendingTotalCount > 0 && state.PendingServerMutationCount > 0)
+        if (summary.PendingTotalCount > 0 && summary.PendingServerMutationCount > 0)
         {
             HasAttention = true;
             AttentionText =
-                $"설정 {state.PendingSettingCount:N0}건 / 거래처기준 {state.PendingCustomerMasterCount:N0}건 / 거래처 {state.PendingCustomerCount:N0}건 / 계약 {state.PendingCustomerContractCount:N0}건"
-                + $" / 품목 {state.PendingItemCount:N0}건 / 재고 {state.PendingItemWarehouseStockCount:N0}건 / 전표 {state.PendingInvoiceCount:N0}건 / 수금·지급 {state.PendingPaymentCount:N0}건"
-                + $" / 거래 {state.PendingTransactionCount:N0}건 / 거래첨부 {state.PendingTransactionAttachmentCount:N0}건 / 재고이동 {state.PendingInventoryTransferCount:N0}건"
-                + $" / 렌탈관리 {state.PendingRentalManagementCompanyCount:N0}건 / 렌탈 {state.PendingRentalBillingProfileCount + state.PendingRentalAssetCount + state.PendingRentalAssetAssignmentHistoryCount + state.PendingRentalBillingLogCount:N0}건이 서버 올리기 대기 중입니다. 네트워크가 복구되면 자동으로 다시 올립니다.";
+                $"설정 {summary.PendingSettingCount:N0}건 / 거래처기준 {summary.PendingCustomerMasterCount:N0}건 / 거래처 {summary.PendingCustomerCount:N0}건 / 계약 {summary.PendingCustomerContractCount:N0}건"
+                + $" / 품목 {summary.PendingItemCount:N0}건 / 재고 {summary.PendingItemWarehouseStockCount:N0}건 / 전표 {summary.PendingInvoiceCount:N0}건 / 수금·지급 {summary.PendingPaymentCount:N0}건"
+                + $" / 거래 {summary.PendingTransactionCount:N0}건 / 거래첨부 {summary.PendingTransactionAttachmentCount:N0}건 / 재고이동 {summary.PendingInventoryTransferCount:N0}건"
+                + $" / 렌탈관리 {summary.PendingRentalManagementCompanyCount:N0}건 / 렌탈 {summary.PendingRentalBillingProfileCount + summary.PendingRentalAssetCount + summary.PendingRentalAssetAssignmentHistoryCount + summary.PendingRentalBillingLogCount:N0}건이 현재 계정으로 서버 올리기 대기 중입니다."
+                + (summary.ExcludedTotalCount > 0 ? $" 현재 권한/지점 범위 밖 보류 {summary.ExcludedTotalCount:N0}건은 자동 업로드하지 않고 보관합니다." : " 네트워크가 복구되면 자동으로 다시 올립니다.");
         }
-        else if (state.PendingPaymentAttachmentCount > 0)
+        else if (summary.PendingPaymentAttachmentCount > 0)
         {
             HasAttention = true;
-            AttentionText = $"첨부 {state.PendingPaymentAttachmentCount:N0}건이 서버 올리기 대기 중입니다. 네트워크가 복구되면 자동으로 다시 올립니다.";
+            AttentionText = $"첨부 {summary.PendingPaymentAttachmentCount:N0}건이 현재 계정으로 서버 올리기 대기 중입니다."
+                + (summary.ExcludedTotalCount > 0 ? $" 현재 권한/지점 범위 밖 보류 {summary.ExcludedTotalCount:N0}건은 자동 업로드하지 않고 보관합니다." : " 네트워크가 복구되면 자동으로 다시 올립니다.");
+        }
+        else if (summary.ExcludedTotalCount > 0)
+        {
+            HasAttention = true;
+            AttentionText = $"현재 로그인 권한/지점 범위 밖의 저장 대기 {summary.ExcludedTotalCount:N0}건은 자동 업로드하지 않고 보관 중입니다. 해당 권한 계정으로 다시 로그인한 뒤 동기화하세요.";
         }
         else if (!string.IsNullOrWhiteSpace(state.LastError))
         {

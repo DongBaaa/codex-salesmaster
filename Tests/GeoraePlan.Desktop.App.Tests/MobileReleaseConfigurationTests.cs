@@ -837,7 +837,7 @@ public sealed class MobileReleaseConfigurationTests
 
         foreach (var collection in settingPendingCollections)
         {
-            Assert.Contains($"(state.PendingPush.{collection}?.Count ?? 0) > 0", coordinatorSource, StringComparison.Ordinal);
+            Assert.Contains($"(pendingPush.{collection}?.Count ?? 0) > 0", coordinatorSource, StringComparison.Ordinal);
             Assert.Contains($"(state.PendingPush.{collection}?.Count ?? 0) > 0", storeSource, StringComparison.Ordinal);
         }
     }
@@ -895,12 +895,14 @@ public sealed class MobileReleaseConfigurationTests
             Assert.Contains("PendingTotalCount", source, StringComparison.Ordinal);
         }
 
-        Assert.Contains("설정 {state.PendingSettingCount", syncViewSource, StringComparison.Ordinal);
+        Assert.Contains("MobilePendingScopeFilter.CreateSummary(_sessionStore.GetSnapshot(), state)", syncViewSource, StringComparison.Ordinal);
+        Assert.Contains("설정 {summary.PendingSettingCount", syncViewSource, StringComparison.Ordinal);
         Assert.Contains("거래처기준", syncViewSource, StringComparison.Ordinal);
         Assert.Contains("계약", syncViewSource, StringComparison.Ordinal);
         Assert.Contains("거래첨부", syncViewSource, StringComparison.Ordinal);
         Assert.Contains("재고이동", syncViewSource, StringComparison.Ordinal);
-        Assert.Contains("설정 {sync.PendingSettingCount", homeViewSource, StringComparison.Ordinal);
+        Assert.Contains("MobilePendingScopeFilter.CreateSummary(session, sync)", homeViewSource, StringComparison.Ordinal);
+        Assert.Contains("설정 {pendingSummary.PendingSettingCount", homeViewSource, StringComparison.Ordinal);
         Assert.Contains("거래처기준", homeViewSource, StringComparison.Ordinal);
         Assert.Contains("계약", homeViewSource, StringComparison.Ordinal);
         Assert.Contains("거래첨부", homeViewSource, StringComparison.Ordinal);
@@ -920,7 +922,7 @@ public sealed class MobileReleaseConfigurationTests
 
         Assert.Contains("private static SyncPushResult EnsurePushResult(SyncPushResult? result)", source, StringComparison.Ordinal);
         Assert.Contains("동기화 push 응답이 비어 있어 서버 반영 여부를 확인할 수 없습니다.", source, StringComparison.Ordinal);
-        Assert.Contains("var result = EnsurePushResult(await _api.PushAsync(state.PendingPush, ct));", source, StringComparison.Ordinal);
+        Assert.Contains("var result = EnsurePushResult(await _api.PushAsync(scopedPush, ct));", source, StringComparison.Ordinal);
         Assert.Contains("var result = EnsurePushResult(await _api.PushAsync(request, ct));", source, StringComparison.Ordinal);
         Assert.DoesNotContain(
             "var result = await _api.PushAsync(state.PendingPush, ct);\n                if (result is not null)",
@@ -1181,7 +1183,7 @@ public sealed class MobileReleaseConfigurationTests
 
         Assert.Contains("QueueRentalAssetAssignmentHistoryDraftAsync", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("state.PendingPush.RentalAssetAssignmentHistories.RemoveAll(x => x.Id == history.Id)", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("(state.PendingPush.RentalAssetAssignmentHistories?.Count ?? 0) > 0", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("(pendingPush.RentalAssetAssignmentHistories?.Count ?? 0) > 0", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("state.LastPulledRentalAssetAssignmentHistoryCount = response.RentalAssetAssignmentHistories.Count;", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("state.SyncedRentalAssetAssignmentHistories = MergeById(state.SyncedRentalAssetAssignmentHistories, response.RentalAssetAssignmentHistories);", coordinatorSource, StringComparison.Ordinal);
 
@@ -2095,10 +2097,10 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("state.PendingPush.Items.RemoveAll(x => x.Id == item.Id)", syncCoordinatorSource, StringComparison.Ordinal);
         Assert.Contains("public int PendingCustomerCount => PendingPush.Customers?.Count ?? 0;", stateSource, StringComparison.Ordinal);
         Assert.Contains("public int PendingItemCount => PendingPush.Items?.Count ?? 0;", stateSource, StringComparison.Ordinal);
-        Assert.Contains("거래처기준 {state.PendingCustomerMasterCount}건 / 거래처 {state.PendingCustomerCount}건 / 계약 {state.PendingCustomerContractCount}건", syncViewSource, StringComparison.Ordinal);
-        Assert.Contains("품목 {state.PendingItemCount}건 / 재고 {state.PendingItemWarehouseStockCount}건", syncViewSource, StringComparison.Ordinal);
-        Assert.Contains("거래처기준 {sync.PendingCustomerMasterCount:N0}건 / 거래처 {sync.PendingCustomerCount:N0}건 / 계약 {sync.PendingCustomerContractCount:N0}건", homeViewSource, StringComparison.Ordinal);
-        Assert.Contains("품목 {sync.PendingItemCount:N0}건 / 재고 {sync.PendingItemWarehouseStockCount:N0}건", homeViewSource, StringComparison.Ordinal);
+        Assert.Contains("거래처기준 {summary.PendingCustomerMasterCount}건 / 거래처 {summary.PendingCustomerCount}건 / 계약 {summary.PendingCustomerContractCount}건", syncViewSource, StringComparison.Ordinal);
+        Assert.Contains("품목 {summary.PendingItemCount}건 / 재고 {summary.PendingItemWarehouseStockCount}건", syncViewSource, StringComparison.Ordinal);
+        Assert.Contains("거래처기준 {pendingSummary.PendingCustomerMasterCount:N0}건 / 거래처 {pendingSummary.PendingCustomerCount:N0}건 / 계약 {pendingSummary.PendingCustomerContractCount:N0}건", homeViewSource, StringComparison.Ordinal);
+        Assert.Contains("품목 {pendingSummary.PendingItemCount:N0}건 / 재고 {pendingSummary.PendingItemWarehouseStockCount:N0}건", homeViewSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2266,6 +2268,55 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void AndroidSyncPendingPush_IsRefilteredByCurrentSessionBeforeDisplayOrUpload()
+    {
+        var root = FindRepositoryRoot();
+        var mobileRoot = Path.Combine(root, "Mobile", "GeoraePlan.Mobile.App");
+        var sessionSource = File.ReadAllText(Path.Combine(mobileRoot, "Models", "SessionSnapshot.cs"));
+        var pendingScopeSource = File.ReadAllText(Path.Combine(mobileRoot, "Services", "MobilePendingScopeFilter.cs"));
+        var coordinatorSource = File.ReadAllText(Path.Combine(mobileRoot, "Services", "SyncCoordinator.cs"));
+        var syncViewSource = File.ReadAllText(Path.Combine(mobileRoot, "ViewModels", "SyncViewModel.cs"));
+        var homeViewSource = File.ReadAllText(Path.Combine(mobileRoot, "ViewModels", "HomeViewModel.cs"));
+
+        Assert.Contains("public static class MobilePendingScopeFilter", pendingScopeSource, StringComparison.Ordinal);
+        Assert.Contains("public sealed class MobilePendingScopeSummary", pendingScopeSource, StringComparison.Ordinal);
+        Assert.Contains("CreateScopedPushRequest(SessionSnapshot snapshot, MobileSyncState state)", pendingScopeSource, StringComparison.Ordinal);
+        Assert.Contains("GetScopedPaymentAttachments(", pendingScopeSource, StringComparison.Ordinal);
+        Assert.Contains("ExcludedServerMutationCount", pendingScopeSource, StringComparison.Ordinal);
+        Assert.Contains("ExcludedPaymentAttachmentCount", pendingScopeSource, StringComparison.Ordinal);
+
+        Assert.Contains("public bool CanEditCompanyProfiles", sessionSource, StringComparison.Ordinal);
+        Assert.Contains("public bool CanEditSettings", sessionSource, StringComparison.Ordinal);
+        Assert.Contains("public bool CanEditDelivery", sessionSource, StringComparison.Ordinal);
+        Assert.Contains("public bool CanEditRentalSettings", sessionSource, StringComparison.Ordinal);
+        Assert.Contains("public bool CanEditRentalProfiles", sessionSource, StringComparison.Ordinal);
+        Assert.Contains("public bool CanEditRentalAssets", sessionSource, StringComparison.Ordinal);
+
+        Assert.Contains("MobileSessionScopeFilter.CanAccessCustomer(snapshot, customer)", pendingScopeSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessItem(snapshot, item)", pendingScopeSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessInvoice(snapshot, invoice)", pendingScopeSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessTransaction(snapshot, transaction)", pendingScopeSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessInventoryTransfer(snapshot, transfer)", pendingScopeSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessRentalBillingProfile(snapshot, profile)", pendingScopeSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessRentalAsset(snapshot, asset)", pendingScopeSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessRentalAssetAssignmentHistory(snapshot, history)", pendingScopeSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessRentalBillingLog(snapshot, log)", pendingScopeSource, StringComparison.Ordinal);
+
+        Assert.Contains("private readonly SessionStore _sessionStore;", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("MobilePendingScopeFilter.CreateScopedPushRequest(_sessionStore.GetSnapshot(), state)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("var result = EnsurePushResult(await _api.PushAsync(scopedPush, ct));", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("RemoveSentScopedPendingMutations(state.PendingPush, scopedPush, result);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("RemoveSubmittedItemWarehouseStocks(state.PendingPush, scopedPush, result);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains(".GetScopedPaymentAttachments(_sessionStore.GetSnapshot(), state, additionalAllowedPaymentIds)", coordinatorSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("await _api.PushAsync(state.PendingPush, ct)", coordinatorSource, StringComparison.Ordinal);
+
+        Assert.Contains("MobilePendingScopeFilter.CreateSummary(_sessionStore.GetSnapshot(), state)", syncViewSource, StringComparison.Ordinal);
+        Assert.Contains("현재 계정 범위 밖 보류", syncViewSource, StringComparison.Ordinal);
+        Assert.Contains("MobilePendingScopeFilter.CreateSummary(session, sync)", homeViewSource, StringComparison.Ordinal);
+        Assert.Contains("권한/지점 범위 밖 보류", homeViewSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AndroidSync_AppliesRecycleBinPurgeRecordsToCachedAndPendingRows()
     {
         var root = FindRepositoryRoot();
@@ -2307,7 +2358,7 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("public List<RecycleBinPurgeRecordDto> PurgeRecords { get; set; } = new();", contractsSource, StringComparison.Ordinal);
         Assert.Contains("\"contract\" => await PurgeContractAsync(target, cancellationToken)", recycleBinControllerSource, StringComparison.Ordinal);
         Assert.Contains("CreatePurgeRecord(\"contract\", contract.Id", recycleBinControllerSource, StringComparison.Ordinal);
-        Assert.Contains("public SyncCoordinator(JsonSyncStateStore store, GeoraePlanApiClient api, PaymentAttachmentDraftStore attachmentStore, CustomerContractCacheStore contractCacheStore)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("public SyncCoordinator(JsonSyncStateStore store, GeoraePlanApiClient api, PaymentAttachmentDraftStore attachmentStore, CustomerContractCacheStore contractCacheStore, SessionStore sessionStore)", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("_contractCacheStore = contractCacheStore;", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("await ApplyPurgeRecordsAsync(state, response.PurgeRecords, ct);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("private async Task ApplyPurgeRecordsAsync(MobileSyncState state, IEnumerable<RecycleBinPurgeRecordDto>? purgeRecords, CancellationToken ct)", coordinatorSource, StringComparison.Ordinal);

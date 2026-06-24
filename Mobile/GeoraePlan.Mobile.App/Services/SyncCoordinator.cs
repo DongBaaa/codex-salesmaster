@@ -12,18 +12,20 @@ public sealed class SyncCoordinator
     private readonly GeoraePlanApiClient _api;
     private readonly PaymentAttachmentDraftStore _attachmentStore;
     private readonly CustomerContractCacheStore _contractCacheStore;
+    private readonly SessionStore _sessionStore;
     private readonly SemaphoreSlim _syncLock = new(1, 1);
     private readonly List<PendingPaymentAttachmentRecord> _discardedPaymentAttachmentDrafts = new();
     private static readonly TimeSpan OrphanPaymentAttachmentDraftMinimumAge = TimeSpan.FromDays(7);
 
     public const string ConcurrencyConflictUserMessage = "다른 PC/모바일에서 먼저 수정되어 최신값을 다시 불러왔습니다. 내용을 확인한 뒤 다시 저장해 주세요.";
 
-    public SyncCoordinator(JsonSyncStateStore store, GeoraePlanApiClient api, PaymentAttachmentDraftStore attachmentStore, CustomerContractCacheStore contractCacheStore)
+    public SyncCoordinator(JsonSyncStateStore store, GeoraePlanApiClient api, PaymentAttachmentDraftStore attachmentStore, CustomerContractCacheStore contractCacheStore, SessionStore sessionStore)
     {
         _store = store;
         _api = api;
         _attachmentStore = attachmentStore;
         _contractCacheStore = contractCacheStore;
+        _sessionStore = sessionStore;
     }
 
     public static bool IsConcurrencyConflictState(MobileSyncState state)
@@ -87,11 +89,17 @@ public sealed class SyncCoordinator
         try
         {
             var state = await _store.LoadAsync(ct);
+            var scopedPaymentIdsBeforePush = MobilePendingScopeFilter
+                .CreateScopedPushRequest(_sessionStore.GetSnapshot(), state)
+                .Payments
+                .Select(payment => payment.Id)
+                .Where(id => id != Guid.Empty)
+                .ToHashSet();
             state = await PushInternalAsync(state, ct);
             if (!string.IsNullOrWhiteSpace(state.LastError))
                 return state;
 
-            state = await UploadPendingPaymentAttachmentsInternalAsync(state, ct);
+            state = await UploadPendingPaymentAttachmentsInternalAsync(state, ct, scopedPaymentIdsBeforePush);
             if (!string.IsNullOrWhiteSpace(state.LastError))
             {
                 await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
@@ -120,11 +128,18 @@ public sealed class SyncCoordinator
 
             state.LastBackgroundSyncUtc = now;
 
-            if (HasPendingServerSyncPayload(state) || state.PendingPaymentAttachments.Count > 0)
+            var scopedPaymentIdsBeforePush = MobilePendingScopeFilter
+                .CreateScopedPushRequest(_sessionStore.GetSnapshot(), state)
+                .Payments
+                .Select(payment => payment.Id)
+                .Where(id => id != Guid.Empty)
+                .ToHashSet();
+            if (MobilePendingScopeFilter.HasScopedServerSyncPayload(_sessionStore.GetSnapshot(), state) ||
+                MobilePendingScopeFilter.GetScopedPaymentAttachments(_sessionStore.GetSnapshot(), state, scopedPaymentIdsBeforePush).Count > 0)
             {
                 state = await PushInternalAsync(state, ct);
                 if (string.IsNullOrWhiteSpace(state.LastError))
-                    state = await UploadPendingPaymentAttachmentsInternalAsync(state, ct);
+                    state = await UploadPendingPaymentAttachmentsInternalAsync(state, ct, scopedPaymentIdsBeforePush);
                 if (string.IsNullOrWhiteSpace(state.LastError))
                     state = await PullInternalAsync(state, ct);
 
@@ -535,19 +550,23 @@ public sealed class SyncCoordinator
         try
         {
             state.Normalize();
-            if (HasPendingServerSyncPayload(state))
+            var scopedPush = MobilePendingScopeFilter.CreateScopedPushRequest(_sessionStore.GetSnapshot(), state);
+            if (HasPendingServerSyncPayload(scopedPush))
             {
-                var result = EnsurePushResult(await _api.PushAsync(state.PendingPush, ct));
+                var result = EnsurePushResult(await _api.PushAsync(scopedPush, ct));
                 state.LastRevision = Math.Max(state.LastRevision, result.CurrentServerRevision);
                 if (result.ConflictCount > 0)
                 {
                     RemoveAcceptedPendingMutations(state.PendingPush, result.AcceptedRevisions);
+                    RemoveSubmittedItemWarehouseStocks(state.PendingPush, scopedPush, result);
                     await MarkPushConflictAndRefreshAsync(state, result, ct);
                     await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
                     return state;
                 }
 
-                state.PendingPush = new SyncPushRequest { DeviceId = state.DeviceId };
+                RemoveSentScopedPendingMutations(state.PendingPush, scopedPush, result);
+                if (!HasPendingServerSyncPayload(state))
+                    state.PendingPush = new SyncPushRequest { DeviceId = state.DeviceId };
             }
 
             state.LastSuccessUtc = DateTime.UtcNow;
@@ -628,6 +647,81 @@ public sealed class SyncCoordinator
         RemoveAccepted(pendingPush.Payments, acceptedRevisions, PaymentEntityName);
     }
 
+    private static void RemoveSentScopedPendingMutations(
+        SyncPushRequest pendingPush,
+        SyncPushRequest submittedPush,
+        SyncPushResult result)
+    {
+        if (result.ConflictCount == 0)
+        {
+            RemoveSubmittedById(pendingPush.CompanyProfiles, submittedPush.CompanyProfiles);
+            RemoveSubmittedById(pendingPush.Units, submittedPush.Units);
+            RemoveSubmittedById(pendingPush.CustomerCategories, submittedPush.CustomerCategories);
+            RemoveSubmittedById(pendingPush.PriceGradeOptions, submittedPush.PriceGradeOptions);
+            RemoveSubmittedById(pendingPush.TradeTypeOptions, submittedPush.TradeTypeOptions);
+            RemoveSubmittedById(pendingPush.ItemCategoryOptions, submittedPush.ItemCategoryOptions);
+            RemoveSubmittedById(pendingPush.CustomerMasters, submittedPush.CustomerMasters);
+            RemoveSubmittedById(pendingPush.Customers, submittedPush.Customers);
+            RemoveSubmittedById(pendingPush.CustomerContracts, submittedPush.CustomerContracts);
+            RemoveSubmittedById(pendingPush.Items, submittedPush.Items);
+            RemoveSubmittedById(pendingPush.Transactions, submittedPush.Transactions);
+            RemoveSubmittedById(pendingPush.TransactionAttachments, submittedPush.TransactionAttachments);
+            RemoveSubmittedById(pendingPush.InventoryTransfers, submittedPush.InventoryTransfers);
+            RemoveSubmittedById(pendingPush.RentalManagementCompanies, submittedPush.RentalManagementCompanies);
+            RemoveSubmittedById(pendingPush.RentalBillingProfiles, submittedPush.RentalBillingProfiles);
+            RemoveSubmittedById(pendingPush.RentalAssets, submittedPush.RentalAssets);
+            RemoveSubmittedById(pendingPush.RentalAssetAssignmentHistories, submittedPush.RentalAssetAssignmentHistories);
+            RemoveSubmittedById(pendingPush.RentalBillingLogs, submittedPush.RentalBillingLogs);
+            RemoveSubmittedById(pendingPush.Invoices, submittedPush.Invoices);
+            RemoveSubmittedById(pendingPush.Payments, submittedPush.Payments);
+        }
+        else
+        {
+            RemoveAcceptedPendingMutations(pendingPush, result.AcceptedRevisions);
+        }
+
+        RemoveSubmittedItemWarehouseStocks(pendingPush, submittedPush, result);
+    }
+
+    private static void RemoveSubmittedById<T>(List<T> pending, IEnumerable<T> submitted)
+        where T : SyncEntityDto
+    {
+        var submittedIds = submitted
+            .Where(entity => entity.Id != Guid.Empty)
+            .Select(entity => entity.Id)
+            .ToHashSet();
+
+        if (submittedIds.Count == 0)
+            return;
+
+        pending.RemoveAll(entity => submittedIds.Contains(entity.Id));
+    }
+
+    private static void RemoveSubmittedItemWarehouseStocks(
+        SyncPushRequest pendingPush,
+        SyncPushRequest submittedPush,
+        SyncPushResult result)
+    {
+        var conflictedStockKeys = result.Conflicts
+            .Where(conflict => string.Equals(conflict.EntityName, ItemWarehouseStockEntityName, StringComparison.OrdinalIgnoreCase))
+            .Select(conflict => conflict.EntityId?.Trim() ?? string.Empty)
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var submittedStockKeys = submittedPush.ItemWarehouseStocks
+            .Select(BuildItemWarehouseStockConflictKey)
+            .Where(key => !string.IsNullOrWhiteSpace(key) && !conflictedStockKeys.Contains(key))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (submittedStockKeys.Count == 0)
+            return;
+
+        pendingPush.ItemWarehouseStocks.RemoveAll(stock => submittedStockKeys.Contains(BuildItemWarehouseStockConflictKey(stock)));
+    }
+
+    private static string BuildItemWarehouseStockConflictKey(ItemWarehouseStockDto stock)
+        => $"{stock.ItemId:D}|{OfficeCodeCatalog.NormalizeWarehouseCodeLoose(stock.WarehouseCode)}";
+
     private static void RemoveAccepted<T>(
         List<T> pending,
         IReadOnlyCollection<SyncAcceptedRevisionDto> acceptedRevisions,
@@ -655,6 +749,7 @@ public sealed class SyncCoordinator
     private const string CustomerEntityName = "Customer";
     private const string CustomerContractEntityName = "CustomerContract";
     private const string ItemEntityName = "Item";
+    private const string ItemWarehouseStockEntityName = "ItemWarehouseStock";
     private const string TransactionRecordEntityName = "TransactionRecord";
     private const string TransactionAttachmentEntityName = "TransactionAttachment";
     private const string InventoryTransferEntityName = "InventoryTransfer";
@@ -666,10 +761,15 @@ public sealed class SyncCoordinator
     private const string InvoiceEntityName = "Invoice";
     private const string PaymentEntityName = "Payment";
 
-    private async Task<MobileSyncState> UploadPendingPaymentAttachmentsInternalAsync(MobileSyncState state, CancellationToken ct)
+    private async Task<MobileSyncState> UploadPendingPaymentAttachmentsInternalAsync(
+        MobileSyncState state,
+        CancellationToken ct,
+        IReadOnlySet<Guid>? additionalAllowedPaymentIds = null)
     {
         state.LastAttemptUtc = DateTime.UtcNow;
-        var pending = state.PendingPaymentAttachments.ToList();
+        var pending = MobilePendingScopeFilter
+            .GetScopedPaymentAttachments(_sessionStore.GetSnapshot(), state, additionalAllowedPaymentIds)
+            .ToList();
         if (pending.Count == 0)
         {
             state.LastError = string.Empty;
@@ -1002,28 +1102,31 @@ public sealed class SyncCoordinator
     private static bool HasPendingServerSyncPayload(MobileSyncState state)
     {
         state.Normalize();
-        return (state.PendingPush.CompanyProfiles?.Count ?? 0) > 0
-            || (state.PendingPush.Units?.Count ?? 0) > 0
-            || (state.PendingPush.CustomerCategories?.Count ?? 0) > 0
-            || (state.PendingPush.PriceGradeOptions?.Count ?? 0) > 0
-            || (state.PendingPush.TradeTypeOptions?.Count ?? 0) > 0
-            || (state.PendingPush.ItemCategoryOptions?.Count ?? 0) > 0
-            || (state.PendingPush.CustomerMasters?.Count ?? 0) > 0
-            || (state.PendingPush.Customers?.Count ?? 0) > 0
-            || (state.PendingPush.CustomerContracts?.Count ?? 0) > 0
-            || (state.PendingPush.Items?.Count ?? 0) > 0
-            || (state.PendingPush.ItemWarehouseStocks?.Count ?? 0) > 0
-            || (state.PendingPush.Transactions?.Count ?? 0) > 0
-            || (state.PendingPush.TransactionAttachments?.Count ?? 0) > 0
-            || (state.PendingPush.InventoryTransfers?.Count ?? 0) > 0
-            || (state.PendingPush.RentalManagementCompanies?.Count ?? 0) > 0
-            || (state.PendingPush.RentalBillingProfiles?.Count ?? 0) > 0
-            || (state.PendingPush.RentalAssets?.Count ?? 0) > 0
-            || (state.PendingPush.RentalAssetAssignmentHistories?.Count ?? 0) > 0
-            || (state.PendingPush.RentalBillingLogs?.Count ?? 0) > 0
-            || (state.PendingPush.Invoices?.Count ?? 0) > 0
-            || (state.PendingPush.Payments?.Count ?? 0) > 0;
+        return HasPendingServerSyncPayload(state.PendingPush);
     }
+
+    private static bool HasPendingServerSyncPayload(SyncPushRequest pendingPush)
+        => (pendingPush.CompanyProfiles?.Count ?? 0) > 0
+            || (pendingPush.Units?.Count ?? 0) > 0
+            || (pendingPush.CustomerCategories?.Count ?? 0) > 0
+            || (pendingPush.PriceGradeOptions?.Count ?? 0) > 0
+            || (pendingPush.TradeTypeOptions?.Count ?? 0) > 0
+            || (pendingPush.ItemCategoryOptions?.Count ?? 0) > 0
+            || (pendingPush.CustomerMasters?.Count ?? 0) > 0
+            || (pendingPush.Customers?.Count ?? 0) > 0
+            || (pendingPush.CustomerContracts?.Count ?? 0) > 0
+            || (pendingPush.Items?.Count ?? 0) > 0
+            || (pendingPush.ItemWarehouseStocks?.Count ?? 0) > 0
+            || (pendingPush.Transactions?.Count ?? 0) > 0
+            || (pendingPush.TransactionAttachments?.Count ?? 0) > 0
+            || (pendingPush.InventoryTransfers?.Count ?? 0) > 0
+            || (pendingPush.RentalManagementCompanies?.Count ?? 0) > 0
+            || (pendingPush.RentalBillingProfiles?.Count ?? 0) > 0
+            || (pendingPush.RentalAssets?.Count ?? 0) > 0
+            || (pendingPush.RentalAssetAssignmentHistories?.Count ?? 0) > 0
+            || (pendingPush.RentalBillingLogs?.Count ?? 0) > 0
+            || (pendingPush.Invoices?.Count ?? 0) > 0
+            || (pendingPush.Payments?.Count ?? 0) > 0;
 
     private async Task ApplyPullResponseAsync(MobileSyncState state, SyncPullResponse response, CancellationToken ct)
     {

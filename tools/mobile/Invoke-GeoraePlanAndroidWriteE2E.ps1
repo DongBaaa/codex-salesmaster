@@ -797,24 +797,81 @@ function Set-AndroidText {
     }
 
     foreach ($ch in $Text.ToCharArray()) {
-        $keyCode = switch -Regex ([string]$ch) {
-            '^[a-zA-Z]$' { 'KEYCODE_' + ([string]$ch).ToUpperInvariant(); break }
-            '^[0-9]$' { 'KEYCODE_' + [string]$ch; break }
-            '^ $' { 'KEYCODE_SPACE'; break }
-            '^-$' { 'KEYCODE_MINUS'; break }
-            default { $null }
-        }
-
-        if ($keyCode) {
-            Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'input', 'keyevent', $keyCode) | Out-Null
-            Start-Sleep -Milliseconds 30
-            continue
-        }
-
         $safeText = ([string]$ch).Replace(' ', '%s')
         Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'input', 'text', $safeText) | Out-Null
-        Start-Sleep -Milliseconds 30
+        Start-Sleep -Milliseconds 60
     }
+}
+
+function Clear-AndroidTextField {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId
+    )
+
+    Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'input', 'keyevent', 'KEYCODE_MOVE_END') | Out-Null
+    for ($i = 0; $i -lt 50; $i++) {
+        Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'input', 'keyevent', 'KEYCODE_DEL') | Out-Null
+    }
+}
+
+function Set-LoginTextField {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$EvidenceDirectory,
+        [string]$Timestamp,
+        [string]$FieldName,
+        [object]$Point,
+        [string]$Value,
+        [switch]$VerifyPlainText
+    )
+
+    if (-not $Point) {
+        throw "login field not found: $FieldName"
+    }
+
+    $lastDump = $null
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $Point.X -Y $Point.Y
+        Start-Sleep -Milliseconds 700
+        Clear-AndroidTextField -AdbPath $AdbPath -DeviceId $DeviceId
+        Set-AndroidText -AdbPath $AdbPath -DeviceId $DeviceId -Text $Value
+        Start-Sleep -Milliseconds 700
+
+        $safeFieldName = $FieldName -replace '[^a-zA-Z0-9_-]', '-'
+        $lastDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-write-e2e-$Timestamp-login-$safeFieldName-attempt$attempt"
+        if ($lastDump.Content.Contains("isn't responding")) {
+            for ($waitAttempt = 1; $waitAttempt -le 12; $waitAttempt++) {
+                Dismiss-AndroidAnrDialog -AdbPath $AdbPath -DeviceId $DeviceId -Content $lastDump.Content | Out-Null
+                Start-Sleep -Seconds 5
+                $lastDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-write-e2e-$Timestamp-login-$safeFieldName-after-anr$attempt-$waitAttempt"
+                if (-not $lastDump.Content.Contains("isn't responding")) {
+                    break
+                }
+            }
+
+            $Point = Get-NodeCenterByText -Content $lastDump.Content -Text $FieldName -ClassName 'android.widget.EditText'
+            if ($Point) {
+                continue
+            }
+        }
+
+        if (-not $VerifyPlainText -or $lastDump.Content.Contains("text=`"$Value`"")) {
+            return $lastDump
+        }
+
+        $Point = Get-NodeCenterByText -Content $lastDump.Content -Text $FieldName -ClassName 'android.widget.EditText'
+        if (-not $Point) {
+            break
+        }
+    }
+
+    if ($VerifyPlainText) {
+        throw "login field value not confirmed: $FieldName"
+    }
+
+    return $lastDump
 }
 
 function New-MobileE2EAlphaSuffix {
@@ -1136,8 +1193,7 @@ try {
         $loginButtonPoint = Get-NodeCenterByText -Content $dump.Content -Text '로그인' -ClassName 'android.widget.Button'
 
         if ($userPoint) {
-            Tap-Point -AdbPath $resolvedAdb -DeviceId $deviceId -X $userPoint.X -Y $userPoint.Y
-            Set-AndroidText -AdbPath $resolvedAdb -DeviceId $deviceId -Text $Username
+            $dump = Set-LoginTextField -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Timestamp $timestamp -FieldName '아이디' -Point $userPoint -Value $Username -VerifyPlainText
             Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'shell', 'input', 'keyevent', 'KEYCODE_ESCAPE') | Out-Null
             Start-Sleep -Seconds 1
             $dump = Wait-UiReadyForLoginOrHome -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-write-e2e-$timestamp-login-username-entered" -TimeoutSeconds 90
@@ -1146,8 +1202,7 @@ try {
         if (-not $passwordPoint) {
             throw '로그인 화면에서 비밀번호 입력칸을 찾지 못했습니다.'
         }
-        Tap-Point -AdbPath $resolvedAdb -DeviceId $deviceId -X $passwordPoint.X -Y $passwordPoint.Y
-        Set-AndroidText -AdbPath $resolvedAdb -DeviceId $deviceId -Text $Password
+        $dump = Set-LoginTextField -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Timestamp $timestamp -FieldName '비밀번호' -Point $passwordPoint -Value $Password
         Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'shell', 'input', 'keyevent', 'KEYCODE_ESCAPE') | Out-Null
         Start-Sleep -Seconds 1
         $dump = Wait-UiReadyForLoginOrHome -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-write-e2e-$timestamp-login-password-entered" -TimeoutSeconds 90

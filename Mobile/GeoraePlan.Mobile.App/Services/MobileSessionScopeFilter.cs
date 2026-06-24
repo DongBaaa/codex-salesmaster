@@ -156,7 +156,7 @@ public static class MobileSessionScopeFilter
         };
     }
 
-    private static bool IsGlobalAdminScope(SessionSnapshot snapshot)
+    public static bool IsGlobalAdminScope(SessionSnapshot snapshot)
         => snapshot.IsAuthenticated &&
            snapshot.IsAdmin &&
            string.Equals(GetNormalizedScopeType(snapshot), TenantScopeCatalog.ScopeAdmin, StringComparison.OrdinalIgnoreCase);
