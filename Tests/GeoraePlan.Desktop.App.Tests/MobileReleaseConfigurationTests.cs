@@ -1691,6 +1691,8 @@ public sealed class MobileReleaseConfigurationTests
         Assert.DoesNotContain("if (await _sessionStore.HasUsableSessionAsync()", recoverySource, StringComparison.Ordinal);
         Assert.Contains("TryRestoreSessionAsync($\"401:{relative}\", forceRefresh: true, ct: ct)", apiSource, StringComparison.Ordinal);
         Assert.Contains("TryRestoreSessionAsync($\"token:{relative}\", ct)", apiSource, StringComparison.Ordinal);
+        Assert.Contains("권한/담당지점/사업 범위가 변경되어 자동 로그인으로도 복구하지 못했습니다", apiSource, StringComparison.Ordinal);
+        Assert.Contains("권한/담당지점/사업 범위가 변경되었을 수 있습니다", apiSource, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -70,6 +70,22 @@ public sealed class ApiErrorMessageFormatterTests
     }
 
     [Fact]
+    public void BuildFailureMessage_EmptyUnauthorizedPayload_ReturnsReLoginGuidanceForChangedScope()
+    {
+        var message = ApiErrorMessageFormatter.BuildFailureMessage(
+            HttpStatusCode.Unauthorized,
+            "Unauthorized",
+            string.Empty);
+
+        Assert.Equal(
+            "401 Unauthorized 로그인 세션이 만료되었거나 권한/담당지점/사업 범위가 변경되었습니다. 다시 로그인하세요.",
+            message);
+        Assert.Contains("담당지점", message);
+        Assert.Contains("사업 범위", message);
+        Assert.Contains("다시 로그인", message);
+    }
+
+    [Fact]
     public void BuildFailureMessage_KnownAttachmentErrorPayload_ReturnsBusinessGuidanceWithoutRawErrorCode()
     {
         var body = JsonSerializer.Serialize(new

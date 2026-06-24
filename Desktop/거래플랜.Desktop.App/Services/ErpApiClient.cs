@@ -761,7 +761,7 @@ public sealed class ErpApiClient
                 return true;
             }
 
-            ClearSessionAfterRejectedRefresh("401 응답 후 로그인 세션 갱신이 서버에서 거부되어 다시 로그인이 필요합니다.");
+            ClearSessionAfterRejectedRefresh("401 응답 후 로그인 세션 갱신이 서버에서 거부되었습니다. 세션 만료 또는 권한/담당지점/사업 범위 변경으로 다시 로그인이 필요합니다.");
             return false;
         }
         catch (Exception ex)

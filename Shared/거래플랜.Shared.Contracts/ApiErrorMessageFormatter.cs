@@ -15,7 +15,7 @@ public static class ApiErrorMessageFormatter
         var trimmedBody = TrimBody(body);
 
         if (statusCode == HttpStatusCode.Unauthorized)
-            return $"{statusText} 로그인 세션이 만료되었거나 권한이 없습니다. 다시 로그인하세요. {trimmedBody}".Trim();
+            return $"{statusText} 로그인 세션이 만료되었거나 권한/담당지점/사업 범위가 변경되었습니다. 다시 로그인하세요. {trimmedBody}".Trim();
 
         if (statusCode == HttpStatusCode.Forbidden)
             return $"{statusText} 현재 계정에 이 작업을 수행할 권한이 없습니다. 관리자에게 권한 확인을 요청하세요.".Trim();

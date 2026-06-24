@@ -430,7 +430,7 @@ public sealed class GeoraePlanApiClient
 
         await HandleAuthenticationFailureAsync();
         throw new MobileAuthenticationException(relative,
-            $"401 Unauthorized ({relative}): 저장된 Bearer 토큰이 만료되었고 자동 로그인으로도 복구하지 못했습니다. 다시 로그인해 주세요.".Trim());
+            $"401 Unauthorized ({relative}): 저장된 Bearer 토큰이 만료되었거나 권한/담당지점/사업 범위가 변경되어 자동 로그인으로도 복구하지 못했습니다. 다시 로그인해 주세요.".Trim());
     }
 
     private async Task<HttpResponseMessage> SendCoreAsync(
@@ -459,7 +459,7 @@ public sealed class GeoraePlanApiClient
         {
             await HandleAuthenticationFailureAsync();
             throw new MobileAuthenticationException(relative,
-                $"401 Unauthorized ({relative}): 서버가 Bearer 토큰을 거부했습니다. 세션이 만료되었거나 다시 로그인이 필요합니다. {failureMessage}".Trim());
+                $"401 Unauthorized ({relative}): 서버가 Bearer 토큰을 거부했습니다. 세션이 만료되었거나 권한/담당지점/사업 범위가 변경되었을 수 있습니다. 다시 로그인해 주세요. {failureMessage}".Trim());
         }
 
         throw new HttpRequestException(failureMessage, null, response.StatusCode);

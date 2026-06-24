@@ -91,6 +91,9 @@ public sealed class ErpApiClientSessionRefreshTests
         var exception = await Assert.ThrowsAsync<HttpRequestException>(() => api.GetSyncStatusAsync());
 
         Assert.Equal(HttpStatusCode.Unauthorized, exception.StatusCode);
+        Assert.Contains("담당지점", exception.Message);
+        Assert.Contains("사업 범위", exception.Message);
+        Assert.Contains("다시 로그인", exception.Message);
         Assert.False(session.IsLoggedIn);
         Assert.Null(session.Token);
         Assert.Collection(
