@@ -2345,6 +2345,34 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void AndroidPaymentE2E_CoversStaleInvoiceRevisionConflict()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "mobile",
+            "Invoke-GeoraePlanAndroidPaymentE2E.ps1"));
+
+        Assert.Contains("[switch]$ExerciseStaleInvoiceRevisionConflict", source, StringComparison.Ordinal);
+        Assert.Contains("Stale invoice revision conflict E2E must run alone", source, StringComparison.Ordinal);
+        Assert.Contains("Assert-LocalDirtySyncTarget -BaseUrl $BaseUrl", source, StringComparison.Ordinal);
+        Assert.Contains("function Start-StaleInvoiceRevisionRaceJob", source, StringComparison.Ordinal);
+        Assert.Contains("Start-Job -ScriptBlock", source, StringComparison.Ordinal);
+        Assert.Contains("Invoke-RestMethod `\n                    -Method Put `\n                    -Uri $invoiceUri", source.Replace("\r\n", "\n", StringComparison.Ordinal), StringComparison.Ordinal);
+        Assert.Contains("server-stale-invoice-revision-race-start", source, StringComparison.Ordinal);
+        Assert.Contains("server-stale-invoice-revision-race-stop", source, StringComparison.Ordinal);
+        Assert.Contains("mobile-payment-e2e-$voucherSlug-$timestamp-after-payment-save-stale-invoice-revision", source, StringComparison.Ordinal);
+        Assert.Contains("server-payment-absent-after-stale-invoice-revision-conflict", source, StringComparison.Ordinal);
+        Assert.Contains("sync-status-after-stale-invoice-revision-conflict", source, StringComparison.Ordinal);
+        Assert.Contains("mobile-stale-invoice-revision-conflict-not-dirty", source, StringComparison.Ordinal);
+        Assert.Contains("\uC800\uC7A5\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4", source, StringComparison.Ordinal);
+        Assert.Contains("\uCD5C\uC2E0\uAC12", source, StringComparison.Ordinal);
+        Assert.Contains("\uC218\uAE08\u00B7\uC9C0\uAE09 0\uAC74", source, StringComparison.Ordinal);
+        Assert.Contains("ExerciseStaleInvoiceRevisionConflict = [bool]$ExerciseStaleInvoiceRevisionConflict", source, StringComparison.Ordinal);
+        Assert.Contains("StaleInvoiceRevisionRaceLog", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AndroidPaymentAttachments_OpenButtonValidatesLocalFileAndHandlesMissingViewer()
     {
         var root = FindRepositoryRoot();

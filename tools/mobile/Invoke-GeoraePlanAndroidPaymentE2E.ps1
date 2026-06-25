@@ -14,6 +14,9 @@
     [switch]$ExerciseStoppedServerDirtySync,
     [ValidateSet('', '400', '401', '403', '404', '422')]
     [string]$ExerciseNonRetryableSaveFaultStatus = '',
+    [switch]$ExerciseStaleInvoiceRevisionConflict,
+    [int]$StaleInvoiceRevisionRaceSeconds = 10,
+    [int]$StaleInvoiceRevisionRaceIntervalMilliseconds = 300,
     [switch]$ExerciseAttachmentUpload,
     [switch]$ExerciseCameraAttachmentUpload,
     [switch]$ExerciseAttachmentOpenUi,
@@ -34,6 +37,21 @@ if ($ExerciseAttachmentOpenUi -and -not ($ExerciseAttachmentUpload -or $Exercise
 }
 if ($ExerciseAttachmentListFallback -and -not $ExerciseAttachmentOpenUi) {
     throw 'Attachment list fallback E2E requires attachment open UI E2E.'
+}
+if ($ExerciseStaleInvoiceRevisionConflict -and (
+        $ExerciseStoppedServerDirtySync -or
+        $ExerciseAttachmentUpload -or
+        $ExerciseCameraAttachmentUpload -or
+        $ExerciseAttachmentOpenUi -or
+        $ExerciseAttachmentListFallback -or
+        -not [string]::IsNullOrWhiteSpace($ExerciseNonRetryableSaveFaultStatus))) {
+    throw 'Stale invoice revision conflict E2E must run alone because it verifies rejected payment/non-dirty behavior.'
+}
+if ($StaleInvoiceRevisionRaceSeconds -lt 2) {
+    throw 'StaleInvoiceRevisionRaceSeconds must be at least 2 seconds.'
+}
+if ($StaleInvoiceRevisionRaceIntervalMilliseconds -lt 100) {
+    throw 'StaleInvoiceRevisionRaceIntervalMilliseconds must be at least 100 milliseconds.'
 }
 
 function Resolve-AdbPath {
@@ -1497,6 +1515,109 @@ function New-TestInvoice {
     }
 }
 
+function Start-StaleInvoiceRevisionRaceJob {
+    param(
+        [string]$BaseUrl,
+        [hashtable]$Headers,
+        [string]$InvoiceId,
+        [string]$EvidenceDirectory,
+        [string]$Timestamp,
+        [int]$DurationSeconds,
+        [int]$IntervalMilliseconds
+    )
+
+    $authorization = [string]$Headers.Authorization
+    if ([string]::IsNullOrWhiteSpace($authorization)) {
+        throw 'Stale invoice revision race requires an Authorization header.'
+    }
+
+    $logPath = Join-Path $EvidenceDirectory "mobile-payment-e2e-$Timestamp-stale-invoice-revision-race.log"
+    Set-Content -LiteralPath $logPath -Value "started=$(Get-Date -Format o) invoice=$InvoiceId duration=${DurationSeconds}s interval=${IntervalMilliseconds}ms" -Encoding UTF8
+
+    $job = Start-Job -ScriptBlock {
+        param(
+            [string]$BaseUrl,
+            [string]$Authorization,
+            [string]$InvoiceId,
+            [string]$LogPath,
+            [int]$DurationSeconds,
+            [int]$IntervalMilliseconds
+        )
+
+        $headers = @{ Authorization = $Authorization }
+        $invoiceUri = $BaseUrl.TrimEnd('/') + "/invoices/$InvoiceId"
+        $deadline = (Get-Date).AddSeconds($DurationSeconds)
+        $updateCount = 0
+
+        while ((Get-Date) -lt $deadline) {
+            try {
+                $invoice = Invoke-RestMethod -Method Get -Uri $invoiceUri -Headers $headers -TimeoutSec 10
+                if ($null -eq $invoice) {
+                    throw "invoice not found: $InvoiceId"
+                }
+
+                $dto = $invoice | ConvertTo-Json -Depth 30 | ConvertFrom-Json
+                $dto.memo = "mobile stale invoice revision race " + [DateTime]::UtcNow.ToString('o')
+                $dto.expectedRevision = [long]$invoice.revision
+                $dto.mutationId = ([guid]::NewGuid()).ToString()
+                $dto.mutationCreatedAtUtc = [DateTime]::UtcNow.ToString('o')
+
+                $updated = Invoke-RestMethod `
+                    -Method Put `
+                    -Uri $invoiceUri `
+                    -Headers $headers `
+                    -ContentType 'application/json; charset=utf-8' `
+                    -TimeoutSec 10 `
+                    -Body ($dto | ConvertTo-Json -Depth 30)
+
+                $updateCount++
+                Add-Content -LiteralPath $LogPath -Value ("updated={0} revision={1}" -f $updateCount, $updated.revision) -Encoding UTF8
+            }
+            catch {
+                Add-Content -LiteralPath $LogPath -Value ("error={0}" -f $_.Exception.Message) -Encoding UTF8
+            }
+
+            Start-Sleep -Milliseconds $IntervalMilliseconds
+        }
+
+        Add-Content -LiteralPath $LogPath -Value "completed=$(Get-Date -Format o) updates=$updateCount" -Encoding UTF8
+        return $updateCount
+    } -ArgumentList $BaseUrl, $authorization, $InvoiceId, $logPath, $DurationSeconds, $IntervalMilliseconds
+
+    return [pscustomobject]@{
+        Job = $job
+        LogPath = $logPath
+    }
+}
+
+function Stop-StaleInvoiceRevisionRaceJob {
+    param($Race)
+
+    if ($null -eq $Race -or $null -eq $Race.Job) {
+        return $null
+    }
+
+    try {
+        Wait-Job -Job $Race.Job -Timeout 2 | Out-Null
+        if ($Race.Job.State -eq 'Running') {
+            Stop-Job -Job $Race.Job -ErrorAction SilentlyContinue
+        }
+
+        $output = Receive-Job -Job $Race.Job -ErrorAction SilentlyContinue
+        Remove-Job -Job $Race.Job -Force -ErrorAction SilentlyContinue
+        return [pscustomobject]@{
+            LogPath = $Race.LogPath
+            Output = ($output -join ', ')
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            LogPath = $Race.LogPath
+            Output = "race-cleanup-failed: $($_.Exception.Message)"
+        }
+    }
+}
+
 function Get-TestPayments {
     param(
         [string]$BaseUrl,
@@ -1931,6 +2052,8 @@ $createdAttachment = $null
 $createdAttachmentContent = $null
 $attachmentFixture = $null
 $attachmentModeText = if ($ExerciseCameraAttachmentUpload) { 'Camera' } elseif ($ExerciseAttachmentUpload) { 'PDF' } else { 'None' }
+$staleInvoiceRevisionRace = $null
+$staleInvoiceRevisionRaceResult = $null
 $localApiStoppedForExercise = $false
 $resultStatus = 'FAIL'
 $errorMessage = $null
@@ -1941,7 +2064,7 @@ try {
         throw 'Non-retryable save fault cannot run with stopped API or attachment exercises.'
     }
 
-    if ($ExerciseStoppedServerDirtySync -or $exerciseNonRetryableSaveFault) {
+    if ($ExerciseStoppedServerDirtySync -or $exerciseNonRetryableSaveFault -or $ExerciseStaleInvoiceRevisionConflict) {
         Assert-LocalDirtySyncTarget -BaseUrl $BaseUrl
     }
 
@@ -2096,11 +2219,60 @@ try {
         $localApiStoppedForExercise = $true
         $steps.Add([pscustomobject]@{ Step = 'local-api-stop-before-payment-save'; Result = 'PASS'; Detail = ($stoppedProcesses -join ', ') })
     }
+    if ($ExerciseStaleInvoiceRevisionConflict) {
+        $staleInvoiceRevisionRace = Start-StaleInvoiceRevisionRaceJob `
+            -BaseUrl $BaseUrl `
+            -Headers $headers `
+            -InvoiceId $createdInvoice.id `
+            -EvidenceDirectory $EvidenceDirectory `
+            -Timestamp "$voucherSlug-$timestamp" `
+            -DurationSeconds $StaleInvoiceRevisionRaceSeconds `
+            -IntervalMilliseconds $StaleInvoiceRevisionRaceIntervalMilliseconds
+        $steps.Add([pscustomobject]@{ Step = 'server-stale-invoice-revision-race-start'; Result = 'PASS'; Detail = "invoice=$($createdInvoice.id), log=$($staleInvoiceRevisionRace.LogPath)" })
+        Start-Sleep -Milliseconds 500
+    }
 
     $saveTappedAt = Get-Date
     Tap-Point -AdbPath $resolvedAdb -DeviceId $deviceId -X $saveButtonPoint.X -Y $saveButtonPoint.Y
 
-    if ($ExerciseStoppedServerDirtySync) {
+    if ($ExerciseStaleInvoiceRevisionConflict) {
+        $rejectionDump = Wait-UiContainsAll `
+            -AdbPath $resolvedAdb `
+            -DeviceId $deviceId `
+            -EvidenceDirectory $EvidenceDirectory `
+            -Name "mobile-payment-e2e-$voucherSlug-$timestamp-after-payment-save-stale-invoice-revision" `
+            -Needles @($paymentAction, '저장되지 않았습니다', '최신값') `
+            -StepName 'stale invoice revision 충돌 후 수금/지급 저장 실패 표시' `
+            -TimeoutSeconds 60
+
+        $staleInvoiceRevisionRaceResult = Stop-StaleInvoiceRevisionRaceJob -Race $staleInvoiceRevisionRace
+        $staleInvoiceRevisionRace = $null
+        $steps.Add([pscustomobject]@{ Step = 'server-stale-invoice-revision-race-stop'; Result = 'PASS'; Detail = "log=$($staleInvoiceRevisionRaceResult.LogPath), output=$($staleInvoiceRevisionRaceResult.Output)" })
+
+        $matchesAfterConflict = @(Get-TestPayments -BaseUrl $BaseUrl -Headers $headers -InvoiceId $createdInvoice.id |
+            Where-Object {
+                [decimal]$_.amount -eq $expectedAmount -and
+                [string]$_.note -like "*$expectedMethod*"
+            })
+        if ($matchesAfterConflict.Count -gt 0) {
+            throw 'stale invoice revision 충돌 후 서버에서 테스트 수금/지급이 조회되었습니다.'
+        }
+        $steps.Add([pscustomobject]@{ Step = 'server-payment-absent-after-stale-invoice-revision-conflict'; Result = 'PASS'; Detail = $createdInvoice.id })
+
+        $syncDump = Open-BottomTabAndAssert `
+            -AdbPath $resolvedAdb `
+            -DeviceId $deviceId `
+            -EvidenceDirectory $EvidenceDirectory `
+            -Timestamp $timestamp `
+            -Screen $screen `
+            -TabText '동기화' `
+            -FallbackXRatio 0.84 `
+            -StepName 'sync-status-after-stale-invoice-revision-conflict' `
+            -Needles @('동기화 상태', '수금·지급 0건') `
+            -Steps $steps
+        $steps.Add([pscustomobject]@{ Step = 'mobile-stale-invoice-revision-conflict-not-dirty'; Result = 'PASS'; Detail = "dump=$($syncDump.Path), rejection=$($rejectionDump.Path)" })
+    }
+    elseif ($ExerciseStoppedServerDirtySync) {
         $pendingDump = Wait-UiContainsAll `
             -AdbPath $resolvedAdb `
             -DeviceId $deviceId `
@@ -2288,6 +2460,17 @@ catch {
     $steps.Add([pscustomobject]@{ Step = 'error'; Result = 'FAIL'; Detail = $errorMessage })
 }
 finally {
+    if ($staleInvoiceRevisionRace) {
+        try {
+            $staleInvoiceRevisionRaceResult = Stop-StaleInvoiceRevisionRaceJob -Race $staleInvoiceRevisionRace
+            $staleInvoiceRevisionRace = $null
+            $cleanupSteps.Add([pscustomobject]@{ Target = 'stale-invoice-revision-race'; Id = $createdInvoice.id; Result = "stopped: $($staleInvoiceRevisionRaceResult.LogPath) / $($staleInvoiceRevisionRaceResult.Output)" })
+        }
+        catch {
+            $cleanupSteps.Add([pscustomobject]@{ Target = 'stale-invoice-revision-race'; Id = if ($createdInvoice) { $createdInvoice.id } else { '' }; Result = "cleanup-failed: $($_.Exception.Message)" })
+        }
+    }
+
     if ($localApiStoppedForExercise) {
         try {
             $restart = Start-LocalApiForBaseUrl `
@@ -2330,6 +2513,9 @@ $result = [pscustomobject]@{
     VoucherKind = $VoucherKind
     ExerciseStoppedServerDirtySync = [bool]$ExerciseStoppedServerDirtySync
     ExerciseNonRetryableSaveFaultStatus = $ExerciseNonRetryableSaveFaultStatus
+    ExerciseStaleInvoiceRevisionConflict = [bool]$ExerciseStaleInvoiceRevisionConflict
+    StaleInvoiceRevisionRaceLog = if ($staleInvoiceRevisionRaceResult) { $staleInvoiceRevisionRaceResult.LogPath } else { $null }
+    StaleInvoiceRevisionRaceOutput = if ($staleInvoiceRevisionRaceResult) { $staleInvoiceRevisionRaceResult.Output } else { $null }
     ExerciseAttachmentOpenUi = [bool]$ExerciseAttachmentOpenUi
     ExerciseAttachmentListFallback = [bool]$ExerciseAttachmentListFallback
     Result = $resultStatus
@@ -2361,6 +2547,8 @@ $mdLines = @(
     "- 전표유형: $VoucherKind",
     "- 기본 방식: $expectedMethod",
     "- 실제 API 중단 dirty 동기화 실행: $([bool]$ExerciseStoppedServerDirtySync)",
+    "- stale invoice revision conflict 실행: $([bool]$ExerciseStaleInvoiceRevisionConflict)",
+    "- stale invoice revision race log: $($result.StaleInvoiceRevisionRaceLog)",
     "- PDF attachment upload exercised: $([bool]$ExerciseAttachmentUpload)",
     "- Camera attachment upload exercised: $([bool]$ExerciseCameraAttachmentUpload)",
     "- Attachment open UI exercised: $([bool]$ExerciseAttachmentOpenUi)",
