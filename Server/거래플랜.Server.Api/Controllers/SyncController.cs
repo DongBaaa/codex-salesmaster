@@ -737,6 +737,7 @@ public sealed class SyncController : ControllerBase
                 var paymentLinkedTransactionSettlementTargets =
                     await CascadeDeletedPaymentsToLinkedTransactionsAsync(acceptedPayments, cancellationToken);
 
+                await SynchronizeAcceptedCustomerRentalLinksAsync(acceptedCustomers, cancellationToken);
                 await _dbContext.SaveChangesAsync(cancellationToken);
                 var rentalSettlementTargets = invoiceRentalSettlementTargets
                     .Concat(transactionRentalSettlementTargets)
@@ -928,6 +929,27 @@ public sealed class SyncController : ControllerBase
         }
 
         return accepted;
+    }
+
+    private async Task SynchronizeAcceptedCustomerRentalLinksAsync(
+        IEnumerable<CustomerDto> acceptedCustomers,
+        CancellationToken cancellationToken)
+    {
+        var customerIds = acceptedCustomers
+            .Where(customer => !customer.IsDeleted && customer.Id != Guid.Empty)
+            .Select(customer => customer.Id)
+            .Distinct()
+            .ToList();
+        if (customerIds.Count == 0)
+            return;
+
+        var customers = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .Where(customer => customerIds.Contains(customer.Id) && !customer.IsDeleted)
+            .ToListAsync(cancellationToken);
+
+        foreach (var customer in customers)
+            await RentalCustomerLinkSynchronizer.SynchronizeAsync(_dbContext, customer, cancellationToken);
     }
 
     private async Task UpsertPriceGradeOptionsAsync(
@@ -3699,9 +3721,9 @@ public sealed class SyncController : ControllerBase
                 dto.OfficeCode = resolvedOwnerOfficeCode;
                 dto.ManagementCompanyCode = resolvedOwnerOfficeCode;
                 var normalizedCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(linkedCustomer.NameOriginal);
-                dto.CustomerName = string.IsNullOrWhiteSpace(dto.CustomerName)
-                    ? normalizedCustomerName
-                    : RentalCatalogValueNormalizer.NormalizeDisplayText(dto.CustomerName);
+                dto.CustomerName = normalizedCustomerName;
+                dto.BusinessNumber = linkedCustomer.BusinessNumber?.Trim() ?? string.Empty;
+                dto.Email = linkedCustomer.Email?.Trim() ?? string.Empty;
             }
 
             if (!string.IsNullOrWhiteSpace(dto.ManagementCompanyCode))
@@ -3906,7 +3928,8 @@ public sealed class SyncController : ControllerBase
                 !directCustomer.IsDeleted &&
                 CanReadCustomerForRentalReference(directCustomer) &&
                 CustomerReferenceTenantMatches(directCustomer, preferredTenantCode) &&
-                CustomerReferenceLooksValid(directCustomer, candidateKeys, normalizedBusinessNumber))
+                (CustomerReferenceLooksValid(directCustomer, candidateKeys, normalizedBusinessNumber) ||
+                 await ExistingRentalBillingProfileUsesCustomerAsync(dto.Id, directCustomer.Id, cancellationToken)))
             {
                 return directCustomer.Id;
             }
@@ -4617,21 +4640,7 @@ public sealed class SyncController : ControllerBase
             dto.ItemId = await ResolveRentalAssetItemReferenceAsync(dto, cancellationToken);
             var linkedCustomer = await GetRentalReferenceCustomerAsync(dto.CustomerId, cancellationToken);
             if (linkedCustomer is not null)
-            {
-                var resolvedResponsibleOfficeCode = ResolveRentalCustomerOfficeCode(linkedCustomer.ResponsibleOfficeCode);
-                var resolvedOwnerOfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
-                    linkedCustomer.OfficeCode,
-                    resolvedResponsibleOfficeCode,
-                    linkedCustomer.OfficeCode);
-                dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(
-                    dto.TenantCode,
-                    resolvedOwnerOfficeCode,
-                    linkedCustomer.TenantCode,
-                    linkedCustomer.OfficeCode);
-                dto.ResponsibleOfficeCode = resolvedResponsibleOfficeCode;
-                dto.OfficeCode = resolvedOwnerOfficeCode;
-                dto.ManagementCompanyCode = resolvedOwnerOfficeCode;
-            }
+                ApplyRentalAssetLinkedCustomerSnapshot(dto, linkedCustomer);
 
             RentalBillingProfile? billingProfile = null;
             if (dto.BillingProfileId.HasValue && dto.BillingProfileId.Value != Guid.Empty)
@@ -4680,10 +4689,41 @@ public sealed class SyncController : ControllerBase
                 dto.ManagementCompanyCode = billingProfile.OfficeCode;
             }
 
+            linkedCustomer = await GetRentalReferenceCustomerAsync(dto.CustomerId, cancellationToken);
+            if (linkedCustomer is not null)
+                ApplyRentalAssetLinkedCustomerSnapshot(dto, linkedCustomer);
+
+            dto.AssetKey = BuildRentalAssetKey(
+                dto.ManagementCompanyCode,
+                dto.ManagementNumber,
+                dto.ManagementId,
+                dto.MachineNumber,
+                dto.CustomerName,
+                dto.ItemName);
             valid.Add(dto);
         }
 
         return valid;
+    }
+
+    private void ApplyRentalAssetLinkedCustomerSnapshot(RentalAssetDto dto, Customer linkedCustomer)
+    {
+        var resolvedResponsibleOfficeCode = ResolveRentalCustomerOfficeCode(linkedCustomer.ResponsibleOfficeCode);
+        var resolvedOwnerOfficeCode = _officeScopeService.ResolveOwningOfficeForOperationalScope(
+            linkedCustomer.OfficeCode,
+            resolvedResponsibleOfficeCode,
+            linkedCustomer.OfficeCode);
+        dto.TenantCode = _officeScopeService.ResolveTenantForRentalCreate(
+            dto.TenantCode,
+            resolvedOwnerOfficeCode,
+            linkedCustomer.TenantCode,
+            linkedCustomer.OfficeCode);
+        dto.ResponsibleOfficeCode = resolvedResponsibleOfficeCode;
+        dto.OfficeCode = resolvedOwnerOfficeCode;
+        dto.ManagementCompanyCode = resolvedOwnerOfficeCode;
+        var normalizedCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(linkedCustomer.NameOriginal);
+        dto.CustomerName = normalizedCustomerName;
+        dto.CurrentCustomerName = normalizedCustomerName;
     }
 
     private async Task<RentalBillingProfile?> ResolveRentalAssetBillingProfileReferenceAsync(
@@ -4922,7 +4962,8 @@ public sealed class SyncController : ControllerBase
                 !directCustomer.IsDeleted &&
                 CanReadCustomerForRentalReference(directCustomer) &&
                 CustomerReferenceTenantMatches(directCustomer, preferredTenantCode) &&
-                CustomerReferenceLooksValid(directCustomer, candidateKeys, null))
+                (CustomerReferenceLooksValid(directCustomer, candidateKeys, null) ||
+                 await ExistingRentalAssetUsesCustomerAsync(dto.Id, directCustomer.Id, cancellationToken)))
             {
                 return directCustomer.Id;
             }
@@ -5009,6 +5050,40 @@ public sealed class SyncController : ControllerBase
             $"Referenced customer is outside the readable office scope: {requestedCustomerId.Value}.",
             result);
         return false;
+    }
+
+    private async Task<bool> ExistingRentalBillingProfileUsesCustomerAsync(
+        Guid profileId,
+        Guid customerId,
+        CancellationToken cancellationToken)
+    {
+        if (profileId == Guid.Empty || customerId == Guid.Empty)
+            return false;
+
+        return await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AnyAsync(profile =>
+                profile.Id == profileId &&
+                !profile.IsDeleted &&
+                profile.CustomerId == customerId,
+                cancellationToken);
+    }
+
+    private async Task<bool> ExistingRentalAssetUsesCustomerAsync(
+        Guid assetId,
+        Guid customerId,
+        CancellationToken cancellationToken)
+    {
+        if (assetId == Guid.Empty || customerId == Guid.Empty)
+            return false;
+
+        return await _dbContext.RentalAssets
+            .IgnoreQueryFilters()
+            .AnyAsync(asset =>
+                asset.Id == assetId &&
+                !asset.IsDeleted &&
+                asset.CustomerId == customerId,
+                cancellationToken);
     }
 
     private static string ResolveRentalCustomerOfficeCode(string? officeCode)

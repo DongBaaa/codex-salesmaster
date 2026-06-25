@@ -11,19 +11,20 @@ namespace 거래플랜.Desktop.App.Services;
 
 public sealed partial class LocalStateService
 {
-    private async Task SynchronizeLinkedRentalCustomerNamesForCustomerRenameAsync(
+    private async Task SynchronizeLinkedRentalCustomerInfoAsync(
         LocalCustomer customer,
-        string previousCustomerName,
         CancellationToken ct)
     {
         if (customer.Id == Guid.Empty)
             return;
 
-        var newCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(customer.NameOriginal);
-        if (string.IsNullOrWhiteSpace(newCustomerName))
+        var customerName = RentalCatalogValueNormalizer.NormalizeDisplayText(customer.NameOriginal);
+        if (string.IsNullOrWhiteSpace(customerName))
             return;
 
-        var previousName = RentalCatalogValueNormalizer.NormalizeDisplayText(previousCustomerName);
+        var businessNumber = (customer.BusinessNumber ?? string.Empty).Trim();
+        var email = (customer.Email ?? string.Empty).Trim();
+        var customerScope = ResolveCustomerRentalOperationalScope(customer);
         var now = DateTime.UtcNow;
 
         var profiles = await _db.RentalBillingProfiles
@@ -33,17 +34,16 @@ public sealed partial class LocalStateService
 
         foreach (var profile in profiles)
         {
-            if (!IsRentalScopeCompatibleWithCustomer(customer, ResolveRentalProfileOperationalScope(profile)))
-                continue;
-
-            if (!ShouldReplaceRenamedCustomerDisplay(profile.CustomerName, previousName))
-                continue;
-
-            if (string.Equals(profile.CustomerName, newCustomerName, StringComparison.Ordinal))
-                continue;
-
-            profile.CustomerName = newCustomerName;
-            MarkRenamedLinkedRentalEntity(profile, now);
+            var changed = false;
+            changed |= SetIfDifferent(profile.CustomerName, customerName, value => profile.CustomerName = value);
+            changed |= SetIfDifferent(profile.BusinessNumber, businessNumber, value => profile.BusinessNumber = value);
+            changed |= SetIfDifferent(profile.Email, email, value => profile.Email = value);
+            changed |= SetIfDifferent(profile.ResponsibleOfficeCode, customerScope.ResponsibleOfficeCode, value => profile.ResponsibleOfficeCode = value);
+            changed |= SetIfDifferent(profile.OfficeCode, customerScope.OwnerOfficeCode, value => profile.OfficeCode = value);
+            changed |= SetIfDifferent(profile.ManagementCompanyCode, customerScope.OwnerOfficeCode, value => profile.ManagementCompanyCode = value);
+            changed |= SetIfDifferent(profile.TenantCode, customerScope.TenantCode, value => profile.TenantCode = value);
+            if (changed)
+                MarkLinkedRentalCustomerEntity(profile, now);
         }
 
         var assets = await _db.RentalAssets
@@ -53,78 +53,25 @@ public sealed partial class LocalStateService
 
         foreach (var asset in assets)
         {
-            if (!IsRentalScopeCompatibleWithCustomer(customer, ResolveRentalAssetOperationalScope(asset)))
-                continue;
-
             var changed = false;
-            if (ShouldReplaceRenamedCustomerDisplay(asset.CustomerName, previousName) &&
-                !string.Equals(asset.CustomerName, newCustomerName, StringComparison.Ordinal))
-            {
-                asset.CustomerName = newCustomerName;
-                changed = true;
-            }
-
-            if (ShouldReplaceRenamedCustomerDisplay(asset.CurrentCustomerName, previousName) &&
-                !string.Equals(asset.CurrentCustomerName, newCustomerName, StringComparison.Ordinal))
-            {
-                asset.CurrentCustomerName = newCustomerName;
-                changed = true;
-            }
-
+            changed |= SetIfDifferent(asset.CustomerName, customerName, value => asset.CustomerName = value);
+            changed |= SetIfDifferent(asset.CurrentCustomerName, customerName, value => asset.CurrentCustomerName = value);
+            changed |= SetIfDifferent(asset.ResponsibleOfficeCode, customerScope.ResponsibleOfficeCode, value => asset.ResponsibleOfficeCode = value);
+            changed |= SetIfDifferent(asset.OfficeCode, customerScope.OwnerOfficeCode, value => asset.OfficeCode = value);
+            changed |= SetIfDifferent(asset.ManagementCompanyCode, customerScope.OwnerOfficeCode, value => asset.ManagementCompanyCode = value);
+            changed |= SetIfDifferent(asset.TenantCode, customerScope.TenantCode, value => asset.TenantCode = value);
             if (changed)
-                MarkRenamedLinkedRentalEntity(asset, now);
+                MarkLinkedRentalCustomerEntity(asset, now);
         }
     }
 
-    private static bool AreCustomerDisplayNamesEquivalent(string? left, string? right)
-        => string.Equals(
-            NormalizeCustomerDisplayNameKey(left),
-            NormalizeCustomerDisplayNameKey(right),
-            StringComparison.OrdinalIgnoreCase);
-
-    private static bool ShouldReplaceRenamedCustomerDisplay(string? currentValue, string previousCustomerName)
-    {
-        if (string.IsNullOrWhiteSpace(currentValue))
-            return true;
-
-        if (string.IsNullOrWhiteSpace(previousCustomerName))
-            return false;
-
-        return string.Equals(
-            NormalizeCustomerDisplayNameKey(currentValue),
-            NormalizeCustomerDisplayNameKey(previousCustomerName),
-            StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string NormalizeCustomerDisplayNameKey(string? value)
-        => RentalCatalogValueNormalizer.NormalizeLooseKey(value);
-
-    private static bool IsRentalScopeCompatibleWithCustomer(LocalCustomer customer, RentalOperationalScope rentalScope)
-    {
-        var customerResponsibleOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
-            customer.ResponsibleOfficeCode,
-            DomainConstants.OfficeUsenet);
-        var customerOwnerOfficeCode = OfficeCodeCatalog.ResolveOwningOfficeCode(
-            customer.OfficeCode,
-            customerResponsibleOfficeCode,
-            customerResponsibleOfficeCode);
-        var customerTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
-            customer.TenantCode,
-            customerOwnerOfficeCode,
-            customer.TenantCode,
-            customerResponsibleOfficeCode);
-
-        return string.Equals(customerTenantCode, rentalScope.TenantCode, StringComparison.OrdinalIgnoreCase) &&
-               string.Equals(customerResponsibleOfficeCode, rentalScope.ResponsibleOfficeCode, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static RentalOperationalScope ResolveRentalProfileOperationalScope(LocalRentalBillingProfile profile)
+    private static RentalOperationalScope ResolveCustomerRentalOperationalScope(LocalCustomer customer)
         => RentalScopeNormalizer.ResolveScope(
-            profile.TenantCode,
-            profile.OfficeCode,
-            profile.ManagementCompanyCode,
-            profile.ResponsibleOfficeCode,
-            OfficeCodeCatalog.Usenet);
+            customer.TenantCode,
+            customer.OfficeCode,
+            null,
+            customer.ResponsibleOfficeCode,
+            customer.OfficeCode);
 
     private static RentalOperationalScope ResolveRentalAssetOperationalScope(LocalRentalAsset asset)
         => RentalScopeNormalizer.ResolveScope(
@@ -134,9 +81,22 @@ public sealed partial class LocalStateService
             asset.ResponsibleOfficeCode,
             OfficeCodeCatalog.Usenet);
 
-    private static void MarkRenamedLinkedRentalEntity(ILocalSyncEntity entity, DateTime now)
+    private static bool SetIfDifferent(string? currentValue, string desiredValue, Action<string> assign)
+    {
+        desiredValue ??= string.Empty;
+        if (string.Equals(currentValue ?? string.Empty, desiredValue, StringComparison.Ordinal))
+            return false;
+
+        assign(desiredValue);
+        return true;
+    }
+
+    private static void MarkLinkedRentalCustomerEntity(ILocalSyncEntity entity, DateTime now)
     {
         entity.IsDirty = true;
         entity.UpdatedAtUtc = now;
     }
+
+    private static void MarkRenamedLinkedRentalEntity(ILocalSyncEntity entity, DateTime now)
+        => MarkLinkedRentalCustomerEntity(entity, now);
 }

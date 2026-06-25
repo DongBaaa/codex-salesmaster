@@ -81,6 +81,174 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task PushCustomerAndRentalRows_SynchronizesLinkedCustomerSnapshotsWithoutBatchConflict()
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "USENET",
+            IsActive = true
+        });
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Old Sync Customer",
+            NameMatchKey = "OLDSYNCCUSTOMER",
+            BusinessNumber = "OLD-BIZ",
+            Email = "old-sync@example.test",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"sync-profile-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = "Old Sync Customer",
+            BusinessNumber = "OLD-BIZ",
+            Email = "old-profile@example.test",
+            ItemName = "Sync Rental Line",
+            BillingType = "bundle",
+            BillingAdvanceMode = "postpaid",
+            BillingDay = 25,
+            BillingCycleMonths = 1,
+            BillingMethod = "cash",
+            IsActive = true
+        });
+        _dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            AssetKey = $"sync-asset-{assetId:N}",
+            CustomerId = customerId,
+            BillingProfileId = profileId,
+            CustomerName = "Old Sync Customer",
+            CurrentCustomerName = "Old Sync Customer",
+            ManagementNumber = "SYNC-ASSET-001",
+            ManagementId = "SYNC-ASSET-ID-001",
+            ItemName = "Sync Rental Asset"
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var customerRevision = await _dbContext.Customers.IgnoreQueryFilters()
+            .Where(current => current.Id == customerId)
+            .Select(current => current.Revision)
+            .SingleAsync();
+        var profileRevision = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .Where(current => current.Id == profileId)
+            .Select(current => current.Revision)
+            .SingleAsync();
+        var assetRevision = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .Where(current => current.Id == assetId)
+            .Select(current => current.Revision)
+            .SingleAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "customer-rental-link-sync-test",
+            Customers =
+            [
+                new CustomerDto
+                {
+                    Id = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    NameOriginal = "New Sync Customer",
+                    NameMatchKey = "NEWSYNCCUSTOMER",
+                    BusinessNumber = "NEW-BIZ",
+                    Email = "new-sync@example.test",
+                    TradeType = CustomerClassificationNormalizer.Sales,
+                    Revision = customerRevision,
+                    ExpectedRevision = customerRevision
+                }
+            ],
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"sync-profile-{profileId:N}",
+                    CustomerId = customerId,
+                    CustomerName = "Client Stale Billing Name",
+                    BusinessNumber = "CLIENT-STALE-BIZ",
+                    Email = "client-stale-profile@example.test",
+                    ItemName = "Sync Rental Line",
+                    BillingType = "bundle",
+                    BillingAdvanceMode = "postpaid",
+                    BillingDay = 25,
+                    BillingCycleMonths = 1,
+                    BillingMethod = "cash",
+                    IsActive = true,
+                    Revision = profileRevision,
+                    ExpectedRevision = profileRevision
+                }
+            ],
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = $"sync-asset-{assetId:N}",
+                    CustomerId = customerId,
+                    BillingProfileId = profileId,
+                    CustomerName = "Client Stale Asset Name",
+                    CurrentCustomerName = "Client Stale Current Name",
+                    ManagementNumber = "SYNC-ASSET-001",
+                    ManagementId = "SYNC-ASSET-ID-001",
+                    ItemName = "Sync Rental Asset",
+                    Revision = assetRevision,
+                    ExpectedRevision = assetRevision
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Empty(result.Conflicts);
+        Assert.True(result.AcceptedCount >= 3);
+
+        var syncedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == profileId);
+        Assert.Equal("New Sync Customer", syncedProfile.CustomerName);
+        Assert.Equal("NEW-BIZ", syncedProfile.BusinessNumber);
+        Assert.Equal("new-sync@example.test", syncedProfile.Email);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, syncedProfile.ResponsibleOfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, syncedProfile.OfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, syncedProfile.ManagementCompanyCode);
+        Assert.Equal(TenantScopeCatalog.UsenetGroup, syncedProfile.TenantCode);
+
+        var syncedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == assetId);
+        Assert.Equal("New Sync Customer", syncedAsset.CustomerName);
+        Assert.Equal("New Sync Customer", syncedAsset.CurrentCustomerName);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, syncedAsset.ResponsibleOfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, syncedAsset.OfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, syncedAsset.ManagementCompanyCode);
+        Assert.Equal(TenantScopeCatalog.UsenetGroup, syncedAsset.TenantCode);
+    }
+
+    [Fact]
     public async Task Push_IgnoresNullPayloadEntries_WithoutFailingOrBlockingValidRows()
     {
         var customerId = Guid.NewGuid();

@@ -1397,9 +1397,9 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
-    public async Task LocalStateService_UpsertCustomer_RenameSynchronizesLinkedRentalCustomerDisplays()
+    public async Task LocalStateService_UpsertCustomer_SynchronizesLinkedRentalCustomerSnapshots()
     {
-        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-linked-customer-rename-{Guid.NewGuid():N}");
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-linked-customer-sync-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
         Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
 
@@ -1421,6 +1421,8 @@ public sealed class LocalStateServicePartialsTests
                 ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
                 NameOriginal = "Old Customer",
                 NameMatchKey = "OLDCUSTOMER",
+                BusinessNumber = "OLD-BIZ",
+                Email = "old@example.test",
                 Revision = 3,
                 IsDirty = false
             });
@@ -1430,6 +1432,8 @@ public sealed class LocalStateServicePartialsTests
                     Id = profileId,
                     CustomerId = customerId,
                     CustomerName = "Old Customer",
+                    BusinessNumber = "OLD-BIZ",
+                    Email = "profile-old@example.test",
                     TenantCode = TenantScopeCatalog.UsenetGroup,
                     OfficeCode = OfficeCodeCatalog.Usenet,
                     ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
@@ -1443,6 +1447,8 @@ public sealed class LocalStateServicePartialsTests
                     Id = aliasProfileId,
                     CustomerId = customerId,
                     CustomerName = "Billing Alias",
+                    BusinessNumber = "ALIAS-BIZ",
+                    Email = "alias@example.test",
                     TenantCode = TenantScopeCatalog.UsenetGroup,
                     OfficeCode = OfficeCodeCatalog.Usenet,
                     ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
@@ -1474,9 +1480,11 @@ public sealed class LocalStateServicePartialsTests
                 Id = customerId,
                 TenantCode = TenantScopeCatalog.UsenetGroup,
                 OfficeCode = OfficeCodeCatalog.Usenet,
-                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
                 NameOriginal = "New Customer",
                 NameMatchKey = "NEWCUSTOMER",
+                BusinessNumber = "NEW-BIZ",
+                Email = "new@example.test",
                 Revision = 3
             }, CreateAdminSession());
 
@@ -1484,12 +1492,25 @@ public sealed class LocalStateServicePartialsTests
             var syncedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == profileId);
             var aliasProfile = await db.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == aliasProfileId);
             var syncedAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == assetId);
-            Assert.Equal("New Customer", syncedProfile.CustomerName);
-            Assert.True(syncedProfile.IsDirty);
-            Assert.Equal("Billing Alias", aliasProfile.CustomerName);
-            Assert.False(aliasProfile.IsDirty);
+
+            foreach (var profile in new[] { syncedProfile, aliasProfile })
+            {
+                Assert.Equal("New Customer", profile.CustomerName);
+                Assert.Equal("NEW-BIZ", profile.BusinessNumber);
+                Assert.Equal("new@example.test", profile.Email);
+                Assert.Equal(OfficeCodeCatalog.Yeonsu, profile.ResponsibleOfficeCode);
+                Assert.Equal(OfficeCodeCatalog.Usenet, profile.OfficeCode);
+                Assert.Equal(OfficeCodeCatalog.Usenet, profile.ManagementCompanyCode);
+                Assert.Equal(TenantScopeCatalog.UsenetGroup, profile.TenantCode);
+                Assert.True(profile.IsDirty);
+            }
+
             Assert.Equal("New Customer", syncedAsset.CustomerName);
             Assert.Equal("New Customer", syncedAsset.CurrentCustomerName);
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, syncedAsset.ResponsibleOfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, syncedAsset.OfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, syncedAsset.ManagementCompanyCode);
+            Assert.Equal(TenantScopeCatalog.UsenetGroup, syncedAsset.TenantCode);
             Assert.True(syncedAsset.IsDirty);
         }
         finally

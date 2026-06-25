@@ -491,7 +491,6 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		customer.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, customer.ResponsibleOfficeCode);
 		var existing = await _db.Customers.FindAsync(new object[1] { customer.Id }, ct);
 		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
-		string previousCustomerName = existing?.NameOriginal ?? string.Empty;
 		DateTime now = DateTime.UtcNow;
 		await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, customer, existing, ct);
 		if (!LocalEntityConcurrencyGuard.TryPrepareForSave(customer, existing, "거래처", now, out string conflictMessage))
@@ -506,10 +505,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			_db.Entry(existing).CurrentValues.SetValues(customer);
 		}
-		if (existing != null && !AreCustomerDisplayNamesEquivalent(previousCustomerName, customer.NameOriginal))
-		{
-			await SynchronizeLinkedRentalCustomerNamesForCustomerRenameAsync(customer, previousCustomerName, ct);
-		}
+		await SynchronizeLinkedRentalCustomerInfoAsync(customer, ct);
 		await _db.SaveChangesAsync(ct);
 		return customer;
 	}
@@ -531,7 +527,6 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		string normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, normalizedOfficeCode);
 		var existing = await _db.Customers.IgnoreQueryFilters().FirstOrDefaultAsync((LocalCustomer current) => current.Id == customer.Id, ct);
 		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
-		string previousCustomerName = existing?.NameOriginal ?? string.Empty;
 		if (existing != null)
 		{
 			NormalizeOfficeScope(existing.ResponsibleOfficeCode, normalizedOfficeCode);
@@ -556,10 +551,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			_db.Entry(existing).CurrentValues.SetValues(customer);
 		}
-		if (existing != null && !AreCustomerDisplayNamesEquivalent(previousCustomerName, customer.NameOriginal))
-		{
-			await SynchronizeLinkedRentalCustomerNamesForCustomerRenameAsync(customer, previousCustomerName, ct);
-		}
+		await SynchronizeLinkedRentalCustomerInfoAsync(customer, ct);
 		await _db.SaveChangesAsync(ct);
 		_officeAccess.RevokeTemporaryCustomerAccess(session, customer.Id);
 		return OfficeMutationResult.Ok(customer.Id, "거래처를 저장했습니다.");

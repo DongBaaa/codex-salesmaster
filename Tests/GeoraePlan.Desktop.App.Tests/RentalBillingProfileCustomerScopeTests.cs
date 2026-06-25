@@ -45,6 +45,53 @@ public sealed class RentalBillingProfileCustomerScopeTests
     }
 
     [Fact]
+    public async Task SaveBillingProfileAsync_UsesLinkedCustomerCanonicalSnapshot()
+    {
+        PrepareAppRoot("georaeplan-billing-profile-customer-canonical");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var customer = CreateCustomer(customerId, OfficeCodeCatalog.Yeonsu, TenantScopeCatalog.UsenetGroup);
+            customer.NameOriginal = "Canonical Billing Customer";
+            customer.NameMatchKey = "CANONICALBILLINGCUSTOMER";
+            customer.BusinessNumber = "999-99-99999";
+            customer.Email = "canonical@example.test";
+            db.Customers.Add(customer);
+            await db.SaveChangesAsync();
+
+            var profileId = Guid.NewGuid();
+            var profile = CreateProfile(profileId, customerId, OfficeCodeCatalog.Yeonsu);
+            profile.CustomerName = "Stale Billing Alias";
+            profile.BusinessNumber = "111-11-11111";
+            profile.Email = "stale@example.test";
+            var session = CreateAdminSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+
+            var result = await new RentalStateService(db).SaveBillingProfileAsync(profile, session);
+
+            Assert.True(result.Success, result.Message);
+            var stored = await db.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(current => current.Id == profileId);
+            Assert.Equal(customerId, stored.CustomerId);
+            Assert.Equal("Canonical Billing Customer", stored.CustomerName);
+            Assert.Equal("999-99-99999", stored.BusinessNumber);
+            Assert.Equal("canonical@example.test", stored.Email);
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, stored.ResponsibleOfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, stored.OfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, stored.ManagementCompanyCode);
+            Assert.Equal(TenantScopeCatalog.UsenetGroup, stored.TenantCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SaveBillingProfileAsync_DoesNotAutoLinkSameTenantCustomerFromDifferentOffice()
     {
         PrepareAppRoot("georaeplan-billing-profile-customer-office-mismatch");

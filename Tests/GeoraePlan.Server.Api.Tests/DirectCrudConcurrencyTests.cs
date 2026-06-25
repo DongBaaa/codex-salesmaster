@@ -62,6 +62,90 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task CustomersController_Update_SynchronizesLinkedRentalCustomerSnapshots()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Old Server Customer",
+            NameMatchKey = "OLDSERVERCUSTOMER",
+            BusinessNumber = "OLD-BIZ",
+            Email = "old-server@example.test",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"profile-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = "Stale Server Billing",
+            BusinessNumber = "STALE-BIZ",
+            Email = "stale-profile@example.test",
+            ItemName = "Server Rental Line"
+        });
+        dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            AssetKey = $"asset-{assetId:N}",
+            CustomerId = customerId,
+            CustomerName = "Stale Server Asset",
+            CurrentCustomerName = "Stale Server Asset",
+            ManagementNumber = "SERVER-ASSET-001",
+            ItemName = "Server Rental Asset"
+        });
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Customers.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == customerId);
+        var dto = stored.ToDto();
+        dto.NameOriginal = "New Server Customer";
+        dto.NameMatchKey = "NEWSERVERCUSTOMER";
+        dto.BusinessNumber = "NEW-BIZ";
+        dto.Email = "new-server@example.test";
+        dto.ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu;
+        dto.OfficeCode = OfficeCodeCatalog.Usenet;
+        dto.TenantCode = TenantScopeCatalog.UsenetGroup;
+        dto.ExpectedRevision = stored.Revision;
+
+        var controller = new CustomersController(dbContext, new OfficeScopeService(currentUser, dbContext), new StubCentralFileStorage());
+        var response = await controller.Update(customerId, dto, CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(response.Result);
+        var syncedProfile = await dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == profileId);
+        Assert.Equal("New Server Customer", syncedProfile.CustomerName);
+        Assert.Equal("NEW-BIZ", syncedProfile.BusinessNumber);
+        Assert.Equal("new-server@example.test", syncedProfile.Email);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, syncedProfile.ResponsibleOfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, syncedProfile.OfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, syncedProfile.ManagementCompanyCode);
+        Assert.Equal(TenantScopeCatalog.UsenetGroup, syncedProfile.TenantCode);
+
+        var syncedAsset = await dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == assetId);
+        Assert.Equal("New Server Customer", syncedAsset.CustomerName);
+        Assert.Equal("New Server Customer", syncedAsset.CurrentCustomerName);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, syncedAsset.ResponsibleOfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, syncedAsset.OfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, syncedAsset.ManagementCompanyCode);
+        Assert.Equal(TenantScopeCatalog.UsenetGroup, syncedAsset.TenantCode);
+    }
+
+    [Fact]
     public async Task CustomersController_Delete_ReturnsConflict_WhenExpectedRevisionDoesNotMatch()
     {
         var currentUser = CreateAdminUser();

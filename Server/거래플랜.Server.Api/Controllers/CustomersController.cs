@@ -202,6 +202,7 @@ public sealed class CustomersController : ControllerBase
         dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode);
         entity.Apply(dto);
         _dbContext.Customers.Add(entity);
+        await RentalCustomerLinkSynchronizer.SynchronizeAsync(_dbContext, entity, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(entity.ToDto());
     }
@@ -237,6 +238,7 @@ public sealed class CustomersController : ControllerBase
             entity.TenantCode,
             entity.OfficeCode);
         entity.Apply(dto);
+        await RentalCustomerLinkSynchronizer.SynchronizeAsync(_dbContext, entity, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(entity.ToDto());
     }

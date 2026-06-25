@@ -4644,12 +4644,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     customer => customer.ResponsibleOfficeCode);
             if (linkedCustomer is not null &&
                 (linkedCustomerTenantMismatch ||
-                 linkedCustomerOfficeMismatch ||
-                 !CustomerMatchesAnyCandidateName(
-                     linkedCustomer,
-                     BuildWorkbookCustomerNameCandidates(profile.CustomerName).ToList(),
-                     customer => customer.NameOriginal,
-                     customer => customer.NameMatchKey)))
+                 linkedCustomerOfficeMismatch))
             {
                 return LocalMutationResult.Denied(
                     $"청구 프로필 거래처명 '{profile.CustomerName}'과 연결된 거래처 '{linkedCustomer.NameOriginal}'의 범위가 다릅니다. 부서별 거래처를 먼저 등록하거나 정확한 거래처를 선택하세요.");
@@ -4669,10 +4664,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
             profile.OfficeCode = profileScope.OwnerOfficeCode;
             profile.TenantCode = profileScope.TenantCode;
             var normalizedCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(linkedCustomer.NameOriginal);
-            if (string.IsNullOrWhiteSpace(profile.CustomerName))
-                profile.CustomerName = normalizedCustomerName;
-            if (string.IsNullOrWhiteSpace(profile.BusinessNumber))
-                profile.BusinessNumber = linkedCustomer.BusinessNumber?.Trim() ?? string.Empty;
+            profile.CustomerName = normalizedCustomerName;
+            profile.BusinessNumber = linkedCustomer.BusinessNumber?.Trim() ?? string.Empty;
+            profile.Email = linkedCustomer.Email?.Trim() ?? string.Empty;
         }
 
         profile.BillingType = NormalizeBillingType(profile.BillingType);
