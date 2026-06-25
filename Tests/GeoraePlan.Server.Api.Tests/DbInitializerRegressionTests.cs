@@ -160,6 +160,164 @@ public sealed class DbInitializerRegressionTests : IDisposable
     }
 
     [Fact]
+    public async Task MergeDuplicateItemsAsync_RepointsRentalBillingTemplateWithoutUnlinkingAssets()
+    {
+        var customerId = Guid.Parse("93111111-1111-1111-1111-111111111111");
+        var canonicalItemId = Guid.Parse("93222222-2222-2222-2222-222222222222");
+        var duplicateItemId = Guid.Parse("93333333-3333-3333-3333-333333333333");
+        var profileId = Guid.Parse("93444444-4444-4444-4444-444444444444");
+        var assetId = Guid.Parse("93555555-5555-5555-5555-555555555555");
+        var firstInvoiceId = Guid.Parse("93666666-6666-6666-6666-666666666666");
+        var secondInvoiceId = Guid.Parse("93777777-7777-7777-7777-777777777777");
+
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Server Initializer Customer",
+            NameMatchKey = "SERVERINITIALIZERCUSTOMER"
+        });
+        _dbContext.Items.AddRange(
+            new Item
+            {
+                Id = canonicalItemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Server Duplicate Item",
+                NameMatchKey = "SERVERDUPLICATEITEM",
+                SpecificationOriginal = "A4",
+                SpecificationMatchKey = "A4",
+                TrackingType = ItemTrackingTypes.Stock
+            },
+            new Item
+            {
+                Id = duplicateItemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Server Duplicate Item",
+                NameMatchKey = "SERVERDUPLICATEITEM",
+                SpecificationOriginal = "A4",
+                SpecificationMatchKey = "A4",
+                TrackingType = ItemTrackingTypes.Stock
+            });
+        _dbContext.Invoices.AddRange(
+            new Invoice
+            {
+                Id = firstInvoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "SERVER-INIT-ITEM-MERGE-1",
+                InvoiceDate = new DateOnly(2026, 6, 24),
+                Lines =
+                {
+                    new InvoiceLine
+                    {
+                        InvoiceId = firstInvoiceId,
+                        ItemId = canonicalItemId,
+                        ItemNameOriginal = "Server Duplicate Item",
+                        SpecificationOriginal = "A4",
+                        Quantity = 1m
+                    },
+                    new InvoiceLine
+                    {
+                        InvoiceId = firstInvoiceId,
+                        ItemId = canonicalItemId,
+                        ItemNameOriginal = "Server Duplicate Item",
+                        SpecificationOriginal = "A4",
+                        Quantity = 1m
+                    }
+                }
+            },
+            new Invoice
+            {
+                Id = secondInvoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "SERVER-INIT-ITEM-MERGE-2",
+                InvoiceDate = new DateOnly(2026, 6, 24),
+                Lines =
+                {
+                    new InvoiceLine
+                    {
+                        InvoiceId = secondInvoiceId,
+                        ItemId = canonicalItemId,
+                        ItemNameOriginal = "Server Duplicate Item",
+                        SpecificationOriginal = "A4",
+                        Quantity = 1m
+                    }
+                }
+            });
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            CustomerId = customerId,
+            CustomerName = "Server Initializer Customer",
+            ItemName = "Server Duplicate Item",
+            BillingTemplateJson = JsonSerializer.Serialize(new object[]
+            {
+                new
+                {
+                    ItemId = duplicateItemId,
+                    DisplayItemName = "Server Duplicate Item",
+                    BillingLineMode = "묶음",
+                    RepresentativeAssetId = assetId,
+                    Quantity = 1m,
+                    UnitPrice = 15000m,
+                    Amount = 15000m,
+                    IncludedAssetIds = new[] { assetId }
+                }
+            })
+        });
+        _dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "USENET|SERVER|INIT-ITEM-MERGE",
+            CustomerId = customerId,
+            CustomerName = "Server Initializer Customer",
+            CurrentCustomerName = "Server Initializer Customer",
+            BillingProfileId = profileId,
+            ItemId = duplicateItemId,
+            ItemName = "Server Duplicate Item",
+            MonthlyFee = 15000m
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var method = typeof(DbInitializer).GetMethod(
+            "MergeDuplicateItemsAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
+        await _dbContext.SaveChangesAsync();
+
+        Assert.False(await _dbContext.Items.IgnoreQueryFilters().AnyAsync(item => item.Id == duplicateItemId));
+        Assert.Equal(canonicalItemId, (await _dbContext.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == assetId)).ItemId);
+
+        var storedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == profileId);
+        using var document = JsonDocument.Parse(storedProfile.BillingTemplateJson);
+        var templateItem = Assert.Single(document.RootElement.EnumerateArray());
+        Assert.Equal(canonicalItemId, templateItem.GetProperty("ItemId").GetGuid());
+        Assert.Contains(
+            assetId,
+            templateItem.GetProperty("IncludedAssetIds").EnumerateArray().Select(element => element.GetGuid()));
+    }
+
+    [Fact]
     public async Task VerifyRequiredOperationalSchemaAsync_Throws_WhenCriticalSchemaColumnMissing()
     {
         await _dbContext.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS \"ItemWarehouseStocks\";");

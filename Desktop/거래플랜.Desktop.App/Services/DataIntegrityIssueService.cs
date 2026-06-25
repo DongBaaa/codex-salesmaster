@@ -1553,6 +1553,12 @@ public sealed class DataIntegrityIssueService
             }
         }
 
+        var rentalBillingTemplateProfileCount = await RemapRentalBillingProfileTemplateItemReferencesAsync(
+            canonical,
+            duplicates,
+            now,
+            ct);
+
         var serialLedgers = await _db.SerialLedgers
             .Where(ledger => ledger.ItemId.HasValue && duplicateIds.Contains(ledger.ItemId.Value))
             .ToListAsync(ct);
@@ -1623,6 +1629,7 @@ public sealed class DataIntegrityIssueService
                 MovedInvoiceLines = invoiceLines.Count,
                 MovedInvoiceLineSerials = invoiceLineSerials.Count,
                 MovedRentalAssets = rentalAssets.Count,
+                MovedRentalBillingTemplateProfiles = rentalBillingTemplateProfileCount,
                 MovedTransferLines = inventoryTransferLines.Count,
                 MovedInventoryMovements = inventoryMovements.Count,
                 MovedStockLayers = stockLayers.Count,
@@ -1715,6 +1722,20 @@ public sealed class DataIntegrityIssueService
             }
         }
 
+        var rentalBillingProfiles = await LoadRentalBillingProfilesContainingItemIdsAsync(duplicateIds, ct);
+        if (rentalBillingProfiles.Count > 0)
+        {
+            if (!HasIntegrityPermission(session, AppPermissionNames.RentalProfileEdit))
+                return OfficeMutationResult.Denied("품목 병합으로 렌탈 청구 템플릿의 품목 참조를 함께 변경하려면 렌탈 청구 편집 권한이 필요합니다.");
+
+            foreach (var profile in rentalBillingProfiles)
+            {
+                var scope = ResolveProfileScope(profile);
+                if (!CanWriteCustomerScopeForIntegrity(session, scope.ResponsibleOfficeCode, scope.TenantCode))
+                    return OfficeMutationResult.Denied("권한 범위 밖의 렌탈 청구 템플릿이 연결된 품목은 병합할 수 없습니다.");
+            }
+        }
+
         var inventoryTransferLines = await _db.InventoryTransferLines.IgnoreQueryFilters()
             .AsNoTracking()
             .Where(line => line.ItemId.HasValue && duplicateIds.Contains(line.ItemId.Value))
@@ -1781,6 +1802,117 @@ public sealed class DataIntegrityIssueService
         }
 
         return null;
+    }
+
+    private async Task<int> RemapRentalBillingProfileTemplateItemReferencesAsync(
+        LocalItem canonical,
+        IReadOnlyCollection<LocalItem> duplicates,
+        DateTime now,
+        CancellationToken ct)
+    {
+        var duplicateIds = duplicates
+            .Select(item => item.Id)
+            .Where(id => id != Guid.Empty)
+            .ToHashSet();
+        if (duplicateIds.Count == 0)
+            return 0;
+
+        var duplicateNames = duplicates.Select(duplicate => duplicate.NameOriginal).ToList();
+        var duplicateSpecs = duplicates.Select(duplicate => duplicate.SpecificationOriginal).ToList();
+        var profiles = await LoadRentalBillingProfilesContainingItemIdsAsync(duplicateIds, ct);
+        var changedCount = 0;
+
+        foreach (var profile in profiles)
+        {
+            List<RentalBillingTemplateItemModel>? templateItems;
+            try
+            {
+                templateItems = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(
+                    profile.BillingTemplateJson ?? "[]",
+                    JsonOptions);
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (templateItems is null || templateItems.Count == 0)
+                continue;
+
+            var changed = false;
+            foreach (var item in templateItems)
+            {
+                if (item is null)
+                    continue;
+
+                var wasDuplicateItemReference = duplicateIds.Contains(item.ItemId);
+                if (wasDuplicateItemReference)
+                {
+                    item.ItemId = canonical.Id;
+                    changed = true;
+                }
+
+                if (wasDuplicateItemReference || MatchesDuplicateDisplayName(item.DisplayItemName, duplicateNames))
+                {
+                    item.DisplayItemName = canonical.NameOriginal;
+                    changed = true;
+                }
+
+                if (wasDuplicateItemReference || MatchesDuplicateDisplayName(item.Specification, duplicateSpecs))
+                {
+                    item.Specification = canonical.SpecificationOriginal;
+                    changed = true;
+                }
+
+                // 품목 병합은 품목 마스터 참조만 바꾸며, 설치 자산 연결(IncludedAssetIds)은 삭제/정리하지 않는다.
+                item.IncludedAssetIds ??= [];
+            }
+
+            if (!changed)
+                continue;
+
+            profile.BillingTemplateJson = JsonSerializer.Serialize(templateItems, JsonOptions);
+            MarkDirty(profile, now);
+            changedCount++;
+        }
+
+        return changedCount;
+    }
+
+    private async Task<List<LocalRentalBillingProfile>> LoadRentalBillingProfilesContainingItemIdsAsync(
+        IReadOnlyCollection<Guid> itemIds,
+        CancellationToken ct)
+    {
+        var itemIdSet = itemIds
+            .Where(id => id != Guid.Empty)
+            .ToHashSet();
+        if (itemIdSet.Count == 0)
+            return [];
+
+        var profiles = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .Where(profile => !profile.IsDeleted && !string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
+            .ToListAsync(ct);
+
+        return profiles
+            .Where(profile => BillingTemplateContainsItemId(profile.BillingTemplateJson, itemIdSet))
+            .ToList();
+    }
+
+    private static bool BillingTemplateContainsItemId(string? templateJson, IReadOnlySet<Guid> itemIds)
+    {
+        if (itemIds.Count == 0 || string.IsNullOrWhiteSpace(templateJson))
+            return false;
+
+        try
+        {
+            var items = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(templateJson, JsonOptions) ?? [];
+            return items.Any(item => item is not null && itemIds.Contains(item.ItemId));
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static void LogIntegrityScanStep(string operation, Stopwatch stopwatch, string? detail = null)
@@ -3787,7 +3919,59 @@ public sealed class DataIntegrityIssueService
             }
         }
 
+        var rentalBillingTemplateCounts = await LoadRentalBillingTemplateItemReferenceCountsAsync(ids, ct);
+        foreach (var (itemId, count) in rentalBillingTemplateCounts)
+        {
+            if (usages.TryGetValue(itemId, out var usage))
+                usage.RentalBillingTemplateCount = count;
+        }
+
         return usages;
+    }
+
+    private async Task<Dictionary<Guid, int>> LoadRentalBillingTemplateItemReferenceCountsAsync(
+        IReadOnlyCollection<Guid> itemIds,
+        CancellationToken ct)
+    {
+        var itemIdSet = itemIds
+            .Where(id => id != Guid.Empty)
+            .ToHashSet();
+        if (itemIdSet.Count == 0)
+            return [];
+
+        var profiles = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(profile => !profile.IsDeleted && !string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
+            .Select(profile => profile.BillingTemplateJson)
+            .ToListAsync(ct);
+
+        var counts = new Dictionary<Guid, int>();
+        foreach (var json in profiles)
+        {
+            List<RentalBillingTemplateItemModel>? templateItems;
+            try
+            {
+                templateItems = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(json ?? "[]", JsonOptions);
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (templateItems is null)
+                continue;
+
+            foreach (var item in templateItems)
+            {
+                if (item is null || !itemIdSet.Contains(item.ItemId))
+                    continue;
+
+                counts[item.ItemId] = counts.GetValueOrDefault(item.ItemId) + 1;
+            }
+        }
+
+        return counts;
     }
 
     public static DataIntegrityIssueDefinition GetDefinition(string code)
@@ -4360,6 +4544,18 @@ public sealed class DataIntegrityIssueService
         var currentKey = RentalCatalogValueNormalizer.NormalizeLooseKey(currentValue);
         if (string.IsNullOrWhiteSpace(currentKey))
             return true;
+
+        return duplicateValues
+            .Select(RentalCatalogValueNormalizer.NormalizeLooseKey)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Any(value => string.Equals(value, currentKey, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool MatchesDuplicateDisplayName(string? currentValue, IEnumerable<string> duplicateValues)
+    {
+        var currentKey = RentalCatalogValueNormalizer.NormalizeLooseKey(currentValue);
+        if (string.IsNullOrWhiteSpace(currentKey))
+            return false;
 
         return duplicateValues
             .Select(RentalCatalogValueNormalizer.NormalizeLooseKey)
@@ -5215,6 +5411,7 @@ public sealed class DataIntegrityIssueService
         public int InvoiceLineCount { get; set; }
         public int InvoiceLineSerialCount { get; set; }
         public int RentalAssetCount { get; set; }
+        public int RentalBillingTemplateCount { get; set; }
         public int InventoryTransferLineCount { get; set; }
         public int InventoryMovementCount { get; set; }
         public int StockLayerCount { get; set; }
@@ -5224,6 +5421,7 @@ public sealed class DataIntegrityIssueService
         public int TotalCount => InvoiceLineCount +
                                  InvoiceLineSerialCount +
                                  RentalAssetCount +
+                                 RentalBillingTemplateCount +
                                  InventoryTransferLineCount +
                                  InventoryMovementCount +
                                  StockLayerCount +

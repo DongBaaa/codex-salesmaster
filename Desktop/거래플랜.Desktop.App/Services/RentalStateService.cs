@@ -11010,7 +11010,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return false;
 
         var changed = false;
-        var linkedIdSet = linkedAssetIds.ToHashSet();
         var assignedIds = new HashSet<Guid>();
         var targetIndex = -1;
 
@@ -11018,7 +11017,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         {
             var item = templateItems[i];
             var normalizedIds = (item.IncludedAssetIds ?? new List<Guid>())
-                .Where(id => id != Guid.Empty && linkedIdSet.Contains(id))
+                .Where(id => id != Guid.Empty)
                 .Distinct()
                 .Where(id => assignedIds.Add(id))
                 .ToList();
@@ -11030,6 +11029,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
             {
                 item.IncludedAssetIds = normalizedIds;
                 changed = true;
+            }
+            else
+            {
+                item.IncludedAssetIds = normalizedIds;
             }
         }
 

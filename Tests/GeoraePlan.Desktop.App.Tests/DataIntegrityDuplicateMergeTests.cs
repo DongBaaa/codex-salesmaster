@@ -404,6 +404,166 @@ public sealed class DataIntegrityDuplicateMergeTests
     }
 
     [Fact]
+    public async Task MergeDuplicateIssueAsync_ItemMergeRepointsRentalBillingTemplateWithoutUnlinkingAssets()
+    {
+        PrepareAppRoot("georaeplan-integrity-item-merge-rental-template");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customer = CreateCustomer("91aaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "Rental Template Customer");
+            var canonical = CreateItem("91bbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "Rental Duplicate Item", "A4", currentStock: 0m);
+            var duplicate = CreateItem("91cccccc-cccc-cccc-cccc-cccccccccccc", "Rental Duplicate Item", "A4", currentStock: 0m);
+            var invoiceId = Guid.Parse("91dddddd-dddd-dddd-dddd-dddddddddddd");
+            var profileId = Guid.Parse("91eeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
+            var assetId = Guid.Parse("91ffffff-ffff-ffff-ffff-ffffffffffff");
+
+            db.Customers.Add(customer);
+            db.Items.AddRange(canonical, duplicate);
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = invoiceId,
+                CustomerId = customer.Id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceDate = new DateOnly(2026, 6, 24),
+                InvoiceNumber = "ITEM-MERGE-RENTAL-TEMPLATE-CANONICAL",
+                IsDirty = false,
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        InvoiceId = invoiceId,
+                        ItemId = canonical.Id,
+                        ItemNameOriginal = canonical.NameOriginal,
+                        SpecificationOriginal = canonical.SpecificationOriginal,
+                        Quantity = 1m
+                    },
+                    new LocalInvoiceLine
+                    {
+                        InvoiceId = invoiceId,
+                        ItemId = canonical.Id,
+                        ItemNameOriginal = canonical.NameOriginal,
+                        SpecificationOriginal = canonical.SpecificationOriginal,
+                        Quantity = 1m
+                    },
+                    new LocalInvoiceLine
+                    {
+                        InvoiceId = invoiceId,
+                        ItemId = canonical.Id,
+                        ItemNameOriginal = canonical.NameOriginal,
+                        SpecificationOriginal = canonical.SpecificationOriginal,
+                        Quantity = 1m
+                    }
+                }
+            });
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerId = customer.Id,
+                CustomerName = customer.NameOriginal,
+                ItemName = duplicate.NameOriginal,
+                BillingTemplateJson = System.Text.Json.JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                {
+                    new()
+                    {
+                        ItemId = duplicate.Id,
+                        DisplayItemName = duplicate.NameOriginal,
+                        Specification = duplicate.SpecificationOriginal,
+                        BillingLineMode = "묶음",
+                        RepresentativeAssetId = assetId,
+                        Quantity = 1m,
+                        UnitPrice = 12000m,
+                        Amount = 12000m,
+                        IncludedAssetIds = [assetId]
+                    }
+                }),
+                IsDirty = false
+            });
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "USENET|TEST|ITEM-MERGE-RENTAL-TEMPLATE",
+                CustomerId = customer.Id,
+                CustomerName = customer.NameOriginal,
+                CurrentCustomerName = customer.NameOriginal,
+                BillingProfileId = profileId,
+                ItemId = duplicate.Id,
+                ItemName = duplicate.NameOriginal,
+                MonthlyFee = 12000m,
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var service = new DataIntegrityIssueService(db, new SyncRequestDispatcher());
+            var scan = await service.ScanAsync(CreateAdminSession());
+            var issue = Assert.Single(scan.Issues, issue => issue.Code == DataIntegrityIssueCodes.ItemDuplicateCandidate);
+
+            var result = await service.MergeDuplicateIssueAsync(issue, CreateAdminSession());
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(canonical.Id, result.EntityId);
+
+            var storedAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == assetId);
+            Assert.False(storedAsset.IsDeleted);
+            Assert.Equal(profileId, storedAsset.BillingProfileId);
+            Assert.Equal(canonical.Id, storedAsset.ItemId);
+
+            var storedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == profileId);
+            var templateItems = System.Text.Json.JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(storedProfile.BillingTemplateJson) ?? [];
+            var templateItem = Assert.Single(templateItems);
+            Assert.Equal(canonical.Id, templateItem.ItemId);
+            Assert.Contains(assetId, templateItem.IncludedAssetIds);
+            Assert.Equal(assetId, templateItem.RepresentativeAssetId);
+            Assert.False((await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == canonical.Id)).IsDeleted);
+            Assert.True((await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == duplicate.Id)).IsDeleted);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public void RentalStateService_NormalizeTemplateAssetCoverage_PreservesExistingIncludedAssetIds()
+    {
+        var method = typeof(RentalStateService).GetMethod(
+            "NormalizeTemplateAssetCoverage",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var existingAssetId = Guid.Parse("92000000-0000-0000-0000-000000000001");
+        var linkedAssetId = Guid.Parse("92000000-0000-0000-0000-000000000002");
+        var templateItems = new List<RentalBillingTemplateItemModel>
+        {
+            new()
+            {
+                DisplayItemName = "Bundle",
+                IncludedAssetIds = [existingAssetId]
+            }
+        };
+
+        var changed = Assert.IsType<bool>(method!.Invoke(null, new object?[] { templateItems, new List<Guid> { linkedAssetId } }));
+
+        Assert.True(changed);
+        Assert.Contains(existingAssetId, templateItems[0].IncludedAssetIds);
+        Assert.Contains(linkedAssetId, templateItems[0].IncludedAssetIds);
+    }
+
+    [Fact]
     public async Task MergeDuplicateIssueAsync_RequiresInvoiceEditWhenItemMergeMovesInvoiceLines()
     {
         PrepareAppRoot("georaeplan-integrity-item-merge-invoice-permission");
@@ -494,6 +654,124 @@ public sealed class DataIntegrityDuplicateMergeTests
             Assert.False(storedDuplicate.IsDirty);
             Assert.Equal(duplicate.Id, storedDuplicateLine.ItemId);
             Assert.False(storedDuplicateInvoice.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalDbInitializer_MergeDuplicateItems_RepointsRentalBillingTemplateWithoutUnlinkingAssets()
+    {
+        PrepareAppRoot("georaeplan-initializer-item-merge-rental-template");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customer = CreateCustomer("17111111-1111-1111-1111-111111111111", "Initializer Item Customer");
+            var canonical = CreateItem("17222222-2222-2222-2222-222222222222", "Initializer Duplicate Item", "A4", currentStock: 0m);
+            var duplicate = CreateItem("17333333-3333-3333-3333-333333333333", "Initializer Duplicate Item", "A4", currentStock: 0m);
+            var profileId = Guid.Parse("17444444-4444-4444-4444-444444444444");
+            var assetId = Guid.Parse("17555555-5555-5555-5555-555555555555");
+            db.Customers.Add(customer);
+            db.Items.AddRange(canonical, duplicate);
+            db.Invoices.AddRange(
+                CreateInitializerInvoice("17666666-6666-6666-6666-666666666666", customer.Id, "LOCAL-INIT-ITEM-MERGE-1"),
+                CreateInitializerInvoice("17777777-7777-7777-7777-777777777777", customer.Id, "LOCAL-INIT-ITEM-MERGE-2"));
+            db.InvoiceLines.AddRange(
+                new LocalInvoiceLine
+                {
+                    InvoiceId = Guid.Parse("17666666-6666-6666-6666-666666666666"),
+                    ItemId = canonical.Id,
+                    ItemNameOriginal = canonical.NameOriginal,
+                    SpecificationOriginal = canonical.SpecificationOriginal,
+                    Quantity = 1m
+                },
+                new LocalInvoiceLine
+                {
+                    InvoiceId = Guid.Parse("17777777-7777-7777-7777-777777777777"),
+                    ItemId = canonical.Id,
+                    ItemNameOriginal = canonical.NameOriginal,
+                    SpecificationOriginal = canonical.SpecificationOriginal,
+                    Quantity = 1m
+                },
+                new LocalInvoiceLine
+                {
+                    InvoiceId = Guid.Parse("17777777-7777-7777-7777-777777777777"),
+                    ItemId = canonical.Id,
+                    ItemNameOriginal = canonical.NameOriginal,
+                    SpecificationOriginal = canonical.SpecificationOriginal,
+                    Quantity = 1m
+                });
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerId = customer.Id,
+                CustomerName = customer.NameOriginal,
+                ItemName = duplicate.NameOriginal,
+                BillingTemplateJson = System.Text.Json.JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                {
+                    new()
+                    {
+                        ItemId = duplicate.Id,
+                        DisplayItemName = duplicate.NameOriginal,
+                        BillingLineMode = "묶음",
+                        RepresentativeAssetId = assetId,
+                        Quantity = 1m,
+                        UnitPrice = 15000m,
+                        Amount = 15000m,
+                        IncludedAssetIds = [assetId]
+                    }
+                }),
+                IsDirty = false
+            });
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "USENET|TEST|INIT-ITEM-MERGE-RENTAL-TEMPLATE",
+                CustomerId = customer.Id,
+                CustomerName = customer.NameOriginal,
+                CurrentCustomerName = customer.NameOriginal,
+                BillingProfileId = profileId,
+                ItemId = duplicate.Id,
+                ItemName = duplicate.NameOriginal,
+                MonthlyFee = 15000m,
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var method = typeof(LocalDbInitializer).GetMethod(
+                "MergeDuplicateItemsAsync",
+                BindingFlags.NonPublic | BindingFlags.Static);
+
+            Assert.NotNull(method);
+
+            var task = method!.Invoke(null, new object?[] { db }) as Task;
+            Assert.NotNull(task);
+            await task!;
+            await db.SaveChangesAsync();
+
+            Assert.False(await db.Items.IgnoreQueryFilters().AnyAsync(item => item.Id == duplicate.Id));
+            Assert.Equal(canonical.Id, (await db.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == assetId)).ItemId);
+
+            var storedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == profileId);
+            var templateItems = System.Text.Json.JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(storedProfile.BillingTemplateJson) ?? [];
+            var templateItem = Assert.Single(templateItems);
+            Assert.Equal(canonical.Id, templateItem.ItemId);
+            Assert.Contains(assetId, templateItem.IncludedAssetIds);
         }
         finally
         {

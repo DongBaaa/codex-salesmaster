@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using System.Globalization;
 using 거래플랜.Server.Api.Domain;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Server.Api.Data;
 
@@ -58,6 +59,7 @@ public static partial class DbInitializer
 
         var invoiceLines = await dbContext.InvoiceLines.IgnoreQueryFilters().ToListAsync(cancellationToken);
         var rentalAssets = await dbContext.RentalAssets.IgnoreQueryFilters().ToListAsync(cancellationToken);
+        var rentalBillingProfiles = await dbContext.RentalBillingProfiles.IgnoreQueryFilters().ToListAsync(cancellationToken);
         var itemWarehouseStocks = await dbContext.ItemWarehouseStocks.ToListAsync(cancellationToken);
         var inventoryTransferLines = await dbContext.InventoryTransferLines.IgnoreQueryFilters().ToListAsync(cancellationToken);
 
@@ -72,6 +74,7 @@ public static partial class DbInitializer
         var inventoryTransferLineCounts = inventoryTransferLines.Where(current => current.ItemId.HasValue && current.ItemId.Value != Guid.Empty)
             .GroupBy(current => current.ItemId!.Value)
             .ToDictionary(group => group.Key, group => group.Count());
+        var rentalBillingTemplateCounts = CountRentalBillingTemplateItemReferences(rentalBillingProfiles);
 
         var groups = items
             .GroupBy(BuildItemDuplicateKey, StringComparer.Ordinal)
@@ -84,7 +87,13 @@ public static partial class DbInitializer
         foreach (var group in groups)
         {
             var canonical = group
-                .OrderByDescending(current => CountItemReferenceScore(current.Id, invoiceLineCounts, rentalAssetCounts, warehouseStockCounts, inventoryTransferLineCounts))
+                .OrderByDescending(current => CountItemReferenceScore(
+                    current.Id,
+                    invoiceLineCounts,
+                    rentalAssetCounts,
+                    warehouseStockCounts,
+                    inventoryTransferLineCounts,
+                    rentalBillingTemplateCounts))
                 .ThenByDescending(current => current.UpdatedAtUtc)
                 .ThenBy(current => current.Id)
                 .First();
@@ -104,6 +113,8 @@ public static partial class DbInitializer
                     asset.ItemId = canonical.Id;
                     TouchTrackedEntity(asset, now);
                 }
+
+                RemapStartupRentalBillingTemplateItemReferences(rentalBillingProfiles, canonical, duplicate, now);
 
                 foreach (var line in inventoryTransferLines.Where(current => current.ItemId == duplicate.Id))
                     line.ItemId = canonical.Id;
@@ -334,11 +345,70 @@ public static partial class DbInitializer
         IReadOnlyDictionary<Guid, int> invoiceLineCounts,
         IReadOnlyDictionary<Guid, int> rentalAssetCounts,
         IReadOnlyDictionary<Guid, int> warehouseStockCounts,
-        IReadOnlyDictionary<Guid, int> inventoryTransferLineCounts)
+        IReadOnlyDictionary<Guid, int> inventoryTransferLineCounts,
+        IReadOnlyDictionary<Guid, int> rentalBillingTemplateCounts)
         => invoiceLineCounts.GetValueOrDefault(itemId)
            + rentalAssetCounts.GetValueOrDefault(itemId)
            + warehouseStockCounts.GetValueOrDefault(itemId)
-           + inventoryTransferLineCounts.GetValueOrDefault(itemId);
+           + inventoryTransferLineCounts.GetValueOrDefault(itemId)
+           + rentalBillingTemplateCounts.GetValueOrDefault(itemId);
+
+    private static Dictionary<Guid, int> CountRentalBillingTemplateItemReferences(
+        IReadOnlyList<RentalBillingProfile> profiles)
+    {
+        var counts = new Dictionary<Guid, int>();
+        foreach (var profile in profiles)
+        {
+            foreach (var item in DeserializeBillingTemplateItems(profile.BillingTemplateJson))
+            {
+                if (item.ItemId == Guid.Empty)
+                    continue;
+
+                counts[item.ItemId] = counts.GetValueOrDefault(item.ItemId) + 1;
+            }
+        }
+
+        return counts;
+    }
+
+    private static void RemapStartupRentalBillingTemplateItemReferences(
+        IReadOnlyList<RentalBillingProfile> profiles,
+        Item canonical,
+        Item duplicate,
+        DateTime now)
+    {
+        foreach (var profile in profiles)
+        {
+            var templateItems = DeserializeBillingTemplateItems(profile.BillingTemplateJson);
+            if (templateItems.Count == 0)
+                continue;
+
+            var changed = false;
+            foreach (var item in templateItems)
+            {
+                if (item.ItemId != duplicate.Id)
+                    continue;
+
+                item.ItemId = canonical.Id;
+                if (string.IsNullOrWhiteSpace(item.DisplayItemName) ||
+                    string.Equals(
+                        RentalCatalogValueNormalizer.NormalizeLooseKey(item.DisplayItemName),
+                        RentalCatalogValueNormalizer.NormalizeLooseKey(duplicate.NameOriginal),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    item.DisplayItemName = canonical.NameOriginal;
+                }
+
+                changed = true;
+            }
+
+            if (!changed)
+                continue;
+
+            profile.BillingTemplateJson = SerializeBillingTemplateItems(templateItems);
+            TouchTrackedEntity(profile, now);
+        }
+    }
 
     private static int CountFilledCustomerValues(Customer current)
     {
