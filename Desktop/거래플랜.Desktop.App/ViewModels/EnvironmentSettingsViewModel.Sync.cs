@@ -906,12 +906,13 @@ public sealed partial class EnvironmentSettingsViewModel
     private async Task OpenDataIntegrityFixTargetAsync(DataIntegrityIssueDetail issue, Window? ownerOverride = null)
     {
         var owner = ownerOverride ?? ResolveActiveWindow();
+        var rentalBillingProfileDirectActionId = ResolveRentalBillingProfileDirectActionId(issue);
         switch (issue.DirectActionKind)
         {
-            case DataIntegrityDirectActionKind.OpenRentalBillingProfile when issue.ProfileId.HasValue:
+            case DataIntegrityDirectActionKind.OpenRentalBillingProfile when rentalBillingProfileDirectActionId.HasValue:
             {
                 var billingViewModel = new RentalBillingViewModel(_rental, _local, _session, _api);
-                await billingViewModel.LoadAndSelectProfileAsync(issue.ProfileId.Value);
+                await billingViewModel.LoadAndSelectProfileAsync(rentalBillingProfileDirectActionId.Value);
                 var window = new RentalBillingWindow(billingViewModel);
                 if (owner is not null)
                     window.Owner = owner;
@@ -1034,6 +1035,20 @@ public sealed partial class EnvironmentSettingsViewModel
                 StatusMessage = "운영 점검 상세에서 수동 확인이 필요한 항목입니다.";
                 break;
         }
+    }
+
+    private static Guid? ResolveRentalBillingProfileDirectActionId(DataIntegrityIssueDetail issue)
+    {
+        if (issue.DirectActionKind != DataIntegrityDirectActionKind.OpenRentalBillingProfile)
+            return null;
+
+        if (issue.ProfileId.HasValue && issue.ProfileId.Value != Guid.Empty)
+            return issue.ProfileId.Value;
+
+        if (!issue.AssetId.HasValue && issue.EntityId.HasValue && issue.EntityId.Value != Guid.Empty)
+            return issue.EntityId.Value;
+
+        return null;
     }
 
     private static void ShowDataIntegrityNavigationMessage(Window? owner, string message)

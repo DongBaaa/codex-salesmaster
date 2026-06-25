@@ -340,7 +340,10 @@ public sealed class RentalBillingRunStateTests
                 .Include(current => current.Lines)
                 .AsNoTracking()
                 .SingleAsync(current => current.LinkedRentalBillingProfileId == profileId);
-            Assert.Equal(2, invoice.Lines.Count(line => !line.IsDeleted));
+            var activeLines = invoice.Lines.Where(line => !line.IsDeleted).ToList();
+            var aggregatedLine = Assert.Single(activeLines);
+            Assert.Equal(2m, aggregatedLine.Quantity);
+            Assert.Equal(200_000m, aggregatedLine.LineAmount);
 
             var persisted = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(current => current.Id == profileId);
             var run = Assert.Single(DeserializeRuns(persisted.BillingRunsJson));
@@ -419,8 +422,8 @@ public sealed class RentalBillingRunStateTests
                 .OrderBy(line => line.OrderIndex)
                 .ToList();
 
-            Assert.Equal(6, orderedLines.Count);
-            Assert.Equal(Enumerable.Range(1, 6), orderedLines.Select(line => line.OrderIndex));
+            Assert.Equal(4, orderedLines.Count);
+            Assert.Equal(Enumerable.Range(1, 4), orderedLines.Select(line => line.OrderIndex));
             Assert.All(orderedLines, line =>
                 Assert.Contains("사무기기 렌탈대금", line.ItemNameOriginal, StringComparison.Ordinal));
             Assert.All(orderedLines.Take(2), line =>
@@ -429,7 +432,8 @@ public sealed class RentalBillingRunStateTests
             });
             Assert.All(orderedLines.Skip(2), line =>
             {
-                Assert.Equal(100_000m, line.LineAmount);
+                Assert.Equal(2m, line.Quantity);
+                Assert.Equal(200_000m, line.LineAmount);
             });
             Assert.Equal(460_000m, invoice.TotalAmount);
 

@@ -46,4 +46,49 @@ public sealed class DataIntegrityIssueViewModelTests
         Assert.Contains("620", viewModel.StatusMessage);
         Assert.Contains("500", viewModel.StatusMessage);
     }
+
+    [Fact]
+    public void ResolveRentalBillingProfileDirectActionId_UsesEntityIdForProfileSummaryMismatch()
+    {
+        var profileId = Guid.Parse("dd100000-0000-0000-0000-000000000001");
+        var issue = new DataIntegrityIssueDetail
+        {
+            Code = DataIntegrityIssueCodes.RentalBillingProfileSummaryMismatch,
+            DirectActionKind = DataIntegrityDirectActionKind.OpenRentalBillingProfile,
+            EntityId = profileId
+        };
+
+        var resolvedId = InvokePrivateStatic<Guid?>(
+            typeof(EnvironmentSettingsViewModel),
+            "ResolveRentalBillingProfileDirectActionId",
+            issue);
+
+        Assert.Equal(profileId, resolvedId);
+    }
+
+    [Fact]
+    public void ResolveRentalBillingProfileDirectActionId_DoesNotTreatAssetEntityAsProfile()
+    {
+        var assetId = Guid.Parse("dd200000-0000-0000-0000-000000000001");
+        var issue = new DataIntegrityIssueDetail
+        {
+            DirectActionKind = DataIntegrityDirectActionKind.OpenRentalBillingProfile,
+            EntityId = assetId,
+            AssetId = assetId
+        };
+
+        var resolvedId = InvokePrivateStatic<Guid?>(
+            typeof(EnvironmentSettingsViewModel),
+            "ResolveRentalBillingProfileDirectActionId",
+            issue);
+
+        Assert.Null(resolvedId);
+    }
+
+    private static T? InvokePrivateStatic<T>(Type type, string methodName, params object?[] args)
+    {
+        var method = type.GetMethod(methodName, System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        return (T?)method!.Invoke(null, args);
+    }
 }

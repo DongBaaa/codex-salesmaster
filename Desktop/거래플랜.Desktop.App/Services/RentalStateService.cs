@@ -9613,6 +9613,22 @@ WHERE ""AssignedUsername"" <> '';", ct);
         };
     }
 
+    private sealed record RentalBillingInvoiceLineDraft(
+        int Sequence,
+        bool CanAggregateQuantity,
+        DateOnly BillingMonth,
+        string DisplayItemName,
+        LocalInvoiceLine Line,
+        IReadOnlyList<LocalRentalAsset> Assets);
+
+    private readonly record struct RentalBillingInvoiceLineAggregateKey(
+        DateOnly BillingMonth,
+        string DisplayItemNameKey,
+        string ItemName,
+        string Unit,
+        decimal UnitPrice,
+        string Remark);
+
     private async Task<LocalInvoice?> GetActiveBillingInvoiceAsync(Guid billingRunId, CancellationToken ct)
     {
         if (billingRunId == Guid.Empty)
@@ -9663,7 +9679,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             ct);
         var assetsById = includedAssets.ToDictionary(asset => asset.Id);
 
-        var lines = new List<LocalInvoiceLine>();
+        var lineDrafts = new List<RentalBillingInvoiceLineDraft>();
         var profileBillingType = NormalizeBillingType(profile.BillingType);
         IReadOnlyList<LocalRentalAsset>? includedBillingAssets = null;
         IReadOnlyList<LocalRentalAsset>? billingAssetCandidates = null;
@@ -9812,7 +9828,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 foreach (var billingMonth in billingMonths)
                 {
                     var specification = ResolveBundleInvoiceSpecification(templateItem, representativeAsset, templateAssets);
-                    lines.Add(new LocalInvoiceLine
+                    var line = new LocalInvoiceLine
                     {
                         Id = Guid.NewGuid(),
                         ItemId = null,
@@ -9823,12 +9839,19 @@ WHERE ""AssignedUsername"" <> '';", ct);
                         Quantity = 1m,
                         UnitPrice = monthlyAmount,
                         LineAmount = monthlyAmount,
-                        OrderIndex = lines.Count + 1,
+                        OrderIndex = lineDrafts.Count + 1,
                         MaterialNumber = FirstNonEmpty(templateItem.MaterialNumber, representativeAsset.ManagementNumber),
                         SerialNumber = representativeAsset.MachineNumber?.Trim() ?? string.Empty,
                         InstallLocation = FirstNonEmpty(representativeAsset.InstallLocation, representativeAsset.InstallSiteName),
                         Remark = (templateItem.Note ?? string.Empty).Trim()
-                    });
+                    };
+                    lineDrafts.Add(new RentalBillingInvoiceLineDraft(
+                        lineDrafts.Count,
+                        false,
+                        billingMonth,
+                        templateItem.DisplayItemName,
+                        line,
+                        templateAssets));
                 }
 
                 continue;
@@ -9850,7 +9873,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 {
                     var quantity = 1m;
                     var unitPrice = asset.MonthlyFee;
-                    lines.Add(new LocalInvoiceLine
+                    var line = new LocalInvoiceLine
                     {
                         Id = Guid.NewGuid(),
                         ItemId = null,
@@ -9861,20 +9884,138 @@ WHERE ""AssignedUsername"" <> '';", ct);
                         Quantity = quantity,
                         UnitPrice = unitPrice,
                         LineAmount = quantity * unitPrice,
-                        OrderIndex = lines.Count + 1,
+                        OrderIndex = lineDrafts.Count + 1,
                         MaterialNumber = FirstNonEmpty(templateItem.MaterialNumber, asset.ManagementNumber),
                         SerialNumber = asset.MachineNumber?.Trim() ?? string.Empty,
                         InstallLocation = FirstNonEmpty(asset.InstallLocation, asset.InstallSiteName),
                         Remark = (templateItem.Note ?? string.Empty).Trim()
-                    });
+                    };
+                    lineDrafts.Add(new RentalBillingInvoiceLineDraft(
+                        lineDrafts.Count,
+                        true,
+                        billingMonth,
+                        templateItem.DisplayItemName,
+                        line,
+                        [asset]));
                 }
             }
         }
 
-        if (lines.Count == 0)
+        if (lineDrafts.Count == 0)
             return (false, "판매전표에 넣을 청구라인을 만들지 못했습니다.", new List<LocalInvoiceLine>());
 
-        return (true, string.Empty, lines);
+        return (true, string.Empty, MaterializeRentalBillingInvoiceLines(lineDrafts));
+    }
+
+    private static List<LocalInvoiceLine> MaterializeRentalBillingInvoiceLines(
+        IReadOnlyList<RentalBillingInvoiceLineDraft> drafts)
+    {
+        var materialized = new List<(int Sequence, LocalInvoiceLine Line)>();
+        var consumed = new HashSet<int>();
+
+        foreach (var draft in drafts.OrderBy(current => current.Sequence))
+        {
+            if (!consumed.Add(draft.Sequence))
+                continue;
+
+            if (!draft.CanAggregateQuantity)
+            {
+                materialized.Add((draft.Sequence, draft.Line));
+                continue;
+            }
+
+            var key = BuildRentalBillingInvoiceLineAggregateKey(draft);
+            var group = drafts
+                .Where(current =>
+                    current.CanAggregateQuantity &&
+                    !consumed.Contains(current.Sequence) &&
+                    BuildRentalBillingInvoiceLineAggregateKey(current).Equals(key))
+                .OrderBy(current => current.Sequence)
+                .ToList();
+
+            foreach (var groupedDraft in group)
+                consumed.Add(groupedDraft.Sequence);
+
+            group.Insert(0, draft);
+            var line = group.Count == 1
+                ? draft.Line
+                : BuildAggregatedRentalBillingInvoiceLine(group);
+            materialized.Add((draft.Sequence, line));
+        }
+
+        var orderedLines = materialized
+            .OrderBy(current => current.Sequence)
+            .Select(current => current.Line)
+            .ToList();
+        for (var index = 0; index < orderedLines.Count; index++)
+            orderedLines[index].OrderIndex = index + 1;
+
+        return orderedLines;
+    }
+
+    private static RentalBillingInvoiceLineAggregateKey BuildRentalBillingInvoiceLineAggregateKey(
+        RentalBillingInvoiceLineDraft draft)
+        => new(
+            draft.BillingMonth,
+            NormalizeRentalBillingDisplayItemKey(draft.DisplayItemName),
+            (draft.Line.ItemNameOriginal ?? string.Empty).Trim(),
+            (draft.Line.Unit ?? string.Empty).Trim(),
+            draft.Line.UnitPrice,
+            (draft.Line.Remark ?? string.Empty).Trim());
+
+    private static LocalInvoiceLine BuildAggregatedRentalBillingInvoiceLine(
+        IReadOnlyList<RentalBillingInvoiceLineDraft> group)
+    {
+        var firstLine = group[0].Line;
+        var quantity = group.Sum(draft => draft.Line.Quantity <= 0m ? 1m : draft.Line.Quantity);
+        firstLine.SpecificationOriginal = BuildAggregatedRentalBillingInvoiceSpecification(group);
+        firstLine.Quantity = quantity;
+        firstLine.LineAmount = quantity * firstLine.UnitPrice;
+        firstLine.MaterialNumber = BuildAggregatedRentalBillingInvoiceField(group.Select(draft => draft.Line.MaterialNumber));
+        firstLine.SerialNumber = BuildAggregatedRentalBillingInvoiceField(group.Select(draft => draft.Line.SerialNumber));
+        firstLine.InstallLocation = BuildAggregatedRentalBillingInvoiceField(group.Select(draft => draft.Line.InstallLocation));
+        return firstLine;
+    }
+
+    private static string BuildAggregatedRentalBillingInvoiceSpecification(
+        IReadOnlyList<RentalBillingInvoiceLineDraft> group)
+    {
+        var firstSpecification = FirstNonEmpty(
+            group.Select(draft => draft.Line.SpecificationOriginal).ToArray());
+        if (string.IsNullOrWhiteSpace(firstSpecification))
+            firstSpecification = NormalizeRentalBillingDisplayItemKey(group[0].DisplayItemName);
+
+        var assetCount = group
+            .SelectMany(draft => draft.Assets)
+            .Select(asset => asset.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .Count();
+        var quantity = Math.Max(assetCount, (int)group.Sum(draft => draft.Line.Quantity <= 0m ? 1m : draft.Line.Quantity));
+        return quantity <= 1
+            ? firstSpecification
+            : $"{firstSpecification} 외 {quantity - 1:N0}대";
+    }
+
+    private static string BuildAggregatedRentalBillingInvoiceField(IEnumerable<string?> values)
+    {
+        var distinctValues = values
+            .Select(value => (value ?? string.Empty).Trim())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        return distinctValues.Count switch
+        {
+            0 => string.Empty,
+            1 => distinctValues[0],
+            _ => $"{distinctValues[0]} 외 {distinctValues.Count - 1:N0}건"
+        };
+    }
+
+    private static string NormalizeRentalBillingDisplayItemKey(string? displayItemName)
+    {
+        var normalized = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(displayItemName ?? string.Empty);
+        return string.IsNullOrWhiteSpace(normalized) ? "렌탈 임대료" : normalized;
     }
 
     private static bool CanAutoLinkAllBillingCandidates(Guid? customerId, IReadOnlyCollection<LocalRentalAsset> candidates)

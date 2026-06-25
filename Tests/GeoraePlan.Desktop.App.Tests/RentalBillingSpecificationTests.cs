@@ -70,6 +70,52 @@ public sealed class RentalBillingSpecificationTests
     }
 
     [Fact]
+    public void RentalBillingViewModel_SyncIndividualTemplateItems_GroupsSameDisplayItemAndUnitPriceAsQuantity()
+    {
+        var assetAId = Guid.Parse("33333333-3333-3333-3333-3333333333a1");
+        var assetBId = Guid.Parse("33333333-3333-3333-3333-3333333333b2");
+        var vm = new RentalBillingViewModel(null!, null!, new SessionState())
+        {
+            EditBillingType = "\uAC1C\uBCC4"
+        };
+        var includedPool = GetPrivateField<List<RentalBillingAssetOption>>(vm, "_includedAssetPool");
+        includedPool.Add(new RentalBillingAssetOption
+        {
+            AssetId = assetAId,
+            ItemName = "IMC2010",
+            MonthlyFee = 50_000m
+        });
+        includedPool.Add(new RentalBillingAssetOption
+        {
+            AssetId = assetBId,
+            ItemName = "IMC2010",
+            MonthlyFee = 50_000m
+        });
+
+        var item = new RentalBillingTemplateEditorItem
+        {
+            DisplayItemName = "IMC2010",
+            BillingLineMode = "\uAC1C\uBCC4",
+            Quantity = 1m,
+            UnitPrice = 50_000m
+        };
+        item.IncludedAssetIds.Add(assetAId);
+        item.IncludedAssetIds.Add(assetBId);
+        vm.TemplateItems.Add(item);
+
+        InvokePrivateInstance(vm, "SyncIndividualTemplateItemsFromIncludedAssets");
+        InvokePrivateInstance(vm, "UpdateTemplateDerivedValues");
+
+        var mergedItem = Assert.Single(vm.TemplateItems);
+        Assert.Equal("IMC2010", mergedItem.DisplayItemName);
+        Assert.Equal(2m, mergedItem.Quantity);
+        Assert.Equal(50_000m, mergedItem.UnitPrice);
+        Assert.Equal(100_000m, mergedItem.Amount);
+        Assert.Equal(2, mergedItem.IncludedAssetIds.Distinct().Count());
+        Assert.Equal("IMC2010 \uC678 1\uB300", mergedItem.Specification);
+    }
+
+    [Fact]
     public void RentalStateService_InvoiceSpecificationKeepsBracketedManufacturerWithoutDuplication()
     {
         var templateItem = new RentalBillingTemplateItemModel
