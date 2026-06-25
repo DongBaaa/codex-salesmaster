@@ -1047,11 +1047,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
         stepStopwatch.Restart();
         var unlinkedAssetBaseQuery = includeUnlinkedAssets
             ? ApplyUnlinkedBillingAssetFilter(
-                ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
-                    .Where(asset => !asset.IsDeleted)
-                    .Where(asset => !asset.BillingProfileId.HasValue || asset.BillingProfileId == Guid.Empty)
-                    .Where(asset => asset.BillingEligibilityStatus == null || asset.BillingEligibilityStatus != BillingEligibilityExcluded)
-                    .Where(asset => !NonOperatingAssetStatusQueryValues.Contains(asset.AssetStatus)),
+                ApplyBillableUnlinkedAssetCandidateFilter(
+                    ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
+                        .Where(asset => !asset.IsDeleted)
+                        .Where(asset => asset.BillingEligibilityStatus == null || asset.BillingEligibilityStatus != BillingEligibilityExcluded)
+                        .Where(asset => !NonOperatingAssetStatusQueryValues.Contains(asset.AssetStatus))),
                 baseFilter)
             : null;
         var unlinkedAssets = includeUnlinkedAssets
@@ -1064,6 +1064,20 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     .ToListAsync(ct)
                 : await LoadUnlinkedBillingAssetSearchResultsAsync(unlinkedAssetBaseQuery!, searchKeyword, unlinkedAssetLimit, ct)
             : new List<LocalRentalAsset>();
+        if (includeUnlinkedAssets && unlinkedAssets.Count > 0)
+        {
+            var templateIncludedAssetIds = BuildTemplateIncludedAssetIdSet(profiles);
+            var activeTemplateAssetIds = await LoadActiveBillingTemplateAssetIdsForCandidateAssetsAsync(
+                unlinkedAssets,
+                session,
+                ct);
+            foreach (var assetId in activeTemplateAssetIds)
+                templateIncludedAssetIds.Add(assetId);
+            if (templateIncludedAssetIds.Count > 0)
+                unlinkedAssets = unlinkedAssets
+                    .Where(asset => !templateIncludedAssetIds.Contains(asset.Id))
+                    .ToList();
+        }
         LogRentalLoadStep("Rental billing unlinked asset query", stepStopwatch, $"assets={unlinkedAssets.Count:N0}, include={includeUnlinkedAssets}, limit={unlinkedAssetLimit:N0}");
 
         stepStopwatch.Restart();
@@ -1422,12 +1436,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var stepStopwatch = Stopwatch.StartNew();
         var profileIds = BuildBillingProfileIds(profiles);
-        var billingAssets = await LoadBillingAssetsForProfilesAsync(profileIds, session, ct);
+        var templateAssetIdsByProfile = BuildBillingTemplateAssetIdsByProfile(profiles);
+        var billingAssets = await LoadBillingAssetsForProfilesAsync(profileIds, templateAssetIdsByProfile, session, ct);
         ct.ThrowIfCancellationRequested();
         LogRentalLoadStep("Rental billing linked asset query", stepStopwatch, $"assets={billingAssets.Count:N0}, profiles={profiles.Count:N0}");
 
         stepStopwatch.Restart();
-        var assetsByProfile = GroupBillingAssetsByProfileId(billingAssets);
+        var assetsByProfile = GroupBillingAssetsByProfileId(billingAssets, templateAssetIdsByProfile);
         LogRentalLoadStep("Rental billing linked asset grouping", stepStopwatch, $"assetGroups={assetsByProfile.Count:N0}");
 
         stepStopwatch.Restart();
@@ -1508,6 +1523,111 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return ids;
     }
 
+    private Dictionary<Guid, List<Guid>> BuildBillingTemplateAssetIdsByProfile(
+        IReadOnlyList<LocalRentalBillingProfile> profiles)
+    {
+        var result = new Dictionary<Guid, List<Guid>>();
+        foreach (var profile in profiles)
+        {
+            if (profile.Id == Guid.Empty)
+                continue;
+
+            var assetIds = GetBillingTemplateItems(profile)
+                .SelectMany(item => item.IncludedAssetIds ?? Enumerable.Empty<Guid>())
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+            if (assetIds.Count > 0)
+                result[profile.Id] = assetIds;
+        }
+
+        return result;
+    }
+
+    private HashSet<Guid> BuildTemplateIncludedAssetIdSet(IReadOnlyList<LocalRentalBillingProfile> profiles)
+    {
+        var ids = new HashSet<Guid>();
+        foreach (var profileAssetIds in BuildBillingTemplateAssetIdsByProfile(profiles).Values)
+        {
+            foreach (var assetId in profileAssetIds)
+                ids.Add(assetId);
+        }
+
+        return ids;
+    }
+
+    private async Task<HashSet<Guid>> LoadActiveBillingTemplateAssetIdsForCandidateAssetsAsync(
+        IReadOnlyList<LocalRentalAsset> candidateAssets,
+        SessionState session,
+        CancellationToken ct)
+    {
+        var candidateAssetIds = candidateAssets
+            .Select(asset => asset.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToHashSet();
+        if (candidateAssetIds.Count == 0)
+            return new HashSet<Guid>();
+
+        var customerIds = candidateAssets
+            .Where(asset => asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
+            .Select(asset => asset.CustomerId!.Value)
+            .Distinct()
+            .ToList();
+        var customerNames = candidateAssets
+            .Select(ResolvePrimaryAssetCustomerName)
+            .Concat(candidateAssets.Select(asset => asset.CustomerName))
+            .Concat(candidateAssets.Select(asset => asset.CurrentCustomerName))
+            .Select(RentalCatalogValueNormalizer.NormalizeDisplayText)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (customerIds.Count == 0 && customerNames.Count == 0)
+            return new HashSet<Guid>();
+
+        var result = new HashSet<Guid>();
+        var query = ApplyBillingScope(_db.RentalBillingProfiles.AsNoTracking(), session)
+            .Where(profile => profile.IsActive);
+        if (customerIds.Count > 0 && customerNames.Count > 0)
+        {
+            query = query.Where(profile =>
+                (profile.CustomerId.HasValue && customerIds.Contains(profile.CustomerId.Value)) ||
+                customerNames.Contains(profile.CustomerName));
+        }
+        else if (customerIds.Count > 0)
+        {
+            query = query.Where(profile => profile.CustomerId.HasValue && customerIds.Contains(profile.CustomerId.Value));
+        }
+        else
+        {
+            query = query.Where(profile => customerNames.Contains(profile.CustomerName));
+        }
+
+        var profiles = await query
+            .Select(profile => new LocalRentalBillingProfile
+            {
+                Id = profile.Id,
+                BillingType = profile.BillingType,
+                ItemName = profile.ItemName,
+                MonthlyAmount = profile.MonthlyAmount,
+                BillingTemplateJson = profile.BillingTemplateJson
+            })
+            .ToListAsync(ct);
+
+        foreach (var profile in profiles)
+        {
+            foreach (var assetId in GetBillingTemplateItems(profile)
+                         .SelectMany(item => item.IncludedAssetIds ?? Enumerable.Empty<Guid>())
+                         .Where(id => candidateAssetIds.Contains(id)))
+            {
+                result.Add(assetId);
+            }
+        }
+
+        return result;
+    }
+
     private static List<Guid> BuildDistinctNonEmptyIds(IEnumerable<Guid> sourceIds)
     {
         var ids = new List<Guid>();
@@ -1522,50 +1642,101 @@ WHERE ""AssignedUsername"" <> '';", ct);
     }
 
     private static Dictionary<Guid, List<LocalRentalAsset>> GroupBillingAssetsByProfileId(
-        IReadOnlyList<LocalRentalAsset> billingAssets)
+        IReadOnlyList<LocalRentalAsset> billingAssets,
+        IReadOnlyDictionary<Guid, List<Guid>> templateAssetIdsByProfile)
     {
         var assetsByProfile = new Dictionary<Guid, List<LocalRentalAsset>>();
+        var assetLookup = new Dictionary<Guid, LocalRentalAsset>();
         foreach (var asset in billingAssets)
         {
+            if (asset.Id != Guid.Empty && !assetLookup.ContainsKey(asset.Id))
+                assetLookup[asset.Id] = asset;
+
             if (!asset.BillingProfileId.HasValue || asset.BillingProfileId.Value == Guid.Empty)
                 continue;
 
-            var profileId = asset.BillingProfileId.Value;
-            if (!assetsByProfile.TryGetValue(profileId, out var profileAssets))
-            {
-                profileAssets = new List<LocalRentalAsset>();
-                assetsByProfile[profileId] = profileAssets;
-            }
+            AddBillingAssetToProfileGroup(assetsByProfile, asset.BillingProfileId.Value, asset);
+        }
 
-            profileAssets.Add(asset);
+        foreach (var pair in templateAssetIdsByProfile)
+        {
+            var profileId = pair.Key;
+            if (profileId == Guid.Empty)
+                continue;
+
+            foreach (var assetId in pair.Value)
+            {
+                if (assetId == Guid.Empty || !assetLookup.TryGetValue(assetId, out var asset))
+                    continue;
+
+                AddBillingAssetToProfileGroup(assetsByProfile, profileId, asset);
+            }
         }
 
         return assetsByProfile;
     }
 
+    private static void AddBillingAssetToProfileGroup(
+        IDictionary<Guid, List<LocalRentalAsset>> assetsByProfile,
+        Guid profileId,
+        LocalRentalAsset asset)
+    {
+        if (profileId == Guid.Empty || asset.Id == Guid.Empty)
+            return;
+
+        if (!assetsByProfile.TryGetValue(profileId, out var profileAssets))
+        {
+            profileAssets = new List<LocalRentalAsset>();
+            assetsByProfile[profileId] = profileAssets;
+        }
+
+        if (profileAssets.All(current => current.Id != asset.Id))
+            profileAssets.Add(asset);
+    }
+
     private async Task<List<LocalRentalAsset>> LoadBillingAssetsForProfilesAsync(
         IReadOnlyCollection<Guid> profileIds,
+        IReadOnlyDictionary<Guid, List<Guid>> templateAssetIdsByProfile,
         SessionState session,
         CancellationToken ct)
     {
         var ids = BuildDistinctNonEmptyIds(profileIds);
-        if (ids.Count == 0)
+        var templateAssetIds = BuildDistinctNonEmptyIds(templateAssetIdsByProfile.SelectMany(pair => pair.Value));
+        if (ids.Count == 0 && templateAssetIds.Count == 0)
             return new List<LocalRentalAsset>();
 
-        var assets = new List<LocalRentalAsset>();
-        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        var assetsById = new Dictionary<Guid, LocalRentalAsset>();
+        if (ids.Count > 0)
         {
-            ct.ThrowIfCancellationRequested();
-            var scopedBatchIds = batchIds;
-            var batchAssets = await SelectBillingLinkedAssetRowProjection(ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
-                    .Where(asset => !asset.IsDeleted &&
-                                    asset.BillingProfileId.HasValue &&
-                                    scopedBatchIds.Contains(asset.BillingProfileId.Value)))
-                .ToListAsync(ct);
-            assets.AddRange(batchAssets);
+            foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+            {
+                ct.ThrowIfCancellationRequested();
+                var scopedBatchIds = batchIds;
+                var batchAssets = await SelectBillingLinkedAssetRowProjection(ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
+                        .Where(asset => !asset.IsDeleted &&
+                                        asset.BillingProfileId.HasValue &&
+                                        scopedBatchIds.Contains(asset.BillingProfileId.Value)))
+                    .ToListAsync(ct);
+                foreach (var asset in batchAssets)
+                    assetsById[asset.Id] = asset;
+            }
         }
 
-        return assets;
+        if (templateAssetIds.Count > 0)
+        {
+            foreach (var batchIds in templateAssetIds.Chunk(LocalQueryContainsBatchSize))
+            {
+                ct.ThrowIfCancellationRequested();
+                var scopedBatchIds = batchIds;
+                var batchAssets = await SelectBillingLinkedAssetRowProjection(ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session)
+                        .Where(asset => !asset.IsDeleted && scopedBatchIds.Contains(asset.Id)))
+                    .ToListAsync(ct);
+                foreach (var asset in batchAssets)
+                    assetsById[asset.Id] = asset;
+            }
+        }
+
+        return assetsById.Values.ToList();
     }
 
     private static IQueryable<LocalRentalAsset> SelectBillingLinkedAssetRowProjection(IQueryable<LocalRentalAsset> query)
@@ -2928,6 +3099,17 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         return query;
     }
+
+    private IQueryable<LocalRentalAsset> ApplyBillableUnlinkedAssetCandidateFilter(IQueryable<LocalRentalAsset> query)
+        => query
+            .Where(asset => asset.MonthlyFee > 0m)
+            .Where(asset =>
+                !asset.BillingProfileId.HasValue ||
+                asset.BillingProfileId == Guid.Empty ||
+                !_db.RentalBillingProfiles.IgnoreQueryFilters()
+                    .Any(profile =>
+                        profile.Id == asset.BillingProfileId.Value &&
+                        !profile.IsDeleted));
 
     private static async Task<List<LocalRentalAsset>> LoadUnlinkedBillingAssetSearchResultsAsync(
         IQueryable<LocalRentalAsset> baseQuery,
@@ -5795,11 +5977,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         var normalizedCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(customerName);
-        var query = ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
-            .Where(asset => !asset.IsDeleted)
-            .Where(asset => asset.TenantCode == normalizedTenantCode)
-            .Where(asset => !NonOperatingAssetStatusQueryValues.Contains(asset.AssetStatus))
-            .Where(asset => !asset.BillingProfileId.HasValue || asset.BillingProfileId == Guid.Empty);
+        var query = ApplyBillableUnlinkedAssetCandidateFilter(ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
+                .Where(asset => !asset.IsDeleted)
+                .Where(asset => asset.TenantCode == normalizedTenantCode)
+                .Where(asset => !NonOperatingAssetStatusQueryValues.Contains(asset.AssetStatus)))
+            .Where(asset => asset.BillingEligibilityStatus == null || asset.BillingEligibilityStatus != BillingEligibilityExcluded);
 
         if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
             query = query.Where(asset =>
@@ -10994,12 +11176,15 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Where(asset => asset.Id != Guid.Empty && !asset.IsDeleted)
             .GroupBy(asset => asset.Id)
             .ToDictionary(group => group.Key, group => group.First());
+        var hasExplicitIncludedAssetIds = templateItems.Any(item =>
+            (item.IncludedAssetIds ?? new List<Guid>()).Any(id => id != Guid.Empty));
         var billableAssetIds = assetsById.Values
             .Where(asset => !RentalAssetStatusRules.IsNonOperating(asset.AssetStatus))
             .Select(asset => asset.Id)
             .Distinct()
             .ToList();
-        var changed = NormalizeTemplateAssetCoverage(templateItems, billableAssetIds);
+        var changed = !hasExplicitIncludedAssetIds &&
+                      NormalizeTemplateAssetCoverage(templateItems, billableAssetIds);
         var profileBillingType = NormalizeBillingType(profile.BillingType);
 
         foreach (var templateItem in templateItems)

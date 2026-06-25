@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using System.Reflection;
 using System.Text.Json;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Services;
@@ -134,6 +135,249 @@ public sealed class RentalIncludedBillingAssetsTests
     }
 
     [Fact]
+    public async Task GetBillingRowsAsync_UsesTemplateIncludedAssetsAsProfileAssets()
+    {
+        PrepareAppRoot("georaeplan-rental-billing-template-assets-row");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("f2400000-1111-4444-8888-000000000001");
+            var assetId = Guid.Parse("f2400000-1111-4444-8888-0000000000a1");
+            db.RentalAssets.Add(CreateRentalAsset(
+                "Template Included Customer",
+                "TEMPLATE-001",
+                billingProfileId: null,
+                assetId,
+                monthlyFee: 100_000m));
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Template Included Customer",
+                ItemName = "Template Rental",
+                BillingType = "묶음",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                {
+                    new()
+                    {
+                        DisplayItemName = "Template Rental",
+                        BillingLineMode = "묶음",
+                        Quantity = 1m,
+                        UnitPrice = 100_000m,
+                        Amount = 100_000m,
+                        IncludedAssetIds = [assetId]
+                    }
+                }),
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+
+            var rows = await new RentalStateService(db).GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    SearchText = "Template Included Customer",
+                    ReferenceDate = new DateOnly(2026, 6, 25),
+                    ExpandCustomerSummaryRows = true
+                },
+                CreateAdminSession());
+
+            var profileRow = Assert.Single(rows, row => row.HasPersistedProfile);
+            Assert.Equal(profileId, profileRow.Source.Id);
+            Assert.Equal(1, profileRow.AssetCount);
+            Assert.Equal(1, profileRow.IncludedAssetCount);
+            Assert.DoesNotContain("연결장비 없음", profileRow.DataIssueSummary);
+            Assert.DoesNotContain(rows, row => !row.HasPersistedProfile && row.SelectionId == assetId);
+
+            var unlinkedRows = await new RentalStateService(db).GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    SearchText = "Template Included Customer",
+                    Status = "미연결",
+                    ReferenceDate = new DateOnly(2026, 6, 25),
+                    ExpandCustomerSummaryRows = true
+                },
+                CreateAdminSession());
+            Assert.DoesNotContain(unlinkedRows, row => row.SelectionId == assetId);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task GetBillingRowsAsync_DoesNotCreateUnlinkedBillingRowsForZeroFeeAssets()
+    {
+        PrepareAppRoot("georaeplan-rental-billing-zero-fee-unlinked");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var zeroFeeAssetId = Guid.Parse("f2500000-1111-4444-8888-0000000000a1");
+            var billableAssetId = Guid.Parse("f2500000-1111-4444-8888-0000000000b2");
+            db.RentalAssets.AddRange(
+                CreateRentalAsset("Zero Fee Customer", "ZERO-001", null, zeroFeeAssetId, monthlyFee: 0m),
+                CreateRentalAsset("Billable Customer", "BILL-001", null, billableAssetId, monthlyFee: 80_000m));
+            await db.SaveChangesAsync();
+
+            var rows = await new RentalStateService(db).GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    Status = "미연결",
+                    ReferenceDate = new DateOnly(2026, 6, 25),
+                    ExpandCustomerSummaryRows = true
+                },
+                CreateAdminSession());
+
+            Assert.DoesNotContain(rows, row => row.SelectionId == zeroFeeAssetId);
+            Assert.Contains(rows, row => row.SelectionId == billableAssetId && !row.HasPersistedProfile);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SaveBillingProfileAsync_RelinksAssetsFromDeletedProfileReference()
+    {
+        PrepareAppRoot("georaeplan-rental-billing-relink-deleted-profile");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var deletedProfileId = Guid.Parse("f2550000-1111-4444-8888-0000000000d1");
+            var activeProfileId = Guid.Parse("f2550000-1111-4444-8888-000000000001");
+            var assetId = Guid.Parse("f2550000-1111-4444-8888-0000000000a1");
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = deletedProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Deleted Link Customer",
+                BillingType = "개별",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                IsDeleted = true,
+                IsActive = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            db.RentalAssets.Add(CreateRentalAsset(
+                "Deleted Link Customer",
+                "DELETED-LINK-001",
+                deletedProfileId,
+                assetId,
+                monthlyFee: 70_000m));
+            await db.SaveChangesAsync();
+
+            var profile = new LocalRentalBillingProfile
+            {
+                Id = activeProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Deleted Link Customer",
+                ItemName = "Relink Rental",
+                BillingType = "개별",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                {
+                    new()
+                    {
+                        DisplayItemName = "Relink Rental",
+                        BillingLineMode = "개별",
+                        Quantity = 1m,
+                        UnitPrice = 70_000m,
+                        Amount = 70_000m,
+                        IncludedAssetIds = [assetId]
+                    }
+                })
+            };
+
+            var result = await new RentalStateService(db).SaveBillingProfileAsync(profile, CreateAdminSession());
+
+            Assert.True(result.Success, result.Message);
+            var storedAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == assetId);
+            Assert.Equal(activeProfileId, storedAsset.BillingProfileId);
+            Assert.Equal("Deleted Link Customer", storedAsset.CustomerName);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public void ApplyAssetMonthlyFeesToBillingTemplate_DoesNotAppendLinkedAssetsWhenTemplateHasExplicitAssets()
+    {
+        var method = typeof(RentalStateService).GetMethod(
+            "ApplyAssetMonthlyFeesToBillingTemplate",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var profileId = Guid.Parse("f2600000-1111-4444-8888-000000000001");
+        var explicitAssetId = Guid.Parse("f2600000-1111-4444-8888-0000000000a1");
+        var staleLinkedAssetId = Guid.Parse("f2600000-1111-4444-8888-0000000000b2");
+        var profile = new LocalRentalBillingProfile
+        {
+            Id = profileId,
+            BillingType = "개별",
+            CustomerName = "Explicit Template Customer"
+        };
+        var templateItems = new List<RentalBillingTemplateItemModel>
+        {
+            new()
+            {
+                DisplayItemName = "Explicit Rental",
+                BillingLineMode = "개별",
+                Quantity = 1m,
+                UnitPrice = 100_000m,
+                Amount = 100_000m,
+                IncludedAssetIds = [explicitAssetId]
+            }
+        };
+        var assets = new List<LocalRentalAsset>
+        {
+            CreateRentalAsset("Explicit Template Customer", "EXPLICIT-001", profileId, explicitAssetId, monthlyFee: 100_000m),
+            CreateRentalAsset("Explicit Template Customer", "STALE-001", profileId, staleLinkedAssetId, monthlyFee: 120_000m)
+        };
+
+        method!.Invoke(null, new object?[] { profile, templateItems, assets });
+
+        Assert.Contains(explicitAssetId, templateItems[0].IncludedAssetIds);
+        Assert.DoesNotContain(staleLinkedAssetId, templateItems[0].IncludedAssetIds);
+    }
+
+    [Fact]
     public async Task GetIncludedBillingAssetsAsync_BatchesManyExplicitIncludedAssetIds()
     {
         PrepareAppRoot("georaeplan-rental-included-assets-explicit-batch");
@@ -197,19 +441,21 @@ public sealed class RentalIncludedBillingAssetsTests
     private static LocalRentalAsset CreateRentalAsset(
         string customerName,
         string managementNumber,
-        Guid? billingProfileId)
+        Guid? billingProfileId,
+        Guid? assetId = null,
+        decimal monthlyFee = 100_000m)
     {
-        var assetId = Guid.NewGuid();
+        var resolvedAssetId = assetId ?? Guid.NewGuid();
         return new LocalRentalAsset
         {
-            Id = assetId,
+            Id = resolvedAssetId,
             TenantCode = TenantScopeCatalog.UsenetGroup,
             OfficeCode = OfficeCodeCatalog.Usenet,
             ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
             ManagementCompanyCode = OfficeCodeCatalog.Usenet,
-            ManagementId = $"MID-{assetId:N}",
+            ManagementId = $"MID-{resolvedAssetId:N}",
             ManagementNumber = managementNumber,
-            AssetKey = $"ASSET-{assetId:N}",
+            AssetKey = $"ASSET-{resolvedAssetId:N}",
             CustomerName = customerName,
             CurrentCustomerName = customerName,
             BillingProfileId = billingProfileId,
@@ -220,7 +466,7 @@ public sealed class RentalIncludedBillingAssetsTests
             InstallLocation = "HQ",
             AssetStatus = "임대진행중",
             BillingEligibilityStatus = "청구대상",
-            MonthlyFee = 100_000m,
+            MonthlyFee = monthlyFee,
             IsDeleted = false,
             CreatedAtUtc = DateTime.UtcNow,
             UpdatedAtUtc = DateTime.UtcNow

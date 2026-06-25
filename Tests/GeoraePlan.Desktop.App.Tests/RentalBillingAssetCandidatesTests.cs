@@ -59,6 +59,95 @@ public sealed class RentalBillingAssetCandidatesTests
         }
     }
 
+    [Fact]
+    public async Task GetBillingAssetCandidatesAsync_TreatsDeletedProfileLinkAsReconnectable()
+    {
+        PrepareAppRoot("georaeplan-rental-billing-candidate-deleted-profile");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.Parse("c7200000-1111-4444-8888-000000000001");
+            var deletedProfileId = Guid.Parse("c7200000-1111-4444-8888-0000000000d1");
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = deletedProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerId = customerId,
+                CustomerName = "Projection Customer",
+                BillingType = "묶음",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                IsDeleted = true,
+                IsActive = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            var asset = CreateRentalAsset(customerId);
+            asset.BillingProfileId = deletedProfileId;
+            db.RentalAssets.Add(asset);
+            await db.SaveChangesAsync();
+
+            var candidates = await new RentalStateService(db).GetBillingAssetCandidatesAsync(
+                billingProfileId: null,
+                customerId,
+                customerName: "Projection Customer",
+                officeCode: OfficeCodeCatalog.Usenet,
+                includeOfficePoolAssets: false,
+                CreateAdminSession());
+
+            var candidate = Assert.Single(candidates);
+            Assert.Equal(asset.Id, candidate.Id);
+            Assert.Equal(deletedProfileId, candidate.BillingProfileId);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task GetBillingAssetCandidatesAsync_ExcludesZeroFeeAssetsFromBillingProfileCreation()
+    {
+        PrepareAppRoot("georaeplan-rental-billing-candidate-zero-fee");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.Parse("c7300000-1111-4444-8888-000000000001");
+            var asset = CreateRentalAsset(customerId);
+            asset.MonthlyFee = 0m;
+            db.RentalAssets.Add(asset);
+            await db.SaveChangesAsync();
+
+            var candidates = await new RentalStateService(db).GetBillingAssetCandidatesAsync(
+                billingProfileId: null,
+                customerId,
+                customerName: "Projection Customer",
+                officeCode: OfficeCodeCatalog.Usenet,
+                includeOfficePoolAssets: false,
+                CreateAdminSession());
+
+            Assert.Empty(candidates);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");

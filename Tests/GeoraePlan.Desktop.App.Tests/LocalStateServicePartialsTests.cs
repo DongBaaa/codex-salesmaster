@@ -7579,7 +7579,7 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
-    public async Task SaveAssetAsync_AddsMissingProfileAssetToMultiLineTemplate()
+    public async Task SaveAssetAsync_DoesNotAppendMissingProfileAssetToExplicitMultiLineTemplate()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-asset-monthly-multiline-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -7658,17 +7658,17 @@ public sealed class LocalStateServicePartialsTests
                 .FirstAsync(profile => profile.Id == profileId);
             var storedTemplateItems = rental.GetBillingTemplateItems(storedProfile);
 
-            Assert.Equal(370000m, storedProfile.MonthlyAmount);
+            Assert.Equal(330000m, storedProfile.MonthlyAmount);
             Assert.Equal(2, storedTemplateItems.Count);
-            Assert.Equal(150000m, storedTemplateItems[0].Amount);
+            Assert.Equal(110000m, storedTemplateItems[0].Amount);
             Assert.Equal(220000m, storedTemplateItems[1].Amount);
 
             var allIncludedAssetIds = storedTemplateItems
                 .SelectMany(item => item.IncludedAssetIds)
                 .OrderBy(id => id)
                 .ToList();
-            Assert.Equal(new[] { firstAssetId, missingAssetId, secondLineAssetId }.OrderBy(id => id), allIncludedAssetIds);
-            Assert.True(storedProfile.IsDirty);
+            Assert.Equal(new[] { firstAssetId, secondLineAssetId }.OrderBy(id => id), allIncludedAssetIds);
+            Assert.DoesNotContain(missingAssetId, allIncludedAssetIds);
         }
         finally
         {
