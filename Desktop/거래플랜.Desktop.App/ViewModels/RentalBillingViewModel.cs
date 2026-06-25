@@ -3257,6 +3257,16 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             .Distinct()
             .ToList();
         var effectiveLineMode = GetTemplateItemEffectiveLineMode(item);
+        if (monthlyFees.All(fee => fee <= 0m))
+        {
+            item.Quantity = string.Equals(effectiveLineMode, "묶음", StringComparison.OrdinalIgnoreCase)
+                ? 1m
+                : includedAssetIds.Count;
+            item.UnitPrice = 0m;
+            item.NormalizeCalculatedAmount();
+            ApplyTemplateMonthlyFeesToPendingAssetEdits(item);
+            return;
+        }
 
         if (includedAssetIds.Count == 1 ||
             string.Equals(effectiveLineMode, "묶음", StringComparison.OrdinalIgnoreCase) ||
@@ -3825,7 +3835,21 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         var current = currentSpecification.Trim();
         var expectedPrefix = $"{defaultSpecification.Trim()} 외";
-        return current.StartsWith(expectedPrefix, StringComparison.CurrentCultureIgnoreCase);
+        if (current.StartsWith(expectedPrefix, StringComparison.CurrentCultureIgnoreCase) ||
+            current.Contains($" {expectedPrefix}", StringComparison.CurrentCultureIgnoreCase))
+        {
+            return true;
+        }
+
+        var modelName = ResolveIndividualTemplateModelName(item).Trim();
+        if (string.IsNullOrWhiteSpace(modelName))
+            return false;
+
+        var modelEtc = $"{modelName} 외";
+        return current.StartsWith(modelEtc, StringComparison.CurrentCultureIgnoreCase) ||
+               current.Contains($" {modelEtc}", StringComparison.CurrentCultureIgnoreCase) ||
+               (!string.Equals(current, modelName, StringComparison.CurrentCultureIgnoreCase) &&
+                current.EndsWith(modelName, StringComparison.CurrentCultureIgnoreCase));
     }
 
     private string BuildLegacyTemplateSpecification(RentalBillingTemplateEditorItem item)

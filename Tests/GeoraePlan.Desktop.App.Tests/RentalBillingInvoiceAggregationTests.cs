@@ -228,6 +228,73 @@ public sealed class RentalBillingInvoiceAggregationTests
         }
     }
 
+    [Fact]
+    public async Task BuildRentalBillingInvoiceLinesAsync_SkipsZeroFeeIndividualAssetsAndGroupsBillableModels()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-invoice-zero-skip-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("a6000000-0000-0000-0000-000000000001");
+            var billableAId = Guid.Parse("a6000000-0000-0000-0000-0000000000a1");
+            var billableBId = Guid.Parse("a6000000-0000-0000-0000-0000000000b2");
+            var zeroAId = Guid.Parse("a6000000-0000-0000-0000-0000000000c3");
+            var zeroBId = Guid.Parse("a6000000-0000-0000-0000-0000000000d4");
+            db.RentalAssets.AddRange(
+                CreateBillableAsset(billableAId, profileId, "BILL-A", "SN-A", "IMC2010", 240_000m),
+                CreateBillableAsset(billableBId, profileId, "BILL-B", "SN-B", "IMC2010", 240_000m),
+                CreateBillableAsset(zeroAId, profileId, "ZERO-A", "SN-C", "SL-M3820ND", 0m),
+                CreateBillableAsset(zeroBId, profileId, "ZERO-B", "SN-D", "SL-M3820ND", 0m));
+            await db.SaveChangesAsync();
+
+            var result = await InvokeBuildRentalBillingInvoiceLinesAsync(
+                new RentalStateService(db),
+                CreateProfile(profileId, "\uAC1C\uBCC4"),
+                CreateRun(),
+                [
+                    new RentalBillingTemplateItemModel
+                    {
+                        DisplayItemName = "SL-M3820ND",
+                        BillingLineMode = "\uAC1C\uBCC4",
+                        Unit = "\uB300",
+                        Quantity = 2m,
+                        UnitPrice = 0m,
+                        Amount = 0m,
+                        IncludedAssetIds = [zeroAId, zeroBId]
+                    },
+                    new RentalBillingTemplateItemModel
+                    {
+                        DisplayItemName = "IMC2010",
+                        BillingLineMode = "\uAC1C\uBCC4",
+                        Unit = "\uB300",
+                        Quantity = 2m,
+                        UnitPrice = 240_000m,
+                        Amount = 480_000m,
+                        IncludedAssetIds = [billableAId, billableBId]
+                    }
+                ],
+                CreateAdminSession());
+
+            Assert.True(result.Success, result.Message);
+            var line = Assert.Single(result.Lines);
+            Assert.Equal("IMC2010", line.SpecificationOriginal);
+            Assert.Equal(2m, line.Quantity);
+            Assert.Equal(240_000m, line.UnitPrice);
+            Assert.Equal(480_000m, line.LineAmount);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static LocalRentalAsset CreateBillableAsset(
         Guid assetId,
         Guid profileId,

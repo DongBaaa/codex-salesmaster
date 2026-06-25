@@ -116,6 +116,55 @@ public sealed class RentalBillingSpecificationTests
     }
 
     [Fact]
+    public void RentalBillingViewModel_SyncIndividualTemplateItems_GroupsSameZeroFeeModelAsQuantity()
+    {
+        var assetAId = Guid.Parse("33333333-3333-3333-3333-3333333334a1");
+        var assetBId = Guid.Parse("33333333-3333-3333-3333-3333333334b2");
+        var vm = new RentalBillingViewModel(null!, null!, new SessionState())
+        {
+            EditBillingType = "\uAC1C\uBCC4"
+        };
+        var includedPool = GetPrivateField<List<RentalBillingAssetOption>>(vm, "_includedAssetPool");
+        includedPool.Add(new RentalBillingAssetOption
+        {
+            AssetId = assetAId,
+            ItemName = "SL-M3820ND",
+            Manufacturer = "\uC0BC\uC131\uC804\uC790",
+            MonthlyFee = 0m
+        });
+        includedPool.Add(new RentalBillingAssetOption
+        {
+            AssetId = assetBId,
+            ItemName = "SL-M3820ND",
+            Manufacturer = "\uC0BC\uC131\uC804\uC790",
+            MonthlyFee = 0m
+        });
+
+        var item = new RentalBillingTemplateEditorItem
+        {
+            DisplayItemName = "SL-M3820ND",
+            BillingLineMode = "\uAC1C\uBCC4",
+            Specification = "\uC0BC\uC131\uC804\uC790 SL-M3820ND \uC678 1\uB300",
+            Quantity = 1m,
+            UnitPrice = 0m
+        };
+        item.IncludedAssetIds.Add(assetAId);
+        item.IncludedAssetIds.Add(assetBId);
+        vm.TemplateItems.Add(item);
+
+        InvokePrivateInstance(vm, "SyncIndividualTemplateItemsFromIncludedAssets");
+        InvokePrivateInstance(vm, "UpdateTemplateDerivedValues");
+
+        var mergedItem = Assert.Single(vm.TemplateItems);
+        Assert.Equal("SL-M3820ND", mergedItem.DisplayItemName);
+        Assert.Equal(2m, mergedItem.Quantity);
+        Assert.Equal(0m, mergedItem.UnitPrice);
+        Assert.Equal(0m, mergedItem.Amount);
+        Assert.Equal(2, mergedItem.IncludedAssetIds.Distinct().Count());
+        Assert.Equal("SL-M3820ND", mergedItem.Specification);
+    }
+
+    [Fact]
     public void RentalStateService_InvoiceSpecificationKeepsBracketedManufacturerWithoutDuplication()
     {
         var templateItem = new RentalBillingTemplateItemModel

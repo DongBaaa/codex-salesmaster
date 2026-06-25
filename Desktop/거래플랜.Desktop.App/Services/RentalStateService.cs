@@ -9851,7 +9851,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 continue;
             }
 
-            foreach (var asset in templateAssets)
+            var billableTemplateAssets = templateAssets
+                .Where(asset => asset.MonthlyFee > 0m)
+                .ToList();
+            if (billableTemplateAssets.Count == 0)
+                continue;
+
+            foreach (var asset in billableTemplateAssets)
             {
                 if (asset.MonthlyFee <= 0m)
                 {
@@ -9863,7 +9869,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
             foreach (var billingMonth in billingMonths)
             {
-                foreach (var asset in templateAssets)
+                foreach (var asset in billableTemplateAssets)
                 {
                     var quantity = 1m;
                     var unitPrice = asset.MonthlyFee;
