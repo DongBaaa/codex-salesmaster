@@ -12115,13 +12115,10 @@ public sealed class SyncControllerTests : IDisposable
             .AsNoTracking()
             .SingleAsync(current => current.Id == profileId);
         Assert.Equal(0m, profile.SettledAmount);
-        Assert.Equal(100_000m, profile.OutstandingAmount);
-        Assert.Equal("미완료", profile.CompletionStatus);
-        var run = Assert.Single(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(profile.BillingRunsJson) ?? []);
-        Assert.Equal(0m, run.SettledAmount);
-        Assert.NotEqual("완료", run.Status);
-        Assert.NotEqual("입금확인", run.SettlementStatus);
-        Assert.Null(run.SettledDate);
+        Assert.Equal(0m, profile.OutstandingAmount);
+        Assert.Equal("\uBBF8\uC644\uB8CC", profile.CompletionStatus);
+        Assert.Null(profile.LastBilledDate);
+        Assert.Empty(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(profile.BillingRunsJson) ?? []);
     }
 
     [Fact]

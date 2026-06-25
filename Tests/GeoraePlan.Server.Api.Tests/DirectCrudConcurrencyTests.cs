@@ -3139,13 +3139,10 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         Assert.False(detachedTransaction.IsDeleted);
         var revertedProfile = await dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().SingleAsync(profile => profile.Id == profileId);
         Assert.Equal(0m, revertedProfile.SettledAmount);
-        Assert.Equal(100_000m, revertedProfile.OutstandingAmount);
-        Assert.Equal("미완료", revertedProfile.CompletionStatus);
-        var revertedRun = Assert.Single(JsonSerializer.Deserialize<List<ServerRentalBillingRunSnapshot>>(revertedProfile.BillingRunsJson) ?? []);
-        Assert.Equal(0m, revertedRun.SettledAmount);
-        Assert.NotEqual("완료", revertedRun.Status);
-        Assert.NotEqual("입금확인", revertedRun.SettlementStatus);
-        Assert.Null(revertedRun.SettledDate);
+        Assert.Equal(0m, revertedProfile.OutstandingAmount);
+        Assert.Equal("\uBBF8\uC644\uB8CC", revertedProfile.CompletionStatus);
+        Assert.Null(revertedProfile.LastBilledDate);
+        Assert.Empty(JsonSerializer.Deserialize<List<ServerRentalBillingRunSnapshot>>(revertedProfile.BillingRunsJson) ?? []);
     }
 
     [Fact]
@@ -3432,7 +3429,8 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         var recalculatedProfile = await dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking()
             .SingleAsync(profile => profile.Id == profileId);
         Assert.Equal(0m, recalculatedProfile.SettledAmount);
-        Assert.Equal(100_000m, recalculatedProfile.OutstandingAmount);
+        Assert.Equal(0m, recalculatedProfile.OutstandingAmount);
+        Assert.Equal("\uBBF8\uC644\uB8CC", recalculatedProfile.CompletionStatus);
         Assert.Null(recalculatedProfile.LastSettledDate);
         Assert.Empty(JsonSerializer.Deserialize<List<ServerRentalBillingRunSnapshot>>(recalculatedProfile.BillingRunsJson) ?? []);
     }

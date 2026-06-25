@@ -8,6 +8,10 @@ namespace 거래플랜.Server.Api.Services;
 
 public sealed class RentalSettlementRecalculationService
 {
+    private const string BillingStatusPlanned = "\uC608\uC815";
+    private const string SettlementStatusUnpaid = "\uBBF8\uC785\uAE08";
+    private const string CompletionPending = "\uBBF8\uC644\uB8CC";
+
     private readonly AppDbContext _dbContext;
 
     public RentalSettlementRecalculationService(AppDbContext dbContext)
@@ -141,6 +145,16 @@ public sealed class RentalSettlementRecalculationService
         if (profile is null || profile.IsDeleted)
             return;
 
+        if (billingRunId.HasValue &&
+            billingRunId.Value != Guid.Empty &&
+            !await HasActiveRentalBillingRunFinancialEvidenceAsync(billingProfileId, billingRunId.Value, cancellationToken))
+        {
+            var runs = DeserializeBillingRuns(profile.BillingRunsJson);
+            runs.RemoveAll(current => current.RunId == billingRunId.Value);
+            await RefreshRentalProfileAfterBillingRunEvidenceRemovalAsync(profile, runs, cancellationToken);
+            return;
+        }
+
         var settledAmount = await GetRentalSettledAmountCoreAsync(billingProfileId, billingRunId, cancellationToken);
         var billedAmount = await ResolveBillingRunAmountAsync(profile, billingRunId, cancellationToken);
         profile.SettledAmount = settledAmount;
@@ -196,6 +210,138 @@ public sealed class RentalSettlementRecalculationService
                 ? await GetRentalLastSettledDateCoreAsync(billingProfileId, billingRunId, cancellationToken)
                 : null;
         }
+    }
+
+    private async Task<bool> HasActiveRentalBillingRunFinancialEvidenceAsync(
+        Guid billingProfileId,
+        Guid billingRunId,
+        CancellationToken cancellationToken)
+    {
+        if (billingProfileId == Guid.Empty || billingRunId == Guid.Empty)
+            return false;
+
+        if (await _dbContext.Invoices.IgnoreQueryFilters().AsNoTracking().AnyAsync(invoice =>
+                !invoice.IsDeleted &&
+                invoice.IsLatestVersion &&
+                invoice.TotalAmount > 0m &&
+                invoice.LinkedRentalBillingProfileId == billingProfileId &&
+                invoice.LinkedRentalBillingRunId == billingRunId,
+                cancellationToken))
+        {
+            return true;
+        }
+
+        if (await _dbContext.Transactions.IgnoreQueryFilters().AsNoTracking().AnyAsync(transaction =>
+                !transaction.IsDeleted &&
+                transaction.SettlementAmount > 0m &&
+                transaction.LinkedRentalBillingProfileId == billingProfileId &&
+                transaction.LinkedRentalBillingRunId == billingRunId,
+                cancellationToken))
+        {
+            return true;
+        }
+
+        return await (
+            from payment in _dbContext.Payments.IgnoreQueryFilters().AsNoTracking()
+            join invoice in _dbContext.Invoices.IgnoreQueryFilters().AsNoTracking()
+                on payment.InvoiceId equals invoice.Id
+            where !payment.IsDeleted &&
+                  payment.Amount > 0m &&
+                  !invoice.IsDeleted &&
+                  invoice.IsLatestVersion &&
+                  invoice.LinkedRentalBillingProfileId == billingProfileId &&
+                  invoice.LinkedRentalBillingRunId == billingRunId &&
+                  !_dbContext.Transactions.IgnoreQueryFilters().AsNoTracking().Any(transaction =>
+                      !transaction.IsDeleted &&
+                      transaction.SettlementAmount > 0m &&
+                      transaction.Id == payment.Id &&
+                      transaction.LinkedRentalBillingProfileId == billingProfileId)
+            select payment.Id).AnyAsync(cancellationToken);
+    }
+
+    private async Task RefreshRentalProfileAfterBillingRunEvidenceRemovalAsync(
+        RentalBillingProfile profile,
+        List<RentalBillingRunSnapshot> remainingRuns,
+        CancellationToken cancellationToken)
+    {
+        var activeRuns = remainingRuns
+            .Where(run => run.RunId != Guid.Empty)
+            .OrderByDescending(run => run.ScheduledDate)
+            .ThenByDescending(run => run.PeriodEndDate)
+            .ToList();
+
+        if (activeRuns.Count == 0)
+        {
+            profile.BillingRunsJson = JsonSerializer.Serialize(activeRuns, RentalBillingJsonOptions);
+            profile.BillingStatus = BillingStatusPlanned;
+            profile.SettlementStatus = SettlementStatusUnpaid;
+            profile.CompletionStatus = CompletionPending;
+            profile.SettledAmount = 0m;
+            profile.OutstandingAmount = 0m;
+            profile.LastBilledDate = null;
+            profile.LastSettledDate = null;
+            profile.RequiresFollowUp = false;
+            return;
+        }
+
+        var activeRunIds = new HashSet<Guid>();
+        foreach (var run in activeRuns)
+        {
+            var hasEvidence = await HasActiveRentalBillingRunFinancialEvidenceAsync(profile.Id, run.RunId, cancellationToken);
+            if (hasEvidence)
+                activeRunIds.Add(run.RunId);
+
+            var billedAmount = hasEvidence
+                ? await ResolveBillingRunAmountAsync(profile, run.RunId, cancellationToken)
+                : Math.Max(0m, run.BilledAmount);
+            var settledAmount = await GetRentalSettledAmountCoreAsync(profile.Id, run.RunId, cancellationToken);
+            var outstandingAmount = Math.Max(0m, billedAmount - settledAmount);
+            run.BilledAmount = billedAmount;
+            run.SettledAmount = settledAmount;
+            run.SettlementStatus = DetermineRentalSettlementStatus(profile.BillingMethod, settledAmount, billedAmount);
+            run.Status = outstandingAmount <= 0m && billedAmount > 0m
+                ? RentalBillingEvidenceStatusResolver.Completed
+                : RentalBillingEvidenceStatusResolver.IsManualStopStatus(run.Status)
+                    ? run.Status.Trim()
+                    : RentalBillingEvidenceStatusResolver.InProgress;
+            run.SettledDate = settledAmount > 0m
+                ? await GetRentalLastSettledDateCoreAsync(profile.Id, run.RunId, cancellationToken)
+                : null;
+        }
+
+        var representativeRun = activeRuns.FirstOrDefault(run => activeRunIds.Contains(run.RunId)) ?? activeRuns.First();
+        var representativeBilledAmount = Math.Max(0m, representativeRun.BilledAmount);
+        var representativeSettledAmount = Math.Max(0m, representativeRun.SettledAmount);
+        var representativeOutstandingAmount = Math.Max(0m, representativeBilledAmount - representativeSettledAmount);
+        profile.BillingRunsJson = JsonSerializer.Serialize(activeRuns, RentalBillingJsonOptions);
+        profile.BillingStatus = representativeRun.Status;
+        profile.SettlementStatus = representativeRun.SettlementStatus;
+        profile.CompletionStatus = representativeOutstandingAmount <= 0m && representativeBilledAmount > 0m
+            ? RentalBillingEvidenceStatusResolver.Completed
+            : CompletionPending;
+        profile.SettledAmount = representativeSettledAmount;
+        profile.OutstandingAmount = representativeOutstandingAmount;
+        profile.LastBilledDate = activeRuns
+            .Where(run => activeRunIds.Contains(run.RunId) || !IsMutableRentalBillingRun(run))
+            .Select(run => (DateOnly?)run.ScheduledDate)
+            .OrderByDescending(date => date)
+            .FirstOrDefault();
+        profile.LastSettledDate = activeRuns
+            .Select(run => run.SettledDate)
+            .OrderByDescending(date => date)
+            .FirstOrDefault();
+        profile.RequiresFollowUp = activeRuns.Any(run =>
+            Math.Max(0m, run.BilledAmount - Math.Max(0m, run.SettledAmount)) > 0m &&
+            (activeRunIds.Contains(run.RunId) ||
+             string.Equals(run.Status, RentalBillingEvidenceStatusResolver.InProgress, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private static bool IsMutableRentalBillingRun(RentalBillingRunSnapshot run)
+    {
+        var status = (run.Status ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(status) ||
+               string.Equals(status, BillingStatusPlanned, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(status, RentalBillingEvidenceStatusResolver.OnHold, StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<decimal> GetRentalSettledAmountCoreAsync(
