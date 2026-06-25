@@ -114,15 +114,15 @@ public static class SupplementDocumentBuilder
         AddLabelCell(grid, 2, 9, 6, 9, "공\n\n급\n\n자", fontSize: 14, background: BandFillBrush);
 
         AddLabelCell(grid, 2, 10, 2, 11, "등록번호");
-        AddMergedCell(grid, 2, 12, 2, 19, SpaceBusinessNumber(Safe(printModel?.SupplierBusinessNumber, company.BusinessNumber)), fontSize: 15);
+        AddMergedCell(grid, 2, 12, 2, 19, SpaceBusinessNumber(Safe(company.BusinessNumber, printModel?.SupplierBusinessNumber ?? string.Empty)), fontSize: 15);
 
         AddLabelCell(grid, 3, 10, 3, 11, "상호명");
-        AddMergedCell(grid, 3, 12, 3, 14, Safe(printModel?.SupplierName, Safe(company.TradeName, "기본 상호")));
+        AddMergedCell(grid, 3, 12, 3, 14, Safe(company.TradeName, Safe(printModel?.SupplierName, "기본 상호")));
         AddLabelCell(grid, 3, 15, 3, 16, "대   표");
-        AddMergedCell(grid, 3, 17, 3, 19, Safe(printModel?.SupplierRepresentative, Safe(company.Representative, "대표자")));
+        AddMergedCell(grid, 3, 17, 3, 19, Safe(company.Representative, Safe(printModel?.SupplierRepresentative, "대표자")));
 
         AddLabelCell(grid, 4, 10, 4, 11, "주   소");
-        AddMergedCell(grid, 4, 12, 4, 19, FormatAddressForDocument(Safe(printModel?.SupplierAddress, company.Address)), fontSize: 10.8, padding: new Thickness(6, 3, 6, 3), wrap: true);
+        AddMergedCell(grid, 4, 12, 4, 19, FormatAddressForDocument(Safe(company.Address, printModel?.SupplierAddress ?? string.Empty)), fontSize: 10.8, padding: new Thickness(6, 3, 6, 3), wrap: true);
 
         AddLabelCell(grid, 5, 10, 5, 11, "업   태");
         AddMergedCell(grid, 5, 12, 5, 14, Safe(company.BusinessType));
@@ -130,7 +130,7 @@ public static class SupplementDocumentBuilder
         AddMergedCell(grid, 5, 17, 5, 19, Safe(company.BusinessItem));
 
         AddLabelCell(grid, 6, 10, 6, 11, "연락처");
-        AddMergedCell(grid, 6, 12, 6, 14, Safe(printModel?.SupplierPhone, company.ContactNumber));
+        AddMergedCell(grid, 6, 12, 6, 14, Safe(company.ContactNumber, printModel?.SupplierPhone ?? string.Empty));
         AddLabelCell(grid, 6, 15, 6, 16, "팩   스");
         AddMergedCell(grid, 6, 17, 6, 19, Safe(customer.FaxNumber));
 
@@ -212,15 +212,15 @@ public static class SupplementDocumentBuilder
         AddLabelCell(grid, 2, 9, 6, 9, "공\n\n급\n\n자", fontSize: 14, background: BandFillBrush);
 
         AddLabelCell(grid, 2, 10, 2, 11, "등록번호");
-        AddMergedCell(grid, 2, 12, 2, 19, SpaceBusinessNumber(Safe(printModel?.SupplierBusinessNumber, company.BusinessNumber)), fontSize: 15);
+        AddMergedCell(grid, 2, 12, 2, 19, SpaceBusinessNumber(Safe(company.BusinessNumber, printModel?.SupplierBusinessNumber ?? string.Empty)), fontSize: 15);
 
         AddLabelCell(grid, 3, 10, 3, 11, "상호명");
-        AddMergedCell(grid, 3, 12, 3, 14, Safe(printModel?.SupplierName, Safe(company.TradeName, "기본 상호")));
+        AddMergedCell(grid, 3, 12, 3, 14, Safe(company.TradeName, Safe(printModel?.SupplierName, "기본 상호")));
         AddLabelCell(grid, 3, 15, 3, 16, "대   표");
-        AddMergedCell(grid, 3, 17, 3, 19, Safe(printModel?.SupplierRepresentative, Safe(company.Representative, "대표자")));
+        AddMergedCell(grid, 3, 17, 3, 19, Safe(company.Representative, Safe(printModel?.SupplierRepresentative, "대표자")));
 
         AddLabelCell(grid, 4, 10, 4, 11, "주   소");
-        AddMergedCell(grid, 4, 12, 4, 19, FormatAddressForDocument(Safe(printModel?.SupplierAddress, company.Address)), fontSize: 10.8, padding: new Thickness(6, 3, 6, 3), wrap: true);
+        AddMergedCell(grid, 4, 12, 4, 19, FormatAddressForDocument(Safe(company.Address, printModel?.SupplierAddress ?? string.Empty)), fontSize: 10.8, padding: new Thickness(6, 3, 6, 3), wrap: true);
 
         AddLabelCell(grid, 5, 10, 5, 11, "업   태");
         AddMergedCell(grid, 5, 12, 5, 14, Safe(company.BusinessType));
@@ -228,7 +228,7 @@ public static class SupplementDocumentBuilder
         AddMergedCell(grid, 5, 17, 5, 19, Safe(company.BusinessItem));
 
         AddLabelCell(grid, 6, 10, 6, 11, "연락처");
-        AddMergedCell(grid, 6, 12, 6, 14, Safe(printModel?.SupplierPhone, company.ContactNumber));
+        AddMergedCell(grid, 6, 12, 6, 14, Safe(company.ContactNumber, printModel?.SupplierPhone ?? string.Empty));
         AddLabelCell(grid, 6, 15, 6, 16, "팩   스");
         AddMergedCell(grid, 6, 17, 6, 19, Safe(customer.FaxNumber));
 
@@ -893,12 +893,12 @@ public static class SupplementDocumentBuilder
 
     private static string ResolveReceiver(LocalCustomer customer, InvoicePrintModel? printModel = null)
     {
-        if (!string.IsNullOrWhiteSpace(printModel?.BuyerName))
-            return printModel.BuyerName.Trim();
         if (!string.IsNullOrWhiteSpace(customer.Recipient))
             return customer.Recipient.Trim();
         if (!string.IsNullOrWhiteSpace(customer.NameOriginal))
             return customer.NameOriginal.Trim();
+        if (!string.IsNullOrWhiteSpace(printModel?.BuyerName))
+            return printModel.BuyerName.Trim();
         return "거래처";
     }
 
@@ -916,9 +916,9 @@ public static class SupplementDocumentBuilder
 
     private static (string BankName, string AccountNo, string Depositor) ParseBankAccount(LocalCompanyProfile company, InvoicePrintModel? printModel = null)
     {
-        var raw = !string.IsNullOrWhiteSpace(printModel?.BankAccountText)
-            ? printModel.BankAccountText
-            : company.BankAccountText ?? string.Empty;
+        var raw = !string.IsNullOrWhiteSpace(company.BankAccountText)
+            ? company.BankAccountText
+            : printModel?.BankAccountText ?? string.Empty;
         var bankName = string.Empty;
         var accountNo = string.Empty;
 
@@ -938,13 +938,13 @@ public static class SupplementDocumentBuilder
         if (string.IsNullOrWhiteSpace(accountNo))
             accountNo = "입금은행/계좌번호를 입력하세요";
 
-        var depositor = !string.IsNullOrWhiteSpace(printModel?.SupplierRepresentative)
-            ? printModel.SupplierRepresentative
-            : !string.IsNullOrWhiteSpace(company.Representative)
-                ? company.Representative
-                : !string.IsNullOrWhiteSpace(printModel?.SupplierName)
-                    ? printModel.SupplierName
-                    : company.TradeName;
+        var depositor = !string.IsNullOrWhiteSpace(company.Representative)
+            ? company.Representative
+            : !string.IsNullOrWhiteSpace(printModel?.SupplierRepresentative)
+                ? printModel.SupplierRepresentative
+                : !string.IsNullOrWhiteSpace(company.TradeName)
+                    ? company.TradeName
+                    : printModel?.SupplierName;
         if (string.IsNullOrWhiteSpace(depositor))
             depositor = "대표자";
 

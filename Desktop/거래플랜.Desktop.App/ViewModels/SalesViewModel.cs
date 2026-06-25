@@ -2030,6 +2030,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
                     NormalizeInvoicePrintSnapshotMetadata(saved, defaultModel);
                     if (invoice.VoucherType == VoucherType.Procurement)
                         saved.DocumentTitle = NormalizeProcurementDocumentTitle(saved.DocumentTitle);
+                    InvoicePrintModelCurrentInfoSynchronizer.RefreshLinkedBusinessPartyFields(saved, defaultModel);
                     InvoicePrintLineSynchronizer.AlignToInvoiceLineOrder(saved, defaultModel);
                     if (!string.Equals(
                             InvoiceVatModes.Normalize(saved.VatMode),

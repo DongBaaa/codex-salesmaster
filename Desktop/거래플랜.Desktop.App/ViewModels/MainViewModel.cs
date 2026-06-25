@@ -1743,6 +1743,7 @@ public sealed partial class MainViewModel : ObservableObject
                     if (invoice.VoucherType == VoucherType.Procurement)
                         saved.DocumentTitle = saved.DocumentTitle is "납품서" or "의뢰서" ? saved.DocumentTitle : "발주서";
 
+                    InvoicePrintModelCurrentInfoSynchronizer.RefreshLinkedBusinessPartyFields(saved, defaultModel);
                     InvoicePrintLineSynchronizer.AlignToInvoiceLineOrder(saved, defaultModel);
 
                     return saved;
