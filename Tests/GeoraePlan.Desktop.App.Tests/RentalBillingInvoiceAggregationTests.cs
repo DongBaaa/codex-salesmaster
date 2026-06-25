@@ -11,7 +11,7 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class RentalBillingInvoiceAggregationTests
 {
     [Fact]
-    public async Task BuildRentalBillingInvoiceLinesAsync_GroupsSameDisplayItemAndUnitPriceAsQuantity()
+    public async Task BuildRentalBillingInvoiceLinesAsync_GroupsSameModelAndUnitPriceAsQuantity()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-invoice-aggregate-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -57,7 +57,7 @@ public sealed class RentalBillingInvoiceAggregationTests
             Assert.Equal(2m, line.Quantity);
             Assert.Equal(50_000m, line.UnitPrice);
             Assert.Equal(100_000m, line.LineAmount);
-            Assert.Equal("IMC2010 \uC678 1\uB300", line.SpecificationOriginal);
+            Assert.Equal("IMC2010", line.SpecificationOriginal);
             Assert.Equal("AGG-A \uC678 1\uAC74", line.MaterialNumber);
             Assert.Equal("SN-A \uC678 1\uAC74", line.SerialNumber);
         }
@@ -69,7 +69,7 @@ public sealed class RentalBillingInvoiceAggregationTests
     }
 
     [Fact]
-    public async Task BuildRentalBillingInvoiceLinesAsync_DoesNotGroupSameDisplayItemWhenUnitPriceDiffers()
+    public async Task BuildRentalBillingInvoiceLinesAsync_DoesNotGroupSameModelWhenUnitPriceDiffers()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-invoice-separate-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -109,6 +109,117 @@ public sealed class RentalBillingInvoiceAggregationTests
             Assert.All(result.Lines, line => Assert.Equal(1m, line.Quantity));
             Assert.Contains(result.Lines, line => line.UnitPrice == 50_000m);
             Assert.Contains(result.Lines, line => line.UnitPrice == 70_000m);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task BuildRentalBillingInvoiceLinesAsync_DoesNotGroupDifferentModelsWithSameDisplayItemAndUnitPrice()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-invoice-model-separate-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("a4000000-0000-0000-0000-000000000001");
+            var assetAId = Guid.Parse("a4000000-0000-0000-0000-0000000000a1");
+            var assetBId = Guid.Parse("a4000000-0000-0000-0000-0000000000b2");
+            db.RentalAssets.AddRange(
+                CreateBillableAsset(assetAId, profileId, "MODEL-A", "SN-A", "IMC2010", 50_000m),
+                CreateBillableAsset(assetBId, profileId, "MODEL-B", "SN-B", "MFC-L5700DN", 50_000m));
+            await db.SaveChangesAsync();
+
+            var result = await InvokeBuildRentalBillingInvoiceLinesAsync(
+                new RentalStateService(db),
+                CreateProfile(profileId, "\uAC1C\uBCC4"),
+                CreateRun(),
+                [
+                    new RentalBillingTemplateItemModel
+                    {
+                        DisplayItemName = "\uBCF5\uD569\uAE30 \uB80C\uD0C8\uB8CC",
+                        BillingLineMode = "\uAC1C\uBCC4",
+                        Unit = "\uB300",
+                        IncludedAssetIds = [assetAId, assetBId]
+                    }
+                ],
+                CreateAdminSession());
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(2, result.Lines.Count);
+            Assert.All(result.Lines, line =>
+            {
+                Assert.Equal(1m, line.Quantity);
+                Assert.Equal(50_000m, line.UnitPrice);
+                Assert.Equal(50_000m, line.LineAmount);
+            });
+            Assert.Contains(result.Lines, line => line.SpecificationOriginal == "IMC2010");
+            Assert.Contains(result.Lines, line => line.SpecificationOriginal == "MFC-L5700DN");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task BuildRentalBillingInvoiceLinesAsync_GroupsSameModelAcrossDifferentDisplayItems()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-invoice-model-display-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("a5000000-0000-0000-0000-000000000001");
+            var assetAId = Guid.Parse("a5000000-0000-0000-0000-0000000000a1");
+            var assetBId = Guid.Parse("a5000000-0000-0000-0000-0000000000b2");
+            db.RentalAssets.AddRange(
+                CreateBillableAsset(assetAId, profileId, "DISPLAY-A", "SN-A", "IMC2010", 50_000m),
+                CreateBillableAsset(assetBId, profileId, "DISPLAY-B", "SN-B", "IMC2010", 50_000m));
+            await db.SaveChangesAsync();
+
+            var result = await InvokeBuildRentalBillingInvoiceLinesAsync(
+                new RentalStateService(db),
+                CreateProfile(profileId, "\uD63C\uD569"),
+                CreateRun(),
+                [
+                    new RentalBillingTemplateItemModel
+                    {
+                        DisplayItemName = "\uBCF5\uD569\uAE30 A",
+                        BillingLineMode = "\uAC1C\uBCC4",
+                        Unit = "\uB300",
+                        IncludedAssetIds = [assetAId]
+                    },
+                    new RentalBillingTemplateItemModel
+                    {
+                        DisplayItemName = "\uBCF5\uD569\uAE30 B",
+                        BillingLineMode = "\uAC1C\uBCC4",
+                        Unit = "\uB300",
+                        IncludedAssetIds = [assetBId]
+                    }
+                ],
+                CreateAdminSession());
+
+            Assert.True(result.Success, result.Message);
+            var line = Assert.Single(result.Lines);
+            Assert.Equal("IMC2010", line.SpecificationOriginal);
+            Assert.Equal(2m, line.Quantity);
+            Assert.Equal(50_000m, line.UnitPrice);
+            Assert.Equal(100_000m, line.LineAmount);
         }
         finally
         {

@@ -9617,7 +9617,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
     private readonly record struct RentalBillingInvoiceLineAggregateKey(
         DateOnly BillingMonth,
-        string DisplayItemNameKey,
+        string ModelNameKey,
         string ItemName,
         string Unit,
         decimal UnitPrice,
@@ -9951,7 +9951,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         RentalBillingInvoiceLineDraft draft)
         => new(
             draft.BillingMonth,
-            NormalizeRentalBillingDisplayItemKey(draft.DisplayItemName),
+            ResolveRentalBillingInvoiceLineModelKey(draft),
             (draft.Line.ItemNameOriginal ?? string.Empty).Trim(),
             (draft.Line.Unit ?? string.Empty).Trim(),
             draft.Line.UnitPrice,
@@ -9974,6 +9974,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private static string BuildAggregatedRentalBillingInvoiceSpecification(
         IReadOnlyList<RentalBillingInvoiceLineDraft> group)
     {
+        var modelName = ResolveAggregatedRentalBillingInvoiceModelName(group);
+        if (!string.IsNullOrWhiteSpace(modelName))
+            return modelName;
+
         var firstSpecification = FirstNonEmpty(
             group.Select(draft => draft.Line.SpecificationOriginal).ToArray());
         if (string.IsNullOrWhiteSpace(firstSpecification))
@@ -9989,6 +9993,51 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return quantity <= 1
             ? firstSpecification
             : $"{firstSpecification} 외 {quantity - 1:N0}대";
+    }
+
+    private static string ResolveRentalBillingInvoiceLineModelKey(RentalBillingInvoiceLineDraft draft)
+    {
+        var modelNames = draft.Assets
+            .Select(asset => RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset.ItemName))
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        if (modelNames.Count == 1)
+            return modelNames[0];
+
+        var specification = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(draft.Line.SpecificationOriginal);
+        if (!string.IsNullOrWhiteSpace(specification))
+            return specification;
+
+        return NormalizeRentalBillingDisplayItemKey(draft.DisplayItemName);
+    }
+
+    private static string ResolveAggregatedRentalBillingInvoiceModelName(
+        IReadOnlyList<RentalBillingInvoiceLineDraft> group)
+    {
+        var modelNames = group
+            .SelectMany(draft => draft.Assets)
+            .Select(asset => RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset.ItemName))
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        if (modelNames.Count == 1)
+            return modelNames[0];
+
+        var specifications = group
+            .Select(draft => RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(draft.Line.SpecificationOriginal))
+            .Where(specification => !string.IsNullOrWhiteSpace(specification))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        if (specifications.Count == 1)
+            return specifications[0];
+
+        var displayItemNames = group
+            .Select(draft => NormalizeRentalBillingDisplayItemKey(draft.DisplayItemName))
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        return displayItemNames.Count == 1 ? displayItemNames[0] : string.Empty;
     }
 
     private static string BuildAggregatedRentalBillingInvoiceField(IEnumerable<string?> values)

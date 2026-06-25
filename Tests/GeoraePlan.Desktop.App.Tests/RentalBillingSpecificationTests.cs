@@ -70,7 +70,7 @@ public sealed class RentalBillingSpecificationTests
     }
 
     [Fact]
-    public void RentalBillingViewModel_SyncIndividualTemplateItems_GroupsSameDisplayItemAndUnitPriceAsQuantity()
+    public void RentalBillingViewModel_SyncIndividualTemplateItems_GroupsSameModelAndUnitPriceAsQuantity()
     {
         var assetAId = Guid.Parse("33333333-3333-3333-3333-3333333333a1");
         var assetBId = Guid.Parse("33333333-3333-3333-3333-3333333333b2");
@@ -112,7 +112,7 @@ public sealed class RentalBillingSpecificationTests
         Assert.Equal(50_000m, mergedItem.UnitPrice);
         Assert.Equal(100_000m, mergedItem.Amount);
         Assert.Equal(2, mergedItem.IncludedAssetIds.Distinct().Count());
-        Assert.Equal("IMC2010 \uC678 1\uB300", mergedItem.Specification);
+        Assert.Equal("IMC2010", mergedItem.Specification);
     }
 
     [Fact]

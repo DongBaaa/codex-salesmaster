@@ -15,7 +15,7 @@ namespace 거래플랜.Desktop.App.ViewModels;
 public sealed partial class RentalBillingViewModel : ObservableObject
 {
     private readonly record struct IndividualTemplateMergeKey(
-        string DisplayItemNameKey,
+        string ModelNameKey,
         string Unit,
         string Note,
         decimal UnitPrice);
@@ -3336,7 +3336,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 }
             }
 
-            if (MergeIndividualTemplateItemsWithSameDisplayAndPrice(rebuiltItems, out var mergeValueChanged))
+            if (MergeIndividualTemplateItemsWithSameModelAndPrice(rebuiltItems, out var mergeValueChanged))
                 collectionChanged = true;
             valueChanged |= mergeValueChanged;
 
@@ -3361,7 +3361,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         return collectionChanged || valueChanged;
     }
 
-    private bool MergeIndividualTemplateItemsWithSameDisplayAndPrice(
+    private bool MergeIndividualTemplateItemsWithSameModelAndPrice(
         List<RentalBillingTemplateEditorItem> items,
         out bool valueChanged)
     {
@@ -3403,11 +3403,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 valueChanged = true;
             }
 
-            valueChanged |= SetIfChanged(() => existing.DisplayItemName, value => existing.DisplayItemName = value, key.DisplayItemNameKey);
+            valueChanged |= SetIfChanged(() => existing.DisplayItemName, value => existing.DisplayItemName = value, key.ModelNameKey);
             valueChanged |= SetIfChanged(() => existing.BillingLineMode, value => existing.BillingLineMode = value, "개별");
             valueChanged |= SetIfChanged(() => existing.Unit, value => existing.Unit = value, key.Unit);
             valueChanged |= SetIfChanged(() => existing.Note, value => existing.Note = value, key.Note);
             ApplyIncludedAssetMonthlyFeesToTemplateItem(existing, applyZeroFees: true);
+            ApplyTemplateSalesFieldDefaults(existing);
+            existing.IncludedAssetSummary = BuildIncludedAssetSummary(existing.IncludedAssetIds);
+            existing.RepresentativeAssetSummary = BuildRepresentativeAssetSummary(existing);
         }
 
         if (collectionChanged)
@@ -3421,15 +3424,37 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private IndividualTemplateMergeKey BuildIndividualTemplateMergeKey(RentalBillingTemplateEditorItem item)
     {
-        var displayItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(item.DisplayItemName);
-        if (string.IsNullOrWhiteSpace(displayItemName))
-            displayItemName = "렌탈 임대료";
+        var modelName = ResolveIndividualTemplateModelName(item);
+        if (string.IsNullOrWhiteSpace(modelName))
+            modelName = "렌탈 임대료";
 
         return new IndividualTemplateMergeKey(
-            displayItemName,
+            modelName,
             (item.Unit ?? string.Empty).Trim(),
             (item.Note ?? string.Empty).Trim(),
             Math.Max(0m, item.UnitPrice));
+    }
+
+    private string ResolveIndividualTemplateModelName(RentalBillingTemplateEditorItem item)
+    {
+        var modelNames = item.IncludedAssetIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .Select(FindBillingAssetOption)
+            .Where(asset => asset is not null)
+            .Select(asset => RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset!.ItemName))
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        if (modelNames.Count == 1)
+            return modelNames[0];
+
+        var displayItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(item.DisplayItemName);
+        if (!string.IsNullOrWhiteSpace(displayItemName))
+            return displayItemName;
+
+        var specification = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(item.Specification);
+        return specification;
     }
 
     private bool ApplyBillingTypeToTemplateLineModes(string? billingType)
@@ -3622,6 +3647,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (IsIndividualAggregateRepresentativeOnlySpecification(item, current, defaultSpecification))
             return true;
 
+        if (IsLegacyIndividualAggregateEtcSpecification(item, current, defaultSpecification))
+            return true;
+
         var legacyDefaultSpecification = BuildLegacyTemplateSpecification(item);
         return !string.IsNullOrWhiteSpace(legacyDefaultSpecification) &&
                !string.Equals(legacyDefaultSpecification, defaultSpecification, StringComparison.CurrentCultureIgnoreCase) &&
@@ -3674,6 +3702,26 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             var asset = FindBillingAssetOption(includedAssetIds[0]);
             return BuildAssetInvoiceSpecification(asset);
         }
+
+        var individualModelNames = includedAssetIds
+            .Select(FindBillingAssetOption)
+            .Where(asset => asset is not null)
+            .Select(asset => RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset!.ItemName))
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        if (individualModelNames.Count == 1)
+            return individualModelNames[0];
+
+        var individualSpecifications = includedAssetIds
+            .Select(FindBillingAssetOption)
+            .Where(asset => asset is not null)
+            .Select(BuildAssetInvoiceSpecification)
+            .Where(specification => !string.IsNullOrWhiteSpace(specification))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        if (individualSpecifications.Count == 1)
+            return individualSpecifications[0];
 
         var individualRepresentativeAsset = includedAssetIds
             .Select(FindBillingAssetOption)
@@ -3754,6 +3802,30 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         return string.Equals(currentSpecification.Trim(), representativeSpecification, StringComparison.CurrentCultureIgnoreCase) &&
                string.Equals(defaultSpecification.Trim(), $"{representativeSpecification} 외 {includedAssetIds.Count - 1:N0}대", StringComparison.CurrentCultureIgnoreCase);
+    }
+
+    private bool IsLegacyIndividualAggregateEtcSpecification(
+        RentalBillingTemplateEditorItem item,
+        string currentSpecification,
+        string defaultSpecification)
+    {
+        if (!IsTemplateItemIndividualMode(item) ||
+            string.IsNullOrWhiteSpace(currentSpecification) ||
+            string.IsNullOrWhiteSpace(defaultSpecification))
+        {
+            return false;
+        }
+
+        var includedAssetCount = item.IncludedAssetIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .Count();
+        if (includedAssetCount <= 1)
+            return false;
+
+        var current = currentSpecification.Trim();
+        var expectedPrefix = $"{defaultSpecification.Trim()} 외";
+        return current.StartsWith(expectedPrefix, StringComparison.CurrentCultureIgnoreCase);
     }
 
     private string BuildLegacyTemplateSpecification(RentalBillingTemplateEditorItem item)

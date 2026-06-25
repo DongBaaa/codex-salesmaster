@@ -1056,7 +1056,10 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             }
 
             if (index >= 0)
+            {
+                fullRow.IsSelected = current?.IsSelected ?? fullRow.IsSelected;
                 Rows[index] = fullRow;
+            }
 
             if (ReferenceEquals(_selectedAssetDetailLoadCts, cts))
                 _selectedAssetDetailLoadCts = null;
@@ -2005,7 +2008,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         var saved = await SaveSnapshotAsync(
             snapshot,
             preserveSelectionRowId: requestedSelection?.Source.Id,
-            refreshAfterSave: true,
+            refreshAfterSave: false,
             successMessage: "렌탈 자산을 자동 저장했습니다.",
             permissionDeniedMessage: "현재 선택한 렌탈 자산을 자동 저장할 권한이 없습니다.",
             showConflictDialog: false);

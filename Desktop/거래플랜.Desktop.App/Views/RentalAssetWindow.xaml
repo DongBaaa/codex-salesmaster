@@ -231,7 +231,8 @@
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
-                <DataGrid ItemsSource="{Binding Rows}" SelectedItem="{Binding SelectedRow}" BorderThickness="0" IsReadOnly="False">
+                <DataGrid ItemsSource="{Binding Rows}" SelectedItem="{Binding SelectedRow}" BorderThickness="0" IsReadOnly="False"
+                          SelectionMode="Single" SelectionUnit="FullRow">
                     <DataGrid.Columns>
                         <DataGridTemplateColumn Width="46">
                             <DataGridTemplateColumn.HeaderTemplate>

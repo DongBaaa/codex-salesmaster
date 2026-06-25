@@ -159,6 +159,42 @@ public sealed class WpfGlobalUiGuardTests
     }
 
     [Fact]
+    public void RentalAssetWindow_KeepsDetailSelectionSingleAndSelectionAutosaveStable()
+    {
+        var root = FindRepositoryRoot();
+        var xaml = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "RentalAssetWindow.xaml"));
+        var viewModel = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "ViewModels",
+            "RentalAssetViewModel.cs"));
+
+        Assert.Contains("ItemsSource=\"{Binding Rows}\" SelectedItem=\"{Binding SelectedRow}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("SelectionMode=\"Single\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("SelectionUnit=\"FullRow\"", xaml, StringComparison.Ordinal);
+        Assert.Contains(
+            "IsChecked=\"{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}\"",
+            xaml,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("SelectionMode=\"Extended\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("private async Task<bool> HandleSelectionAutoSaveAsync", viewModel, StringComparison.Ordinal);
+        Assert.Contains(
+            "preserveSelectionRowId: requestedSelection?.Source.Id,\n            refreshAfterSave: false",
+            viewModel,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "fullRow.IsSelected = current?.IsSelected ?? fullRow.IsSelected;",
+            viewModel,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PaymentTransferVerifier_CapturesRuntimeWindowScreenshotsAndDatePickerMetrics()
     {
         var root = FindRepositoryRoot();
