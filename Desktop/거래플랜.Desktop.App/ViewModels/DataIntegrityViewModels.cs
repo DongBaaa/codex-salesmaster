@@ -20,8 +20,12 @@ public sealed partial class DataIntegrityAlertViewModel : ObservableObject
     public DataIntegrityScanResult ScanResult { get; }
     public ObservableCollection<DataIntegrityIssueSummary> Summaries { get; } = new();
 
-    public string HeadingText => "동기화 후 운영 점검에서 확인할 항목이 있습니다.";
-    public string SummaryText => $"총 {ScanResult.TotalIssueCount:N0}건 / {Summaries.Count:N0}개 유형";
+    public string HeadingText => ScanResult.HasActionRequiredIssues
+        ? "동기화 후 운영 점검에서 확인할 항목이 있습니다."
+        : "운영 점검 참고 정보가 있습니다.";
+    public string SummaryText => ScanResult.InformationalIssueCount > 0
+        ? $"확인 필요 {ScanResult.ActionRequiredIssueCount:N0}건 / 참고 {ScanResult.InformationalIssueCount:N0}건 / {Summaries.Count:N0}개 유형"
+        : $"확인 필요 {ScanResult.ActionRequiredIssueCount:N0}건 / {Summaries.Count:N0}개 유형";
     public string ScannedAtText => $"점검 시각 {ScanResult.ScannedAtText}";
     public bool HasIssues => ScanResult.HasIssues;
 }
@@ -54,7 +58,7 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject, IDis
     public ObservableCollection<DataIntegrityIssueSummary> Summaries { get; } = new();
     public ObservableCollection<DataIntegrityIssueFilterOption> IssueTypeOptions { get; } = new();
     public ObservableCollection<DataIntegrityIssueDetail> Issues { get; } = new ResettableObservableCollection<DataIntegrityIssueDetail>();
-    public IReadOnlyList<string> SeverityOptions { get; } = ["전체", "오류", "주의"];
+    public IReadOnlyList<string> SeverityOptions { get; } = ["전체", "오류", "주의", "참고"];
 
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private string _statusMessage = "운영 점검 항목을 불러오는 중입니다.";
@@ -244,7 +248,9 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject, IDis
         if (string.Equals(severity, "오류", StringComparison.OrdinalIgnoreCase))
             filtered = filtered.Where(issue => string.Equals(issue.Severity, "Error", StringComparison.OrdinalIgnoreCase));
         else if (string.Equals(severity, "주의", StringComparison.OrdinalIgnoreCase))
-            filtered = filtered.Where(issue => !string.Equals(issue.Severity, "Error", StringComparison.OrdinalIgnoreCase));
+            filtered = filtered.Where(issue => string.Equals(issue.Severity, "Warning", StringComparison.OrdinalIgnoreCase));
+        else if (string.Equals(severity, "참고", StringComparison.OrdinalIgnoreCase))
+            filtered = filtered.Where(issue => string.Equals(issue.Severity, "Info", StringComparison.OrdinalIgnoreCase));
 
         if (!string.IsNullOrWhiteSpace(query))
         {
@@ -261,7 +267,7 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject, IDis
 
         var previousId = SelectedIssue?.Id;
         var list = filtered
-            .OrderByDescending(issue => string.Equals(issue.Severity, "Error", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(issue => DataIntegritySeverityFormatter.GetSortWeight(issue.Severity))
             .ThenBy(issue => issue.Title, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(issue => issue.CustomerName, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
@@ -303,11 +309,15 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject, IDis
         SelectedIssueType = IssueTypeOptions.FirstOrDefault(option => string.Equals(option.Code, previousCode, StringComparison.OrdinalIgnoreCase))
                             ?? IssueTypeOptions.FirstOrDefault();
         ScanSummaryText = scanResult.HasIssues
-            ? $"총 {scanResult.TotalIssueCount:N0}건 / {scanResult.Summaries.Count:N0}개 유형 / 점검 {scanResult.ScannedAtText}"
+            ? scanResult.InformationalIssueCount > 0
+                ? $"확인 필요 {scanResult.ActionRequiredIssueCount:N0}건 / 참고 {scanResult.InformationalIssueCount:N0}건 / {scanResult.Summaries.Count:N0}개 유형 / 점검 {scanResult.ScannedAtText}"
+                : $"확인 필요 {scanResult.ActionRequiredIssueCount:N0}건 / {scanResult.Summaries.Count:N0}개 유형 / 점검 {scanResult.ScannedAtText}"
             : $"확인된 운영 위험 신호가 없습니다. 점검 {scanResult.ScannedAtText}";
         ApplyFilter();
         if (!scanResult.HasIssues)
             StatusMessage = "현재 확인된 위험 신호가 없습니다.";
+        else if (!scanResult.HasActionRequiredIssues)
+            StatusMessage = "현재 업무 처리가 필요한 오류/주의 항목은 없고 참고 정보만 있습니다.";
     }
 
     private static bool Contains(string? value, string query)

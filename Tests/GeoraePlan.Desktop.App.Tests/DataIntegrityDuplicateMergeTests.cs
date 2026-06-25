@@ -558,6 +558,39 @@ public sealed class DataIntegrityDuplicateMergeTests
     }
 
     [Fact]
+    public void DataIntegrityInfoSeverity_IsDisplayedAndFilteredAsReferenceNotWarning()
+    {
+        var detail = new DataIntegrityIssueDetail { Severity = "Info" };
+        var summary = new DataIntegrityIssueSummary { Severity = "Info" };
+        Assert.Equal("참고", detail.SeverityDisplay);
+        Assert.Equal("참고", summary.SeverityDisplay);
+
+        var viewModelSource = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "ViewModels",
+            "DataIntegrityViewModels.cs"));
+        var alertXaml = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "DataIntegrityAlertWindow.xaml"));
+        var detailXaml = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "DataIntegrityIssueWindow.xaml"));
+
+        Assert.Contains("\"참고\"", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("issue.Severity, \"Info\"", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("확인 항목", alertXaml, StringComparison.Ordinal);
+        Assert.Contains("확인 항목과 참고 정보", detailXaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EnvironmentSettingsDataIntegrityWindow_WiresFixAndMergeHandlers()
     {
         var source = File.ReadAllText(Path.Combine(

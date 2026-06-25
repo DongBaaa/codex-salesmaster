@@ -64,6 +64,34 @@ public sealed class MasterUiWiringGuardTests
     }
 
     [Fact]
+    public void MainWindow_SelectedInvoiceCustomerInfoFieldsStayFocusableForCopy()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var xaml = ReadAppFile(appRoot, "MainWindow.xaml");
+        var viewModel = ReadAppFile(appRoot, "ViewModels", "MainViewModel.cs");
+
+        Assert.Contains(
+            "[NotifyPropertyChangedFor(nameof(IsPreviewCustomerInfoReadOnly))]",
+            viewModel,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "public bool IsPreviewCustomerInfoReadOnly => !HasSelectedCustomer;",
+            viewModel,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "IsEnabled=\"{Binding HasSelectedCustomer}\"",
+            xaml,
+            StringComparison.Ordinal);
+        Assert.True(
+            CountOccurrences(xaml, "IsReadOnly=\"{Binding IsPreviewCustomerInfoReadOnly}\"") >= 5,
+            "전표 선택 상태의 거래처 정보 입력칸은 비활성화하지 말고 읽기전용으로 둬야 텍스트 선택/복사가 가능합니다.");
+        Assert.True(
+            CountOccurrences(xaml, "IsReadOnlyCaretVisible=\"True\"") >= 5,
+            "읽기전용 상태에서도 복사할 위치를 확인할 수 있도록 caret 표시를 유지해야 합니다.");
+    }
+
+    [Fact]
     public void InventoryWindow_ItemActionsUseScopedItemCommandsAndGuardedServices()
     {
         var appRoot = FindDesktopAppRoot();

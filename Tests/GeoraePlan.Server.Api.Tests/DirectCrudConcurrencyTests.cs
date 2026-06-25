@@ -70,6 +70,10 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         var customerId = Guid.NewGuid();
         var profileId = Guid.NewGuid();
         var assetId = Guid.NewGuid();
+        var profileLinkedAssetId = Guid.NewGuid();
+        var currentHistoryId = Guid.NewGuid();
+        var profileLinkedHistoryId = Guid.NewGuid();
+        var pastHistoryId = Guid.NewGuid();
         dbContext.Customers.Add(new Customer
         {
             Id = customerId,
@@ -96,20 +100,76 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             Email = "stale-profile@example.test",
             ItemName = "Server Rental Line"
         });
-        dbContext.RentalAssets.Add(new RentalAsset
-        {
-            Id = assetId,
-            TenantCode = TenantScopeCatalog.UsenetGroup,
-            OfficeCode = OfficeCodeCatalog.Usenet,
-            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
-            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
-            AssetKey = $"asset-{assetId:N}",
-            CustomerId = customerId,
-            CustomerName = "Stale Server Asset",
-            CurrentCustomerName = "Stale Server Asset",
-            ManagementNumber = "SERVER-ASSET-001",
-            ItemName = "Server Rental Asset"
-        });
+        dbContext.RentalAssets.AddRange(
+            new RentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = $"asset-{assetId:N}",
+                CustomerId = customerId,
+                CustomerName = "Stale Server Asset",
+                CurrentCustomerName = "Stale Server Asset",
+                ManagementNumber = "SERVER-ASSET-001",
+                ItemName = "Server Rental Asset"
+            },
+            new RentalAsset
+            {
+                Id = profileLinkedAssetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = $"asset-{profileLinkedAssetId:N}",
+                BillingProfileId = profileId,
+                CustomerName = "Stale Profile Linked Asset",
+                CurrentCustomerName = "Stale Profile Linked Asset",
+                ManagementNumber = "SERVER-ASSET-002",
+                ItemName = "Server Profile Linked Rental Asset"
+            });
+        dbContext.RentalAssetAssignmentHistories.AddRange(
+            new RentalAssetAssignmentHistory
+            {
+                Id = currentHistoryId,
+                AssetId = assetId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Stale Server History",
+                ItemName = "Server Rental Asset",
+                ManagementNumber = "SERVER-ASSET-001",
+                IsCurrent = true
+            },
+            new RentalAssetAssignmentHistory
+            {
+                Id = profileLinkedHistoryId,
+                AssetId = profileLinkedAssetId,
+                BillingProfileId = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Stale Profile Linked History",
+                BillingProfileDisplay = "profile history",
+                ItemName = "Server Profile Linked Rental Asset",
+                ManagementNumber = "SERVER-ASSET-002",
+                IsCurrent = true
+            },
+            new RentalAssetAssignmentHistory
+            {
+                Id = pastHistoryId,
+                AssetId = assetId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Past Server Customer Snapshot",
+                ItemName = "Past Server Asset",
+                ManagementNumber = "SERVER-ASSET-PAST",
+                IsCurrent = false
+            });
         await dbContext.SaveChangesAsync();
 
         var stored = await dbContext.Customers.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == customerId);
@@ -143,6 +203,29 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         Assert.Equal(OfficeCodeCatalog.Usenet, syncedAsset.OfficeCode);
         Assert.Equal(OfficeCodeCatalog.Usenet, syncedAsset.ManagementCompanyCode);
         Assert.Equal(TenantScopeCatalog.UsenetGroup, syncedAsset.TenantCode);
+
+        var syncedProfileLinkedAsset = await dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == profileLinkedAssetId);
+        Assert.Equal("New Server Customer", syncedProfileLinkedAsset.CustomerName);
+        Assert.Equal("New Server Customer", syncedProfileLinkedAsset.CurrentCustomerName);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, syncedProfileLinkedAsset.ResponsibleOfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, syncedProfileLinkedAsset.OfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, syncedProfileLinkedAsset.ManagementCompanyCode);
+        Assert.Equal(TenantScopeCatalog.UsenetGroup, syncedProfileLinkedAsset.TenantCode);
+
+        var syncedCurrentHistory = await dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == currentHistoryId);
+        var syncedProfileLinkedHistory = await dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == profileLinkedHistoryId);
+        foreach (var history in new[] { syncedCurrentHistory, syncedProfileLinkedHistory })
+        {
+            Assert.Equal("New Server Customer", history.CustomerName);
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, history.ResponsibleOfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, history.OfficeCode);
+            Assert.Equal(TenantScopeCatalog.UsenetGroup, history.TenantCode);
+        }
+
+        var preservedPastHistory = await dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == pastHistoryId);
+        Assert.Equal("Past Server Customer Snapshot", preservedPastHistory.CustomerName);
+        Assert.Equal(OfficeCodeCatalog.Usenet, preservedPastHistory.ResponsibleOfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, preservedPastHistory.OfficeCode);
     }
 
     [Fact]

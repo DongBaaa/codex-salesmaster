@@ -13,9 +13,6 @@ internal static class RentalCustomerLinkSynchronizer
             return;
 
         var customerName = RentalCatalogValueNormalizer.NormalizeDisplayText(customer.NameOriginal);
-        if (string.IsNullOrWhiteSpace(customerName))
-            return;
-
         var businessNumber = customer.BusinessNumber?.Trim() ?? string.Empty;
         var email = customer.Email?.Trim() ?? string.Empty;
         var customerScope = RentalScopeNormalizer.ResolveScope(
@@ -29,10 +26,16 @@ internal static class RentalCustomerLinkSynchronizer
             .IgnoreQueryFilters()
             .Where(profile => !profile.IsDeleted && profile.CustomerId == customer.Id)
             .ToListAsync(cancellationToken);
+        var linkedProfileIds = profiles
+            .Select(profile => profile.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
 
         foreach (var profile in profiles)
         {
-            SetIfDifferent(profile.CustomerName, customerName, value => profile.CustomerName = value);
+            if (!string.IsNullOrWhiteSpace(customerName))
+                SetIfDifferent(profile.CustomerName, customerName, value => profile.CustomerName = value);
             SetIfDifferent(profile.BusinessNumber, businessNumber, value => profile.BusinessNumber = value);
             SetIfDifferent(profile.Email, email, value => profile.Email = value);
             SetIfDifferent(profile.ResponsibleOfficeCode, customerScope.ResponsibleOfficeCode, value => profile.ResponsibleOfficeCode = value);
@@ -43,17 +46,47 @@ internal static class RentalCustomerLinkSynchronizer
 
         var assets = await dbContext.RentalAssets
             .IgnoreQueryFilters()
-            .Where(asset => !asset.IsDeleted && asset.CustomerId == customer.Id)
+            .Where(asset =>
+                !asset.IsDeleted &&
+                (asset.CustomerId == customer.Id ||
+                 (asset.BillingProfileId.HasValue && linkedProfileIds.Contains(asset.BillingProfileId.Value))))
             .ToListAsync(cancellationToken);
+        var linkedAssetIds = assets
+            .Select(asset => asset.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
 
         foreach (var asset in assets)
         {
-            SetIfDifferent(asset.CustomerName, customerName, value => asset.CustomerName = value);
-            SetIfDifferent(asset.CurrentCustomerName, customerName, value => asset.CurrentCustomerName = value);
+            if (!string.IsNullOrWhiteSpace(customerName))
+            {
+                SetIfDifferent(asset.CustomerName, customerName, value => asset.CustomerName = value);
+                SetIfDifferent(asset.CurrentCustomerName, customerName, value => asset.CurrentCustomerName = value);
+            }
             SetIfDifferent(asset.ResponsibleOfficeCode, customerScope.ResponsibleOfficeCode, value => asset.ResponsibleOfficeCode = value);
             SetIfDifferent(asset.OfficeCode, customerScope.OwnerOfficeCode, value => asset.OfficeCode = value);
             SetIfDifferent(asset.ManagementCompanyCode, customerScope.OwnerOfficeCode, value => asset.ManagementCompanyCode = value);
             SetIfDifferent(asset.TenantCode, customerScope.TenantCode, value => asset.TenantCode = value);
+        }
+
+        var currentHistories = await dbContext.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .Where(history =>
+                !history.IsDeleted &&
+                history.IsCurrent &&
+                (history.CustomerId == customer.Id ||
+                 linkedAssetIds.Contains(history.AssetId) ||
+                 (history.BillingProfileId.HasValue && linkedProfileIds.Contains(history.BillingProfileId.Value))))
+            .ToListAsync(cancellationToken);
+
+        foreach (var history in currentHistories)
+        {
+            if (!string.IsNullOrWhiteSpace(customerName))
+                SetIfDifferent(history.CustomerName, customerName, value => history.CustomerName = value);
+            SetIfDifferent(history.ResponsibleOfficeCode, customerScope.ResponsibleOfficeCode, value => history.ResponsibleOfficeCode = value);
+            SetIfDifferent(history.OfficeCode, customerScope.OwnerOfficeCode, value => history.OfficeCode = value);
+            SetIfDifferent(history.TenantCode, customerScope.TenantCode, value => history.TenantCode = value);
         }
     }
 

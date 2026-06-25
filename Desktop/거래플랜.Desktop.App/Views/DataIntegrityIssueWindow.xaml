@@ -87,7 +87,7 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel>
                     <TextBlock Text="운영 점검 상세" FontSize="30" FontWeight="Bold" Foreground="#5BD4FF"/>
-                    <TextBlock Text="동기화 후 확인된 데이터 위험 신호를 목록으로 보고 원본 화면으로 바로 이동합니다." FontSize="15" Foreground="#B8C7D8" Margin="0,6,0,0"/>
+                    <TextBlock Text="동기화 후 확인된 데이터 확인 항목과 참고 정보를 목록으로 보고 원본 화면으로 바로 이동합니다." FontSize="15" Foreground="#B8C7D8" Margin="0,6,0,0"/>
                     <TextBlock Text="{Binding ScanSummaryText}" FontSize="13" Foreground="#FFD56B" Margin="0,8,0,0"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">

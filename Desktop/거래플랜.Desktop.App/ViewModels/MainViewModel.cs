@@ -74,9 +74,11 @@ public sealed partial class MainViewModel : ObservableObject
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasSelectedCustomer))]
+    [NotifyPropertyChangedFor(nameof(IsPreviewCustomerInfoReadOnly))]
     [NotifyPropertyChangedFor(nameof(InvoicePrimaryColumnHeader))]
     private LocalCustomer? _selectedCustomerFilter;
     public bool HasSelectedCustomer => SelectedCustomerFilter is not null;
+    public bool IsPreviewCustomerInfoReadOnly => !HasSelectedCustomer;
     public string InvoicePrimaryColumnHeader => HasSelectedCustomer ? "거래내역" : "거래처";
 
     // 거래처 인라인 편집 (우측 패널)
@@ -848,6 +850,7 @@ public sealed partial class MainViewModel : ObservableObject
                     EditCustNotes = customer.Notes;
                 }
                 finally { _suppressCustomerSave = false; }
+                CustomerInlineSaveStatus = "전표 선택 상태입니다. 거래처 정보는 복사 가능하며, 수정은 왼쪽 거래처를 선택한 뒤 가능합니다.";
 
                 await RefreshCustomerFinancialPreviewAsync(customer);
                 RequestRefreshPreviewCustomerContract(customer);

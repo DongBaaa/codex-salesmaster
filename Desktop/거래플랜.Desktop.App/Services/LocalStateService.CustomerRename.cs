@@ -19,9 +19,6 @@ public sealed partial class LocalStateService
             return;
 
         var customerName = RentalCatalogValueNormalizer.NormalizeDisplayText(customer.NameOriginal);
-        if (string.IsNullOrWhiteSpace(customerName))
-            return;
-
         var businessNumber = (customer.BusinessNumber ?? string.Empty).Trim();
         var email = (customer.Email ?? string.Empty).Trim();
         var customerScope = ResolveCustomerRentalOperationalScope(customer);
@@ -31,11 +28,17 @@ public sealed partial class LocalStateService
             .IgnoreQueryFilters()
             .Where(profile => !profile.IsDeleted && profile.CustomerId == customer.Id)
             .ToListAsync(ct);
+        var linkedProfileIds = profiles
+            .Select(profile => profile.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
 
         foreach (var profile in profiles)
         {
             var changed = false;
-            changed |= SetIfDifferent(profile.CustomerName, customerName, value => profile.CustomerName = value);
+            if (!string.IsNullOrWhiteSpace(customerName))
+                changed |= SetIfDifferent(profile.CustomerName, customerName, value => profile.CustomerName = value);
             changed |= SetIfDifferent(profile.BusinessNumber, businessNumber, value => profile.BusinessNumber = value);
             changed |= SetIfDifferent(profile.Email, email, value => profile.Email = value);
             changed |= SetIfDifferent(profile.ResponsibleOfficeCode, customerScope.ResponsibleOfficeCode, value => profile.ResponsibleOfficeCode = value);
@@ -48,20 +51,52 @@ public sealed partial class LocalStateService
 
         var assets = await _db.RentalAssets
             .IgnoreQueryFilters()
-            .Where(asset => !asset.IsDeleted && asset.CustomerId == customer.Id)
+            .Where(asset =>
+                !asset.IsDeleted &&
+                (asset.CustomerId == customer.Id ||
+                 (asset.BillingProfileId.HasValue && linkedProfileIds.Contains(asset.BillingProfileId.Value))))
             .ToListAsync(ct);
+        var linkedAssetIds = assets
+            .Select(asset => asset.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
 
         foreach (var asset in assets)
         {
             var changed = false;
-            changed |= SetIfDifferent(asset.CustomerName, customerName, value => asset.CustomerName = value);
-            changed |= SetIfDifferent(asset.CurrentCustomerName, customerName, value => asset.CurrentCustomerName = value);
+            if (!string.IsNullOrWhiteSpace(customerName))
+            {
+                changed |= SetIfDifferent(asset.CustomerName, customerName, value => asset.CustomerName = value);
+                changed |= SetIfDifferent(asset.CurrentCustomerName, customerName, value => asset.CurrentCustomerName = value);
+            }
             changed |= SetIfDifferent(asset.ResponsibleOfficeCode, customerScope.ResponsibleOfficeCode, value => asset.ResponsibleOfficeCode = value);
             changed |= SetIfDifferent(asset.OfficeCode, customerScope.OwnerOfficeCode, value => asset.OfficeCode = value);
             changed |= SetIfDifferent(asset.ManagementCompanyCode, customerScope.OwnerOfficeCode, value => asset.ManagementCompanyCode = value);
             changed |= SetIfDifferent(asset.TenantCode, customerScope.TenantCode, value => asset.TenantCode = value);
             if (changed)
                 MarkLinkedRentalCustomerEntity(asset, now);
+        }
+
+        var currentHistories = await _db.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .Where(history =>
+                !history.IsDeleted &&
+                history.IsCurrent &&
+                (history.CustomerId == customer.Id ||
+                 linkedAssetIds.Contains(history.AssetId) ||
+                 (history.BillingProfileId.HasValue && linkedProfileIds.Contains(history.BillingProfileId.Value))))
+            .ToListAsync(ct);
+
+        foreach (var history in currentHistories)
+        {
+            var changed = false;
+            if (!string.IsNullOrWhiteSpace(customerName))
+                changed |= SetIfDifferent(history.CustomerName, customerName, value => history.CustomerName = value);
+            changed |= SetIfDifferent(history.ResponsibleOfficeCode, customerScope.ResponsibleOfficeCode, value => history.ResponsibleOfficeCode = value);
+            changed |= SetIfDifferent(history.TenantCode, customerScope.TenantCode, value => history.TenantCode = value);
+            if (changed)
+                MarkLinkedRentalCustomerEntity(history, now);
         }
     }
 

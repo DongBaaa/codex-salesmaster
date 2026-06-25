@@ -1413,6 +1413,10 @@ public sealed class LocalStateServicePartialsTests
             var profileId = Guid.Parse("9bbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
             var aliasProfileId = Guid.Parse("9ccccccc-cccc-cccc-cccc-cccccccccccc");
             var assetId = Guid.Parse("9ddddddd-dddd-dddd-dddd-dddddddddddd");
+            var profileLinkedAssetId = Guid.Parse("9eeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
+            var currentHistoryId = Guid.Parse("91111111-1111-1111-1111-111111111111");
+            var profileLinkedHistoryId = Guid.Parse("92222222-2222-2222-2222-222222222222");
+            var pastHistoryId = Guid.Parse("93333333-3333-3333-3333-333333333333");
             db.Customers.Add(new LocalCustomer
             {
                 Id = customerId,
@@ -1457,21 +1461,78 @@ public sealed class LocalStateServicePartialsTests
                     ItemName = "Rental Line",
                     IsDirty = false
                 });
-            db.RentalAssets.Add(new LocalRentalAsset
-            {
-                Id = assetId,
-                CustomerId = customerId,
-                TenantCode = TenantScopeCatalog.UsenetGroup,
-                OfficeCode = OfficeCodeCatalog.Usenet,
-                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
-                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
-                ManagementId = "ASSET-OLD",
-                ManagementNumber = "2605-001",
-                ItemName = "Rental Asset",
-                CustomerName = "Old Customer",
-                CurrentCustomerName = "Old Customer",
-                IsDirty = false
-            });
+            db.RentalAssets.AddRange(
+                new LocalRentalAsset
+                {
+                    Id = assetId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ManagementId = "ASSET-OLD",
+                    ManagementNumber = "2605-001",
+                    ItemName = "Rental Asset",
+                    CustomerName = "Old Customer",
+                    CurrentCustomerName = "Old Customer",
+                    IsDirty = false
+                },
+                new LocalRentalAsset
+                {
+                    Id = profileLinkedAssetId,
+                    BillingProfileId = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ManagementId = "ASSET-PROFILE-LINKED",
+                    ManagementNumber = "2605-002",
+                    ItemName = "Profile Linked Rental Asset",
+                    CustomerName = "Old Profile Customer",
+                    CurrentCustomerName = "Old Profile Customer",
+                    IsDirty = false
+                });
+            db.RentalAssetAssignmentHistories.AddRange(
+                new LocalRentalAssetAssignmentHistory
+                {
+                    Id = currentHistoryId,
+                    AssetId = assetId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    CustomerName = "Old Customer",
+                    ItemName = "Rental Asset",
+                    ManagementNumber = "2605-001",
+                    IsCurrent = true,
+                    IsDirty = false
+                },
+                new LocalRentalAssetAssignmentHistory
+                {
+                    Id = profileLinkedHistoryId,
+                    AssetId = profileLinkedAssetId,
+                    BillingProfileId = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    CustomerName = "Old Profile Customer",
+                    BillingProfileDisplay = "PROFILE-OLD",
+                    ItemName = "Profile Linked Rental Asset",
+                    ManagementNumber = "2605-002",
+                    IsCurrent = true,
+                    IsDirty = false
+                },
+                new LocalRentalAssetAssignmentHistory
+                {
+                    Id = pastHistoryId,
+                    AssetId = assetId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    CustomerName = "Past Customer Snapshot",
+                    ItemName = "Past Rental Asset",
+                    ManagementNumber = "2605-PAST",
+                    IsCurrent = false,
+                    IsDirty = false
+                });
             await db.SaveChangesAsync();
 
             var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), CreateAdminSession());
@@ -1492,6 +1553,10 @@ public sealed class LocalStateServicePartialsTests
             var syncedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == profileId);
             var aliasProfile = await db.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == aliasProfileId);
             var syncedAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == assetId);
+            var syncedProfileLinkedAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == profileLinkedAssetId);
+            var syncedCurrentHistory = await db.RentalAssetAssignmentHistories.IgnoreQueryFilters().SingleAsync(history => history.Id == currentHistoryId);
+            var syncedProfileLinkedHistory = await db.RentalAssetAssignmentHistories.IgnoreQueryFilters().SingleAsync(history => history.Id == profileLinkedHistoryId);
+            var preservedPastHistory = await db.RentalAssetAssignmentHistories.IgnoreQueryFilters().SingleAsync(history => history.Id == pastHistoryId);
 
             foreach (var profile in new[] { syncedProfile, aliasProfile })
             {
@@ -1512,6 +1577,26 @@ public sealed class LocalStateServicePartialsTests
             Assert.Equal(OfficeCodeCatalog.Usenet, syncedAsset.ManagementCompanyCode);
             Assert.Equal(TenantScopeCatalog.UsenetGroup, syncedAsset.TenantCode);
             Assert.True(syncedAsset.IsDirty);
+
+            Assert.Equal("New Customer", syncedProfileLinkedAsset.CustomerName);
+            Assert.Equal("New Customer", syncedProfileLinkedAsset.CurrentCustomerName);
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, syncedProfileLinkedAsset.ResponsibleOfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, syncedProfileLinkedAsset.OfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, syncedProfileLinkedAsset.ManagementCompanyCode);
+            Assert.Equal(TenantScopeCatalog.UsenetGroup, syncedProfileLinkedAsset.TenantCode);
+            Assert.True(syncedProfileLinkedAsset.IsDirty);
+
+            foreach (var history in new[] { syncedCurrentHistory, syncedProfileLinkedHistory })
+            {
+                Assert.Equal("New Customer", history.CustomerName);
+                Assert.Equal(OfficeCodeCatalog.Yeonsu, history.ResponsibleOfficeCode);
+                Assert.Equal(TenantScopeCatalog.UsenetGroup, history.TenantCode);
+                Assert.True(history.IsDirty);
+            }
+
+            Assert.Equal("Past Customer Snapshot", preservedPastHistory.CustomerName);
+            Assert.Equal(OfficeCodeCatalog.Usenet, preservedPastHistory.ResponsibleOfficeCode);
+            Assert.False(preservedPastHistory.IsDirty);
         }
         finally
         {

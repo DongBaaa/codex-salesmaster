@@ -531,16 +531,30 @@
                                                    TextWrapping="Wrap"
                                                    Margin="0,0,0,8"/>
                                         <TextBlock Text="사업자번호" FontSize="11" Foreground="#9FB3C8"/>
-                                        <TextBox Text="{Binding EditCustBizNumber, UpdateSourceTrigger=LostFocus}" IsEnabled="{Binding HasSelectedCustomer}" Margin="0,4,0,8"/>
+                                        <TextBox Text="{Binding EditCustBizNumber, UpdateSourceTrigger=LostFocus}"
+                                                 IsReadOnly="{Binding IsPreviewCustomerInfoReadOnly}"
+                                                 IsReadOnlyCaretVisible="True"
+                                                 Margin="0,4,0,8"/>
                                         <TextBlock Text="전화" FontSize="11" Foreground="#9FB3C8"/>
-                                        <TextBox Text="{Binding EditCustPhone, UpdateSourceTrigger=LostFocus}" IsEnabled="{Binding HasSelectedCustomer}" Margin="0,4,0,8"/>
+                                        <TextBox Text="{Binding EditCustPhone, UpdateSourceTrigger=LostFocus}"
+                                                 IsReadOnly="{Binding IsPreviewCustomerInfoReadOnly}"
+                                                 IsReadOnlyCaretVisible="True"
+                                                 Margin="0,4,0,8"/>
                                         <TextBlock Text="담당자" FontSize="11" Foreground="#9FB3C8"/>
-                                        <TextBox Text="{Binding EditCustContactPerson, UpdateSourceTrigger=LostFocus}" IsEnabled="{Binding HasSelectedCustomer}" Margin="0,4,0,8"/>
+                                        <TextBox Text="{Binding EditCustContactPerson, UpdateSourceTrigger=LostFocus}"
+                                                 IsReadOnly="{Binding IsPreviewCustomerInfoReadOnly}"
+                                                 IsReadOnlyCaretVisible="True"
+                                                 Margin="0,4,0,8"/>
                                         <TextBlock Text="주소" FontSize="11" Foreground="#9FB3C8"/>
-                                        <TextBox Text="{Binding EditCustAddress, UpdateSourceTrigger=LostFocus}" IsEnabled="{Binding HasSelectedCustomer}" TextWrapping="Wrap" Margin="0,4,0,8"/>
+                                        <TextBox Text="{Binding EditCustAddress, UpdateSourceTrigger=LostFocus}"
+                                                 IsReadOnly="{Binding IsPreviewCustomerInfoReadOnly}"
+                                                 IsReadOnlyCaretVisible="True"
+                                                 TextWrapping="Wrap"
+                                                 Margin="0,4,0,8"/>
                                         <TextBlock Text="메모" FontSize="11" Foreground="#9FB3C8"/>
                                         <TextBox Text="{Binding EditCustNotes, UpdateSourceTrigger=LostFocus}"
-                                                 IsEnabled="{Binding HasSelectedCustomer}"
+                                                 IsReadOnly="{Binding IsPreviewCustomerInfoReadOnly}"
+                                                 IsReadOnlyCaretVisible="True"
                                                  Height="112"
                                                  TextWrapping="Wrap"
                                                  AcceptsReturn="True"

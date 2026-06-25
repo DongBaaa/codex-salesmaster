@@ -95,7 +95,7 @@ public sealed class DataIntegrityIssueSummary
     public bool HasDirectAction { get; init; }
 
     public string CountText => $"{Count:N0}건";
-    public string SeverityDisplay => string.Equals(Severity, "Error", StringComparison.OrdinalIgnoreCase) ? "오류" : "주의";
+    public string SeverityDisplay => DataIntegritySeverityFormatter.ToDisplayText(Severity);
 }
 
 public sealed class DataIntegrityIssueDetail
@@ -125,7 +125,7 @@ public sealed class DataIntegrityIssueDetail
     public bool CanMergeDuplicates => RelatedEntityIds.Count > 1 &&
                                       (string.Equals(Code, DataIntegrityIssueCodes.CustomerDuplicateCandidate, StringComparison.OrdinalIgnoreCase) ||
                                        string.Equals(Code, DataIntegrityIssueCodes.ItemDuplicateCandidate, StringComparison.OrdinalIgnoreCase));
-    public string SeverityDisplay => string.Equals(Severity, "Error", StringComparison.OrdinalIgnoreCase) ? "오류" : "주의";
+    public string SeverityDisplay => DataIntegritySeverityFormatter.ToDisplayText(Severity);
     public string RelatedEntityIdText => RelatedEntityIds.Count == 0
         ? string.Empty
         : string.Join(" / ", RelatedEntityIds.Select(id => id.ToString("N")));
@@ -174,6 +174,31 @@ public sealed class DataIntegrityIssueFilterOption
     public override string ToString() => DisplayName;
 }
 
+internal static class DataIntegritySeverityFormatter
+{
+    public static string ToDisplayText(string? severity)
+        => severity?.Trim() switch
+        {
+            { } value when value.Equals("Error", StringComparison.OrdinalIgnoreCase) => "오류",
+            { } value when value.Equals("Warning", StringComparison.OrdinalIgnoreCase) => "주의",
+            { } value when value.Equals("Info", StringComparison.OrdinalIgnoreCase) => "참고",
+            { Length: > 0 } value => value,
+            _ => "주의"
+        };
+
+    public static int GetSortWeight(string? severity)
+        => severity?.Trim() switch
+        {
+            { } value when value.Equals("Error", StringComparison.OrdinalIgnoreCase) => 3,
+            { } value when value.Equals("Warning", StringComparison.OrdinalIgnoreCase) => 2,
+            { } value when value.Equals("Info", StringComparison.OrdinalIgnoreCase) => 1,
+            _ => 0
+        };
+
+    public static bool IsActionRequired(string? severity)
+        => !string.Equals(severity?.Trim(), "Info", StringComparison.OrdinalIgnoreCase);
+}
+
 public sealed class DataIntegrityScanResult
 {
     public DataIntegrityScanResult(DateTime scannedAtLocal, IReadOnlyList<DataIntegrityIssueSummary> summaries, IReadOnlyList<DataIntegrityIssueDetail> issues)
@@ -188,7 +213,10 @@ public sealed class DataIntegrityScanResult
     public IReadOnlyList<DataIntegrityIssueSummary> Summaries { get; }
     public IReadOnlyList<DataIntegrityIssueDetail> Issues { get; }
     public int TotalIssueCount => Issues.Count;
+    public int ActionRequiredIssueCount => Issues.Count(issue => DataIntegritySeverityFormatter.IsActionRequired(issue.Severity));
+    public int InformationalIssueCount => Issues.Count(issue => !DataIntegritySeverityFormatter.IsActionRequired(issue.Severity));
     public bool HasIssues => Issues.Count > 0;
+    public bool HasActionRequiredIssues => ActionRequiredIssueCount > 0;
     public bool HasPassiveStartupNoticeIssues => Issues.Any(IntegrityIssueReviewPolicy.RequiresPassiveStartupNotice);
     public string PassiveStartupNoticeSignature => string.Join(
         "|",

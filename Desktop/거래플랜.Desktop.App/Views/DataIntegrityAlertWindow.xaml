@@ -48,7 +48,7 @@
                 </StackPanel>
                 <Border Grid.Column="1" Background="#071222" BorderBrush="#2A4666" BorderThickness="1" CornerRadius="6" Padding="18" VerticalAlignment="Center">
                     <StackPanel>
-                        <TextBlock Text="위험 신호" Foreground="#8FB6D8" FontSize="13" HorizontalAlignment="Right"/>
+                        <TextBlock Text="확인 항목" Foreground="#8FB6D8" FontSize="13" HorizontalAlignment="Right"/>
                         <TextBlock Text="{Binding SummaryText}" Foreground="#FFD56B" FontSize="22" FontWeight="Bold" HorizontalAlignment="Right"/>
                     </StackPanel>
                 </Border>
