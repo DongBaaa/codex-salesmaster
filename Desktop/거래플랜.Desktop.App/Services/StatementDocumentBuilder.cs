@@ -13,13 +13,20 @@ public static class StatementDocumentBuilder
     private const string FontName = "맑은 고딕";
     private const double ContentWidth = 744;
 
-    private static readonly SolidColorBrush RedAccentBrush = new(Color.FromRgb(229, 57, 53));
-    private static readonly SolidColorBrush BlueAccentBrush = new(Color.FromRgb(63, 81, 181));
-    private static readonly SolidColorBrush HeaderFillBrush = new(Color.FromRgb(246, 246, 246));
-    private static readonly SolidColorBrush DividerBrush = new(Color.FromRgb(120, 120, 120));
+    private static readonly SolidColorBrush RedAccentBrush = CreateFrozenBrush(Color.FromRgb(229, 57, 53));
+    private static readonly SolidColorBrush BlueAccentBrush = CreateFrozenBrush(Color.FromRgb(63, 81, 181));
+    private static readonly SolidColorBrush HeaderFillBrush = CreateFrozenBrush(Color.FromRgb(246, 246, 246));
+    private static readonly SolidColorBrush DividerBrush = CreateFrozenBrush(Color.FromRgb(120, 120, 120));
 
     private static readonly Thickness GridBorder = new(0.55);
     private static readonly Thickness CellPadding = new(3, 1.5, 3, 1.5);
+
+    private static SolidColorBrush CreateFrozenBrush(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
 
     public static FlowDocument BuildStatementPrintDocument(
         LocalInvoice invoice,

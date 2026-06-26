@@ -18,10 +18,17 @@ public sealed class RentalDocumentService
     private const double A4Width = 793.7;
     private const double A4Height = 1122.5;
     private const double PageMargin = 28d;
-    private static readonly Brush BorderBrush = new SolidColorBrush(Color.FromRgb(186, 186, 186));
-    private static readonly Brush HeaderFill = new SolidColorBrush(Color.FromRgb(246, 246, 246));
-    private static readonly Brush AccentBrush = new SolidColorBrush(Color.FromRgb(102, 102, 102));
-    private static readonly Brush LightAccentBrush = new SolidColorBrush(Color.FromRgb(240, 240, 240));
+    private static readonly Brush BorderBrush = CreateFrozenBrush(Color.FromRgb(186, 186, 186));
+    private static readonly Brush HeaderFill = CreateFrozenBrush(Color.FromRgb(246, 246, 246));
+    private static readonly Brush AccentBrush = CreateFrozenBrush(Color.FromRgb(102, 102, 102));
+    private static readonly Brush LightAccentBrush = CreateFrozenBrush(Color.FromRgb(240, 240, 240));
+
+    private static SolidColorBrush CreateFrozenBrush(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
 
     public FixedDocument BuildEquipmentDetailDocument(
         IReadOnlyList<LocalRentalAsset> assets,

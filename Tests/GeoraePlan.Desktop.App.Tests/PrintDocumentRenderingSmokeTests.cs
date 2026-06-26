@@ -93,6 +93,107 @@ public sealed class PrintDocumentRenderingSmokeTests
     }
 
     [Fact]
+    public void SalesDocuments_RenderCurrentMasterInfoWhenSavedPrintSnapshotIsStale()
+    {
+        RunOnSta(() =>
+        {
+            var (invoice, customer, company) = CreateSampleInvoice(VoucherType.Sales);
+            var printService = new WpfInvoicePrintService();
+            var savedSnapshot = printService.CreateDefaultModel(
+                invoice,
+                customer,
+                company,
+                printWithDate: true,
+                printWithPrice: true);
+            savedSnapshot.SupplierName = "스냅샷 공급자";
+            savedSnapshot.SupplierRepresentative = "스냅샷 대표";
+            savedSnapshot.SupplierAddress = "스냅샷 공급자 주소";
+            savedSnapshot.BuyerName = "스냅샷 거래처";
+            savedSnapshot.BuyerRepresentative = "스냅샷 거래처 대표";
+            savedSnapshot.BuyerAddress = "스냅샷 거래처 주소";
+            savedSnapshot.ManagerName = "스냅샷 담당자";
+            savedSnapshot.BankAccountText = "스냅샷은행 000-000";
+
+            customer.NameOriginal = "현재 연동 거래처";
+            customer.BusinessNumber = "222-33-44444";
+            customer.Representative = "현재 거래처 대표";
+            customer.Phone = "032-222-4444";
+            customer.Address = "인천광역시 현재거래처로 10";
+            customer.ContactPerson = "현재 담당자";
+            customer.Recipient = "현재 연동 수신처";
+            customer.FaxNumber = "032-222-4445";
+
+            company.TradeName = "현재 연동 회사";
+            company.BusinessNumber = "555-66-77777";
+            company.Representative = "현재 회사 대표";
+            company.BusinessType = "현재 업태";
+            company.BusinessItem = "현재 종목";
+            company.Address = "인천광역시 현재회사로 20";
+            company.ContactNumber = "032-555-7777";
+            company.BankAccountText = "신한은행 123-456-789 현재회사";
+
+            var currentDefault = printService.CreateDefaultModel(
+                invoice,
+                customer,
+                company,
+                printWithDate: true,
+                printWithPrice: true);
+            InvoicePrintModelCurrentInfoSynchronizer.RefreshLinkedBusinessPartyFields(savedSnapshot, currentDefault);
+
+            var fixedStatementDocument = printService.BuildFixedDocument(savedSnapshot);
+            RenderFixedDocumentFirstPage(fixedStatementDocument);
+            var fixedStatementText = NormalizeText(ReadFixedDocumentText(fixedStatementDocument));
+            Assert.Contains("현재 연동 회사", fixedStatementText);
+            Assert.Contains("현재 회사 대표", fixedStatementText);
+            Assert.Contains("현재 연동 거래처", fixedStatementText);
+            Assert.Contains("현재 거래처 대표", fixedStatementText);
+            Assert.DoesNotContain("스냅샷 공급자", fixedStatementText);
+            Assert.DoesNotContain("스냅샷 거래처", fixedStatementText);
+
+            var nativeStatementDocument = StatementDocumentBuilder.BuildStatementPrintDocument(
+                invoice,
+                customer,
+                company,
+                NativeStatementLayoutType.TradeHalf,
+                printWithDate: true,
+                printWithPrice: true);
+            RenderFlowDocumentFirstPage(nativeStatementDocument);
+            var nativeStatementText = NormalizeText(ReadFlowDocumentText(nativeStatementDocument));
+            Assert.Contains("현재 연동 회사", nativeStatementText);
+            Assert.Contains("현재 연동 거래처", nativeStatementText);
+            Assert.Contains("인천광역시 현재거래처로 10", nativeStatementText);
+            Assert.DoesNotContain("스냅샷 공급자", nativeStatementText);
+            Assert.DoesNotContain("스냅샷 거래처", nativeStatementText);
+
+            var estimateDocument = SupplementDocumentBuilder.BuildEstimateDocument(invoice, customer, company, savedSnapshot);
+            RenderFixedDocumentFirstPage(estimateDocument);
+            var estimateText = NormalizeText(ReadFixedDocumentText(estimateDocument));
+            Assert.Contains("현재 연동 수신처", estimateText);
+            Assert.Contains("현재 연동 회사", estimateText);
+            Assert.Contains("현재 회사 대표", estimateText);
+            Assert.Contains("인천광역시 현재회사로 20", estimateText);
+            Assert.DoesNotContain("스냅샷 공급자", estimateText);
+            Assert.DoesNotContain("스냅샷 거래처", estimateText);
+
+            var claimDocument = SupplementDocumentBuilder.BuildPaymentClaimDocument(
+                invoice,
+                customer,
+                company,
+                new[] { "거래명세서", "견적서", "대금청구서" },
+                savedSnapshot);
+            RenderFixedDocumentFirstPage(claimDocument);
+            var claimText = NormalizeText(ReadFixedDocumentText(claimDocument));
+            Assert.Contains("현재 연동 수신처", claimText);
+            Assert.Contains("현재 연동 회사", claimText);
+            Assert.Contains("현재 회사 대표", claimText);
+            Assert.Contains("신한은행", claimText);
+            Assert.Contains("123-456-789", claimText);
+            Assert.DoesNotContain("스냅샷 공급자", claimText);
+            Assert.DoesNotContain("스냅샷 거래처", claimText);
+        });
+    }
+
+    [Fact]
     public void SalesPurchaseAndProcurementFixedDocuments_RenderWithoutLosingBusinessLabels()
     {
         RunOnSta(() =>

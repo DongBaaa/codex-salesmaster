@@ -26,9 +26,16 @@ public static class ProcurementDocumentBuilder
     private const int RowsPerPage = 19;
 
     private static readonly Brush BorderBrush = Brushes.Black;
-    private static readonly Brush HeaderFill = new SolidColorBrush(Color.FromRgb(216, 232, 235));
-    private static readonly Brush SideFill = new SolidColorBrush(Color.FromRgb(216, 232, 235));
+    private static readonly Brush HeaderFill = CreateFrozenBrush(Color.FromRgb(216, 232, 235));
+    private static readonly Brush SideFill = CreateFrozenBrush(Color.FromRgb(216, 232, 235));
     private static readonly Brush TextBrush = Brushes.Black;
+
+    private static SolidColorBrush CreateFrozenBrush(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
 
     public static FixedDocument BuildDocument(InvoicePrintModel model)
     {

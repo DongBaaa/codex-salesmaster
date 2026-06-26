@@ -19,13 +19,20 @@ public sealed class WpfInvoicePrintService : IPrintService
     private const int SalesRowsPerPage = 12;
     private const int PurchaseRowsPerPage = 22;
     private const double PageMargin = 28;
-    private static readonly Brush SalesSupplierAccent = new SolidColorBrush(Color.FromRgb(190, 45, 45));
-    private static readonly Brush SalesBuyerAccent = new SolidColorBrush(Color.FromRgb(46, 83, 193));
-    private static readonly Brush HeaderFill = new SolidColorBrush(Color.FromRgb(242, 242, 242));
-    private static readonly Brush BorderGray = new SolidColorBrush(Color.FromRgb(186, 186, 186));
-    private static readonly Brush PurchaseHeaderFill = new SolidColorBrush(Color.FromRgb(242, 242, 242));
-    private static readonly Brush PurchaseBandFill = new SolidColorBrush(Color.FromRgb(217, 217, 217));
-    private static readonly Brush PurchaseBorder = new SolidColorBrush(Color.FromRgb(186, 186, 186));
+    private static readonly Brush SalesSupplierAccent = CreateFrozenBrush(Color.FromRgb(190, 45, 45));
+    private static readonly Brush SalesBuyerAccent = CreateFrozenBrush(Color.FromRgb(46, 83, 193));
+    private static readonly Brush HeaderFill = CreateFrozenBrush(Color.FromRgb(242, 242, 242));
+    private static readonly Brush BorderGray = CreateFrozenBrush(Color.FromRgb(186, 186, 186));
+    private static readonly Brush PurchaseHeaderFill = CreateFrozenBrush(Color.FromRgb(242, 242, 242));
+    private static readonly Brush PurchaseBandFill = CreateFrozenBrush(Color.FromRgb(217, 217, 217));
+    private static readonly Brush PurchaseBorder = CreateFrozenBrush(Color.FromRgb(186, 186, 186));
+
+    private static SolidColorBrush CreateFrozenBrush(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
 
     public InvoicePrintModel CreateDefaultModel(
         LocalInvoice invoice,

@@ -24,12 +24,19 @@ public static class SupplementDocumentBuilder
     private const double LineThickness = 0.72;
     private const int EstimateRowsPerPage = 13;
 
-    private static readonly Brush BorderBrushBlack = new SolidColorBrush(Color.FromRgb(217, 217, 217));
+    private static readonly Brush BorderBrushBlack = CreateFrozenBrush(Color.FromRgb(217, 217, 217));
     private static readonly Brush TitleBrush = Brushes.Black;
     private static readonly Brush TextBrush = Brushes.Black;
-    private static readonly Brush HeaderFillBrush = new SolidColorBrush(Color.FromRgb(242, 242, 242));
-    private static readonly Brush BandFillBrush = new SolidColorBrush(Color.FromRgb(217, 217, 217));
-    private static readonly Brush SectionRuleBrush = new SolidColorBrush(Color.FromRgb(128, 128, 128));
+    private static readonly Brush HeaderFillBrush = CreateFrozenBrush(Color.FromRgb(242, 242, 242));
+    private static readonly Brush BandFillBrush = CreateFrozenBrush(Color.FromRgb(217, 217, 217));
+    private static readonly Brush SectionRuleBrush = CreateFrozenBrush(Color.FromRgb(128, 128, 128));
+
+    private static SolidColorBrush CreateFrozenBrush(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
 
     // Excel source: "250602 (3)"
     private static readonly double[] EstimateColUnits =
