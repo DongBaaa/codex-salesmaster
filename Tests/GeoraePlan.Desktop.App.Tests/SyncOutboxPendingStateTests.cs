@@ -287,6 +287,159 @@ public sealed class SyncOutboxPendingStateTests
         }
     }
 
+    [Fact]
+    public async Task RentalBillingProfileAcceptedAlias_IsAcknowledgedAndCanonicalizedByPull()
+    {
+        PrepareAppRoot("georaeplan-rental-profile-accepted-alias");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var profileKey = "USENET|ACCEPTED-ALIAS-PC|개별|후불|25|1|전자세금계산서";
+            var localTemporaryProfileId = Guid.NewGuid();
+            var canonicalProfileId = Guid.NewGuid();
+            var mutationId = $"test-device:{nameof(LocalRentalBillingProfile)}:{localTemporaryProfileId:N}:accepted-alias";
+            var acceptedUpdatedAtUtc = DateTime.UtcNow;
+
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = localTemporaryProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = profileKey,
+                CustomerName = "accepted alias pc customer",
+                BusinessNumber = "111-22-33333",
+                ItemName = "IMC2010",
+                BillingType = "개별",
+                BillingAdvanceMode = "후불",
+                BillingMethod = "전자세금계산서",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                MonthlyAmount = 55_000m,
+                Revision = 0,
+                IsDirty = true,
+                CreatedAtUtc = acceptedUpdatedAtUtc.AddMinutes(-30),
+                UpdatedAtUtc = acceptedUpdatedAtUtc.AddMinutes(-20)
+            });
+            db.SyncOutboxEntries.Add(new LocalSyncOutboxEntry
+            {
+                Id = Guid.NewGuid(),
+                MutationId = mutationId,
+                DeviceId = "test-device",
+                EntityName = nameof(LocalRentalBillingProfile),
+                EntityId = localTemporaryProfileId,
+                ExpectedRevision = 0,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                Status = "Sent",
+                PreparedAtUtc = acceptedUpdatedAtUtc.AddMinutes(-10),
+                SentAtUtc = acceptedUpdatedAtUtc.AddMinutes(-5)
+            });
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            using var sync = CreateSyncService(db, session);
+            var acceptedRevisions = new List<SyncAcceptedRevisionDto>
+            {
+                new()
+                {
+                    EntityName = "RentalBillingProfile",
+                    EntityId = canonicalProfileId,
+                    Revision = 42,
+                    UpdatedAtUtc = acceptedUpdatedAtUtc
+                },
+                new()
+                {
+                    EntityName = "RentalBillingProfile",
+                    EntityId = localTemporaryProfileId,
+                    Revision = 42,
+                    UpdatedAtUtc = acceptedUpdatedAtUtc
+                }
+            };
+
+            await InvokeApplyAcceptedRevisionsAsync(sync, acceptedRevisions);
+            await InvokeMarkOutboxAcknowledgedAsync(
+                sync,
+                new SyncPushRequest
+                {
+                    DeviceId = "test-device",
+                    RentalBillingProfiles =
+                    [
+                        new RentalBillingProfileDto
+                        {
+                            Id = localTemporaryProfileId,
+                            MutationId = mutationId
+                        }
+                    ]
+                },
+                acceptedRevisions);
+
+            var acknowledgedOutbox = await db.SyncOutboxEntries.AsNoTracking().SingleAsync();
+            Assert.Equal("Acknowledged", acknowledgedOutbox.Status);
+            Assert.NotNull(acknowledgedOutbox.AcknowledgedAtUtc);
+
+            var acceptedLocalProfile = await db.RentalBillingProfiles.IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(profile => profile.Id == localTemporaryProfileId);
+            Assert.False(acceptedLocalProfile.IsDirty);
+            Assert.Equal(42, acceptedLocalProfile.Revision);
+
+            await InvokeApplyPullAsync(
+                sync,
+                new SyncPullResponse
+                {
+                    RentalBillingProfiles =
+                    [
+                        new RentalBillingProfileDto
+                        {
+                            Id = canonicalProfileId,
+                            TenantCode = TenantScopeCatalog.UsenetGroup,
+                            OfficeCode = OfficeCodeCatalog.Usenet,
+                            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                            ProfileKey = profileKey,
+                            CustomerName = "accepted alias pc customer",
+                            BusinessNumber = "111-22-33333",
+                            ItemName = "IMC2010",
+                            BillingType = "개별",
+                            BillingAdvanceMode = "후불",
+                            BillingMethod = "전자세금계산서",
+                            BillingDay = 28,
+                            BillingCycleMonths = 1,
+                            MonthlyAmount = 77_000m,
+                            Revision = 43,
+                            CreatedAtUtc = acceptedUpdatedAtUtc.AddMinutes(-1),
+                            UpdatedAtUtc = acceptedUpdatedAtUtc
+                        }
+                    ]
+                });
+
+            db.ChangeTracker.Clear();
+            var profiles = await db.RentalBillingProfiles.IgnoreQueryFilters()
+                .AsNoTracking()
+                .ToListAsync();
+            var canonicalProfile = Assert.Single(profiles);
+            Assert.Equal(canonicalProfileId, canonicalProfile.Id);
+            Assert.Equal(profileKey, canonicalProfile.ProfileKey);
+            Assert.False(canonicalProfile.IsDirty);
+            Assert.Equal(43, canonicalProfile.Revision);
+            Assert.Equal(28, canonicalProfile.BillingDay);
+            Assert.Equal(77_000m, canonicalProfile.MonthlyAmount);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static LocalSyncOutboxEntry CreateOutboxEntry(
         string status,
         string entityName = nameof(LocalCustomer),
@@ -340,6 +493,45 @@ public sealed class SyncOutboxPendingStateTests
         var generic = method.MakeGenericMethod(typeof(TLocal), typeof(TDto));
         var task = (Task<int>)generic.Invoke(sync, [serverEntities, CancellationToken.None])!;
         return await task;
+    }
+
+    private static Task InvokeApplyAcceptedRevisionsAsync(
+        SyncService sync,
+        IReadOnlyCollection<SyncAcceptedRevisionDto> acceptedRevisions)
+    {
+        var method = typeof(SyncService)
+            .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
+            .Single(info =>
+                info.Name == "ApplyAcceptedRevisionsAsync" &&
+                !info.IsGenericMethodDefinition &&
+                info.GetParameters().Length == 2);
+        return (Task)method.Invoke(sync, [acceptedRevisions, CancellationToken.None])!;
+    }
+
+    private static Task InvokeMarkOutboxAcknowledgedAsync(
+        SyncService sync,
+        SyncPushRequest request,
+        IReadOnlyCollection<SyncAcceptedRevisionDto> acceptedRevisions)
+    {
+        var method = typeof(SyncService).GetMethod(
+            "MarkOutboxAcknowledgedAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(nameof(SyncService), "MarkOutboxAcknowledgedAsync");
+        return (Task)method.Invoke(sync, [request, acceptedRevisions, CancellationToken.None])!;
+    }
+
+    private static Task InvokeApplyPullAsync(SyncService sync, SyncPullResponse pull)
+    {
+        var method = typeof(SyncService).GetMethod("ApplyPullAsync", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(nameof(SyncService), "ApplyPullAsync");
+        return (Task)method.Invoke(
+            sync,
+            [
+                pull,
+                0L,
+                CancellationToken.None,
+                false
+            ])!;
     }
 
     private static SessionState CreateAdminSession()
