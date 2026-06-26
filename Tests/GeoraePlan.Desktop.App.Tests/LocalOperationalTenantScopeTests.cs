@@ -160,6 +160,70 @@ public sealed class LocalOperationalTenantScopeTests
     }
 
     [Fact]
+    public async Task CustomerFinancialSummary_ExcludesOutOfScopeTransactionsForSameCustomerId()
+    {
+        PrepareAppRoot("georaeplan-customer-financial-summary-transaction-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Scoped financial summary customer",
+                NameMatchKey = "SCOPEDFINANCIALSUMMARYCUSTOMER"
+            });
+
+            var inScopeTransaction = CreateTransaction(
+                tenantCode: TenantScopeCatalog.UsenetGroup,
+                officeCode: OfficeCodeCatalog.Usenet,
+                customerId: customerId,
+                note: "USENET scoped reserve");
+            inScopeTransaction.AdvanceDelta = 100m;
+            inScopeTransaction.PrepaidDelta = 20m;
+            inScopeTransaction.LinkedInvoiceId = Guid.NewGuid();
+
+            var outOfScopeTransaction = CreateTransaction(
+                tenantCode: TenantScopeCatalog.Itworld,
+                officeCode: OfficeCodeCatalog.Itworld,
+                customerId: customerId,
+                note: "ITWORLD out-of-scope reserve");
+            outOfScopeTransaction.AdvanceDelta = 900m;
+            outOfScopeTransaction.PrepaidDelta = 800m;
+            outOfScopeTransaction.LinkedInvoiceId = Guid.NewGuid();
+
+            db.Transactions.AddRange(inScopeTransaction, outOfScopeTransaction);
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                AppPermissionNames.PaymentEdit);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var advanceBalance = await service.GetAdvanceBalanceAsync(customerId, session);
+            var summary = await service.GetCustomerFinancialSummaryAsync(customerId, session);
+
+            Assert.Equal(100m, advanceBalance);
+            Assert.Equal(100m, summary.AdvanceBalance);
+            Assert.Equal(100m, summary.PrepaymentAmount);
+            Assert.Equal(20m, summary.PrepaidAmount);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task DeliveryViewAllInvoiceQueries_StayWithinCurrentTenant()
     {
         PrepareAppRoot("georaeplan-delivery-tenant-scope");

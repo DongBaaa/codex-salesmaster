@@ -4708,7 +4708,11 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return default(decimal);
 		}
-		return await GetAdvanceBalanceCoreAsync(customerId, ct);
+		IQueryable<LocalTransaction> query = from transaction in _db.Transactions.IgnoreQueryFilters().AsNoTracking()
+			where !transaction.IsDeleted && transaction.CustomerId == customerId
+			select transaction;
+		query = ApplyTransactionScope(query, session);
+		return (await query.Select(transaction => transaction.AdvanceDelta).ToListAsync(ct)).Sum();
 	}
 
 	public async Task<CustomerFinancialSummary> GetCustomerFinancialSummaryAsync(Guid customerId, SessionState session, CancellationToken ct = default(CancellationToken))
@@ -4728,9 +4732,11 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			select invoice).ToListAsync(ct)).Where((LocalInvoice invoice) => IsCustomerFinancialSummaryInvoice(invoice) && CanAccessInvoice(invoice, session)).ToList();
 		decimal receivableAmount = scopedInvoices.Where((LocalInvoice invoice) => invoice.VoucherType == VoucherType.Sales).Sum((LocalInvoice invoice) => Math.Max(0m, invoice.TotalAmount - invoice.Payments.Where((LocalPayment payment) => !payment.IsDeleted).Sum((LocalPayment payment) => payment.Amount)));
 		decimal payableAmount = scopedInvoices.Where((LocalInvoice invoice) => invoice.VoucherType == VoucherType.Purchase).Sum((LocalInvoice invoice) => Math.Max(0m, invoice.TotalAmount - invoice.Payments.Where((LocalPayment payment) => !payment.IsDeleted).Sum((LocalPayment payment) => payment.Amount)));
-		List<LocalTransaction> transactions = await (from transaction in _db.Transactions.IgnoreQueryFilters().AsNoTracking()
+		IQueryable<LocalTransaction> transactionQuery = from transaction in _db.Transactions.IgnoreQueryFilters().AsNoTracking()
 			where !transaction.IsDeleted && transaction.CustomerId == customerId
-			select transaction).ToListAsync(ct);
+			select transaction;
+		transactionQuery = ApplyTransactionScope(transactionQuery, session);
+		List<LocalTransaction> transactions = await transactionQuery.ToListAsync(ct);
 		decimal prepaymentAmount = transactions.Where((LocalTransaction transaction) => transaction.AdvanceDelta > 0m && (transaction.LinkedInvoiceId.HasValue || transaction.LinkedRentalBillingProfileId.HasValue)).Sum((LocalTransaction transaction) => transaction.AdvanceDelta);
 		decimal prepaidAmount = transactions.Sum((LocalTransaction transaction) => transaction.PrepaidDelta);
 		return new CustomerFinancialSummary
