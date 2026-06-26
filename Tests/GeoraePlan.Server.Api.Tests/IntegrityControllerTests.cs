@@ -3524,6 +3524,93 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetReport_FlagsRentalAssetLinkedToProfileButMissingFromTemplateItems()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var profileId = Guid.NewGuid();
+        var includedAssetId = Guid.NewGuid();
+        var profileOnlyAssetId = Guid.NewGuid();
+        var legacyProfileId = Guid.NewGuid();
+        var legacyLinkedAssetId = Guid.NewGuid();
+
+        dbContext.RentalBillingProfiles.AddRange(
+            new RentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = "PROFILE-TEMPLATE-GAP",
+                CustomerName = "Template Gap Customer",
+                ItemName = "Copier",
+                BillingType = "Bundle",
+                MonthlyAmount = 100_000m,
+                BillingTemplateJson = JsonSerializer.Serialize(new object[]
+                {
+                    new
+                    {
+                        ItemId = Guid.NewGuid(),
+                        DisplayItemName = "Explicit rental line",
+                        Quantity = 1m,
+                        UnitPrice = 100_000m,
+                        Amount = 100_000m,
+                        IncludedAssetIds = new[] { includedAssetId }
+                    }
+                }),
+                IsActive = true
+            },
+            new RentalBillingProfile
+            {
+                Id = legacyProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = "PROFILE-LEGACY-FALLBACK",
+                CustomerName = "Legacy Template Customer",
+                ItemName = "Copier",
+                BillingType = "Bundle",
+                MonthlyAmount = 100_000m,
+                BillingTemplateJson = JsonSerializer.Serialize(new object[]
+                {
+                    new
+                    {
+                        ItemId = Guid.NewGuid(),
+                        DisplayItemName = "Legacy fallback line",
+                        Quantity = 1m,
+                        UnitPrice = 100_000m,
+                        Amount = 100_000m,
+                        IncludedAssetIds = Array.Empty<Guid>()
+                    }
+                }),
+                IsActive = true
+            });
+        dbContext.RentalAssets.AddRange(
+            CreateRentalAssetForTemplateGap(includedAssetId, profileId, "TEMPLATE-INCLUDED-001", "Template Gap Customer"),
+            CreateRentalAssetForTemplateGap(profileOnlyAssetId, profileId, "PROFILE-ONLY-001", "Template Gap Customer"),
+            CreateRentalAssetForTemplateGap(legacyLinkedAssetId, legacyProfileId, "LEGACY-LINKED-001", "Legacy Template Customer"));
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var report = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issue = Assert.Single(report.Issues, current => current.Code == "rental_asset_missing_profile_template_refs");
+        Assert.Equal("Error", issue.Severity);
+        Assert.Equal(1, issue.Count);
+
+        var detailsResponse = await controller.GetReportDetails("rental_asset_missing_profile_template_refs", CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+        var row = Assert.Single(details.Rows);
+        Assert.Equal(FormatGuidForTest(profileOnlyAssetId), row.EntityIdText);
+        Assert.Contains("PROFILE-ONLY-001", row.SecondaryText, StringComparison.Ordinal);
+        Assert.Contains(FormatGuidForTest(profileId), row.DetailText, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task GetReport_FlagsRentalBillingTemplateMissingItemReferences()
     {
         var currentUser = CreateAdminUser();
@@ -4270,6 +4357,24 @@ public sealed class IntegrityControllerTests : IDisposable
         if (Directory.Exists(_fileStorageRoot))
             Directory.Delete(_fileStorageRoot, recursive: true);
     }
+
+    private static RentalAsset CreateRentalAssetForTemplateGap(Guid assetId, Guid profileId, string managementNumber, string customerName)
+        => new()
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            BillingProfileId = profileId,
+            AssetKey = $"{managementNumber}-KEY",
+            ManagementId = managementNumber,
+            ManagementNumber = managementNumber,
+            CustomerName = customerName,
+            CurrentCustomerName = customerName,
+            ItemName = "Copier",
+            InstallLocation = "Main Office",
+            MonthlyFee = 100_000m
+        };
 
     private AppDbContext CreateDbContext(TestCurrentUserContext currentUser)
     {

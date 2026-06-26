@@ -30,6 +30,7 @@ public static class DataIntegrityIssueCodes
     public const string RentalTemplateMissingAsset = "rental_template_missing_asset";
     public const string RentalAssetTemplateMonthlyMismatch = "rental_asset_template_monthly_mismatch";
     public const string RentalAssetProfileScopeMismatch = "rental_asset_profile_scope_mismatch";
+    public const string RentalAssetMissingProfileTemplateReference = "rental_asset_missing_profile_template_reference";
     public const string RentalOperationalScopeMismatch = "rental_operational_scope_mismatch";
     public const string RentalCustomerNameMismatch = "rental_customer_name_mismatch";
     public const string RentalAssetInMultipleProfileTemplates = "rental_asset_in_multiple_profile_templates";
@@ -289,6 +290,13 @@ public sealed class DataIntegrityIssueService
             "렌탈 연결",
             "자산에 저장된 청구 프로필/지점/업체 범위가 청구 품목 참조와 다릅니다.",
             "청구관리 또는 자산 화면에서 연결 프로필을 다시 지정하세요."),
+        [DataIntegrityIssueCodes.RentalAssetMissingProfileTemplateReference] = new(
+            DataIntegrityIssueCodes.RentalAssetMissingProfileTemplateReference,
+            "프로필 연결 자산이 표시품목에서 누락",
+            "Error",
+            "렌탈 연결",
+            "자산은 청구 프로필에 연결되어 있으나 청구서 표시 품목의 IncludedAssetIds에는 없어 실제 전표/청구 대상에서 누락될 수 있습니다.",
+            "렌탈 청구관리에서 내부 포함 장비와 청구서 표시 품목을 다시 저장하거나 잘못 연결된 자산을 해제하세요."),
         [DataIntegrityIssueCodes.RentalOperationalScopeMismatch] = new(
             DataIntegrityIssueCodes.RentalOperationalScopeMismatch,
             "렌탈 scope 자체 불일치",
@@ -1020,6 +1028,20 @@ public sealed class DataIntegrityIssueService
                         currentValue: FormatMoney(itemMonthly),
                         expectedValue: FormatMoney(assetMonthlySum),
                         message: $"{BuildProfileDisplay(profile)} / {NormalizeDisplay(item.DisplayItemName, "품목")} 품목 금액이 연결 자산 월요금 합계와 다릅니다.",
+                        directActionKind: DataIntegrityDirectActionKind.OpenRentalBillingProfile);
+                }
+            }
+
+            if (profileAssetIds.Count > 0)
+            {
+                foreach (var linkedAsset in linkedAssets.Where(asset => !profileAssetIds.Contains(asset.Id)))
+                {
+                    AddIssue(details, DataIntegrityIssueCodes.RentalAssetMissingProfileTemplateReference, profile, linkedAsset,
+                        entityType: "자산-표시품목 연결",
+                        entityId: linkedAsset.Id,
+                        currentValue: $"BillingProfileId {profile.Id:D}",
+                        expectedValue: "청구서 표시 품목 IncludedAssetIds",
+                        message: $"{BuildAssetDisplay(linkedAsset)} 자산은 {BuildProfileDisplay(profile)} 프로필에 연결되어 있지만 청구서 표시 품목에는 포함되어 있지 않습니다.",
                         directActionKind: DataIntegrityDirectActionKind.OpenRentalBillingProfile);
                 }
             }

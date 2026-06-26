@@ -44,6 +44,78 @@ public sealed class DataIntegrityIssueServicePerformanceTests
     }
 
     [Fact]
+    public async Task ScanAsync_FindsRentalAssetLinkedToProfileButMissingFromTemplateItems()
+    {
+        PrepareAppRoot("georaeplan-integrity-profile-linked-asset-template-gap");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var includedAssetId = Guid.NewGuid();
+            var profileOnlyAssetId = Guid.NewGuid();
+            var legacyProfileId = Guid.NewGuid();
+            var legacyLinkedAssetId = Guid.NewGuid();
+
+            var profile = CreateProfile(profileId, 0);
+            profile.BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    ItemId = Guid.NewGuid(),
+                    DisplayItemName = "Explicit rental line",
+                    Quantity = 1m,
+                    UnitPrice = 100_000m,
+                    Amount = 100_000m,
+                    IncludedAssetIds = [includedAssetId]
+                }
+            });
+
+            var legacyProfile = CreateProfile(legacyProfileId, 1);
+            legacyProfile.BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    ItemId = Guid.NewGuid(),
+                    DisplayItemName = "Legacy fallback line",
+                    Quantity = 1m,
+                    UnitPrice = 100_000m,
+                    Amount = 100_000m,
+                    IncludedAssetIds = []
+                }
+            });
+
+            db.RentalBillingProfiles.AddRange(profile, legacyProfile);
+            db.RentalAssets.AddRange(
+                CreateLinkedAsset(profileId, 0, assetId: includedAssetId),
+                CreateLinkedAsset(profileId, 1, assetId: profileOnlyAssetId),
+                CreateLinkedAsset(legacyProfileId, 2, assetId: legacyLinkedAssetId));
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateAdminSession());
+            var issues = result.Issues
+                .Where(issue => issue.Code == DataIntegrityIssueCodes.RentalAssetMissingProfileTemplateReference)
+                .ToList();
+
+            var issue = Assert.Single(issues);
+            Assert.Equal(profileId, issue.ProfileId);
+            Assert.Equal(profileOnlyAssetId, issue.AssetId);
+            Assert.Equal(profileOnlyAssetId, issue.EntityId);
+            Assert.Contains(profileId.ToString("D"), issue.CurrentValue, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("IncludedAssetIds", issue.ExpectedValue, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(issues, current => current.ProfileId == legacyProfileId);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task ScanAsync_UsesItemNameLookupForManyInventoryReferenceIssues()
     {
         PrepareAppRoot("georaeplan-integrity-inventory-item-lookup");

@@ -292,6 +292,9 @@ public sealed class IntegrityController : ControllerBase
         var rentalAssetTemplateMonthlyMismatchCount = CountRentalAssetTemplateMonthlyMismatches(rentalTemplateScanRows);
         AddIssue(issues, "rental_asset_template_monthly_mismatch", rentalAssetTemplateMonthlyMismatchCount, "Warning", "렌탈 자산 월요금 합계와 청구 품목 금액이 다릅니다.");
 
+        var rentalAssetMissingProfileTemplateReferenceCount = CountRentalAssetsMissingProfileTemplateReferences(rentalTemplateScanRows);
+        AddIssue(issues, "rental_asset_missing_profile_template_refs", rentalAssetMissingProfileTemplateReferenceCount, "Error", "렌탈 자산이 청구 프로필에는 연결됐지만 청구서 표시 품목에는 포함되지 않았습니다.");
+
         var orphanRentalAssetCustomerCount = await _officeScopeService.ApplyRentalAssetScope(_dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking())
             .Where(asset => !asset.IsDeleted && asset.CustomerId.HasValue)
             .CountAsync(asset => !_dbContext.Customers.IgnoreQueryFilters().Any(customer => !customer.IsDeleted && customer.Id == asset.CustomerId), cancellationToken);
@@ -633,6 +636,7 @@ public sealed class IntegrityController : ControllerBase
             "rental_profile_monthly_amount_mismatch" => await LoadRentalProfileMonthlyAmountMismatchDetailsAsync(cancellationToken),
             "rental_profile_asset_monthly_amount_mismatch" => await LoadRentalProfileAssetMonthlyAmountMismatchDetailsAsync(cancellationToken),
             "rental_asset_template_monthly_mismatch" => await LoadRentalAssetTemplateMonthlyMismatchDetailsAsync(cancellationToken),
+            "rental_asset_missing_profile_template_refs" => await LoadRentalAssetMissingProfileTemplateReferenceDetailsAsync(cancellationToken),
             "orphan_rental_asset_customer_refs" => await LoadOrphanRentalAssetCustomerDetailsAsync(cancellationToken),
             "rental_asset_customer_scope_mismatch" => await LoadRentalAssetCustomerScopeMismatchDetailsAsync(cancellationToken),
             "orphan_rental_asset_profile_refs" => await LoadOrphanRentalAssetProfileDetailsAsync(cancellationToken),
@@ -1961,6 +1965,33 @@ public sealed class IntegrityController : ControllerBase
                     $"자산월요금합계 {FormatMoney(row.AssetMonthlyAmount)}",
                     $"차이 {FormatMoney(row.TemplateMonthlyAmount - row.AssetMonthlyAmount)}",
                     BuildAssetMonthlyBreakdown(row.LinkedAssets))))
+            .ToList();
+    }
+
+    private async Task<List<IntegrityIssueDetailRowDto>> LoadRentalAssetMissingProfileTemplateReferenceDetailsAsync(CancellationToken cancellationToken)
+    {
+        var rows = await LoadRentalTemplateScanRowsAsync(cancellationToken);
+
+        return rows
+            .SelectMany(CreateRentalAssetMissingProfileTemplateReferenceRows)
+            .OrderBy(row => row.Profile.CustomerName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.Asset.ManagementNumber, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.Asset.AssetKey, StringComparer.OrdinalIgnoreCase)
+            .Select(row => CreateDetailRow(
+                entityType: "렌탈자산",
+                entityIdText: FormatGuid(row.Asset.Id),
+                primaryText: FirstNonEmpty(row.Asset.CurrentCustomerName, row.Asset.CustomerName, row.Profile.CustomerName, FormatGuid(row.Asset.Id)),
+                secondaryText: CombineParts(
+                    FirstNonEmpty(row.Asset.ManagementNumber, row.Asset.AssetKey, row.Asset.ManagementId),
+                    row.Asset.ItemName,
+                    row.Asset.InstallLocation),
+                referenceText: "프로필 연결만 있고 표시품목 제외",
+                scopeText: FormatScope(row.Asset.TenantCode, row.Asset.OfficeCode, row.Asset.ResponsibleOfficeCode),
+                detailText: CombineParts(
+                    $"청구프로필 {FirstNonEmpty(row.Profile.CustomerName, row.Profile.ProfileKey, FormatGuid(row.Profile.Id))}",
+                    $"프로필ID {FormatGuid(row.Profile.Id)}",
+                    $"표시품목 포함 자산 {row.TemplateAssetIds.Count:N0}대",
+                    "조치: 렌탈 청구관리에서 내부 포함 장비/표시 품목을 다시 저장하거나 잘못 연결된 자산을 해제하세요.")))
             .ToList();
     }
 
@@ -3905,6 +3936,9 @@ public sealed class IntegrityController : ControllerBase
     private static int CountRentalAssetTemplateMonthlyMismatches(IEnumerable<RentalTemplateScanRow> rows)
         => rows.SelectMany(CreateRentalAssetTemplateMonthlyMismatchRows).Count();
 
+    private static int CountRentalAssetsMissingProfileTemplateReferences(IEnumerable<RentalTemplateScanRow> rows)
+        => rows.SelectMany(CreateRentalAssetMissingProfileTemplateReferenceRows).Count();
+
     private static bool ShouldWarnRentalProfileAssetMonthlyMismatch(RentalTemplateScanRow row)
     {
         if (row.LinkedAssets.Count == 0 ||
@@ -3957,6 +3991,28 @@ public sealed class IntegrityController : ControllerBase
                 linkedAssets,
                 templateMonthlyAmount,
                 assetMonthlyAmount);
+        }
+    }
+
+    private static IEnumerable<RentalAssetMissingProfileTemplateReferenceRow> CreateRentalAssetMissingProfileTemplateReferenceRows(RentalTemplateScanRow row)
+    {
+        if (!row.TemplateParseSucceeded)
+            yield break;
+
+        var templateAssetIds = row.TemplateItems
+            .SelectMany(item => item.IncludedAssetIds ?? [])
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToHashSet();
+        if (templateAssetIds.Count == 0)
+            yield break;
+
+        foreach (var linkedAsset in row.LinkedAssets.Where(asset => !templateAssetIds.Contains(asset.Id)))
+        {
+            yield return new RentalAssetMissingProfileTemplateReferenceRow(
+                row.Profile,
+                linkedAsset,
+                templateAssetIds);
         }
     }
 
@@ -4346,6 +4402,7 @@ public sealed class IntegrityController : ControllerBase
             "rental_profile_monthly_amount_mismatch" => new IntegrityIssueDefinition("rental_profile_monthly_amount_mismatch", "Warning", "렌탈 청구 프로필 월 기준금액과 청구 품목 합계가 다릅니다."),
             "rental_profile_asset_monthly_amount_mismatch" => new IntegrityIssueDefinition("rental_profile_asset_monthly_amount_mismatch", "Warning", "렌탈 청구 프로필 월 기준금액과 연결 자산 월요금 합계가 다릅니다."),
             "rental_asset_template_monthly_mismatch" => new IntegrityIssueDefinition("rental_asset_template_monthly_mismatch", "Warning", "렌탈 자산 월요금 합계와 청구 품목 금액이 다릅니다."),
+            "rental_asset_missing_profile_template_refs" => new IntegrityIssueDefinition("rental_asset_missing_profile_template_refs", "Error", "렌탈 자산이 청구 프로필에는 연결됐지만 청구서 표시 품목에는 포함되지 않았습니다."),
             "orphan_rental_asset_customer_refs" => new IntegrityIssueDefinition("orphan_rental_asset_customer_refs", "Error", "거래처가 없는 렌탈 자산 참조가 존재합니다."),
             "rental_asset_customer_scope_mismatch" => new IntegrityIssueDefinition("rental_asset_customer_scope_mismatch", "Error", "렌탈 자산이 다른 업체/담당지점 거래처를 참조합니다."),
             "orphan_rental_asset_profile_refs" => new IntegrityIssueDefinition("orphan_rental_asset_profile_refs", "Error", "렌탈 청구 프로필이 없는 자산 연결이 존재합니다."),
@@ -5025,6 +5082,11 @@ public sealed class IntegrityController : ControllerBase
         List<RentalAsset> LinkedAssets,
         decimal TemplateMonthlyAmount,
         decimal AssetMonthlyAmount);
+
+    private sealed record RentalAssetMissingProfileTemplateReferenceRow(
+        RentalBillingProfile Profile,
+        RentalAsset Asset,
+        IReadOnlyCollection<Guid> TemplateAssetIds);
 
     private sealed record RentalBillingTemplateMissingItemReferenceRow(
         RentalBillingProfile Profile,
