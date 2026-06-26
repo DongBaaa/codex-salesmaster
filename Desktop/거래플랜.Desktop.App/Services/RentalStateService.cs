@@ -4896,6 +4896,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구 데이터를 저장할 수 없습니다.");
 
         var templateItems = GetBillingTemplateItems(profile, Array.Empty<LocalRentalAsset>());
+        var incomingTemplateHasExplicitAssetCoverage = HasExplicitIncludedAssetIds(templateItems);
         profile.BillingType = ResolveProfileBillingTypeFromTemplateItems(templateItems, profile.BillingType);
         // 렌탈 자산은 설치/소유 기준으로 전 업체가 공유 조회될 수 있고,
         // 청구 프로필은 외부 자산을 "원본 자산 변경 없는 참조"로 포함할 수 있다.
@@ -4951,6 +4952,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         existing = await ReloadRentalBillingProfileForMutationAsync(existing, ct);
         if (existing is not null && !CanEditRentalProfileEntityScope(existing, session))
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구 데이터를 수정할 수 없습니다.");
+        var existingTemplateHadExplicitAssetCoverage = existing is not null &&
+            HasExplicitIncludedAssetIds(GetBillingTemplateItems(existing, Array.Empty<LocalRentalAsset>()));
         await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, profile, existing, ct);
         if (!LocalEntityConcurrencyGuard.TryPrepareForSave(profile, existing, "렌탈 청구", now, out var conflictMessage))
             return LocalMutationResult.Conflict(conflictMessage);
@@ -4969,7 +4972,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         await _db.SaveChangesAsync(ct);
-        await SyncBillingProfileAssetsAsync(profile, templateItems, assetLinkEdits, session, ct);
+        await SyncBillingProfileAssetsAsync(
+            profile,
+            templateItems,
+            assetLinkEdits,
+            session,
+            incomingTemplateHasExplicitAssetCoverage || existingTemplateHadExplicitAssetCoverage,
+            ct);
         return LocalMutationResult.Ok(profile.Id, "렌탈 청구 프로필을 저장했습니다.");
     }
 
@@ -5151,7 +5160,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 profile.BillingTemplateJson = serializedTemplateItems;
                 profile.MonthlyAmount = templateItems.Sum(ResolveTemplateMonthlyAmount);
                 profile.ItemName = BuildProfileItemName(profile, templateItems);
-                await SyncBillingProfileAssetsAsync(profile, templateItems, null, session, ct);
+                await SyncBillingProfileAssetsAsync(
+                    profile,
+                    templateItems,
+                    null,
+                    session,
+                    HasExplicitIncludedAssetIds(templateItems),
+                    ct);
             }
 
             var officeCode = NormalizeOfficeCode(profile.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
@@ -11355,11 +11370,16 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return monthlyFeeByAssetId;
     }
 
+    private static bool HasExplicitIncludedAssetIds(IReadOnlyList<RentalBillingTemplateItemModel> templateItems)
+        => templateItems.Any(item =>
+            (item.IncludedAssetIds ?? new List<Guid>()).Any(id => id != Guid.Empty));
+
     private async Task SyncBillingProfileAssetsAsync(
         LocalRentalBillingProfile profile,
         IReadOnlyList<RentalBillingTemplateItemModel> templateItems,
         IReadOnlyList<RentalBillingAssetLinkEdit>? assetLinkEdits,
         SessionState? session,
+        bool replaceProfileLinkedAssets,
         CancellationToken ct)
     {
         var includedAssetIds = templateItems
@@ -11372,7 +11392,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .GroupBy(edit => edit.AssetId)
             .ToDictionary(group => group.Key, group => group.Last());
 
-        var hasAssetLinkInstruction = includedAssetIds.Count > 0 || assetLinkEdits is not null;
+        var hasAssetLinkInstruction = replaceProfileLinkedAssets ||
+                                      includedAssetIds.Count > 0 ||
+                                      assetLinkEditMap.Count > 0;
         if (!hasAssetLinkInstruction)
             return;
 
@@ -11418,7 +11440,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         foreach (var asset in linkedAssets)
         {
             var previousBillingProfileId = asset.BillingProfileId;
-            var shouldInclude = includedAssetIds.Contains(asset.Id);
+            var shouldInclude = includedAssetIds.Contains(asset.Id) ||
+                                (!replaceProfileLinkedAssets && asset.BillingProfileId == profile.Id);
             assetLinkEditMap.TryGetValue(asset.Id, out var edit);
             var matchesProfileTenant = RentalAssetCanTransferToBillingProfileScope(asset, normalizedTenantCode);
 

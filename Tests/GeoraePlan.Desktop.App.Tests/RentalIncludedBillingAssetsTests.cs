@@ -841,6 +841,202 @@ public sealed class RentalIncludedBillingAssetsTests
         }
     }
 
+    [Fact]
+    public async Task SaveBillingProfileAsync_LegacyProfileWithoutTemplateAssetIdsKeepsExistingLinkedAssetsWhenNoExplicitCoverage()
+    {
+        PrepareAppRoot("georaeplan-rental-legacy-linked-assets-preserve");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("f2900000-1111-4444-8888-000000000001");
+            var linkedAssetId = Guid.Parse("f2900000-1111-4444-8888-0000000000a1");
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Legacy Linked Customer",
+                InstallSiteName = "Legacy Linked Customer",
+                BillingType = "개별",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                MonthlyAmount = 80_000m,
+                BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                {
+                    new()
+                    {
+                        DisplayItemName = "Legacy Rental",
+                        BillingLineMode = "개별",
+                        Quantity = 1m,
+                        UnitPrice = 80_000m,
+                        Amount = 80_000m,
+                        IncludedAssetIds = []
+                    }
+                }),
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            db.RentalAssets.Add(CreateRentalAsset(
+                "Legacy Linked Customer",
+                "LEGACY-LINK-001",
+                profileId,
+                linkedAssetId,
+                monthlyFee: 80_000m));
+            await db.SaveChangesAsync();
+
+            var profileSavePayload = new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Legacy Linked Customer",
+                InstallSiteName = "Legacy Linked Customer",
+                BillingType = "개별",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                MonthlyAmount = 80_000m,
+                BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                {
+                    new()
+                    {
+                        DisplayItemName = "Legacy Rental",
+                        BillingLineMode = "개별",
+                        Quantity = 1m,
+                        UnitPrice = 80_000m,
+                        Amount = 80_000m,
+                        IncludedAssetIds = []
+                    }
+                })
+            };
+
+            var result = await new RentalStateService(db).SaveBillingProfileAsync(
+                profileSavePayload,
+                CreateAdminSession(),
+                Array.Empty<RentalBillingAssetLinkEdit>());
+
+            Assert.True(result.Success, result.Message);
+            var storedAsset = await db.RentalAssets.IgnoreQueryFilters()
+                .SingleAsync(asset => asset.Id == linkedAssetId);
+            Assert.Equal(profileId, storedAsset.BillingProfileId);
+            Assert.Equal("청구대상", storedAsset.BillingEligibilityStatus);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SaveBillingProfileAsync_RemovingPreviouslyExplicitTemplateAssetIdsUnlinksAssets()
+    {
+        PrepareAppRoot("georaeplan-rental-explicit-linked-assets-remove");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("f2910000-1111-4444-8888-000000000001");
+            var linkedAssetId = Guid.Parse("f2910000-1111-4444-8888-0000000000a1");
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Explicit Remove Customer",
+                InstallSiteName = "Explicit Remove Customer",
+                BillingType = "개별",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                MonthlyAmount = 80_000m,
+                BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                {
+                    new()
+                    {
+                        DisplayItemName = "Explicit Rental",
+                        BillingLineMode = "개별",
+                        Quantity = 1m,
+                        UnitPrice = 80_000m,
+                        Amount = 80_000m,
+                        IncludedAssetIds = [linkedAssetId]
+                    }
+                }),
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            db.RentalAssets.Add(CreateRentalAsset(
+                "Explicit Remove Customer",
+                "EXPLICIT-REMOVE-001",
+                profileId,
+                linkedAssetId,
+                monthlyFee: 80_000m));
+            await db.SaveChangesAsync();
+
+            var profileSavePayload = new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Explicit Remove Customer",
+                InstallSiteName = "Explicit Remove Customer",
+                BillingType = "개별",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                MonthlyAmount = 80_000m,
+                BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                {
+                    new()
+                    {
+                        DisplayItemName = "Explicit Rental",
+                        BillingLineMode = "개별",
+                        Quantity = 1m,
+                        UnitPrice = 80_000m,
+                        Amount = 80_000m,
+                        IncludedAssetIds = []
+                    }
+                })
+            };
+
+            var result = await new RentalStateService(db).SaveBillingProfileAsync(
+                profileSavePayload,
+                CreateAdminSession(),
+                Array.Empty<RentalBillingAssetLinkEdit>());
+
+            Assert.True(result.Success, result.Message);
+            var storedAsset = await db.RentalAssets.IgnoreQueryFilters()
+                .SingleAsync(asset => asset.Id == linkedAssetId);
+            Assert.Null(storedAsset.BillingProfileId);
+            Assert.Equal("미확인", storedAsset.BillingEligibilityStatus);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
