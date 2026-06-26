@@ -392,6 +392,7 @@ public sealed class MasterUiWiringGuardTests
         var rentalBillingViewModel = ReadAppFile(appRoot, "ViewModels", "RentalBillingViewModel.cs");
         var rentalAssetViewModel = ReadAppFile(appRoot, "ViewModels", "RentalAssetViewModel.cs");
         var inventoryTransferViewModel = ReadAppFile(appRoot, "ViewModels", "InventoryTransferViewModel.cs");
+        var yeonsuDeliveryViewModel = ReadAppFile(appRoot, "ViewModels", "YeonsuDeliveryViewModel.cs");
 
         AssertContainsAll(
             mainViewModel,
@@ -479,6 +480,12 @@ public sealed class MasterUiWiringGuardTests
             "var result = await _local.RejectInventoryTransferAsync(TransferId, RejectReason, _session, expectedRevision: _transferRevision);",
             "var result = await _local.SaveInventoryTransferAsync(transfer, _session);",
             "if (result.ConcurrencyConflict && showConflictDialog)");
+
+        AssertContainsAll(
+            yeonsuDeliveryViewModel,
+            "var invoices = await _local.GetSalesPurchaseLedgerInvoicesAsync(",
+            "responsibleOfficeCode: accountOfficeCode,",
+            "session: _session);");
     }
 
     private static void AssertContainsAll(string source, params string[] expectedMarkers)

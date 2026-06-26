@@ -200,7 +200,8 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject, IDisposa
                 ToDate,
                 customerId: null,
                 warehouseCode: warehouseCodeFilter,
-                responsibleOfficeCode: accountOfficeCode);
+                responsibleOfficeCode: accountOfficeCode,
+                session: _session);
 
             var customerMap = await _local.GetCustomerNameMapAsync(invoices.Select(invoice => invoice.CustomerId));
             var itemMap = await _local.GetItemMapAsync(

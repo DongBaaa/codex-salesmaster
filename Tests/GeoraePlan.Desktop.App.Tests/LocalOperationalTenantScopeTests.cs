@@ -107,10 +107,19 @@ public sealed class LocalOperationalTenantScopeTests
                 new DateOnly(2026, 6, 30),
                 null,
                 session);
+            var ledgerInvoices = await service.GetSalesPurchaseLedgerInvoicesAsync(
+                new DateOnly(2026, 6, 1),
+                new DateOnly(2026, 6, 30),
+                null,
+                warehouseCode: null,
+                responsibleOfficeCode: OfficeCodeCatalog.Usenet,
+                session);
             var report = await service.BuildIntegrityReportAsync(session);
 
             var invoice = Assert.Single(invoices);
             Assert.Equal("USENET-INV", invoice.InvoiceNumber);
+            var ledgerInvoice = Assert.Single(ledgerInvoices);
+            Assert.Equal("USENET-INV", ledgerInvoice.InvoiceNumber);
             var transaction = Assert.Single(transactions);
             Assert.Equal("USENET transaction", transaction.Note);
 

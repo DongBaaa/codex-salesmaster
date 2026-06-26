@@ -2573,6 +2573,43 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			select invoice).ToListAsync(ct);
 	}
 
+	public async Task<List<LocalInvoice>> GetSalesPurchaseLedgerInvoicesAsync(DateOnly? from, DateOnly? to, Guid? customerId, string? warehouseCode, string? responsibleOfficeCode, SessionState session, CancellationToken ct = default(CancellationToken))
+	{
+		string officeFilterText = (responsibleOfficeCode ?? string.Empty).Trim();
+		string normalizedOfficeCode = (string.IsNullOrWhiteSpace(officeFilterText) ? string.Empty : NormalizeOfficeCode(officeFilterText, DomainConstants.OfficeYeonsu));
+		IQueryable<LocalInvoice> query = from invoice in _db.Invoices.Include((LocalInvoice invoice) => invoice.Lines.Where((LocalInvoiceLine line) => !line.IsDeleted)).Include((LocalInvoice invoice) => invoice.Payments.Where((LocalPayment payment) => !payment.IsDeleted)).AsSplitQuery().AsNoTracking()
+			where !invoice.IsDeleted && invoice.IsLatestVersion && invoice.IsConfirmed && ((int)invoice.VoucherType == 0 || (int)invoice.VoucherType == 1 || (int)invoice.VoucherType == 2)
+			select invoice;
+		query = ApplyInvoiceScope(query, session);
+		if (!string.IsNullOrWhiteSpace(normalizedOfficeCode))
+		{
+			query = query.Where((LocalInvoice invoice) =>
+				invoice.ResponsibleOfficeCode == normalizedOfficeCode ||
+				((invoice.ResponsibleOfficeCode == null || invoice.ResponsibleOfficeCode == string.Empty) &&
+				 invoice.OfficeCode == normalizedOfficeCode));
+		}
+		if (from.HasValue)
+		{
+			query = query.Where((LocalInvoice invoice) => invoice.InvoiceDate >= ((DateOnly?)from).Value);
+		}
+		if (to.HasValue)
+		{
+			query = query.Where((LocalInvoice invoice) => invoice.InvoiceDate <= ((DateOnly?)to).Value);
+		}
+		if (customerId.HasValue)
+		{
+			query = query.Where((LocalInvoice invoice) => invoice.CustomerId == ((Guid?)customerId).Value);
+		}
+		string normalizedWarehouseCode = (warehouseCode ?? string.Empty).Trim().ToUpperInvariant();
+		if (!string.IsNullOrWhiteSpace(normalizedWarehouseCode))
+		{
+			query = query.Where((LocalInvoice invoice) => invoice.SourceWarehouseCode == normalizedWarehouseCode);
+		}
+		return await (from invoice in query
+			orderby invoice.InvoiceDate descending, invoice.LastSavedAtUtc descending, invoice.UpdatedAtUtc descending
+			select invoice).ToListAsync(ct);
+	}
+
 	public async Task<LocalInvoice?> GetInvoiceAsync(Guid id, CancellationToken ct = default(CancellationToken))
 	{
 		return await _db.Invoices
