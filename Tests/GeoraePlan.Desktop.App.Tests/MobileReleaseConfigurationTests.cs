@@ -22,7 +22,7 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
-    public void AndroidSettingsService_PersistsCustomBaseUrlWithoutExposingItInSettingsPage()
+    public void AndroidSettingsService_PersistsCustomBaseUrlAndExposesGuardedAdvancedSettings()
     {
         var root = FindRepositoryRoot();
         var settingsSource = File.ReadAllText(Path.Combine(
@@ -43,14 +43,27 @@ public sealed class MobileReleaseConfigurationTests
             "GeoraePlan.Mobile.App",
             "Pages",
             "SettingsPage.cs"));
+        var settingsViewModelSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "SettingsViewModel.cs"));
 
         Assert.Contains("private const string BaseUrlKey = \"settings.api.baseUrl\";", settingsSource, StringComparison.Ordinal);
         Assert.Contains("Preferences.Default.Get(BaseUrlKey, string.Empty)", settingsSource, StringComparison.Ordinal);
         Assert.Contains("Preferences.Default.Set(BaseUrlKey, normalized);", settingsSource, StringComparison.Ordinal);
         Assert.Contains("Preferences.Default.Remove(BaseUrlKey);", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("public Task ResetBaseUrlAsync()", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("Uri.TryCreate(value, UriKind.Absolute", settingsSource, StringComparison.Ordinal);
         Assert.Contains("var baseUrl = _settings.GetBaseUrl();", apiClientSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("nameof(SettingsViewModel.BaseUrl)", settingsPageSource, StringComparison.Ordinal);
-        Assert.Contains("모바일 앱은 거래플랜 운영 서버에 고정 연결됩니다.", settingsPageSource, StringComparison.Ordinal);
+        Assert.Contains("nameof(SettingsViewModel.BaseUrl)", settingsPageSource, StringComparison.Ordinal);
+        Assert.Contains("nameof(SettingsViewModel.IsConnectionSettingsVisible)", settingsPageSource, StringComparison.Ordinal);
+        Assert.Contains("고급 연결 설정", settingsPageSource, StringComparison.Ordinal);
+        Assert.Contains("운영 서버로 초기화", settingsPageSource, StringComparison.Ordinal);
+        Assert.Contains("ToggleConnectionSettingsCommand = new AsyncCommand(", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("ResetConnectionCommand = new AsyncCommand(ResetConnectionAsync);", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("catch (ArgumentException ex)", settingsViewModelSource, StringComparison.Ordinal);
     }
 
     [Fact]

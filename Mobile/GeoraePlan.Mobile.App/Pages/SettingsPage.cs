@@ -55,6 +55,32 @@ public sealed class SettingsPage : ContentPage
         var updateNotesLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false);
         updateNotesLabel.SetBinding(Label.TextProperty, nameof(SettingsViewModel.UpdateNotes));
 
+        var connectionModeLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false);
+        connectionModeLabel.SetBinding(Label.TextProperty, nameof(SettingsViewModel.ConnectionModeText));
+
+        var advancedConnectionButton = GeoraePlanTheme.CreateButton("고급 연결 설정", GeoraePlanTheme.SecondaryButton);
+        advancedConnectionButton.SetBinding(Button.CommandProperty, nameof(SettingsViewModel.ToggleConnectionSettingsCommand));
+
+        var baseUrlEntry = GeoraePlanTheme.CreateEntry("https://trade.2884.kr 또는 터널 URL");
+        baseUrlEntry.Keyboard = Keyboard.Url;
+        baseUrlEntry.SetBinding(Entry.TextProperty, nameof(SettingsViewModel.BaseUrl));
+        baseUrlEntry.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.IsConnectionSettingsVisible));
+
+        var connectionHelpLabel = GeoraePlanTheme.CreateBodyText(
+            "현장 터널/테스트 서버가 필요할 때만 변경하세요. 접속 오류가 나면 운영 서버로 초기화할 수 있습니다.",
+            muted: true,
+            fontSize: 12);
+        connectionHelpLabel.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.IsConnectionSettingsVisible));
+
+        var saveConnectionButton = GeoraePlanTheme.CreateButton("연결 URL 저장", GeoraePlanTheme.Accent);
+        saveConnectionButton.TextColor = Colors.Black;
+        saveConnectionButton.SetBinding(Button.CommandProperty, nameof(SettingsViewModel.SaveCommand));
+        saveConnectionButton.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.IsConnectionSettingsVisible));
+
+        var resetConnectionButton = GeoraePlanTheme.CreateButton("운영 서버로 초기화", GeoraePlanTheme.Brown);
+        resetConnectionButton.SetBinding(Button.CommandProperty, nameof(SettingsViewModel.ResetConnectionCommand));
+        resetConnectionButton.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.IsConnectionSettingsVisible));
+
         Content = new ScrollView
         {
             Content = new VerticalStackLayout
@@ -65,8 +91,13 @@ public sealed class SettingsPage : ContentPage
                 {
                     GeoraePlanTheme.CreateCard(
                         GeoraePlanTheme.CreateSectionTitle("앱 설정"),
-                        GeoraePlanTheme.CreateBodyText("모바일 앱은 거래플랜 운영 서버에 고정 연결됩니다."),
-                        GeoraePlanTheme.CreateBodyText("연결 정보는 사용자 화면에 표시하지 않습니다."),
+                        GeoraePlanTheme.CreateBodyText("모바일 앱은 기본적으로 거래플랜 운영 서버에 연결됩니다."),
+                        connectionModeLabel,
+                        advancedConnectionButton,
+                        baseUrlEntry,
+                        connectionHelpLabel,
+                        saveConnectionButton,
+                        resetConnectionButton,
                         integrityAccessLabel,
                         integrityButton,
                         recycleBinButton,

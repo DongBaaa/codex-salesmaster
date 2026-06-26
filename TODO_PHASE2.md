@@ -33,8 +33,8 @@
 ## 3. 원격 접속 터널
 
 - [ ] ngrok / Cloudflare Tunnel 통합
-- [ ] 설정 화면에서 터널 URL 입력
-- [ ] `appsettings.json`의 `Api.BaseUrl`을 터널 URL로 전환
+- [x] 모바일 설정 화면에서 터널 URL 입력/저장/운영 서버 초기화
+- [x] Android 런타임 `Api.BaseUrl`을 저장된 터널 URL 우선으로 전환
 
 ---
 
@@ -114,7 +114,15 @@
 - [x] Android `SettingsService.SaveBaseUrlAsync`가 더 이상 no-op이 아니며, 기본 운영 서버와 다른 URL은 `Preferences`에 저장하고 기본값과 같으면 저장값을 제거합니다.
 - [x] `SettingsService.GetBaseUrl`은 저장된 URL을 우선 사용하고 값이 없으면 `ApiOptions.DefaultBaseUrl`로 돌아갑니다.
 - [x] `ApiClient`는 기존처럼 `SettingsService.GetBaseUrl()`을 통해 실제 요청 base URL을 결정하므로 저장값 반영 경로가 끊기지 않습니다.
-- [x] Settings 화면은 기존 정책대로 “모바일 앱은 거래플랜 운영 서버에 고정 연결됩니다.” 안내를 유지하며 BaseUrl 입력 UI를 노출하지 않습니다.
+- [x] 0.2.70에서는 Settings 화면의 BaseUrl 입력 UI를 숨긴 상태로 저장 로직만 보강했고, 0.2.71에서 별도 고급 연결 설정 UI를 추가했습니다.
 - [x] 검증: Android 설정 저장 source guard 87/87 PASS, Android Debug build PASS, Android 에뮬레이터 smoke PASS(`mobile-smoke-20260626-222120.md`), 전체 데스크톱 테스트 747/747 PASS.
 - [x] Android 0.2.70 / version code 181 signed APK, stable 업데이트 manifest, live 배포 완료(`20260626-android-baseurl-settings-v070`).
-- [ ] ngrok/Cloudflare Tunnel UI 노출과 운영 정책 전환은 별도 설계 항목으로 유지합니다.
+- [x] 모바일 고급 연결 설정 UI 노출은 0.2.71에서 완료했습니다. ngrok/Cloudflare Tunnel 자체 발급/연결 자동화는 별도 인프라 작업으로 유지합니다.
+
+### 2026-06-26 Android 고급 연결 설정 UI 완료 증거
+- [x] Settings 화면에 “고급 연결 설정” 버튼을 추가하고, 토글 후에만 BaseUrl 입력/저장/운영 서버 초기화 UI가 표시되도록 했습니다.
+- [x] URL 저장 전 `http://`/`https://` 절대 URL과 host를 검증하고, 잘못된 저장값은 제거 후 기본 운영 서버로 fallback합니다.
+- [x] Android 에뮬레이터 UI-tree 기준으로 설정 화면 진입, 고급 연결 설정 토글, URL 입력칸, 연결 URL 저장, 운영 서버 초기화 버튼과 초기화 완료 메시지를 확인했습니다.
+- [x] 검증: Android 설정 source guard 87/87 PASS, Android Debug build PASS, Android smoke PASS(`mobile-smoke-20260626-224340.md`), 전체 데스크톱 테스트 747/747 PASS.
+- [x] Android 0.2.71 / version code 182 signed APK, stable 업데이트 manifest, live 배포 완료(`20260626-android-advanced-baseurl-v071`).
+- [ ] ngrok/Cloudflare Tunnel 자체 발급/연결 자동화는 별도 인프라 작업으로 유지합니다.

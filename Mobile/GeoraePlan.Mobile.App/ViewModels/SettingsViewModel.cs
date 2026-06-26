@@ -1,4 +1,4 @@
-﻿using GeoraePlan.Mobile.App.Services;
+using GeoraePlan.Mobile.App.Services;
 using 거래플랜.Shared.Contracts;
 
 namespace GeoraePlan.Mobile.App.ViewModels;
@@ -12,6 +12,7 @@ public sealed class SettingsViewModel : ObservableObject
 
     private string _baseUrl = string.Empty;
     private string _statusMessage = "모바일 앱은 거래플랜 운영 서버에 고정 연결됩니다.";
+    private string _connectionModeText = "운영 서버 기본 연결";
     private string _currentVersion = string.Empty;
     private string _latestVersion = "-";
     private string _updateNotes = "새 버전 확인 대기";
@@ -19,6 +20,7 @@ public sealed class SettingsViewModel : ObservableObject
     private string _integrityAccessText = "운영점검 권한 확인 대기";
     private bool _isUpdateAvailable;
     private bool _isCheckingForUpdate;
+    private bool _isConnectionSettingsVisible;
     private bool _canViewIntegrityReport;
     private bool _canManageRecycleBin;
 
@@ -28,6 +30,8 @@ public sealed class SettingsViewModel : ObservableObject
         _sessionStore = sessionStore;
         _updateService = updateService;
         SaveCommand = new AsyncCommand(SaveAsync);
+        ResetConnectionCommand = new AsyncCommand(ResetConnectionAsync);
+        ToggleConnectionSettingsCommand = new AsyncCommand(ToggleConnectionSettingsAsync);
         LogoutCommand = new AsyncCommand(LogoutAsync);
         CheckForUpdatesCommand = new AsyncCommand(CheckForUpdatesAsync);
         InstallUpdateCommand = new AsyncCommand(InstallUpdateAsync);
@@ -45,6 +49,12 @@ public sealed class SettingsViewModel : ObservableObject
     {
         get => _statusMessage;
         set => SetProperty(ref _statusMessage, value);
+    }
+
+    public string ConnectionModeText
+    {
+        get => _connectionModeText;
+        set => SetProperty(ref _connectionModeText, value);
     }
 
     public string CurrentVersion
@@ -83,6 +93,12 @@ public sealed class SettingsViewModel : ObservableObject
         set => SetProperty(ref _isCheckingForUpdate, value);
     }
 
+    public bool IsConnectionSettingsVisible
+    {
+        get => _isConnectionSettingsVisible;
+        set => SetProperty(ref _isConnectionSettingsVisible, value);
+    }
+
     public string IntegrityAccessText
     {
         get => _integrityAccessText;
@@ -102,6 +118,8 @@ public sealed class SettingsViewModel : ObservableObject
     }
 
     public AsyncCommand SaveCommand { get; }
+    public AsyncCommand ResetConnectionCommand { get; }
+    public AsyncCommand ToggleConnectionSettingsCommand { get; }
     public AsyncCommand LogoutCommand { get; }
     public AsyncCommand CheckForUpdatesCommand { get; }
     public AsyncCommand InstallUpdateCommand { get; }
@@ -109,7 +127,10 @@ public sealed class SettingsViewModel : ObservableObject
     public async Task LoadAsync()
     {
         BaseUrl = _settings.GetBaseUrl();
-        StatusMessage = "앱 연결 정보는 관리자 설정으로 고정되어 있습니다.";
+        RefreshConnectionModeText();
+        StatusMessage = _settings.HasCustomBaseUrl()
+            ? "고급 연결 URL을 사용 중입니다. 접속 오류가 있으면 운영 서버로 초기화하세요."
+            : "기본 운영 서버로 연결 중입니다.";
         CurrentVersion = _updateService.GetCurrentVersion();
         LatestVersion = CurrentVersion;
         UpdateNotes = "새 버전 확인을 눌러 최신 APK를 조회할 수 있습니다.";
@@ -124,9 +145,27 @@ public sealed class SettingsViewModel : ObservableObject
 
     public async Task SaveAsync()
     {
-        await _settings.SaveBaseUrlAsync(BaseUrl);
-        BaseUrl = _settings.GetBaseUrl();
-        StatusMessage = "연결 정보는 숨김 상태로 고정되어 있습니다.";
+        try
+        {
+            await _settings.SaveBaseUrlAsync(BaseUrl);
+            BaseUrl = _settings.GetBaseUrl();
+            RefreshConnectionModeText();
+            StatusMessage = _settings.HasCustomBaseUrl()
+                ? "고급 연결 URL을 저장했습니다. 다음 요청부터 해당 서버로 연결합니다."
+                : "운영 서버 기본 연결로 저장했습니다.";
+        }
+        catch (ArgumentException ex)
+        {
+            StatusMessage = ex.Message;
+        }
+    }
+
+    public async Task ResetConnectionAsync()
+    {
+        await _settings.ResetBaseUrlAsync();
+        BaseUrl = _settings.GetDefaultBaseUrl();
+        RefreshConnectionModeText();
+        StatusMessage = "운영 서버 기본 연결로 초기화했습니다.";
     }
 
     public async Task LogoutAsync()
@@ -138,6 +177,14 @@ public sealed class SettingsViewModel : ObservableObject
 
     public Task CheckForUpdatesAsync()
         => LoadUpdateInfoAsync(userInitiated: true);
+
+    private Task ToggleConnectionSettingsAsync()
+    {
+        IsConnectionSettingsVisible = !IsConnectionSettingsVisible;
+        if (IsConnectionSettingsVisible)
+            StatusMessage = "고급 연결 설정은 현장 터널/테스트 서버 확인 때만 사용하세요.";
+        return Task.CompletedTask;
+    }
 
     public async Task InstallUpdateAsync()
     {
@@ -215,5 +262,12 @@ public sealed class SettingsViewModel : ObservableObject
             notes += $"{Environment.NewLine}서버 최소 지원 버전: {result.MinimumSupportedVersion}";
 
         return notes;
+    }
+
+    private void RefreshConnectionModeText()
+    {
+        ConnectionModeText = _settings.HasCustomBaseUrl()
+            ? $"고급 연결 사용 중: {_settings.GetBaseUrl()}"
+            : $"운영 서버 기본 연결: {_settings.GetDefaultBaseUrl()}";
     }
 }

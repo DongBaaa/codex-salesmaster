@@ -13,7 +13,15 @@ public sealed class SettingsService
     public string GetBaseUrl()
     {
         var saved = Preferences.Default.Get(BaseUrlKey, string.Empty);
-        return NormalizeBaseUrl(string.IsNullOrWhiteSpace(saved) ? ApiOptions.DefaultBaseUrl : saved);
+        if (!string.IsNullOrWhiteSpace(saved))
+        {
+            if (TryNormalizeBaseUrl(saved, out var normalizedSaved))
+                return normalizedSaved;
+
+            Preferences.Default.Remove(BaseUrlKey);
+        }
+
+        return NormalizeBaseUrl(ApiOptions.DefaultBaseUrl);
     }
 
     public Task SaveBaseUrlAsync(string baseUrl)
@@ -27,6 +35,18 @@ public sealed class SettingsService
 
         return Task.CompletedTask;
     }
+
+    public Task ResetBaseUrlAsync()
+    {
+        Preferences.Default.Remove(BaseUrlKey);
+        return Task.CompletedTask;
+    }
+
+    public bool HasCustomBaseUrl()
+        => !string.IsNullOrWhiteSpace(Preferences.Default.Get(BaseUrlKey, string.Empty));
+
+    public string GetDefaultBaseUrl()
+        => NormalizeBaseUrl(ApiOptions.DefaultBaseUrl);
 
     public string GetLastUsername()
         => Preferences.Default.Get(LastUsernameKey, string.Empty);
@@ -97,6 +117,14 @@ public sealed class SettingsService
 
     private static string NormalizeBaseUrl(string? raw)
     {
+        if (TryNormalizeBaseUrl(raw, out var normalized))
+            return normalized;
+
+        throw new ArgumentException("서버 주소는 http:// 또는 https:// 로 시작하는 올바른 URL이어야 합니다.", nameof(raw));
+    }
+
+    private static bool TryNormalizeBaseUrl(string? raw, out string normalized)
+    {
         var value = (raw ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(value))
             value = ApiOptions.DefaultBaseUrl;
@@ -107,6 +135,17 @@ public sealed class SettingsService
             value = "https://" + value;
         }
 
-        return value.TrimEnd('/');
+        value = value.TrimEnd('/');
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+            string.IsNullOrWhiteSpace(uri.Host) ||
+            (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+             !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+        {
+            normalized = string.Empty;
+            return false;
+        }
+
+        normalized = uri.ToString().TrimEnd('/');
+        return true;
     }
 }
