@@ -683,6 +683,104 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     [Fact]
+    public async Task DeleteInvoice_DuplicateRentalRunInvoicesKeepRunUntilLastInvoiceIsDeleted()
+    {
+        PrepareAppRoot("georaeplan-rental-delete-duplicate-run-invoices");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Duplicate rental run invoice customer";
+            var runId = Guid.NewGuid();
+            var firstInvoiceId = Guid.NewGuid();
+            var secondInvoiceId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            profile.BillingRunsJson = JsonSerializer.Serialize(new List<RentalBillingRunModel>
+            {
+                new()
+                {
+                    RunId = runId,
+                    RunKey = "2026-06",
+                    ScheduledDate = new DateOnly(2026, 6, 25),
+                    PeriodStartDate = new DateOnly(2026, 6, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    PeriodLabel = "2026-06",
+                    Status = PaymentFlowConstants.BillingStatusInProgress,
+                    BilledAmount = 200_000m,
+                    SettledAmount = 0m,
+                    SettlementStatus = PaymentFlowConstants.SettlementStatusPending
+                }
+            });
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "청구대상"));
+            db.Invoices.AddRange(
+                CreateRentalRunInvoice(firstInvoiceId, customerId, customerName, profileId, runId, "RENT-DUP-001", 100_000m),
+                CreateRentalRunInvoice(secondInvoiceId, customerId, customerName, profileId, runId, "RENT-DUP-002", 100_000m));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+
+            var firstDelete = await local.DeleteInvoiceAsync(firstInvoiceId, session);
+            Assert.True(firstDelete.Success, firstDelete.Message);
+            db.ChangeTracker.Clear();
+
+            var profileAfterFirstDelete = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == profileId);
+            var remainingRun = Assert.Single(DeserializeRuns(profileAfterFirstDelete), current => current.RunId == runId);
+            Assert.Equal(100_000m, remainingRun.BilledAmount);
+            Assert.Equal(100_000m, profileAfterFirstDelete.OutstandingAmount);
+            Assert.True(await db.Invoices.IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == firstInvoiceId && current.IsDeleted));
+            Assert.True(await db.Invoices.IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == secondInvoiceId && !current.IsDeleted && current.IsLatestVersion));
+
+            var historiesAfterFirstDelete = await rental.GetBillingHistoryRowsAsync(
+                new[] { profileId },
+                session,
+                new DateOnly(2026, 6, 30));
+            var historyAfterFirstDelete = Assert.Single(historiesAfterFirstDelete, current => current.BillingRunId == runId);
+            Assert.True(historyAfterFirstDelete.HasInvoice);
+            Assert.True(historyAfterFirstDelete.CanDelete);
+            Assert.Equal(100_000m, historyAfterFirstDelete.BilledAmount);
+
+            var secondDelete = await local.DeleteInvoiceAsync(secondInvoiceId, session);
+            Assert.True(secondDelete.Success, secondDelete.Message);
+            db.ChangeTracker.Clear();
+
+            var profileAfterSecondDelete = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == profileId);
+            Assert.DoesNotContain(DeserializeRuns(profileAfterSecondDelete), current => current.RunId == runId);
+            Assert.Equal(0m, profileAfterSecondDelete.SettledAmount);
+            Assert.Equal(0m, profileAfterSecondDelete.OutstandingAmount);
+            Assert.Equal(PaymentFlowConstants.CompletionPending, profileAfterSecondDelete.CompletionStatus);
+
+            var historiesAfterSecondDelete = await rental.GetBillingHistoryRowsAsync(
+                new[] { profileId },
+                session,
+                new DateOnly(2026, 6, 30));
+            Assert.DoesNotContain(historiesAfterSecondDelete, current => current.BillingRunId == runId);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task BillingHistoryRows_AllowsDeletingPersistedRunWithoutActiveInvoiceOrSettlement()
     {
         PrepareAppRoot("georaeplan-rental-delete-orphan-history-row");
@@ -4765,6 +4863,56 @@ public sealed class RentalBillingDeletionFlowTests
             IsDirty = false,
             CreatedAtUtc = DateTime.UtcNow,
             UpdatedAtUtc = DateTime.UtcNow
+        };
+
+    private static LocalInvoice CreateRentalRunInvoice(
+        Guid invoiceId,
+        Guid customerId,
+        string customerName,
+        Guid profileId,
+        Guid runId,
+        string invoiceNumber,
+        decimal amount)
+        => new()
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = invoiceNumber,
+            LocalTempNumber = invoiceNumber,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 25),
+            TotalAmount = amount,
+            SupplyAmount = amount,
+            VatAmount = 0m,
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            IsConfirmed = true,
+            IsDeleted = false,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId,
+            IsDirty = false,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+            LastSavedAtUtc = DateTime.UtcNow,
+            Lines =
+            {
+                new LocalInvoiceLine
+                {
+                    Id = Guid.NewGuid(),
+                    InvoiceId = invoiceId,
+                    ItemNameOriginal = "사무기기 렌탈대금[6월]",
+                    SpecificationOriginal = "복합기",
+                    Unit = "대",
+                    Quantity = 1m,
+                    UnitPrice = amount,
+                    LineAmount = amount,
+                    OrderIndex = 1
+                }
+            }
         };
 
     private static LocalRentalAsset CreateRentalAsset(
