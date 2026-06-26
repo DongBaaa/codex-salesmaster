@@ -200,3 +200,8 @@
 - [x] 회귀 테스트 PASS: `SyncItemWarehouseStockPullTests|LocalIntegrityInventoryResidueTests` 8/8, 동기화/재고 관련 확장 필터 24/24.
 - [ ] 사용자 PC별 오래된 로컬 DB와 운영망 현장 실행 증거는 별도 조건에서 추가 누적합니다.
 - [x] PC 1.1.615 설치/업데이트 패키지 생성 및 Linux PC live manifest 반영 PASS(SHA256 `F7161495B4E07F1ECF97F3F95D418F2A6785C855CEFE1069AD0BE28F213376FB`).
+
+### 2026-06-27 PC 창고재고 sync push scope 필터 증거
+- [x] PC sync push 창고재고 수집이 item write scope와 warehouse write scope를 모두 만족하는 row만 전송하도록 보강했습니다.
+- [x] USENET office-only 사용자가 YEONSU 품목/창고 row를 push 후보에 싣지 않는 회귀테스트를 추가했습니다.
+- [x] 회귀 테스트 PASS: 창고재고 push scope targeted 8/8, 동기화/권한 확장 회귀 17/17, Desktop 전체 764/764.

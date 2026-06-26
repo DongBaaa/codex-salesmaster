@@ -7193,7 +7193,11 @@ public sealed class SyncService : IDisposable
             .ToListAsync(ct);
 
         return rows
-            .Where(row => !row.Item.IsDeleted && SupportsInventoryTracking(row.Item))
+            .Where(row =>
+                !row.Item.IsDeleted &&
+                SupportsInventoryTracking(row.Item) &&
+                _local.CanWriteItemScope(row.Item, _session) &&
+                CanWriteItemWarehouseStockForPush(row.Stock, row.Item))
             .Select(row => row.Stock)
             .ToList();
     }
@@ -7293,6 +7297,22 @@ public sealed class SyncService : IDisposable
             item.CategoryName,
             item.IsRental);
         return ItemOperationalPolicy.SupportsInventory(normalizedTrackingType);
+    }
+
+    private bool CanWriteItemWarehouseStockForPush(LocalItemWarehouseStock stock, LocalItem item)
+    {
+        if (_session.HasGlobalDataScope)
+            return true;
+
+        var normalizedWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(
+            stock.WarehouseCode,
+            item.OfficeCode,
+            _session.OfficeCode);
+        var writableWarehouseCodes = _local
+            .GetWritableOfficeCodesForSession(_session)
+            .Select(OfficeCodeCatalog.GetMainWarehouseCode)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return writableWarehouseCodes.Contains(normalizedWarehouseCode);
     }
 
     private static string NormalizeItemIdentityValue(string? value)

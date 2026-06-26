@@ -686,6 +686,91 @@ public sealed class SyncItemWarehouseStockPullTests
         }
     }
 
+    [Fact]
+    public async Task SyncPushItemWarehouseStocks_FiltersItemAndWarehouseWriteScopeForOfficeUser()
+    {
+        PrepareAppRoot("georaeplan-sync-stock-push-office-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var usenetItemId = Guid.Parse("81920000-0000-0000-0000-000000000001");
+            var yeonsuItemId = Guid.Parse("81920000-0000-0000-0000-000000000002");
+            var now = DateTime.UtcNow;
+
+            db.Items.AddRange(
+                new LocalItem
+                {
+                    Id = usenetItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "USENET push scope item",
+                    NameMatchKey = "USENETPUSHSCOPEITEM",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    IsSale = true,
+                    CurrentStock = 12m,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                },
+                new LocalItem
+                {
+                    Id = yeonsuItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Yeonsu,
+                    NameOriginal = "YEONSU push scope item",
+                    NameMatchKey = "YEONSUPUSHSCOPEITEM",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    IsSale = true,
+                    CurrentStock = 6m,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                });
+            db.ItemWarehouseStocks.AddRange(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = usenetItemId,
+                    WarehouseCode = DomainConstants.WarehouseUsenetMain,
+                    Quantity = 10m,
+                    UpdatedAtUtc = now
+                },
+                new LocalItemWarehouseStock
+                {
+                    ItemId = usenetItemId,
+                    WarehouseCode = DomainConstants.WarehouseYeonsuMain,
+                    Quantity = 2m,
+                    UpdatedAtUtc = now
+                },
+                new LocalItemWarehouseStock
+                {
+                    ItemId = yeonsuItemId,
+                    WarehouseCode = DomainConstants.WarehouseYeonsuMain,
+                    Quantity = 6m,
+                    UpdatedAtUtc = now
+                });
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            using var sync = CreateSyncService(db, CreateOfficeItemEditorSession(OfficeCodeCatalog.Usenet));
+
+            var pushStocks = await InvokeLoadInventoryTrackedItemWarehouseStocksForPushAsync(sync);
+
+            var stock = Assert.Single(pushStocks);
+            Assert.Equal(usenetItemId, stock.ItemId);
+            Assert.Equal(DomainConstants.WarehouseUsenetMain, stock.WarehouseCode);
+            Assert.Equal(10m, stock.Quantity);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static SessionState CreateAdminSession()
     {
         var session = new SessionState();
@@ -701,6 +786,22 @@ public sealed class SyncItemWarehouseStockPullTests
                 ScopeType = TenantScopeCatalog.ScopeAdmin
             },
             DateTime.UtcNow.AddDays(1));
+        return session;
+    }
+
+    private static SessionState CreateOfficeItemEditorSession(string officeCode)
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            UserId = Guid.NewGuid(),
+            Username = $"{officeCode.ToLowerInvariant()}-item-editor",
+            Role = DomainConstants.RoleUser,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = officeCode,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [AppPermissionNames.ItemEdit]
+        });
         return session;
     }
 
