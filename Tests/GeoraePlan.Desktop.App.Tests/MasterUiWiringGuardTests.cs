@@ -117,10 +117,18 @@ public sealed class MasterUiWiringGuardTests
             "청구서 표시 품목 (거래명세서 출력 라인)",
             "실제 청구/전표 대상 자산은 아래 '내부 포함 장비' 목록에서만 결정됩니다.",
             "개별 라인은 같은 모델명끼리 청구서 만들기 시 수량 합산됩니다.",
+            "표시품목 요약",
+            "선택 표시 라인 삭제",
+            "내부 포함 장비 연결",
+            "내부장비수",
             "내부 포함 장비 (실제 청구/전표 대상 자산)",
             "청구서 표시 품목명을 바꿔도 자산이 추가/삭제되지 않습니다.",
             "BillingAssetCoverageWarning",
             "HasBillingAssetCoverageWarning");
+
+        Assert.DoesNotContain("청구항목 요약", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Content=\"선택 품목 삭제\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Content=\"새 장비연결\"", xaml, StringComparison.Ordinal);
 
         AssertContainsAll(
             code,
@@ -146,6 +154,8 @@ public sealed class MasterUiWiringGuardTests
 
         AssertContainsAll(
             xaml,
+            "거래처 등록 → 렌탈 설정 → 청구 설정 → 내부 장비 연결 → 표시품목 구성 순서로 진행합니다.",
+            "5. 표시품목/내부 장비 구성",
             "표시품목/장비 연결",
             "표시 라인 추가",
             "선택 표시 라인 삭제",
@@ -157,6 +167,8 @@ public sealed class MasterUiWiringGuardTests
             "표시품목/내부 포함 장비 요약",
             "실제 청구 대상 내부 포함 장비",
             "실제 청구/전표 대상이 됩니다.");
+
+        Assert.DoesNotContain("청구항목 구성", xaml, StringComparison.Ordinal);
 
         AssertContainsAll(
             viewModel,

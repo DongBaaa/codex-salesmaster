@@ -421,7 +421,7 @@
                         </DataGridTemplateColumn>
                         <DataGridTextColumn Header="유형" Binding="{Binding BillingType}" Width="72" IsReadOnly="True"/>
                         <DataGridTextColumn Header="표시품목수" Binding="{Binding TemplateItemCount}" Width="90" IsReadOnly="True"/>
-                        <DataGridTextColumn Header="연결장비수" Binding="{Binding IncludedAssetCount}" Width="92" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="내부장비수" Binding="{Binding IncludedAssetCount}" Width="92" IsReadOnly="True"/>
                         <DataGridTextColumn Header="청구금액" Binding="{Binding CurrentBilledAmount, StringFormat=N0}" Width="110" IsReadOnly="True"/>
                         <DataGridTextColumn Header="누적수금" Binding="{Binding SettledAmount, StringFormat=N0}" Width="110" IsReadOnly="True"/>
                         <DataGridTemplateColumn Header="미수금" Width="100" IsReadOnly="True">
@@ -682,7 +682,7 @@
 
                         <Border Background="#223754" CornerRadius="6" Padding="10" Margin="0,0,0,10">
                             <StackPanel>
-                                <TextBlock Text="청구항목 요약" Foreground="#4FC3F7" FontWeight="Bold"/>
+                                <TextBlock Text="표시품목 요약" Foreground="#4FC3F7" FontWeight="Bold"/>
                                 <TextBlock Text="{Binding TemplateSummary}" Margin="0,6,0,0"/>
                                 <Border Background="#4A2F13"
                                         BorderBrush="#FFB74D"
@@ -704,8 +704,8 @@
                             <Button Content="표시 라인 추가" Background="#3949AB" BorderBrush="#3949AB" Margin="0,0,8,0" Command="{Binding AddTemplateItemCommand}" IsEnabled="{Binding CanSave}"/>
                             <Button Content="▲" Width="34" MinWidth="34" Padding="0" Background="#455A64" BorderBrush="#455A64" Margin="0,0,4,0" Command="{Binding MoveTemplateItemUpCommand}" ToolTip="선택한 표시 품목을 위로 이동"/>
                             <Button Content="▼" Width="34" MinWidth="34" Padding="0" Background="#455A64" BorderBrush="#455A64" Margin="0,0,8,0" Command="{Binding MoveTemplateItemDownCommand}" ToolTip="선택한 표시 품목을 아래로 이동"/>
-                            <Button Content="선택 품목 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,8,0" Command="{Binding RemoveTemplateItemCommand}"/>
-                            <Button Content="새 장비연결" Background="#6A1B9A" BorderBrush="#6A1B9A" Click="OpenAssetLinkDialogButton_Click" IsEnabled="{Binding CanOpenAssetLinkDialog}"/>
+                            <Button Content="선택 표시 라인 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,8,0" Command="{Binding RemoveTemplateItemCommand}"/>
+                            <Button Content="내부 포함 장비 연결" Background="#6A1B9A" BorderBrush="#6A1B9A" Click="OpenAssetLinkDialogButton_Click" IsEnabled="{Binding CanOpenAssetLinkDialog}"/>
                         </WrapPanel>
                         <TextBlock Text="{Binding ApplySelectedAssetsHint}" Foreground="#90CAF9" Margin="0,0,0,8" TextWrapping="Wrap"/>
                         <TextBlock Text="청구유형이 묶음/개별이면 표시품목 라인유형이 자동으로 같은 값으로 고정됩니다. 품목별로 섞어 쓰려면 청구유형을 혼합으로 선택하세요."

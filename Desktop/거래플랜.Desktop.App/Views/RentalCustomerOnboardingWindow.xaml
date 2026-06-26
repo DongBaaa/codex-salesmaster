@@ -82,7 +82,7 @@
             <DockPanel>
                 <StackPanel DockPanel.Dock="Left">
                     <TextBlock Text="신규 렌탈 거래처 등록" FontSize="22" FontWeight="Bold" Foreground="#4FC3F7"/>
-                    <TextBlock Text="거래처 등록 → 렌탈 설정 → 청구 설정 → 장비 연결 → 청구항목 구성 순서로 진행합니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
+                    <TextBlock Text="거래처 등록 → 렌탈 설정 → 청구 설정 → 내부 장비 연결 → 표시품목 구성 순서로 진행합니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
                 </StackPanel>
                 <StackPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
                     <TextBlock Text="{Binding CurrentStepTitle}" FontSize="16" FontWeight="SemiBold" HorizontalAlignment="Right"/>
@@ -114,7 +114,7 @@
                         <TextBlock Text="4. 장비 연결"/>
                     </Border>
                     <Border Background="#223754" CornerRadius="4" Padding="10" Margin="0,0,0,8">
-                        <TextBlock Text="5. 청구항목 구성"/>
+                        <TextBlock Text="5. 표시품목/내부 장비 구성"/>
                     </Border>
                     <Border Background="#223754" CornerRadius="4" Padding="10">
                         <TextBlock Text="6. 최종 확인"/>
