@@ -473,6 +473,219 @@ public sealed class SyncItemWarehouseStockPullTests
         }
     }
 
+    [Fact]
+    public async Task SyncPullItemWarehouseStocks_DiscardsNonInventoryRowsAndZerosSnapshots()
+    {
+        PrepareAppRoot("georaeplan-sync-stock-pull-noninventory-prune");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var assetItemId = Guid.Parse("81900000-0000-0000-0000-000000000001");
+            var stockItemId = Guid.Parse("81900000-0000-0000-0000-000000000002");
+            var now = DateTime.UtcNow;
+
+            db.Items.AddRange(
+                new LocalItem
+                {
+                    Id = assetItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "렌탈 장비 pull 오염 품목",
+                    NameMatchKey = "렌탈장비pull오염품목",
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    IsRental = true,
+                    IsSale = false,
+                    CurrentStock = 8m,
+                    SafetyStock = 2m,
+                    CreatedAtUtc = now.AddHours(-2),
+                    UpdatedAtUtc = now.AddHours(-2),
+                    Revision = 10,
+                    IsDirty = false
+                },
+                new LocalItem
+                {
+                    Id = stockItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "일반 재고 pull 품목",
+                    NameMatchKey = "일반재고pull품목",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    IsRental = false,
+                    IsSale = true,
+                    CurrentStock = 3m,
+                    SafetyStock = 1m,
+                    CreatedAtUtc = now.AddHours(-2),
+                    UpdatedAtUtc = now.AddHours(-2),
+                    Revision = 10,
+                    IsDirty = false
+                });
+            db.ItemWarehouseStocks.AddRange(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = assetItemId,
+                    WarehouseCode = DomainConstants.WarehouseUsenetMain,
+                    Quantity = 8m,
+                    UpdatedAtUtc = now.AddHours(-1),
+                    Revision = 10
+                },
+                new LocalItemWarehouseStock
+                {
+                    ItemId = stockItemId,
+                    WarehouseCode = DomainConstants.WarehouseUsenetMain,
+                    Quantity = 3m,
+                    UpdatedAtUtc = now.AddHours(-1),
+                    Revision = 10
+                });
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            using var sync = CreateSyncService(db, session);
+            await InvokeApplyPullAsync(
+                sync,
+                new SyncPullResponse
+                {
+                    CurrentServerRevision = 70,
+                    ItemWarehouseStocks =
+                    {
+                        new ItemWarehouseStockDto
+                        {
+                            ItemId = assetItemId,
+                            WarehouseCode = DomainConstants.WarehouseUsenetMain,
+                            Quantity = 9m,
+                            UpdatedAtUtc = now.AddMinutes(1),
+                            Revision = 70
+                        },
+                        new ItemWarehouseStockDto
+                        {
+                            ItemId = stockItemId,
+                            WarehouseCode = DomainConstants.WarehouseUsenetMain,
+                            Quantity = 5m,
+                            UpdatedAtUtc = now.AddMinutes(1),
+                            Revision = 70
+                        }
+                    }
+                });
+
+            db.ChangeTracker.Clear();
+
+            Assert.False(await db.ItemWarehouseStocks.AnyAsync(stock => stock.ItemId == assetItemId));
+            var assetItem = await db.Items.AsNoTracking().SingleAsync(item => item.Id == assetItemId);
+            Assert.Equal(0m, assetItem.CurrentStock);
+            Assert.Equal(0m, assetItem.SafetyStock);
+            Assert.False(assetItem.IsDirty);
+
+            var stockItem = await db.Items.AsNoTracking().SingleAsync(item => item.Id == stockItemId);
+            Assert.Equal(5m, stockItem.CurrentStock);
+            Assert.Equal(1m, stockItem.SafetyStock);
+            var stock = await db.ItemWarehouseStocks
+                .AsNoTracking()
+                .SingleAsync(current => current.ItemId == stockItemId);
+            Assert.Equal(5m, stock.Quantity);
+            Assert.Equal(70, stock.Revision);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SyncPushItemWarehouseStocks_PrunesAndExcludesNonInventoryRows()
+    {
+        PrepareAppRoot("georaeplan-sync-stock-push-noninventory-prune");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var assetItemId = Guid.Parse("81910000-0000-0000-0000-000000000001");
+            var stockItemId = Guid.Parse("81910000-0000-0000-0000-000000000002");
+            var now = DateTime.UtcNow;
+
+            db.Items.AddRange(
+                new LocalItem
+                {
+                    Id = assetItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "push 제외 렌탈 장비",
+                    NameMatchKey = "push제외렌탈장비",
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    IsRental = true,
+                    IsSale = false,
+                    CurrentStock = 7m,
+                    SafetyStock = 3m,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                },
+                new LocalItem
+                {
+                    Id = stockItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "push 허용 일반 재고",
+                    NameMatchKey = "push허용일반재고",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    IsRental = false,
+                    IsSale = true,
+                    CurrentStock = 4m,
+                    SafetyStock = 1m,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                });
+            db.ItemWarehouseStocks.AddRange(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = assetItemId,
+                    WarehouseCode = DomainConstants.WarehouseUsenetMain,
+                    Quantity = 7m,
+                    UpdatedAtUtc = now
+                },
+                new LocalItemWarehouseStock
+                {
+                    ItemId = stockItemId,
+                    WarehouseCode = DomainConstants.WarehouseUsenetMain,
+                    Quantity = 4m,
+                    UpdatedAtUtc = now
+                });
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            using var sync = CreateSyncService(db, session);
+            var removedCount = await InvokePruneNonInventoryItemWarehouseStocksAsync(sync);
+            var pushStocks = await InvokeLoadInventoryTrackedItemWarehouseStocksForPushAsync(sync);
+
+            Assert.Equal(1, removedCount);
+            Assert.DoesNotContain(pushStocks, stock => stock.ItemId == assetItemId);
+            var pushStock = Assert.Single(pushStocks);
+            Assert.Equal(stockItemId, pushStock.ItemId);
+            Assert.Equal(4m, pushStock.Quantity);
+            Assert.False(await db.ItemWarehouseStocks.AnyAsync(stock => stock.ItemId == assetItemId));
+
+            var assetItem = await db.Items.AsNoTracking().SingleAsync(item => item.Id == assetItemId);
+            Assert.Equal(0m, assetItem.CurrentStock);
+            Assert.Equal(0m, assetItem.SafetyStock);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static SessionState CreateAdminSession()
     {
         var session = new SessionState();
@@ -520,5 +733,19 @@ public sealed class SyncItemWarehouseStockPullTests
                 CancellationToken.None,
                 false
             ])!;
+    }
+
+    private static async Task<int> InvokePruneNonInventoryItemWarehouseStocksAsync(SyncService sync)
+    {
+        var method = typeof(SyncService).GetMethod("PruneNonInventoryItemWarehouseStocksAsync", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(nameof(SyncService), "PruneNonInventoryItemWarehouseStocksAsync");
+        return await (Task<int>)method.Invoke(sync, [CancellationToken.None])!;
+    }
+
+    private static async Task<List<LocalItemWarehouseStock>> InvokeLoadInventoryTrackedItemWarehouseStocksForPushAsync(SyncService sync)
+    {
+        var method = typeof(SyncService).GetMethod("LoadInventoryTrackedItemWarehouseStocksForPushAsync", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(nameof(SyncService), "LoadInventoryTrackedItemWarehouseStocksForPushAsync");
+        return await (Task<List<LocalItemWarehouseStock>>)method.Invoke(sync, [CancellationToken.None])!;
     }
 }

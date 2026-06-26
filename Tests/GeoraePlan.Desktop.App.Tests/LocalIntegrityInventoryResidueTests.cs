@@ -164,6 +164,63 @@ public sealed class LocalIntegrityInventoryResidueTests
         }
     }
 
+    [Fact]
+    public async Task SetItemOfficeStockAsync_NonInventoryItemCleansStaleRowsAndRejectsQuantity()
+    {
+        PrepareAppRoot("georaeplan-local-noninventory-stock-set-guard");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateYeonsuAdminSession();
+            var itemId = Guid.NewGuid();
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                NameOriginal = "수동 재고 차단 렌탈 장비",
+                NameMatchKey = "수동재고차단렌탈장비",
+                ItemKind = ItemKinds.Asset,
+                TrackingType = ItemTrackingTypes.Asset,
+                IsRental = true,
+                IsSale = false,
+                CurrentStock = 6m,
+                SafetyStock = 2m,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            db.ItemWarehouseStocks.Add(new LocalItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode = OfficeCodeCatalog.GetMainWarehouseCode(OfficeCodeCatalog.Yeonsu),
+                Quantity = 6m,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                service.SetItemOfficeStockAsync(itemId, 4m, OfficeCodeCatalog.Yeonsu));
+
+            Assert.Contains("재고 추적 대상이 아닌 품목", ex.Message, StringComparison.Ordinal);
+            Assert.False(await db.ItemWarehouseStocks.AnyAsync(stock => stock.ItemId == itemId));
+            var item = await db.Items.AsNoTracking().SingleAsync(current => current.Id == itemId);
+            Assert.Equal(0m, item.CurrentStock);
+            Assert.Equal(0m, item.SafetyStock);
+            Assert.True(item.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var root = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");

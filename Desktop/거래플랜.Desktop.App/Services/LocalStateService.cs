@@ -1829,8 +1829,54 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return null;
 		}
+		var originalTrackingType = item.TrackingType;
+		var originalItemKind = item.ItemKind;
+		var originalIsRental = item.IsRental;
+		var originalIsSale = item.IsSale;
+		var originalCurrentStock = item.CurrentStock;
+		var originalSafetyStock = item.SafetyStock;
+		NormalizeItemOperationalState(item);
+		var operationalStateChanged =
+			!string.Equals(originalTrackingType, item.TrackingType, StringComparison.Ordinal) ||
+			!string.Equals(originalItemKind, item.ItemKind, StringComparison.Ordinal) ||
+			originalIsRental != item.IsRental ||
+			originalIsSale != item.IsSale ||
+			originalCurrentStock != item.CurrentStock ||
+			originalSafetyStock != item.SafetyStock;
 		string warehouseCode = ResolvePrimaryWarehouseCode(officeCode);
 		List<LocalItemWarehouseStock> stocks = await _db.ItemWarehouseStocks.Where((LocalItemWarehouseStock stock) => stock.ItemId == itemId).ToListAsync(ct);
+		if (!ItemOperationalPolicy.SupportsInventory(item.TrackingType))
+		{
+			var nowForCleanup = DateTime.UtcNow;
+			var changed = operationalStateChanged;
+			if (stocks.Count > 0)
+			{
+				_db.ItemWarehouseStocks.RemoveRange(stocks);
+				changed = true;
+			}
+			if (item.CurrentStock != 0m)
+			{
+				item.CurrentStock = 0m;
+				changed = true;
+			}
+			if (item.SafetyStock != 0m)
+			{
+				item.SafetyStock = 0m;
+				changed = true;
+			}
+			if (changed)
+			{
+				item.IsDirty = true;
+				item.UpdatedAtUtc = nowForCleanup;
+				await _db.SaveChangesAsync(ct);
+				RaiseInventoryStateChanged();
+			}
+			if (quantity != 0m)
+			{
+				throw new InvalidOperationException("재고 추적 대상이 아닌 품목은 재고 수량을 입력할 수 없습니다. 렌탈/장비 수량은 렌탈 자산에서 관리하세요.");
+			}
+			return item;
+		}
 		var targetStock = stocks.FirstOrDefault((LocalItemWarehouseStock stock) => string.Equals(stock.WarehouseCode, warehouseCode, StringComparison.OrdinalIgnoreCase));
 		var previousQuantity = targetStock?.Quantity ?? 0m;
 		var quantityDelta = quantity - previousQuantity;
@@ -8003,6 +8049,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				item.IsRental = false;
 				item.IsSale = true;
 				item.CurrentStock = 0m;
+				item.SafetyStock = 0m;
 			}
 			else
 			{
@@ -8015,6 +8062,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			item.IsRental = true;
 			item.IsSale = false;
 			item.CurrentStock = 0m;
+			item.SafetyStock = 0m;
 		}
 	}
 

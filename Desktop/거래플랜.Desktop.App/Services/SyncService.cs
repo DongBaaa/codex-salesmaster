@@ -1610,6 +1610,14 @@ public sealed class SyncService : IDisposable
                 $"동기화 전 음수 재고 스냅샷 {negativeStockRepairCount}건을 0 이상으로 복구했습니다.");
         }
 
+        var nonInventoryStockCleanupCount = await PruneNonInventoryItemWarehouseStocksAsync(ct);
+        if (nonInventoryStockCleanupCount > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"동기화 전 재고 추적 대상이 아닌 품목의 창고재고 스냅샷 {nonInventoryStockCleanupCount}건을 제외했습니다.");
+        }
+
         var canSyncCompanyProfiles = includeSharedDirty && session.HasPermission(AppPermissionNames.CompanyProfileEdit);
         var canSyncSettings = includeSharedDirty && session.HasPermission(AppPermissionNames.SettingsEdit);
         var canSyncItemWarehouseStocks = includeSharedDirty && session.HasPermission(AppPermissionNames.ItemEdit);
@@ -1656,9 +1664,7 @@ public sealed class SyncService : IDisposable
         var dirtyCustomerContracts = await _local.GetDirtyCustomerContractsForSyncAsync(session, ct);
         var dirtyItems = await _local.GetDirtyItemsForSyncAsync(session, ct);
         var dirtyItemWarehouseStocks = canSyncItemWarehouseStocks
-            ? await _db.ItemWarehouseStocks
-                .AsNoTracking()
-                .ToListAsync(ct)
+            ? await LoadInventoryTrackedItemWarehouseStocksForPushAsync(ct)
             : [];
         var dirtyTransactions = await _local.GetDirtyTransactionsForSyncAsync(session, ct);
         var dirtyTransactionAttachments = await _local.GetDirtyTransactionAttachmentsForSyncAsync(session, ct);
@@ -7178,6 +7184,117 @@ public sealed class SyncService : IDisposable
         });
     }
 
+    private async Task<List<LocalItemWarehouseStock>> LoadInventoryTrackedItemWarehouseStocksForPushAsync(CancellationToken ct)
+    {
+        var rows = await (from stock in _db.ItemWarehouseStocks.AsNoTracking()
+                          join item in _db.Items.IgnoreQueryFilters().AsNoTracking()
+                              on stock.ItemId equals item.Id
+                          select new { Stock = stock, Item = item })
+            .ToListAsync(ct);
+
+        return rows
+            .Where(row => !row.Item.IsDeleted && SupportsInventoryTracking(row.Item))
+            .Select(row => row.Stock)
+            .ToList();
+    }
+
+    private async Task<int> PruneNonInventoryItemWarehouseStocksAsync(CancellationToken ct)
+    {
+        var rows = await (from stock in _db.ItemWarehouseStocks
+                          join item in _db.Items.IgnoreQueryFilters()
+                              on stock.ItemId equals item.Id
+                          select new { Stock = stock, Item = item })
+            .ToListAsync(ct);
+
+        var targetRows = rows
+            .Where(row => row.Item.IsDeleted || !SupportsInventoryTracking(row.Item))
+            .ToList();
+        if (targetRows.Count == 0)
+            return 0;
+
+        var now = DateTime.UtcNow;
+        var removedCount = 0;
+        foreach (var group in targetRows.GroupBy(row => row.Item.Id))
+        {
+            var item = group.First().Item;
+            var stocks = group.Select(row => row.Stock).ToList();
+            if (stocks.Count > 0)
+            {
+                _db.ItemWarehouseStocks.RemoveRange(stocks);
+                removedCount += stocks.Count;
+            }
+
+            if (item.IsDeleted)
+                continue;
+
+            var normalizedTrackingType = ItemOperationalPolicy.NormalizeTrackingType(
+                item.TrackingType,
+                item.ItemKind,
+                item.CategoryName,
+                item.IsRental);
+            var normalizedItemKind = ItemOperationalPolicy.NormalizeItemKind(
+                item.ItemKind,
+                normalizedTrackingType,
+                item.CategoryName,
+                item.IsRental);
+            var expectedIsRental = string.Equals(normalizedTrackingType, ItemTrackingTypes.Asset, StringComparison.Ordinal);
+            var expectedIsSale = !expectedIsRental;
+            var changed = false;
+
+            if (!string.Equals(item.TrackingType, normalizedTrackingType, StringComparison.Ordinal))
+            {
+                item.TrackingType = normalizedTrackingType;
+                changed = true;
+            }
+
+            if (!string.Equals(item.ItemKind, normalizedItemKind, StringComparison.Ordinal))
+            {
+                item.ItemKind = normalizedItemKind;
+                changed = true;
+            }
+
+            if (item.IsRental != expectedIsRental)
+            {
+                item.IsRental = expectedIsRental;
+                changed = true;
+            }
+
+            if (item.IsSale != expectedIsSale)
+            {
+                item.IsSale = expectedIsSale;
+                changed = true;
+            }
+
+            if (item.CurrentStock != 0m)
+            {
+                item.CurrentStock = 0m;
+                changed = true;
+            }
+
+            if (item.SafetyStock != 0m)
+            {
+                item.SafetyStock = 0m;
+                changed = true;
+            }
+
+            if (changed)
+                item.UpdatedAtUtc = now;
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return removedCount;
+    }
+
+    private static bool SupportsInventoryTracking(LocalItem item)
+    {
+        var normalizedTrackingType = ItemOperationalPolicy.NormalizeTrackingType(
+            item.TrackingType,
+            item.ItemKind,
+            item.CategoryName,
+            item.IsRental);
+        return ItemOperationalPolicy.SupportsInventory(normalizedTrackingType);
+    }
+
     private static string NormalizeItemIdentityValue(string? value)
         => RentalCatalogValueNormalizer.NormalizeLooseKey(value);
 
@@ -7582,15 +7699,62 @@ public sealed class SyncService : IDisposable
 
     private async Task UpsertPulledItemWarehouseStocksAsync(IReadOnlyList<ItemWarehouseStockDto> dtos, CancellationToken ct)
     {
-        var pulledKeys = dtos
-            .Select(dto => BuildItemWarehouseStockKey(dto.ItemId, dto.WarehouseCode))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var affectedItemIds = dtos
+        var incomingItemIds = dtos
             .Where(dto => dto.ItemId != Guid.Empty)
             .Select(dto => dto.ItemId)
             .ToHashSet();
+        var incomingItems = incomingItemIds.Count == 0
+            ? new List<LocalItem>()
+            : await _db.Items
+                .IgnoreQueryFilters()
+                .Where(item => incomingItemIds.Contains(item.Id))
+                .ToListAsync(ct);
+        var nonInventoryIncomingItemIds = incomingItems
+            .Where(item => item.IsDeleted || !SupportsInventoryTracking(item))
+            .Select(item => item.Id)
+            .ToHashSet();
+        IReadOnlyList<ItemWarehouseStockDto> filteredDtos = nonInventoryIncomingItemIds.Count == 0
+            ? dtos
+            : dtos
+                .Where(dto => !nonInventoryIncomingItemIds.Contains(dto.ItemId))
+                .ToList();
+        var pulledKeys = filteredDtos
+            .Select(dto => BuildItemWarehouseStockKey(dto.ItemId, dto.WarehouseCode))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var affectedItemIds = filteredDtos
+            .Where(dto => dto.ItemId != Guid.Empty)
+            .Select(dto => dto.ItemId)
+            .ToHashSet();
+        affectedItemIds.UnionWith(nonInventoryIncomingItemIds);
 
-        foreach (var dto in dtos)
+        if (nonInventoryIncomingItemIds.Count > 0)
+        {
+            var staleStocks = await _db.ItemWarehouseStocks
+                .Where(stock => nonInventoryIncomingItemIds.Contains(stock.ItemId))
+                .ToListAsync(ct);
+            if (staleStocks.Count > 0)
+                _db.ItemWarehouseStocks.RemoveRange(staleStocks);
+
+            var now = DateTime.UtcNow;
+            foreach (var item in incomingItems.Where(item => nonInventoryIncomingItemIds.Contains(item.Id) && !item.IsDeleted))
+            {
+                var changed = false;
+                if (item.CurrentStock != 0m)
+                {
+                    item.CurrentStock = 0m;
+                    changed = true;
+                }
+                if (item.SafetyStock != 0m)
+                {
+                    item.SafetyStock = 0m;
+                    changed = true;
+                }
+                if (changed)
+                    item.UpdatedAtUtc = now;
+            }
+        }
+
+        foreach (var dto in filteredDtos)
         {
             var local = LocalMappings.ToLocal(dto);
             var existing = await _db.ItemWarehouseStocks.FindAsync([local.ItemId, local.WarehouseCode], ct);

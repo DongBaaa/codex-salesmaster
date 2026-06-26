@@ -76,6 +76,7 @@
 - [ ] `LocalItem`의 IsRental 품목 재고 추적 고도화
   - [x] 서버 직접 저장/sync push/시작 보정에서 렌탈·장비 품목의 현재고·창고재고 잔여값 차단
   - [x] Android 품목/전표 화면과 pending 저장 경로에서 비재고·자산 품목 재고값 표시/저장 차단
+  - [x] PC 동기화 pull/push 및 수동 재고 조정 경로에서 비재고·자산 품목의 창고재고 row/현재고/안전재고 잔여값 차단
   - [ ] PC/Android 운영 로컬 캐시 잔여 row 실데이터 정리 증거 누적
 - [ ] 임대 시작/종료 달력 뷰
 - [x] 재고 부족 알림(메인 대시보드 안전재고 카드 표시)
@@ -191,3 +192,10 @@
 - [x] Android sync pull 캐시와 pending push에서 비재고/자산 품목 창고재고 row를 정리하고, scope filter가 해당 row를 서버로 올리지 않도록 보강했습니다.
 - [x] Android 0.2.77 / version code 188 signed APK 생성, 에뮬레이터 release smoke PASS, stable 업데이트 manifest live 반영 및 다운로드 SHA256 검증 PASS.
 - [ ] Android 실기기·운영망 장시간 실행 증거는 별도 기기 조건에서 추가 누적합니다.
+
+### 2026-06-27 PC 비재고/자산 품목 로컬 재고 캐시 및 push/pull 차단 증거
+- [x] PC sync push 직전에 비재고·자산 품목 창고재고 row를 제거하고 서버 전송 대상에서 제외합니다.
+- [x] PC sync pull에 비재고·자산 품목 창고재고 row가 섞여도 로컬 저장하지 않고 현재고·안전재고를 0으로 유지합니다.
+- [x] PC 수동 재고 조정 서비스가 재고 추적 대상이 아닌 품목의 0이 아닌 재고 입력을 거부하고 기존 잔여 row를 정리합니다.
+- [x] 회귀 테스트 PASS: `SyncItemWarehouseStockPullTests|LocalIntegrityInventoryResidueTests` 8/8, 동기화/재고 관련 확장 필터 24/24.
+- [ ] 사용자 PC별 오래된 로컬 DB와 운영망 현장 실행 증거는 별도 조건에서 추가 누적합니다.

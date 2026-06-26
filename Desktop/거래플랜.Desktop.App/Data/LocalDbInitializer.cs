@@ -2041,6 +2041,12 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                 changed = true;
             }
 
+            if (shouldRemoveInventoryStock && item.SafetyStock != 0m)
+            {
+                item.SafetyStock = 0m;
+                changed = true;
+            }
+
             if (changed)
             {
                 PreserveDirtyStateForStartupMaintenance(item, now);
