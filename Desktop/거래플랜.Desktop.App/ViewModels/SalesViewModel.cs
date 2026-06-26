@@ -25,6 +25,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     private readonly UiDebouncer _itemSearchDebouncer = new();
     private List<LocalItem> _allItems = new();
     private List<LocalCustomer> _allCustomers = new();
+    private readonly List<LocalWarehouse> _allWritableWarehouses = new();
     private readonly Dictionary<Guid, string> _categoryNameMap = new();
     private readonly Dictionary<string, string> _priceGradeSourceMap = new(StringComparer.CurrentCultureIgnoreCase);
     private readonly Dictionary<string, (bool AllowsSales, bool AllowsPurchase)> _tradeTypeRuleMap = new(StringComparer.CurrentCultureIgnoreCase);
@@ -433,19 +434,25 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
                 Offices.Add(office);
         }
 
-        Warehouses.Clear();
+        _allWritableWarehouses.Clear();
         foreach (var warehouse in await _local.GetWarehousesAsync())
         {
             if (writableWarehouseCodes.Contains(warehouse.Code))
-                Warehouses.Add(warehouse);
+                _allWritableWarehouses.Add(warehouse);
         }
+
+        RefreshWarehouseOptionsForResponsibleOffice(SelectedResponsibleOfficeCode, preserveSelectedWarehouse: true);
     }
 
     private void InitializeOfficeAndWarehouseDefaults()
     {
-        var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
+        var officeCode = InvoiceOfficeWarehouseSelectionPolicy.ResolveSelectableOfficeCode(
+            _session.OfficeCode,
+            Offices,
+            DomainConstants.OfficeUsenet);
 
         SelectedResponsibleOfficeCode = officeCode;
+        RefreshWarehouseOptionsForResponsibleOffice(officeCode, preserveSelectedWarehouse: false);
         SelectedWarehouseCode = ResolveDefaultWarehouseCode(officeCode);
     }
 
@@ -541,9 +548,13 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         CustomerTradeType = customer.TradeType;
         CustomerPriceGrade = customer.PriceGrade;
         CustomerNote = customer.Notes;
-        SelectedResponsibleOfficeCode = string.IsNullOrWhiteSpace(customer.ResponsibleOfficeCode)
+        var customerResponsibleOfficeCode = string.IsNullOrWhiteSpace(customer.ResponsibleOfficeCode)
             ? SelectedResponsibleOfficeCode
-            : OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(customer.ResponsibleOfficeCode, SelectedResponsibleOfficeCode);
+            : customer.ResponsibleOfficeCode;
+        SelectedResponsibleOfficeCode = InvoiceOfficeWarehouseSelectionPolicy.ResolveSelectableOfficeCode(
+            customerResponsibleOfficeCode,
+            Offices,
+            SelectedResponsibleOfficeCode);
         RequestRefreshPaymentSummary();
         RequestRefreshCustomerPurchasePriceCache(customer.Id);
     }
@@ -956,7 +967,10 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
     partial void OnSelectedResponsibleOfficeCodeChanged(string value)
     {
-        var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(value, DomainConstants.OfficeUsenet);
+        var officeCode = InvoiceOfficeWarehouseSelectionPolicy.ResolveSelectableOfficeCode(
+            value,
+            Offices,
+            _session.OfficeCode);
 
         if (!string.Equals(value, officeCode, StringComparison.OrdinalIgnoreCase))
         {
@@ -969,33 +983,55 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var selectedWarehouse = Warehouses.FirstOrDefault(warehouse =>
-            string.Equals(warehouse.Code, SelectedWarehouseCode, StringComparison.OrdinalIgnoreCase));
-
-        if (selectedWarehouse is null ||
-            !string.Equals(
-                OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(selectedWarehouse.OfficeCode, DomainConstants.OfficeUsenet),
-                officeCode,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            SelectedWarehouseCode = ResolveDefaultWarehouseCode(officeCode);
-        }
-
+        RefreshWarehouseOptionsForResponsibleOffice(officeCode, preserveSelectedWarehouse: true);
         OnPropertyChanged(nameof(PurchaseReceivingMetaDisplay));
     }
 
     partial void OnSelectedWarehouseCodeChanged(string value)
     {
+        var warehouseCode = InvoiceOfficeWarehouseSelectionPolicy.ResolveWarehouseCode(
+            value,
+            SelectedResponsibleOfficeCode,
+            _allWritableWarehouses);
+
+        if (!string.Equals(value, warehouseCode, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.Equals(SelectedWarehouseCode, warehouseCode, StringComparison.OrdinalIgnoreCase))
+            {
+                SelectedWarehouseCode = warehouseCode;
+            }
+
+            OnPropertyChanged(nameof(PurchaseReceivingMetaDisplay));
+            return;
+        }
+
         OnPropertyChanged(nameof(PurchaseReceivingMetaDisplay));
     }
 
-    private string ResolveDefaultWarehouseCode(string? officeCode)
+    private void RefreshWarehouseOptionsForResponsibleOffice(string? officeCode, bool preserveSelectedWarehouse)
     {
-        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, DomainConstants.OfficeUsenet);
-        return Warehouses.FirstOrDefault(warehouse =>
-                   string.Equals(warehouse.OfficeCode, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase))?.Code
-               ?? OfficeCodeCatalog.GetMainWarehouseCode(normalizedOfficeCode);
+        var requestedWarehouseCode = preserveSelectedWarehouse ? SelectedWarehouseCode : string.Empty;
+        var options = InvoiceOfficeWarehouseSelectionPolicy.FilterWarehousesForOffice(
+            _allWritableWarehouses,
+            officeCode);
+
+        Warehouses.Clear();
+        foreach (var warehouse in options)
+            Warehouses.Add(warehouse);
+
+        var resolvedWarehouseCode = InvoiceOfficeWarehouseSelectionPolicy.ResolveWarehouseCode(
+            requestedWarehouseCode,
+            officeCode,
+            _allWritableWarehouses);
+        if (!string.Equals(SelectedWarehouseCode, resolvedWarehouseCode, StringComparison.OrdinalIgnoreCase))
+            SelectedWarehouseCode = resolvedWarehouseCode;
     }
+
+    private string ResolveDefaultWarehouseCode(string? officeCode)
+        => InvoiceOfficeWarehouseSelectionPolicy.ResolveWarehouseCode(
+            null,
+            officeCode,
+            _allWritableWarehouses);
 
     private decimal ResolveUnitPrice(LocalItem item)
     {
@@ -1648,12 +1684,14 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         PurchaseReceivingMemo = inv.PurchaseReceivingMemo;
         _linkedRentalBillingProfileId = inv.LinkedRentalBillingProfileId;
         _linkedRentalBillingRunId = inv.LinkedRentalBillingRunId;
-        SelectedResponsibleOfficeCode = string.IsNullOrWhiteSpace(inv.ResponsibleOfficeCode)
-            ? SelectedResponsibleOfficeCode
-            : OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(inv.ResponsibleOfficeCode, SelectedResponsibleOfficeCode);
-        SelectedWarehouseCode = string.IsNullOrWhiteSpace(inv.SourceWarehouseCode)
-            ? ResolveDefaultWarehouseCode(SelectedResponsibleOfficeCode)
-            : OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(inv.SourceWarehouseCode, SelectedResponsibleOfficeCode, SelectedResponsibleOfficeCode);
+        SelectedResponsibleOfficeCode = InvoiceOfficeWarehouseSelectionPolicy.ResolveSelectableOfficeCode(
+            string.IsNullOrWhiteSpace(inv.ResponsibleOfficeCode) ? SelectedResponsibleOfficeCode : inv.ResponsibleOfficeCode,
+            Offices,
+            SelectedResponsibleOfficeCode);
+        SelectedWarehouseCode = InvoiceOfficeWarehouseSelectionPolicy.ResolveWarehouseCode(
+            inv.SourceWarehouseCode,
+            SelectedResponsibleOfficeCode,
+            _allWritableWarehouses);
         CurrentConcurrencyStamp = inv.ConcurrencyStamp;
         LastSavedBy = inv.LastSavedByUsername;
         LastSavedAtDisplay = inv.LastSavedAtUtc == default
