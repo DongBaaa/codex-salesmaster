@@ -205,3 +205,4 @@
 - [x] PC sync push 창고재고 수집이 item write scope와 warehouse write scope를 모두 만족하는 row만 전송하도록 보강했습니다.
 - [x] USENET office-only 사용자가 YEONSU 품목/창고 row를 push 후보에 싣지 않는 회귀테스트를 추가했습니다.
 - [x] 회귀 테스트 PASS: 창고재고 push scope targeted 8/8, 동기화/권한 확장 회귀 17/17, Desktop 전체 764/764.
+- [x] PC 1.1.616 설치/업데이트 패키지 생성 및 Linux PC live manifest 반영 PASS(SHA256 `D5257567787922951B1279734BC3714F493A222F3E344C795622044BEC22426B`).
