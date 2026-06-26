@@ -224,6 +224,8 @@ public sealed partial class LocalStateService
             },
             ct);
 
+        await NormalizeNonInventoryItemsAfterSnapshotRepairAsync(ct);
+
         var deletedItemsWithStockResidue = await _db.Items
             .IgnoreQueryFilters()
             .Where(item => item.IsDeleted && item.CurrentStock != 0m)
@@ -242,6 +244,89 @@ public sealed partial class LocalStateService
         }
 
         return new InventoryIntegrityRepairResult(crossTenantTransferIds.Count, true);
+    }
+
+    private async Task<int> NormalizeNonInventoryItemsAfterSnapshotRepairAsync(CancellationToken ct)
+    {
+        var items = await _db.Items
+            .IgnoreQueryFilters()
+            .Where(item => !item.IsDeleted)
+            .ToListAsync(ct);
+        if (items.Count == 0)
+            return 0;
+
+        var now = DateTime.UtcNow;
+        var changedCount = 0;
+        foreach (var item in items)
+        {
+            var normalizedTrackingType = ItemOperationalPolicy.NormalizeTrackingType(
+                item.TrackingType,
+                item.ItemKind,
+                item.CategoryName,
+                item.IsRental);
+            if (ItemOperationalPolicy.SupportsInventory(normalizedTrackingType))
+                continue;
+
+            var normalizedItemKind = ItemOperationalPolicy.NormalizeItemKind(
+                item.ItemKind,
+                normalizedTrackingType,
+                item.CategoryName,
+                item.IsRental);
+            var expectedIsRental = string.Equals(
+                normalizedTrackingType,
+                ItemTrackingTypes.Asset,
+                StringComparison.Ordinal);
+            var expectedIsSale = !expectedIsRental;
+            var changed = false;
+
+            if (!string.Equals(item.TrackingType, normalizedTrackingType, StringComparison.Ordinal))
+            {
+                item.TrackingType = normalizedTrackingType;
+                changed = true;
+            }
+
+            if (!string.Equals(item.ItemKind, normalizedItemKind, StringComparison.Ordinal))
+            {
+                item.ItemKind = normalizedItemKind;
+                changed = true;
+            }
+
+            if (item.IsRental != expectedIsRental)
+            {
+                item.IsRental = expectedIsRental;
+                changed = true;
+            }
+
+            if (item.IsSale != expectedIsSale)
+            {
+                item.IsSale = expectedIsSale;
+                changed = true;
+            }
+
+            if (item.CurrentStock != 0m)
+            {
+                item.CurrentStock = 0m;
+                changed = true;
+            }
+
+            if (item.SafetyStock != 0m)
+            {
+                item.SafetyStock = 0m;
+                changed = true;
+            }
+
+            if (!changed)
+                continue;
+
+            item.IsDirty = true;
+            item.UpdatedAtUtc = now;
+            changedCount++;
+        }
+
+        if (changedCount > 0)
+            await _db.SaveChangesAsync(ct);
+
+        return changedCount;
     }
 
     private async Task<bool> CanRunGlobalInventoryMaintenanceForCurrentIntegrityScopeAsync(

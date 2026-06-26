@@ -165,6 +165,66 @@ public sealed class LocalIntegrityInventoryResidueTests
     }
 
     [Fact]
+    public async Task RepairInventoryIntegrityForStartupAsync_NonInventoryItemCleansStaleRowsAndSafetyStock()
+    {
+        PrepareAppRoot("georaeplan-local-integrity-noninventory-stock-residue");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateYeonsuAdminSession();
+            var itemId = Guid.NewGuid();
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                NameOriginal = "Legacy asset stock residue item",
+                NameMatchKey = "LEGACYASSETSTOCKRESIDUEITEM",
+                ItemKind = ItemKinds.Asset,
+                TrackingType = ItemTrackingTypes.Asset,
+                IsRental = true,
+                IsSale = false,
+                CurrentStock = 6m,
+                SafetyStock = 2m,
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            db.ItemWarehouseStocks.Add(new LocalItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode = OfficeCodeCatalog.GetMainWarehouseCode(OfficeCodeCatalog.Yeonsu),
+                Quantity = 6m,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var repairResult = await service.RepairInventoryIntegrityForStartupAsync(session);
+
+            Assert.True(repairResult.RepairedAny);
+            Assert.False(await db.ItemWarehouseStocks.AnyAsync(stock => stock.ItemId == itemId));
+            var item = await db.Items.AsNoTracking().SingleAsync(current => current.Id == itemId);
+            Assert.Equal(ItemTrackingTypes.Asset, item.TrackingType);
+            Assert.Equal(ItemKinds.Asset, item.ItemKind);
+            Assert.True(item.IsRental);
+            Assert.False(item.IsSale);
+            Assert.Equal(0m, item.CurrentStock);
+            Assert.Equal(0m, item.SafetyStock);
+            Assert.True(item.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SetItemOfficeStockAsync_NonInventoryItemCleansStaleRowsAndRejectsQuantity()
     {
         PrepareAppRoot("georaeplan-local-noninventory-stock-set-guard");
