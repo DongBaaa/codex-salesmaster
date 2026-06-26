@@ -1,7 +1,10 @@
+using System.IO;
+using System.IO.Packaging;
 using System.Printing;
 using System.Windows;
 using System.Windows.Documents;
 using System.Windows.Xps;
+using System.Windows.Xps.Packaging;
 using 거래플랜.Desktop.App.Views;
 
 namespace 거래플랜.Desktop.App.Services;
@@ -37,12 +40,6 @@ public static class TradePrintExecutor
         {
             using var printServer = new LocalPrintServer();
             var printQueues = LoadInstalledPrintQueues(printServer);
-            if (printQueues.Count == 0)
-            {
-                errorMessage = "설치된 프린터가 없습니다. Windows에서 프린터를 먼저 추가한 뒤 다시 시도하세요.";
-                return false;
-            }
-
             var defaultQueue = TryGetDefaultPrintQueue(printServer);
             var paginator = document.DocumentPaginator;
             paginator.PageSize = pageSize;
@@ -58,6 +55,18 @@ public static class TradePrintExecutor
 
             paginator.PageSize = pageSize;
             var targetPaginator = BuildTargetPaginator(paginator, dialog.PrintOptions.PageNumbers, dialog.PrintOptions.ReversePageOrder, pageCount);
+            if (dialog.PrintOptions.SaveToFile)
+            {
+                SaveDocumentAsXps(targetPaginator, dialog.PrintOptions.OutputFilePath);
+                return true;
+            }
+
+            if (dialog.PrintOptions.PrintQueue is null)
+            {
+                errorMessage = "인쇄할 프린터를 선택하세요. 프린터가 없으면 파일 저장(XPS)을 사용하세요.";
+                return false;
+            }
+
             var printTicket = BuildPrintTicket(dialog.PrintOptions.PrintQueue, dialog.PrintOptions.CopyCount, dialog.PrintOptions.Collate);
             var writer = PrintQueue.CreateXpsDocumentWriter(dialog.PrintOptions.PrintQueue);
             writer.Write(targetPaginator, printTicket);
@@ -209,6 +218,21 @@ public static class TradePrintExecutor
         }
 
         return printTicket;
+    }
+
+    private static void SaveDocumentAsXps(DocumentPaginator paginator, string? outputFilePath)
+    {
+        if (string.IsNullOrWhiteSpace(outputFilePath))
+            throw new InvalidOperationException("저장할 파일 경로가 비어 있습니다.");
+
+        var directory = Path.GetDirectoryName(outputFilePath);
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+            throw new DirectoryNotFoundException("저장할 폴더를 찾을 수 없습니다.");
+
+        using var package = Package.Open(outputFilePath, FileMode.Create, FileAccess.ReadWrite);
+        using var xpsDocument = new XpsDocument(package, CompressionOption.Maximum);
+        var writer = XpsDocument.CreateXpsDocumentWriter(xpsDocument);
+        writer.Write(paginator);
     }
 
     private static Window? ResolveActiveOwner()

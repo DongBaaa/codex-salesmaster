@@ -74,7 +74,7 @@
                            Foreground="#EAF2FF"
                            FontSize="22"
                            FontWeight="Bold"/>
-                <TextBlock Text="Windows 기본 인쇄창 대신 거래플랜 안에서 프린터, 페이지, 매수를 선택해 바로 인쇄합니다."
+                <TextBlock Text="Windows 기본 인쇄창 대신 거래플랜 안에서 프린터, 페이지, 매수를 선택해 바로 인쇄하거나 문서 파일로 저장합니다."
                            Foreground="#A7D1FF"
                            Margin="0,6,0,0"
                            TextWrapping="Wrap"/>
@@ -234,6 +234,11 @@
                            VerticalAlignment="Center"/>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="파일 저장(XPS)"
+                            Style="{StaticResource DialogButtonStyle}"
+                            MinWidth="132"
+                            Background="#526985"
+                            Click="OnSaveFileClick"/>
                     <Button Content="확인"
                             Style="{StaticResource DialogButtonStyle}"
                             Background="#1F7ACC"

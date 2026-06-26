@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using System.IO;
 using System.Printing;
 using System.Windows;
+using Microsoft.Win32;
 using 거래플랜.Desktop.App.Printing;
 
 namespace 거래플랜.Desktop.App.Views;
@@ -106,10 +108,67 @@ public partial class TradePrintWindow : Window
 
     private void OnOkClick(object sender, RoutedEventArgs e)
     {
-        if (PrinterComboBox.SelectedItem is not PrinterListItem item)
+        if (TryBuildPrintOptions(saveToFile: false, outputFilePath: null, out var options))
         {
-            ShowValidationError("인쇄할 프린터를 선택하세요.");
+            PrintOptions = options;
+            DialogResult = true;
+        }
+    }
+
+    private void OnSaveFileClick(object sender, RoutedEventArgs e)
+    {
+        var defaultFileName = MakeSafeFileName($"거래플랜-인쇄문서-{DateTime.Now:yyyyMMdd-HHmm}.xps");
+        var dialog = new SaveFileDialog
+        {
+            Title = "인쇄 문서 파일 저장",
+            Filter = "XPS 문서 (*.xps)|*.xps",
+            FileName = defaultFileName,
+            AddExtension = true,
+            DefaultExt = ".xps",
+            OverwritePrompt = true
+        };
+
+        if (dialog.ShowDialog(this) != true)
             return;
+
+        if (TryBuildPrintOptions(saveToFile: true, dialog.FileName, out var options))
+        {
+            PrintOptions = options;
+            DialogResult = true;
+        }
+    }
+
+    private bool TryBuildPrintOptions(
+        bool saveToFile,
+        string? outputFilePath,
+        out TradePrintDialogResult? options)
+    {
+        options = null;
+        PrinterListItem? item = null;
+        if (!saveToFile)
+        {
+            item = PrinterComboBox.SelectedItem as PrinterListItem;
+            if (item is null)
+            {
+                ShowValidationError("인쇄할 프린터를 선택하세요. 프린터가 없으면 파일 저장(XPS)을 사용하세요.");
+                return false;
+            }
+        }
+
+        if (saveToFile)
+        {
+            if (string.IsNullOrWhiteSpace(outputFilePath))
+            {
+                ShowValidationError("저장할 파일 경로를 선택하세요.");
+                return false;
+            }
+
+            var directory = Path.GetDirectoryName(outputFilePath);
+            if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+            {
+                ShowValidationError("저장할 폴더를 찾을 수 없습니다.");
+                return false;
+            }
         }
 
         if (!int.TryParse(CopyCountTextBox.Text.Trim(), out var copyCount) || copyCount < 1 || copyCount > 999)
@@ -117,7 +176,7 @@ public partial class TradePrintWindow : Window
             ShowValidationError("인쇄 매수는 1~999 사이의 숫자로 입력하세요.");
             CopyCountTextBox.Focus();
             CopyCountTextBox.SelectAll();
-            return;
+            return false;
         }
 
         IReadOnlyList<int>? pageNumbers = null;
@@ -128,7 +187,7 @@ public partial class TradePrintWindow : Window
                 ShowValidationError(errorMessage ?? "페이지 범위를 확인하세요.");
                 PageRangeTextBox.Focus();
                 PageRangeTextBox.SelectAll();
-                return;
+                return false;
             }
 
             pageNumbers = parsedPages;
@@ -137,16 +196,18 @@ public partial class TradePrintWindow : Window
         if (ReverseOrderCheckBox.IsChecked == true && _pageCount <= 0)
         {
             ShowValidationError("문서 페이지 수를 확인할 수 없어 역방향 인쇄를 사용할 수 없습니다.");
-            return;
+            return false;
         }
 
-        PrintOptions = new TradePrintDialogResult(
-            item.Queue,
+        options = new TradePrintDialogResult(
+            saveToFile ? null : item!.Queue,
             copyCount,
             CollateCheckBox.IsChecked == true,
             pageNumbers,
-            ReverseOrderCheckBox.IsChecked == true);
-        DialogResult = true;
+            ReverseOrderCheckBox.IsChecked == true,
+            saveToFile,
+            outputFilePath);
+        return true;
     }
 
     private void OnCancelClick(object sender, RoutedEventArgs e)
@@ -211,6 +272,14 @@ public partial class TradePrintWindow : Window
         {
             return false;
         }
+    }
+
+    private static string MakeSafeFileName(string fileName)
+    {
+        foreach (var invalidChar in Path.GetInvalidFileNameChars())
+            fileName = fileName.Replace(invalidChar, '-');
+
+        return fileName;
     }
 
     private sealed class PrinterListItem

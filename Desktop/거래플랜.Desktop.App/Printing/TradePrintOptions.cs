@@ -3,11 +3,13 @@ using System.Printing;
 namespace 거래플랜.Desktop.App.Printing;
 
 public sealed record TradePrintDialogResult(
-    PrintQueue PrintQueue,
+    PrintQueue? PrintQueue,
     int CopyCount,
     bool Collate,
     IReadOnlyList<int>? PageNumbers,
-    bool ReversePageOrder);
+    bool ReversePageOrder,
+    bool SaveToFile = false,
+    string? OutputFilePath = null);
 
 public static class TradePrintPageRangeParser
 {
