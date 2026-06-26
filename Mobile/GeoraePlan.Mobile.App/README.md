@@ -56,11 +56,17 @@
 
 ### 직접 `dotnet build` 할 때
 - 기본 권장은 위 전용 빌드 스크립트 사용입니다.
+- 현재 Windows PATH의 시스템 `dotnet`에 `maui-android` 워크로드가 없으면 `NETSDK1147`로 실패할 수 있습니다. 이 경우 아래처럼 거래플랜 전용 dotnet을 먼저 사용하세요.
+- 전용 dotnet 후보:
+  - `D:\거래플랜\.dotnet\dotnet.exe`
+  - `%LOCALAPPDATA%\GeoraePlan.Android\dotnet8\dotnet.exe`
 - 그래도 직접 빌드할 때는 프로젝트가 `ANDROID_SDK_ROOT`, `ANDROID_HOME`, `%LOCALAPPDATA%\GeoraePlan.Android\android-sdk`, `JAVA_HOME`, Android Studio JBR 경로를 순서대로 자동 감지합니다.
 - `XA5300: Android SDK 디렉터리를 찾을 수 없습니다`가 나오면 아래처럼 SDK/JDK 경로를 명시합니다.
+- Release 직접 `build`는 Android AOT 응답파일 이슈로 실패할 수 있으므로 납품 APK/AAB 생성은 `Build-GeoraePlanAndroidApk.ps1`/`Build-GeoraePlanAndroidBundle.ps1`를 사용하세요. 해당 스크립트는 알려진 AOT 응답파일 오류가 나면 AOT 비활성 재시도를 수행합니다.
 
 ```powershell
-dotnet build "D:\거래플랜\Mobile\GeoraePlan.Mobile.App\GeoraePlan.Mobile.App.csproj" -f net8.0-android -c Debug -p:AndroidSdkDirectory="$env:LOCALAPPDATA\GeoraePlan.Android\android-sdk" -p:JavaSdkDirectory="C:\Program Files\Android\Android Studio\jbr"
+$mobileDotnet = if (Test-Path "D:\거래플랜\.dotnet\dotnet.exe") { "D:\거래플랜\.dotnet\dotnet.exe" } else { "$env:LOCALAPPDATA\GeoraePlan.Android\dotnet8\dotnet.exe" }
+& $mobileDotnet build "D:\거래플랜\Mobile\GeoraePlan.Mobile.App\GeoraePlan.Mobile.App.csproj" -f net8.0-android -c Debug -p:AndroidSdkDirectory="$env:LOCALAPPDATA\GeoraePlan.Android\android-sdk" -p:JavaSdkDirectory="C:\Program Files\Android\Android Studio\jbr"
 ```
 
 ## Android Studio로 직접 확인하는 방법

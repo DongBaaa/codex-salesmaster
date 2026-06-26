@@ -29,11 +29,35 @@ public sealed class MobileAndroidBuildConfigTests
             "README.md");
 
         Assert.Contains("직접 `dotnet build` 할 때", source, StringComparison.Ordinal);
+        Assert.Contains("NETSDK1147", source, StringComparison.Ordinal);
+        Assert.Contains("D:\\거래플랜\\.dotnet\\dotnet.exe", source, StringComparison.Ordinal);
+        Assert.Contains("%LOCALAPPDATA%\\GeoraePlan.Android\\dotnet8\\dotnet.exe", source, StringComparison.Ordinal);
         Assert.Contains("ANDROID_SDK_ROOT", source, StringComparison.Ordinal);
         Assert.Contains("%LOCALAPPDATA%\\GeoraePlan.Android\\android-sdk", source, StringComparison.Ordinal);
         Assert.Contains("XA5300", source, StringComparison.Ordinal);
+        Assert.Contains("AOT 응답파일 오류", source, StringComparison.Ordinal);
         Assert.Contains("-p:AndroidSdkDirectory", source, StringComparison.Ordinal);
         Assert.Contains("-p:JavaSdkDirectory", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MobileBuildScriptsConsiderBundledDotnetBeforeSystemDotnet()
+    {
+        var environmentScript = ReadRepositoryFile(
+            "tools",
+            "mobile",
+            "Test-GeoraePlanAndroidEnvironment.ps1");
+        var apkBuildScript = ReadRepositoryFile(
+            "tools",
+            "mobile",
+            "Build-GeoraePlanAndroidApk.ps1");
+
+        Assert.Contains("(Join-Path $ProjectRoot '.dotnet\\dotnet.exe')", environmentScript, StringComparison.Ordinal);
+        Assert.Contains("(Join-Path $ProjectRoot '.dotnet\\dotnet.exe')", apkBuildScript, StringComparison.Ordinal);
+        Assert.True(
+            apkBuildScript.IndexOf("(Join-Path $ProjectRoot '.dotnet\\dotnet.exe')", StringComparison.Ordinal) <
+            apkBuildScript.IndexOf("Get-Command dotnet", StringComparison.Ordinal),
+            "모바일 APK 빌드는 시스템 dotnet보다 프로젝트/전용 dotnet 후보를 먼저 확인해야 합니다.");
     }
 
     private static string ReadRepositoryFile(params string[] pathParts)

@@ -27,6 +27,7 @@ function Get-ResolvedDotNetPath {
 
     foreach ($candidate in @(
         (Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\dotnet8\dotnet.exe'),
+        (Join-Path $ProjectRoot '.dotnet\dotnet.exe'),
         (Join-Path $ProjectRoot '.tooling\dotnet8\dotnet.exe')
     )) {
         if (Test-Path -LiteralPath $candidate) {
