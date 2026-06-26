@@ -244,7 +244,8 @@
                             MinWidth="132"
                             Background="#526985"
                             Click="OnSaveFileClick"/>
-                    <Button Content="확인"
+                    <Button x:Name="PrintButton"
+                            Content="확인"
                             Style="{StaticResource DialogButtonStyle}"
                             Background="#1F7ACC"
                             IsDefault="True"

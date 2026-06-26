@@ -40,7 +40,12 @@ public partial class TradePrintWindow : Window
 
         PrinterComboBox.ItemsSource = items;
         PrinterComboBox.SelectedItem = items.FirstOrDefault(static item => item.IsDefault) ?? items.FirstOrDefault();
-        PropertiesButtonEnabled();
+        UpdatePrinterActionState();
+
+        if (items.Count == 0)
+        {
+            StatusTextBlock.Text = "등록된 프린터를 찾지 못했습니다. PDF 저장 또는 파일 저장(XPS)으로 문서를 저장한 뒤 복합기에서 출력하세요.";
+        }
     }
 
     private void OnPrinterSelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -50,14 +55,18 @@ public partial class TradePrintWindow : Window
             PrinterTypeTextBlock.Text = string.Empty;
             PrinterLocationTextBlock.Text = string.Empty;
             PrinterStatusTextBlock.Text = string.Empty;
-            PropertiesButtonEnabled();
+            StatusTextBlock.Text = "프린터가 선택되지 않았습니다. PDF 저장 또는 파일 저장(XPS)을 사용할 수 있습니다.";
+            UpdatePrinterActionState();
             return;
         }
 
         PrinterTypeTextBlock.Text = item.TypeText;
         PrinterLocationTextBlock.Text = item.LocationText;
         PrinterStatusTextBlock.Text = item.StatusText;
-        PropertiesButtonEnabled();
+        StatusTextBlock.Text = item.IsOffline
+            ? "선택한 프린터가 오프라인입니다. 프린터 상태를 확인하거나 PDF 저장으로 대체 출력하세요."
+            : "프린터와 인쇄 옵션을 확인한 뒤 확인을 누르세요.";
+        UpdatePrinterActionState();
     }
 
     private void OnPrinterPropertiesClick(object sender, RoutedEventArgs e)
@@ -67,7 +76,15 @@ public partial class TradePrintWindow : Window
 
         try
         {
-            var printerName = item.Queue.FullName;
+            var printerName = SafeRead(item.Queue, static q => q.FullName);
+            if (string.IsNullOrWhiteSpace(printerName))
+                printerName = SafeRead(item.Queue, static q => q.Name);
+            if (string.IsNullOrWhiteSpace(printerName))
+            {
+                StatusTextBlock.Text = "프린터 이름을 확인할 수 없어 속성 창을 열 수 없습니다.";
+                return;
+            }
+
             var safePrinterName = printerName.Replace("\"", "\\\"", StringComparison.Ordinal);
             Process.Start(new ProcessStartInfo
             {
@@ -243,10 +260,12 @@ public partial class TradePrintWindow : Window
     private void SetCopyCount(int copyCount)
         => CopyCountTextBox.Text = Math.Clamp(copyCount, 1, 999).ToString("N0").Replace(",", string.Empty, StringComparison.Ordinal);
 
-    private void PropertiesButtonEnabled()
+    private void UpdatePrinterActionState()
     {
-        // 속성 버튼은 선택된 프린터가 있을 때만 동작하도록 유지한다.
-        PropertiesButton.IsEnabled = PrinterComboBox.SelectedItem is PrinterListItem;
+        // 속성/직접 인쇄 버튼은 선택된 프린터가 있을 때만 동작하도록 유지한다.
+        var hasPrinter = PrinterComboBox.SelectedItem is PrinterListItem;
+        PropertiesButton.IsEnabled = hasPrinter;
+        PrintButton.IsEnabled = hasPrinter;
     }
 
     private static bool IsSameQueue(PrintQueue queue, string? defaultFullName)
@@ -318,8 +337,9 @@ public partial class TradePrintWindow : Window
                 : location;
 
             var status = SafeRead(queue, static q => q.QueueStatus.ToString());
-            if (SafeReadBool(queue, static q => q.IsOffline))
-                status = string.IsNullOrWhiteSpace(status) ? "Offline" : $"{status}, Offline";
+            IsOffline = SafeReadBool(queue, static q => q.IsOffline);
+            if (IsOffline)
+                status = string.IsNullOrWhiteSpace(status) ? "오프라인" : $"{status}, 오프라인";
             StatusText = string.IsNullOrWhiteSpace(status) || status == "None" ? "준비" : status;
         }
 
@@ -329,5 +349,6 @@ public partial class TradePrintWindow : Window
         public string TypeText { get; }
         public string LocationText { get; }
         public string StatusText { get; }
+        public bool IsOffline { get; }
     }
 }

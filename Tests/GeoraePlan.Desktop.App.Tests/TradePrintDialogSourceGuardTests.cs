@@ -36,6 +36,36 @@ public sealed class TradePrintDialogSourceGuardTests
     }
 
     [Fact]
+    public void TradePrintWindow_DisablesDirectPrintWhenPrinterIsUnavailableAndGuidesFileFallback()
+    {
+        var repoRoot = FindRepositoryRoot();
+        var xaml = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "TradePrintWindow.xaml"));
+        var codeBehind = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "TradePrintWindow.xaml.cs"));
+        var executor = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Services",
+            "TradePrintExecutor.cs"));
+
+        Assert.Contains("x:Name=\"PrintButton\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("PrintButton.IsEnabled = hasPrinter", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("등록된 프린터를 찾지 못했습니다", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("PDF 저장 또는 파일 저장(XPS)", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("파일 저장 전용으로 인쇄창을 표시합니다", executor, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TradePrintExecutor_SavesPdfFileFromFixedDocument()
     {
         RunOnSta(() =>
@@ -88,6 +118,24 @@ public sealed class TradePrintDialogSourceGuardTests
         Assert.Equal([0, 0, 1, 1, 2, 2], source.RequestedPages);
     }
 
+    [Fact]
+    public void TradePrintExecutor_AppliesPageSelectionAndReverseOrder()
+    {
+        var source = new RecordingDocumentPaginator(5);
+        var paginator = InvokeBuildTargetPaginator(
+            source,
+            pageNumbers: [1, 3, 4],
+            reversePageOrder: true,
+            pageCount: 5);
+
+        Assert.Equal(3, paginator.PageCount);
+
+        for (var index = 0; index < paginator.PageCount; index++)
+            paginator.GetPage(index);
+
+        Assert.Equal([3, 2, 0], source.RequestedPages);
+    }
+
     private static DocumentPaginator InvokeBuildCopyPaginator(
         DocumentPaginator source,
         int copyCount,
@@ -99,6 +147,21 @@ public sealed class TradePrintDialogSourceGuardTests
         Assert.NotNull(method);
 
         var result = method!.Invoke(null, [source, copyCount, collate]);
+        return Assert.IsAssignableFrom<DocumentPaginator>(result);
+    }
+
+    private static DocumentPaginator InvokeBuildTargetPaginator(
+        DocumentPaginator source,
+        IReadOnlyList<int>? pageNumbers,
+        bool reversePageOrder,
+        int pageCount)
+    {
+        var method = typeof(TradePrintExecutor).GetMethod(
+            "BuildTargetPaginator",
+            BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, [source, pageNumbers, reversePageOrder, pageCount]);
         return Assert.IsAssignableFrom<DocumentPaginator>(result);
     }
 
