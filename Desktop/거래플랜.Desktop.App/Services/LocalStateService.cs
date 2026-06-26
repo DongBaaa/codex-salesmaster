@@ -5914,7 +5914,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		decimal settledAmount,
 		CancellationToken ct)
 	{
-		var evidence = await LoadRentalBillingRunEvidenceAsync(profile.Id, billingRunId, ct);
+		var evidence = await LoadRentalBillingRunEvidenceAsync(profile, billingRunId, ct);
 		if (evidence is null)
 		{
 			return null;
@@ -5950,42 +5950,72 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		};
 	}
 
-	private async Task<RentalBillingRunEvidence?> LoadRentalBillingRunEvidenceAsync(Guid billingProfileId, Guid billingRunId, CancellationToken ct)
+	private async Task<RentalBillingRunEvidence?> LoadRentalBillingRunEvidenceAsync(LocalRentalBillingProfile profile, Guid billingRunId, CancellationToken ct)
 	{
-		var invoiceEvidence = await _db.Invoices.IgnoreQueryFilters().AsNoTracking()
+		var invoiceEvidenceRows = await _db.Invoices.IgnoreQueryFilters().AsNoTracking()
 			.Where((LocalInvoice invoice) => !invoice.IsDeleted &&
 			                                invoice.IsLatestVersion &&
 			                                invoice.TotalAmount > 0m &&
-			                                invoice.LinkedRentalBillingProfileId == billingProfileId &&
+			                                invoice.LinkedRentalBillingProfileId == profile.Id &&
 			                                invoice.LinkedRentalBillingRunId == billingRunId)
 			.OrderByDescending((LocalInvoice invoice) => invoice.LastSavedAtUtc)
 			.ThenByDescending((LocalInvoice invoice) => invoice.UpdatedAtUtc)
-			.Select((LocalInvoice invoice) => new { invoice.InvoiceDate })
-			.FirstOrDefaultAsync(ct);
+			.Select((LocalInvoice invoice) => new
+			{
+				invoice.InvoiceDate,
+				invoice.TenantCode,
+				invoice.ResponsibleOfficeCode,
+				invoice.OfficeCode
+			})
+			.ToListAsync(ct);
+		var invoiceEvidence = invoiceEvidenceRows
+			.FirstOrDefault(row => IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode));
 
-		var transactionDates = await _db.Transactions.IgnoreQueryFilters().AsNoTracking()
+		var transactionRows = await _db.Transactions.IgnoreQueryFilters().AsNoTracking()
 			.Where((LocalTransaction transaction) => !transaction.IsDeleted &&
 			                                       transaction.SettlementAmount > 0m &&
-			                                       transaction.LinkedRentalBillingProfileId == billingProfileId &&
+			                                       transaction.LinkedRentalBillingProfileId == profile.Id &&
 			                                       transaction.LinkedRentalBillingRunId == billingRunId)
-			.Select((LocalTransaction transaction) => transaction.TransactionDate)
+			.Select((LocalTransaction transaction) => new
+			{
+				transaction.Id,
+				transaction.TransactionDate,
+				transaction.TenantCode,
+				transaction.ResponsibleOfficeCode,
+				transaction.OfficeCode
+			})
 			.ToListAsync(ct);
+		var scopedTransactionRows = transactionRows
+			.Where(row => IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
+			.ToList();
+		HashSet<Guid> scopedTransactionIds = scopedTransactionRows.Select(row => row.Id).ToHashSet();
+		var transactionDates = scopedTransactionRows
+			.Select(row => row.TransactionDate)
+			.ToList();
 
-		var directPaymentDates = await (from payment in _db.Payments.IgnoreQueryFilters().AsNoTracking()
+		var directPaymentRows = await (from payment in _db.Payments.IgnoreQueryFilters().AsNoTracking()
 			join invoice in _db.Invoices.IgnoreQueryFilters().AsNoTracking()
 				on payment.InvoiceId equals invoice.Id
 			where !payment.IsDeleted &&
 			      payment.Amount > 0m &&
 			      !invoice.IsDeleted &&
 			      invoice.IsLatestVersion &&
-			      invoice.LinkedRentalBillingProfileId == billingProfileId &&
-			      invoice.LinkedRentalBillingRunId == billingRunId &&
-			      !_db.Transactions.IgnoreQueryFilters().AsNoTracking().Any(transaction =>
-				      !transaction.IsDeleted &&
-				      transaction.SettlementAmount > 0m &&
-				      transaction.Id == payment.Id &&
-				      transaction.LinkedRentalBillingProfileId == billingProfileId)
-			select payment.PaymentDate).ToListAsync(ct);
+			      invoice.LinkedRentalBillingProfileId == profile.Id &&
+			      invoice.LinkedRentalBillingRunId == billingRunId
+			select new
+			{
+				PaymentId = payment.Id,
+				payment.PaymentDate,
+				invoice.TenantCode,
+				invoice.ResponsibleOfficeCode,
+				invoice.OfficeCode
+			}).ToListAsync(ct);
+		var directPaymentDates = directPaymentRows
+			.Where(row =>
+				!scopedTransactionIds.Contains(row.PaymentId) &&
+				IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
+			.Select(row => row.PaymentDate)
+			.ToList();
 
 		if (invoiceEvidence is null && transactionDates.Count == 0 && directPaymentDates.Count == 0)
 		{
@@ -6012,15 +6042,25 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return Math.Max(0m, profile.MonthlyAmount);
 		}
-		var activeInvoiceAmount = await _db.Invoices.IgnoreQueryFilters().AsNoTracking()
+		var activeInvoiceRows = await _db.Invoices.IgnoreQueryFilters().AsNoTracking()
 			.Where((LocalInvoice invoice) => !invoice.IsDeleted &&
 			                                invoice.IsLatestVersion &&
 			                                invoice.LinkedRentalBillingProfileId == profile.Id &&
 			                                invoice.LinkedRentalBillingRunId == billingRunId.Value)
 			.OrderByDescending((LocalInvoice invoice) => invoice.LastSavedAtUtc)
 			.ThenByDescending((LocalInvoice invoice) => invoice.UpdatedAtUtc)
-			.Select((LocalInvoice invoice) => (decimal?)invoice.TotalAmount)
-			.FirstOrDefaultAsync(ct);
+			.Select((LocalInvoice invoice) => new
+			{
+				invoice.TotalAmount,
+				invoice.TenantCode,
+				invoice.ResponsibleOfficeCode,
+				invoice.OfficeCode
+			})
+			.ToListAsync(ct);
+		decimal? activeInvoiceAmount = activeInvoiceRows
+			.Where(row => IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
+			.Select(row => (decimal?)row.TotalAmount)
+			.FirstOrDefault();
 		if (activeInvoiceAmount.HasValue && activeInvoiceAmount.Value > 0m)
 		{
 			return activeInvoiceAmount.Value;

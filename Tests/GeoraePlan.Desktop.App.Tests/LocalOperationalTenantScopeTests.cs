@@ -268,6 +268,8 @@ public sealed class LocalOperationalTenantScopeTests
                 invoiceNumber: "USENET-RENTAL-INV");
             inScopeInvoice.LinkedRentalBillingProfileId = profile.Id;
             inScopeInvoice.LinkedRentalBillingRunId = billingRunId;
+            inScopeInvoice.TotalAmount = 1_000m;
+            inScopeInvoice.LastSavedAtUtc = new DateTime(2026, 6, 22, 9, 0, 0, DateTimeKind.Utc);
 
             var outOfScopeInvoice = CreateInvoice(
                 tenantCode: TenantScopeCatalog.Itworld,
@@ -276,6 +278,8 @@ public sealed class LocalOperationalTenantScopeTests
                 invoiceNumber: "ITWORLD-RENTAL-INV");
             outOfScopeInvoice.LinkedRentalBillingProfileId = profile.Id;
             outOfScopeInvoice.LinkedRentalBillingRunId = billingRunId;
+            outOfScopeInvoice.TotalAmount = 9_000m;
+            outOfScopeInvoice.LastSavedAtUtc = new DateTime(2026, 6, 22, 10, 0, 0, DateTimeKind.Utc);
 
             var inScopePayment = new LocalPayment
             {
@@ -313,6 +317,16 @@ public sealed class LocalOperationalTenantScopeTests
             Assert.Equal(1_000m, summary.BilledAmount);
             Assert.Equal(130m, summary.SettledAmount);
             Assert.Equal(870m, summary.OutstandingAmount);
+
+            var storedAmountSummary = await service.GetRentalSettlementSummaryAsync(
+                profile.Id,
+                billingRunId,
+                billedAmountOverride: null,
+                session);
+
+            Assert.Equal(1_000m, storedAmountSummary.BilledAmount);
+            Assert.Equal(130m, storedAmountSummary.SettledAmount);
+            Assert.Equal(870m, storedAmountSummary.OutstandingAmount);
         }
         finally
         {

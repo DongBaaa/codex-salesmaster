@@ -5101,7 +5101,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return LocalMutationResult.Denied("선택한 조회/작성 기준일의 청구 정보를 만들 수 없습니다.");
 
         var templateItems = GetBillingTemplateItems(profile);
-        var linkedInvoice = await GetActiveBillingInvoiceAsync(currentRun.RunId, ct);
+        var linkedInvoice = await GetActiveBillingInvoiceAsync(profile, currentRun.RunId, ct);
         var reusedExistingInvoice = linkedInvoice is not null;
         Guid invoiceId;
         decimal billedAmount;
@@ -9970,20 +9970,27 @@ WHERE ""AssignedUsername"" <> '';", ct);
         string Unit,
         string Remark);
 
-    private async Task<LocalInvoice?> GetActiveBillingInvoiceAsync(Guid billingRunId, CancellationToken ct)
+    private async Task<LocalInvoice?> GetActiveBillingInvoiceAsync(LocalRentalBillingProfile profile, Guid billingRunId, CancellationToken ct)
     {
         if (billingRunId == Guid.Empty)
             return null;
 
-        return await _db.Invoices
+        var invoices = await _db.Invoices
             .Include(invoice => invoice.Lines.Where(line => !line.IsDeleted))
             .Include(invoice => invoice.Payments.Where(payment => !payment.IsDeleted))
             .AsNoTracking()
             .Where(invoice => !invoice.IsDeleted &&
                               invoice.IsLatestVersion &&
+                              invoice.LinkedRentalBillingProfileId == profile.Id &&
                               invoice.LinkedRentalBillingRunId == billingRunId)
             .OrderByDescending(invoice => invoice.LastSavedAtUtc)
-            .FirstOrDefaultAsync(ct);
+            .ThenByDescending(invoice => invoice.UpdatedAtUtc)
+            .ToListAsync(ct);
+        return invoices.FirstOrDefault(invoice => IsSameRentalSettlementScope(
+            profile,
+            invoice.TenantCode,
+            invoice.ResponsibleOfficeCode,
+            invoice.OfficeCode));
     }
 
     private async Task<(bool Success, string Message, List<LocalInvoiceLine> Lines)> BuildRentalBillingInvoiceLinesAsync(
