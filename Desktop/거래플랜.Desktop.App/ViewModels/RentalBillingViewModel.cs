@@ -98,6 +98,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [ObservableProperty] private string _editNotes = string.Empty;
     [ObservableProperty] private string _templateSummary = string.Empty;
     [ObservableProperty] private string _assetCandidateSummary = string.Empty;
+    [ObservableProperty] private string _billingAssetCoverageWarning = string.Empty;
     [ObservableProperty] private bool _linkAssetsLater;
     [ObservableProperty] private DateTime? _editBillingAnchorDate;
     [ObservableProperty] private DateTime? _editBillingStartDate;
@@ -217,6 +218,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     public bool ShouldShowContractDateWarning => IsContractDateMissing && (EditCustomerId.HasValue || !string.IsNullOrWhiteSpace(EditCustomerName) || SelectedRow is not null);
     public string ContractDateWarningMessage => "계약 체결일을 확인할 수 없습니다. 저장은 가능하지만 청구 기준 검토가 필요합니다.";
     public bool HasPastUnresolved => PastUnresolvedCount > 0 || PastUnresolvedAmount > 0m;
+    public bool HasBillingAssetCoverageWarning => !string.IsNullOrWhiteSpace(BillingAssetCoverageWarning);
     public string PastUnresolvedSummaryText => HasPastUnresolved
         ? $"과거 미처리 알림: 거래처 {PastUnresolvedCustomerCount:N0}곳 / 청구월 {PastUnresolvedCount:N0}건 / 총 미수 {PastUnresolvedAmount:N0}원"
         : "과거 미처리 입금 내역이 없습니다.";
@@ -407,6 +409,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         UpdateTemplateDerivedValues();
         OnPropertyChanged(nameof(CanEditTemplateLineMode));
     }
+
+    partial void OnBillingAssetCoverageWarningChanged(string value)
+        => OnPropertyChanged(nameof(HasBillingAssetCoverageWarning));
     partial void OnSelectedTemplateItemChanged(RentalBillingTemplateEditorItem? value)
     {
         NormalizeTemplateRepresentativeAssets();
@@ -4108,8 +4113,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             EditMonthlyAmount = TemplateItems.Sum(item => item.EffectiveAmount);
             EditItemName = BuildTemplateItemName();
             EditOutstandingAmount = Math.Max(0m, EditMonthlyAmount - EditSettledAmount);
-            var linkedAssetCount = TemplateItems.SelectMany(item => item.IncludedAssetIds).Distinct().Count();
+            var linkedAssetCount = CountDistinctEditorIncludedAssets();
+            var profileAssetCount = ResolveCurrentProfileLinkedAssetCount();
             TemplateSummary = $"표시품목 {TemplateItems.Count:N0}건 / 연결장비 {linkedAssetCount:N0}대";
+            BillingAssetCoverageWarning = BuildBillingAssetCoverageWarning(profileAssetCount, linkedAssetCount, LinkAssetsLater);
             BillingSchedulePreviewText = BuildBillingSchedulePreview();
             DocumentIssuePreviewText = BuildDocumentIssuePreview();
             ApplySelectedAssetsHint = BuildApplySelectedAssetsHint(linkedAssetCount);
@@ -4155,6 +4162,60 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             : ids.Count > labels.Count
                 ? $"{string.Join(", ", labels)} 외 {ids.Count - labels.Count}대"
                 : string.Join(", ", labels);
+    }
+
+    public string GetBillingAssetCoverageStartWarning()
+    {
+        if (SelectedRow is null || SelectedRow.IsAggregateRow || !SelectedRow.HasPersistedProfile)
+            return string.Empty;
+
+        return BuildBillingAssetCoverageWarning(
+            SelectedRow.AssetCount,
+            SelectedRow.IncludedAssetCount,
+            linkAssetsLater: false);
+    }
+
+    private int CountDistinctEditorIncludedAssets()
+        => TemplateItems
+            .SelectMany(item => item.IncludedAssetIds)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .Count();
+
+    private int ResolveCurrentProfileLinkedAssetCount()
+    {
+        var selectedAssetCount = SelectedRow is { IsAggregateRow: false }
+            ? Math.Max(0, SelectedRow.AssetCount)
+            : 0;
+        var pendingLinkedAssetCount = BuildPendingAssetLinkEdits()
+            .Select(edit => edit.AssetId)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .Count();
+        return Math.Max(selectedAssetCount, pendingLinkedAssetCount);
+    }
+
+    private static string BuildBillingAssetCoverageWarning(
+        int profileAssetCount,
+        int includedAssetCount,
+        bool linkAssetsLater)
+    {
+        profileAssetCount = Math.Max(0, profileAssetCount);
+        includedAssetCount = Math.Max(0, includedAssetCount);
+
+        if (includedAssetCount == 0 && !linkAssetsLater)
+        {
+            return "청구서 표시 품목에 내부 포함 장비가 없습니다. 실제 청구/전표 대상 자산이 빠질 수 있으니 새 장비연결로 자산을 추가하거나 '장비 나중 연결'을 선택하세요.";
+        }
+
+        if (profileAssetCount > 0 &&
+            includedAssetCount > 0 &&
+            profileAssetCount != includedAssetCount)
+        {
+            return $"청구 프로필 연결 자산 {profileAssetCount:N0}대 중 표시품목 포함 자산 {includedAssetCount:N0}대만 실제 청구/전표 대상입니다. 일부 장비만 청구하려는 것이 아니라면 내부 포함 장비를 확인하세요.";
+        }
+
+        return string.Empty;
     }
 
     private bool TryRejectAggregateSelection(string actionName)
@@ -4229,6 +4290,13 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (TemplateItems.Any(item => string.IsNullOrWhiteSpace(item.DisplayItemName)))
         {
             message = "표시 품목명은 비워둘 수 없습니다.";
+            return false;
+        }
+
+        var includedAssetCount = CountDistinctEditorIncludedAssets();
+        if (includedAssetCount == 0 && !LinkAssetsLater)
+        {
+            message = "청구서 표시 품목에 내부 포함 장비가 없습니다. 실제 청구 대상 자산을 연결하거나 '장비 나중 연결'을 선택하세요.";
             return false;
         }
 

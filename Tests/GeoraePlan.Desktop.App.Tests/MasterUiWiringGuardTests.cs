@@ -108,13 +108,29 @@ public sealed class MasterUiWiringGuardTests
     {
         var appRoot = FindDesktopAppRoot();
         var xaml = ReadAppFile(appRoot, "Views", "RentalBillingWindow.xaml");
+        var code = ReadAppFile(appRoot, "Views", "RentalBillingWindow.xaml.cs");
+        var viewModel = ReadAppFile(appRoot, "ViewModels", "RentalBillingViewModel.cs");
 
         AssertContainsAll(
             xaml,
             "거래명세서에 보일 라인입니다.",
             "실제 청구 대상 자산은 '연결장비'에 표시된 내부 포함 장비만 적용됩니다.",
             "내부 포함 장비 (실제 청구 대상 자산)",
-            "이 목록의 장비만 청구/전표 생성 대상입니다.");
+            "이 목록의 장비만 청구/전표 생성 대상입니다.",
+            "BillingAssetCoverageWarning",
+            "HasBillingAssetCoverageWarning");
+
+        AssertContainsAll(
+            code,
+            "GetBillingAssetCoverageStartWarning()",
+            "청구 대상 장비 확인");
+
+        AssertContainsAll(
+            viewModel,
+            "청구서 표시 품목에 내부 포함 장비가 없습니다.",
+            "청구 프로필 연결 자산",
+            "표시품목 포함 자산",
+            "GetBillingAssetCoverageStartWarning");
     }
 
     [Fact]

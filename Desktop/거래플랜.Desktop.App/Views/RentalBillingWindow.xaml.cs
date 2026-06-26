@@ -78,6 +78,19 @@ public partial class RentalBillingWindow : Window
             if (DataContext is not RentalBillingViewModel viewModel)
                 return;
 
+            var assetCoverageWarning = viewModel.GetBillingAssetCoverageStartWarning();
+            if (!string.IsNullOrWhiteSpace(assetCoverageWarning))
+            {
+                var confirmCoverage = MessageBox.Show(
+                    this,
+                    $"{assetCoverageWarning}{Environment.NewLine}{Environment.NewLine}이 상태로 조회/작성 기준일의 청구서를 만들까요?",
+                    "청구 대상 장비 확인",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
+                if (confirmCoverage != MessageBoxResult.Yes)
+                    return;
+            }
+
             if (viewModel.SelectedRow?.HasPastUnresolved == true)
             {
                 var confirm = MessageBox.Show(

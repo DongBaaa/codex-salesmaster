@@ -385,11 +385,83 @@ public sealed class RentalBillingSpecificationTests
         Assert.Equal("IMC2000 \uC678", item.Specification);
     }
 
+    [Fact]
+    public void RentalBillingViewModel_TemplateWithoutIncludedAssetsRequiresExplicitLaterFlag()
+    {
+        var vm = new RentalBillingViewModel(null!, null!, new SessionState());
+        vm.TemplateItems.Add(new RentalBillingTemplateEditorItem
+        {
+            DisplayItemName = "렌탈 임대료",
+            BillingLineMode = "묶음",
+            Quantity = 1m,
+            UnitPrice = 100_000m,
+            Amount = 100_000m
+        });
+
+        var blocked = InvokeValidateTemplateConfiguration(vm);
+
+        Assert.False(blocked.IsValid);
+        Assert.Contains("내부 포함 장비", blocked.Message, StringComparison.Ordinal);
+
+        vm.LinkAssetsLater = true;
+        var allowed = InvokeValidateTemplateConfiguration(vm);
+
+        Assert.True(allowed.IsValid, allowed.Message);
+    }
+
+    [Fact]
+    public void RentalBillingViewModel_UpdateTemplateDerivedValuesWarnsWhenProfileAndTemplateAssetCountsDiffer()
+    {
+        var includedAssetId = Guid.Parse("12121212-1212-1212-1212-121212121212");
+        var vm = new RentalBillingViewModel(null!, null!, new SessionState());
+        SetPrivateField(vm, "_selectedRow", new RentalBillingViewRow
+        {
+            AssetCount = 3,
+            IncludedAssetCount = 1,
+            HasPersistedProfile = true
+        });
+        var item = new RentalBillingTemplateEditorItem
+        {
+            DisplayItemName = "IMC2010",
+            BillingLineMode = "개별",
+            Quantity = 1m,
+            UnitPrice = 50_000m,
+            Amount = 50_000m
+        };
+        item.IncludedAssetIds.Add(includedAssetId);
+        vm.TemplateItems.Add(item);
+
+        InvokePrivateInstance(vm, "UpdateTemplateDerivedValues");
+
+        Assert.True(vm.HasBillingAssetCoverageWarning);
+        Assert.Contains("청구 프로필 연결 자산 3대", vm.BillingAssetCoverageWarning, StringComparison.Ordinal);
+        Assert.Contains("표시품목 포함 자산 1대", vm.GetBillingAssetCoverageStartWarning(), StringComparison.Ordinal);
+    }
+
     private static T GetPrivateField<T>(object target, string fieldName)
     {
         var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(field);
         return Assert.IsType<T>(field!.GetValue(target));
+    }
+
+    private static void SetPrivateField(object target, string fieldName, object? value)
+    {
+        var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        field!.SetValue(target, value);
+    }
+
+    private static (bool IsValid, string Message) InvokeValidateTemplateConfiguration(RentalBillingViewModel vm)
+    {
+        var method = typeof(RentalBillingViewModel).GetMethod(
+            "TryValidateTemplateConfiguration",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+
+        object?[] args = [null];
+        var isValid = Assert.IsType<bool>(method!.Invoke(vm, args));
+        return (isValid, Assert.IsType<string>(args[0]));
     }
 
     private static void InvokePrivateInstance(object target, string methodName, params object?[] args)

@@ -684,6 +684,17 @@
                             <StackPanel>
                                 <TextBlock Text="청구항목 요약" Foreground="#4FC3F7" FontWeight="Bold"/>
                                 <TextBlock Text="{Binding TemplateSummary}" Margin="0,6,0,0"/>
+                                <Border Background="#4A2F13"
+                                        BorderBrush="#FFB74D"
+                                        BorderThickness="1"
+                                        CornerRadius="4"
+                                        Padding="8"
+                                        Margin="0,6,0,0"
+                                        Visibility="{Binding HasBillingAssetCoverageWarning, Converter={StaticResource BoolToVisibility}}">
+                                    <TextBlock Text="{Binding BillingAssetCoverageWarning}"
+                                               Foreground="#FFCC80"
+                                               TextWrapping="Wrap"/>
+                                </Border>
                                 <TextBlock Text="{Binding BillingSchedulePreviewText}" Foreground="#B3E5FC" Margin="0,4,0,0" TextWrapping="Wrap"/>
                                 <TextBlock Text="{Binding DocumentIssuePreviewText}" Foreground="#B3E5FC" Margin="0,4,0,0" TextWrapping="Wrap"/>
                             </StackPanel>
