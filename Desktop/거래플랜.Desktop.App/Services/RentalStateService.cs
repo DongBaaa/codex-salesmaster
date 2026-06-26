@@ -9802,7 +9802,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
         string ModelNameKey,
         string ItemName,
         string Unit,
-        decimal UnitPrice,
         string Remark);
 
     private async Task<LocalInvoice?> GetActiveBillingInvoiceAsync(Guid billingRunId, CancellationToken ct)
@@ -10142,7 +10141,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
             ResolveRentalBillingInvoiceLineModelKey(draft),
             (draft.Line.ItemNameOriginal ?? string.Empty).Trim(),
             (draft.Line.Unit ?? string.Empty).Trim(),
-            draft.Line.UnitPrice,
             (draft.Line.Remark ?? string.Empty).Trim());
 
     private static LocalInvoiceLine BuildAggregatedRentalBillingInvoiceLine(
@@ -10150,9 +10148,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
     {
         var firstLine = group[0].Line;
         var quantity = group.Sum(draft => draft.Line.Quantity <= 0m ? 1m : draft.Line.Quantity);
+        var totalAmount = group.Sum(draft => draft.Line.LineAmount > 0m
+            ? draft.Line.LineAmount
+            : (draft.Line.Quantity <= 0m ? 1m : draft.Line.Quantity) * Math.Max(0m, draft.Line.UnitPrice));
         firstLine.SpecificationOriginal = BuildAggregatedRentalBillingInvoiceSpecification(group);
         firstLine.Quantity = quantity;
-        firstLine.LineAmount = quantity * firstLine.UnitPrice;
+        firstLine.UnitPrice = quantity <= 0m ? 0m : totalAmount / quantity;
+        firstLine.LineAmount = totalAmount;
         firstLine.MaterialNumber = BuildAggregatedRentalBillingInvoiceField(group.Select(draft => draft.Line.MaterialNumber));
         firstLine.SerialNumber = BuildAggregatedRentalBillingInvoiceField(group.Select(draft => draft.Line.SerialNumber));
         firstLine.InstallLocation = BuildAggregatedRentalBillingInvoiceField(group.Select(draft => draft.Line.InstallLocation));
@@ -11215,16 +11217,27 @@ WHERE ""AssignedUsername"" <> '';", ct);
             decimal quantity;
             decimal unitPrice;
             if (itemAssets.Count == 1 ||
-                string.Equals(effectiveLineMode, "묶음", StringComparison.OrdinalIgnoreCase) ||
-                distinctPositiveFees.Count != 1)
+                string.Equals(effectiveLineMode, "묶음", StringComparison.OrdinalIgnoreCase))
             {
                 quantity = 1m;
                 unitPrice = totalMonthlyFee;
             }
-            else
+            else if (distinctPositiveFees.Count == 1 &&
+                     itemAssets.All(asset =>
+                     {
+                         var monthlyFee = Math.Max(0m, asset.MonthlyFee);
+                         return monthlyFee <= 0m || monthlyFee == distinctPositiveFees[0];
+                     }))
             {
                 quantity = itemAssets.Count;
                 unitPrice = distinctPositiveFees[0];
+            }
+            else
+            {
+                quantity = itemAssets.Count;
+                unitPrice = itemAssets.Count == 0
+                    ? 0m
+                    : totalMonthlyFee / itemAssets.Count;
             }
 
             var amount = CalculateTemplateLineAmount(quantity, unitPrice);
@@ -11290,9 +11303,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
     }
 
     private static Dictionary<Guid, decimal> BuildTemplateAssetMonthlyFeeMap(
-        IReadOnlyList<RentalBillingTemplateItemModel> templateItems)
+        IReadOnlyList<RentalBillingTemplateItemModel> templateItems,
+        IReadOnlyList<LocalRentalAsset> linkedAssets)
     {
         var monthlyFeeByAssetId = new Dictionary<Guid, decimal>();
+        var linkedAssetFeeById = (linkedAssets ?? Array.Empty<LocalRentalAsset>())
+            .Where(asset => asset.Id != Guid.Empty)
+            .GroupBy(asset => asset.Id)
+            .ToDictionary(group => group.Key, group => Math.Max(0m, group.First().MonthlyFee));
         foreach (var templateItem in templateItems)
         {
             var includedAssetIds = (templateItem.IncludedAssetIds ?? new List<Guid>())
@@ -11311,8 +11329,18 @@ WHERE ""AssignedUsername"" <> '';", ct);
             {
                 var quantity = NormalizeTemplateQuantity(templateItem.Quantity);
                 var unitPrice = ResolveTemplateUnitPrice(quantity, templateItem.UnitPrice, templateItem.Amount);
-                if (unitPrice > 0m && quantity == includedAssetIds.Count)
+                var linkedFees = includedAssetIds
+                    .Where(linkedAssetFeeById.ContainsKey)
+                    .Select(id => linkedAssetFeeById[id])
+                    .ToList();
+                if (unitPrice > 0m &&
+                    quantity == includedAssetIds.Count &&
+                    linkedFees.Count == includedAssetIds.Count &&
+                    linkedFees.Distinct().Count() == 1 &&
+                    linkedFees[0] == unitPrice)
+                {
                     monthlyFee = unitPrice;
+                }
             }
 
             if (!monthlyFee.HasValue)
@@ -11385,7 +11413,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var relinkedProfileIds = new HashSet<Guid>();
         var touchedAssetIds = new HashSet<Guid>();
-        var templateMonthlyFeeByAssetId = BuildTemplateAssetMonthlyFeeMap(templateItems);
+        var templateMonthlyFeeByAssetId = BuildTemplateAssetMonthlyFeeMap(templateItems, linkedAssets);
         var now = DateTime.UtcNow;
         foreach (var asset in linkedAssets)
         {

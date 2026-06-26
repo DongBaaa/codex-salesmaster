@@ -378,6 +378,51 @@ public sealed class RentalIncludedBillingAssetsTests
     }
 
     [Fact]
+    public void ApplyAssetMonthlyFeesToBillingTemplate_IndividualMixedFeesKeepsQuantityAndAverageUnitPrice()
+    {
+        var method = typeof(RentalStateService).GetMethod(
+            "ApplyAssetMonthlyFeesToBillingTemplate",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var profileId = Guid.Parse("f2700000-1111-4444-8888-000000000001");
+        var assetAId = Guid.Parse("f2700000-1111-4444-8888-0000000000a1");
+        var assetBId = Guid.Parse("f2700000-1111-4444-8888-0000000000b2");
+        var profile = new LocalRentalBillingProfile
+        {
+            Id = profileId,
+            BillingType = "개별",
+            CustomerName = "Mixed Fee Template Customer"
+        };
+        var templateItems = new List<RentalBillingTemplateItemModel>
+        {
+            new()
+            {
+                DisplayItemName = "IMC2010",
+                BillingLineMode = "개별",
+                Quantity = 1m,
+                UnitPrice = 50_000m,
+                Amount = 50_000m,
+                IncludedAssetIds = [assetAId, assetBId]
+            }
+        };
+        var assets = new List<LocalRentalAsset>
+        {
+            CreateRentalAsset("Mixed Fee Template Customer", "MIXED-001", profileId, assetAId, monthlyFee: 50_000m),
+            CreateRentalAsset("Mixed Fee Template Customer", "MIXED-002", profileId, assetBId, monthlyFee: 70_000m)
+        };
+
+        var changed = Assert.IsType<bool>(method!.Invoke(null, new object?[] { profile, templateItems, assets }));
+
+        Assert.True(changed);
+        var item = Assert.Single(templateItems);
+        Assert.Equal(2m, item.Quantity);
+        Assert.Equal(60_000m, item.UnitPrice);
+        Assert.Equal(120_000m, item.Amount);
+        Assert.Equal(new[] { assetAId, assetBId }, item.IncludedAssetIds);
+    }
+
+    [Fact]
     public async Task GetIncludedBillingAssetsAsync_BatchesManyExplicitIncludedAssetIds()
     {
         PrepareAppRoot("georaeplan-rental-included-assets-explicit-batch");

@@ -17,8 +17,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private readonly record struct IndividualTemplateMergeKey(
         string ModelNameKey,
         string Unit,
-        string Note,
-        decimal UnitPrice);
+        string Note);
 
     private const string AllOption = "전체";
     private const int BillingHistoryDisplayLimit = 600;
@@ -3269,16 +3268,22 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         }
 
         if (includedAssetIds.Count == 1 ||
-            string.Equals(effectiveLineMode, "묶음", StringComparison.OrdinalIgnoreCase) ||
-            distinctPositiveFees.Count != 1)
+            string.Equals(effectiveLineMode, "묶음", StringComparison.OrdinalIgnoreCase))
         {
             item.Quantity = 1m;
             item.UnitPrice = totalMonthlyFee;
         }
-        else
+        else if (distinctPositiveFees.Count == 1 && monthlyFees.All(fee => fee <= 0m || fee == distinctPositiveFees[0]))
         {
             item.Quantity = includedAssetIds.Count;
             item.UnitPrice = distinctPositiveFees[0];
+        }
+        else
+        {
+            item.Quantity = includedAssetIds.Count;
+            item.UnitPrice = includedAssetIds.Count == 0
+                ? 0m
+                : totalMonthlyFee / includedAssetIds.Count;
         }
 
         item.NormalizeCalculatedAmount();
@@ -3441,8 +3446,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         return new IndividualTemplateMergeKey(
             modelName,
             (item.Unit ?? string.Empty).Trim(),
-            (item.Note ?? string.Empty).Trim(),
-            Math.Max(0m, item.UnitPrice));
+            (item.Note ?? string.Empty).Trim());
     }
 
     private string ResolveIndividualTemplateModelName(RentalBillingTemplateEditorItem item)
@@ -3998,6 +4002,18 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         var unitPrice = Math.Max(0m, item.UnitPrice);
         if (unitPrice <= 0m || quantity != includedAssetIds.Count)
             return false;
+
+        var linkedAssetFees = includedAssetIds
+            .Select(FindBillingAssetOption)
+            .Where(asset => asset is not null)
+            .Select(asset => Math.Max(0m, asset!.MonthlyFee))
+            .ToList();
+        if (linkedAssetFees.Count != includedAssetIds.Count ||
+            linkedAssetFees.Distinct().Count() != 1 ||
+            linkedAssetFees[0] != unitPrice)
+        {
+            return false;
+        }
 
         monthlyFee = unitPrice;
         return true;

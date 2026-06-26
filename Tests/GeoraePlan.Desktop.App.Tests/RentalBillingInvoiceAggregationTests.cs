@@ -69,7 +69,7 @@ public sealed class RentalBillingInvoiceAggregationTests
     }
 
     [Fact]
-    public async Task BuildRentalBillingInvoiceLinesAsync_DoesNotGroupSameModelWhenUnitPriceDiffers()
+    public async Task BuildRentalBillingInvoiceLinesAsync_GroupsSameModelWhenUnitPriceDiffersUsingAverageUnitPrice()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-invoice-separate-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -105,10 +105,13 @@ public sealed class RentalBillingInvoiceAggregationTests
                 CreateAdminSession());
 
             Assert.True(result.Success, result.Message);
-            Assert.Equal(2, result.Lines.Count);
-            Assert.All(result.Lines, line => Assert.Equal(1m, line.Quantity));
-            Assert.Contains(result.Lines, line => line.UnitPrice == 50_000m);
-            Assert.Contains(result.Lines, line => line.UnitPrice == 70_000m);
+            var line = Assert.Single(result.Lines);
+            Assert.Equal(2m, line.Quantity);
+            Assert.Equal(60_000m, line.UnitPrice);
+            Assert.Equal(120_000m, line.LineAmount);
+            Assert.Equal("IMC2010", line.SpecificationOriginal);
+            Assert.Equal("SEP-A \uC678 1\uAC74", line.MaterialNumber);
+            Assert.Equal("SN-A \uC678 1\uAC74", line.SerialNumber);
         }
         finally
         {
