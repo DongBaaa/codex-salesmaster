@@ -11,6 +11,7 @@ public sealed partial class PrintPreviewViewModel : ObservableObject
     private readonly string _jobName;
 
     public event Action? RequestClose;
+    public Func<int?>? CurrentPageNumberProvider { get; set; }
 
     [ObservableProperty] private IDocumentPaginatorSource _document;
     [ObservableProperty] private string _statusMessage = "미리보기를 확인한 뒤 인쇄를 진행하세요.";
@@ -55,7 +56,8 @@ public sealed partial class PrintPreviewViewModel : ObservableObject
 
         try
         {
-            if (_printService.TryPrint(Document, _jobName, out var errorMessage))
+            var currentPageNumber = CurrentPageNumberProvider?.Invoke();
+            if (_printService.TryPrint(Document, _jobName, out var errorMessage, currentPageNumber))
             {
                 WasPrinted = true;
                 StatusMessage = "인쇄를 완료했습니다.";

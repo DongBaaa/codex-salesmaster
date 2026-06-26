@@ -8,6 +8,7 @@ public sealed record TradePrintDialogResult(
     bool Collate,
     IReadOnlyList<int>? PageNumbers,
     bool ReversePageOrder,
+    int? CurrentPageNumber = null,
     bool SaveToFile = false,
     string? OutputFilePath = null,
     TradePrintFileFormat FileFormat = TradePrintFileFormat.Xps);

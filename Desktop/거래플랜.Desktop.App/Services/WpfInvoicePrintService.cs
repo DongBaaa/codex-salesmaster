@@ -113,14 +113,19 @@ public sealed class WpfInvoicePrintService : IPrintService
             : BuildSalesDocument(model, lines);
     }
 
-    public bool TryPrint(IDocumentPaginatorSource document, string jobName, out string? errorMessage)
+    public bool TryPrint(
+        IDocumentPaginatorSource document,
+        string jobName,
+        out string? errorMessage,
+        int? currentPageNumber = null)
     {
         ArgumentNullException.ThrowIfNull(document);
         return TradePrintExecutor.TryPrintDocument(
             document,
             string.IsNullOrWhiteSpace(jobName) ? "전표 인쇄" : jobName,
             new Size(A4Width, A4Height),
-            out errorMessage);
+            out errorMessage,
+            currentPageNumber);
     }
 
     private static bool IsPurchase(InvoicePrintModel model)

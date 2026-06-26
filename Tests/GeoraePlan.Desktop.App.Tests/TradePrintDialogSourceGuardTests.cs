@@ -127,7 +127,60 @@ public sealed class TradePrintDialogSourceGuardTests
         Assert.Contains("GetSelectedQueueName()", codeBehind, StringComparison.Ordinal);
         Assert.Contains("프린터 목록을 새로고침했습니다", codeBehind, StringComparison.Ordinal);
         Assert.Contains("LoadPrinterSnapshotSafely", executor, StringComparison.Ordinal);
-        Assert.Contains("new TradePrintWindow(printQueues, defaultQueue, pageCount, LoadPrinterSnapshotSafely)", executor, StringComparison.Ordinal);
+        Assert.Contains("LoadPrinterSnapshotSafely,", executor, StringComparison.Ordinal);
+        Assert.Contains("currentPageNumber", executor, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TradePrintWindow_OffersCurrentPreviewPageOption()
+    {
+        var repoRoot = FindRepositoryRoot();
+        var xaml = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "TradePrintWindow.xaml"));
+        var codeBehind = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "TradePrintWindow.xaml.cs"));
+        var previewXaml = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "PrintPreviewWindow.xaml"));
+        var previewCodeBehind = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "PrintPreviewWindow.xaml.cs"));
+        var previewViewModel = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "ViewModels",
+            "PrintPreviewViewModel.cs"));
+        var printService = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Services",
+            "WpfInvoicePrintService.cs"));
+
+        Assert.Contains("x:Name=\"CurrentPageRadioButton\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Content=\"현재 페이지\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("ConfigureCurrentPageOption", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("pageNumbers = [_currentPageNumber.Value]", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("CurrentPageNumber", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"PreviewDocumentViewer\"", previewXaml, StringComparison.Ordinal);
+        Assert.Contains("PreviewDocumentViewer?.MasterPageNumber", previewCodeBehind, StringComparison.Ordinal);
+        Assert.Contains("CurrentPageNumberProvider", previewViewModel, StringComparison.Ordinal);
+        Assert.Contains("currentPageNumber", printService, StringComparison.Ordinal);
     }
 
     [Fact]

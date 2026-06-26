@@ -10,6 +10,7 @@ namespace 거래플랜.Desktop.App.Views;
 public partial class TradePrintWindow : Window
 {
     private readonly int _pageCount;
+    private readonly int? _currentPageNumber;
     private readonly Func<(IReadOnlyList<PrintQueue> PrintQueues, PrintQueue? DefaultPrintQueue)>? _printerRefreshProvider;
     private bool _isRefreshingPrinters;
 
@@ -19,17 +20,35 @@ public partial class TradePrintWindow : Window
         IReadOnlyList<PrintQueue> printQueues,
         PrintQueue? defaultPrintQueue,
         int pageCount,
-        Func<(IReadOnlyList<PrintQueue> PrintQueues, PrintQueue? DefaultPrintQueue)>? printerRefreshProvider = null)
+        Func<(IReadOnlyList<PrintQueue> PrintQueues, PrintQueue? DefaultPrintQueue)>? printerRefreshProvider = null,
+        int? currentPageNumber = null)
     {
         ArgumentNullException.ThrowIfNull(printQueues);
 
         InitializeComponent();
         _pageCount = Math.Max(0, pageCount);
+        _currentPageNumber = NormalizeCurrentPageNumber(currentPageNumber, _pageCount);
         _printerRefreshProvider = printerRefreshProvider;
+        ConfigureCurrentPageOption();
         PopulatePrinters(printQueues, defaultPrintQueue);
         PageCountTextBlock.Text = _pageCount > 0
             ? $"문서 총 {_pageCount:N0}쪽"
             : "문서 페이지 수를 아직 확인하지 못했습니다.";
+    }
+
+    private void ConfigureCurrentPageOption()
+    {
+        if (_currentPageNumber.HasValue)
+        {
+            CurrentPageRadioButton.Content = $"현재 페이지 ({_currentPageNumber.Value:N0}쪽)";
+            CurrentPageRadioButton.IsEnabled = true;
+            CurrentPageRadioButton.ToolTip = $"{_currentPageNumber.Value:N0}쪽만 인쇄합니다.";
+            return;
+        }
+
+        CurrentPageRadioButton.Content = "현재 페이지";
+        CurrentPageRadioButton.IsEnabled = false;
+        CurrentPageRadioButton.ToolTip = "미리보기 현재 페이지를 확인할 수 없어 사용할 수 없습니다.";
     }
 
     private int PopulatePrinters(
@@ -256,7 +275,17 @@ public partial class TradePrintWindow : Window
         }
 
         IReadOnlyList<int>? pageNumbers = null;
-        if (PageRangeRadioButton.IsChecked == true)
+        if (CurrentPageRadioButton.IsChecked == true)
+        {
+            if (!_currentPageNumber.HasValue)
+            {
+                ShowValidationError("현재 페이지 번호를 확인할 수 없습니다. 모든 페이지 또는 페이지 범위를 선택하세요.");
+                return false;
+            }
+
+            pageNumbers = [_currentPageNumber.Value];
+        }
+        else if (PageRangeRadioButton.IsChecked == true)
         {
             if (!TradePrintPageRangeParser.TryParse(PageRangeTextBox.Text, _pageCount, out var parsedPages, out var errorMessage))
             {
@@ -281,6 +310,7 @@ public partial class TradePrintWindow : Window
             CollateCheckBox.IsChecked == true,
             pageNumbers,
             ReverseOrderCheckBox.IsChecked == true,
+            _currentPageNumber,
             saveToFile,
             outputFilePath,
             fileFormat);
@@ -363,6 +393,16 @@ public partial class TradePrintWindow : Window
         {
             return false;
         }
+    }
+
+    private static int? NormalizeCurrentPageNumber(int? currentPageNumber, int pageCount)
+    {
+        if (!currentPageNumber.HasValue || pageCount <= 0)
+            return null;
+
+        return currentPageNumber.Value >= 1 && currentPageNumber.Value <= pageCount
+            ? currentPageNumber.Value
+            : null;
     }
 
     private static string MakeSafeFileName(string fileName)

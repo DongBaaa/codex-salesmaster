@@ -77,7 +77,9 @@
                 BorderThickness="1"
                 Padding="8"
                 CornerRadius="6">
-            <DocumentViewer Document="{Binding Document}" Zoom="{Binding Zoom, Mode=TwoWay}" />
+            <DocumentViewer x:Name="PreviewDocumentViewer"
+                            Document="{Binding Document}"
+                            Zoom="{Binding Zoom, Mode=TwoWay}" />
         </Border>
     </DockPanel>
 </Window>

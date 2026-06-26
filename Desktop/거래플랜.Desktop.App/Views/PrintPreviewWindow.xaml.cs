@@ -13,6 +13,7 @@ public partial class PrintPreviewWindow : Window
         InitializeComponent();
         _viewModel = viewModel;
         DataContext = viewModel;
+        _viewModel.CurrentPageNumberProvider = () => PreviewDocumentViewer?.MasterPageNumber;
         _viewModel.RequestClose += OnRequestClose;
         Closed += OnClosed;
     }
@@ -25,6 +26,7 @@ public partial class PrintPreviewWindow : Window
     private void OnClosed(object? sender, EventArgs e)
     {
         _viewModel.RequestClose -= OnRequestClose;
+        _viewModel.CurrentPageNumberProvider = null;
         Closed -= OnClosed;
     }
 }

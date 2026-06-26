@@ -45,7 +45,8 @@ public static class TradePrintExecutor
         IDocumentPaginatorSource document,
         string jobName,
         WpfSize pageSize,
-        out string? errorMessage)
+        out string? errorMessage,
+        int? currentPageNumber = null)
     {
         ArgumentNullException.ThrowIfNull(document);
         errorMessage = null;
@@ -82,7 +83,12 @@ public static class TradePrintExecutor
             paginator.PageSize = pageSize;
             var pageCount = ResolvePageCount(paginator);
 
-            var dialog = new TradePrintWindow(printQueues, defaultQueue, pageCount, LoadPrinterSnapshotSafely)
+            var dialog = new TradePrintWindow(
+                printQueues,
+                defaultQueue,
+                pageCount,
+                LoadPrinterSnapshotSafely,
+                currentPageNumber)
             {
                 Owner = ResolveActiveOwner()
             };

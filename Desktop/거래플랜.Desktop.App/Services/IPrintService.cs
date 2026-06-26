@@ -18,5 +18,6 @@ public interface IPrintService
     bool TryPrint(
         IDocumentPaginatorSource document,
         string jobName,
-        out string? errorMessage);
+        out string? errorMessage,
+        int? currentPageNumber = null);
 }

@@ -163,6 +163,12 @@
                                  IsChecked="True"
                                  Checked="OnPageModeChecked"
                                  Margin="0,0,0,8"/>
+                    <RadioButton x:Name="CurrentPageRadioButton"
+                                 Content="현재 페이지"
+                                 GroupName="PageMode"
+                                 Foreground="#EAF2FF"
+                                 Checked="OnPageModeChecked"
+                                 Margin="0,0,0,8"/>
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                         <RadioButton x:Name="PageRangeRadioButton"
                                      Content="페이지:"
