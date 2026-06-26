@@ -828,6 +828,43 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public void DeployAfterTestForwardsExplicitRentalTemplateRiskAcceptanceToLinuxDeploy()
+    {
+        var source = ReadRepositoryFile(
+            "테스트 시행",
+            "Deploy-After-Test.ps1");
+
+        Assert.Contains("[switch]$AcceptRentalTemplateItemReferenceRisk", source, StringComparison.Ordinal);
+        Assert.Contains("[switch]$SkipPostDeployOperationalGate", source, StringComparison.Ordinal);
+        Assert.Contains("[string]$PostDeployBaseUrl = ''", source, StringComparison.Ordinal);
+        Assert.Contains("if ($AcceptRentalTemplateItemReferenceRisk)", source, StringComparison.Ordinal);
+        Assert.Contains("$linuxArgs += '-AcceptRentalTemplateItemReferenceRisk'", source, StringComparison.Ordinal);
+        Assert.Contains("if ($SkipPostDeployOperationalGate)", source, StringComparison.Ordinal);
+        Assert.Contains("$linuxArgs += '-SkipPostDeployOperationalGate'", source, StringComparison.Ordinal);
+        Assert.Contains("$linuxArgs += @('-PostDeployBaseUrl', $PostDeployBaseUrl)", source, StringComparison.Ordinal);
+        AssertInOrder(
+            source,
+            "[switch]$AcceptRentalTemplateItemReferenceRisk",
+            "if ($AcceptRentalTemplateItemReferenceRisk)",
+            "$linuxArgs += '-AcceptRentalTemplateItemReferenceRisk'");
+    }
+
+    [Fact]
+    public void VerificationDeployWrapperExposesExplicitGateSkipAndRiskOptions()
+    {
+        var source = ReadRepositoryFile(
+            "테스트 시행",
+            "검증완료-반영.ps1");
+
+        Assert.Contains("[switch]$SkipPreDeployOperationalGate", source, StringComparison.Ordinal);
+        Assert.Contains("[switch]$SkipPostDeployOperationalGate", source, StringComparison.Ordinal);
+        Assert.Contains("[switch]$AcceptRentalTemplateItemReferenceRisk", source, StringComparison.Ordinal);
+        Assert.Contains("[string]$PreDeployBaseUrl = ''", source, StringComparison.Ordinal);
+        Assert.Contains("[string]$PostDeployBaseUrl = ''", source, StringComparison.Ordinal);
+        Assert.Contains("& $scriptPath @PSBoundParameters", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void FullReleaseForwardsAndroidAotAndTrimmingOverridesToApkBuild()
     {
         var source = ReadRepositoryFile(

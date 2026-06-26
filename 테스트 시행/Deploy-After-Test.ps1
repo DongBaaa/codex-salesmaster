@@ -20,10 +20,16 @@ param(
     [string]$LinuxRemoteOpsPath = '/srv/georaeplan/ops',
     [string]$PlatformStateRoot = '',
     [switch]$SkipPreDeployOperationalGate,
+    [switch]$SkipPostDeployOperationalGate,
+    [switch]$AcceptRentalTemplateItemReferenceRisk,
     [string]$PreDeployBaseUrl = '',
     [string]$PreDeploySecretPath = '',
     [string]$PreDeployOutputDirectory = '',
-    [string[]]$PreDeployAllowedIntegrityWarningCodes = @()
+    [string[]]$PreDeployAllowedIntegrityWarningCodes = @(),
+    [string]$PostDeployBaseUrl = '',
+    [string]$PostDeploySecretPath = '',
+    [string]$PostDeployOutputDirectory = '',
+    [string[]]$PostDeployAllowedIntegrityWarningCodes = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -469,7 +475,9 @@ if ($DryRun) {
         "- Git 반영 예정: $([bool](-not $SkipGit))",
         "- Git push 예정: $([bool](-not $SkipGit -and -not $SkipPush))",
         "- live 사전 점검 리포트: $(if ($SkipLinuxPc) { '-' } else { $livePreflightReport })",
-        "- live 전 운영 게이트 리포트: $(if ($SkipLinuxPc -or $SkipPreDeployOperationalGate) { '-' } else { Join-Path $preDeployOperationalGateDirectory 'operational-gate-report.md' })"
+        "- live 전 운영 게이트 리포트: $(if ($SkipLinuxPc -or $SkipPreDeployOperationalGate) { '-' } else { Join-Path $preDeployOperationalGateDirectory 'operational-gate-report.md' })",
+        "- live 후 운영 게이트 생략: $([bool]($SkipLinuxPc -or $SkipPostDeployOperationalGate))",
+        "- 렌탈 템플릿 품목 참조 게이트 위험수용: $([bool]$AcceptRentalTemplateItemReferenceRisk)"
     ) -join [Environment]::NewLine
     Write-Utf8File -Path (Join-Path $sessionRoot '반영 결과.md') -Content $dryRunSummary
 
@@ -554,6 +562,12 @@ if (-not $SkipLinuxPc) {
     if ($SkipPreDeployOperationalGate) {
         $linuxArgs += '-SkipPreDeployOperationalGate'
     }
+    if ($SkipPostDeployOperationalGate) {
+        $linuxArgs += '-SkipPostDeployOperationalGate'
+    }
+    if ($AcceptRentalTemplateItemReferenceRisk) {
+        $linuxArgs += '-AcceptRentalTemplateItemReferenceRisk'
+    }
     if (-not [string]::IsNullOrWhiteSpace($PreDeployBaseUrl)) {
         $linuxArgs += @('-PreDeployBaseUrl', $PreDeployBaseUrl)
     }
@@ -566,6 +580,19 @@ if (-not $SkipLinuxPc) {
     if ($PreDeployAllowedIntegrityWarningCodes.Count -gt 0) {
         $linuxArgs += '-PreDeployAllowedIntegrityWarningCodes'
         $linuxArgs += $PreDeployAllowedIntegrityWarningCodes
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PostDeployBaseUrl)) {
+        $linuxArgs += @('-PostDeployBaseUrl', $PostDeployBaseUrl)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PostDeploySecretPath)) {
+        $linuxArgs += @('-PostDeploySecretPath', $PostDeploySecretPath)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PostDeployOutputDirectory)) {
+        $linuxArgs += @('-PostDeployOutputDirectory', $PostDeployOutputDirectory)
+    }
+    if ($PostDeployAllowedIntegrityWarningCodes.Count -gt 0) {
+        $linuxArgs += '-PostDeployAllowedIntegrityWarningCodes'
+        $linuxArgs += $PostDeployAllowedIntegrityWarningCodes
     }
 
     Write-Info '메인(live) stable 배포본의 Linux PC 반영을 진행합니다.'
@@ -592,6 +619,8 @@ $finalSummary = @(
     "- Git push 수행: $([bool](-not $SkipGit -and -not $SkipPush))",
     "- live 사전 점검 리포트: $(if ($SkipLinuxPc) { '-' } else { $livePreflightReport })",
     "- live 전 운영 게이트 리포트: $(if ($SkipLinuxPc -or $SkipPreDeployOperationalGate) { '-' } else { Join-Path $preDeployOperationalGateDirectory 'operational-gate-report.md' })",
+    "- live 후 운영 게이트 생략: $([bool]($SkipLinuxPc -or $SkipPostDeployOperationalGate))",
+    "- 렌탈 템플릿 품목 참조 게이트 위험수용: $([bool]$AcceptRentalTemplateItemReferenceRisk)",
     "- live 사후 점검 리포트: $(if ($SkipLinuxPc) { '-' } else { $livePostflightReport })"
 ) -join [Environment]::NewLine
 Write-Utf8File -Path (Join-Path $sessionRoot '반영 결과.md') -Content $finalSummary
