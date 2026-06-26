@@ -187,4 +187,5 @@
 - [x] 모바일 품목 목록 상세와 전표 품목 선택 상세에서 비재고/자산 품목은 “재고 추적 대상 아님”으로 표시하고 창고재고 fallback row를 만들지 않도록 했습니다.
 - [x] 모바일 품목 저장 DTO와 네트워크 장애 pending 저장 경로 모두 `ItemOperationalPolicy`로 정규화해 비재고/자산 품목 현재고·안전재고가 0으로만 저장되도록 했습니다.
 - [x] 검증: `MobileNonInventoryItems_DoNotExposeOrQueueStockValues|MobileReleaseConfigurationTests` 85/85 PASS, Android Debug build PASS, Android 에뮬레이터 smoke/권장 동기화 PASS(`D:\거래플랜\테스트 시행\evidence\mobile-noninventory-20260627\mobile-smoke-20260627-030235.md`).
+- [x] Android 0.2.76 / version code 187 signed APK 생성 및 stable 업데이트 manifest live 반영 완료. live manifest와 다운로드 APK SHA256 검증 PASS.
 - [ ] Android 실기기·운영망 장시간 실행 증거는 별도 기기 조건에서 추가 누적합니다.
