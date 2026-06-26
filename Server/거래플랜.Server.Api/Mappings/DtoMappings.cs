@@ -417,9 +417,11 @@ public static class DtoMappings
         entity.CategoryName = RentalCatalogValueNormalizer.NormalizeCategoryDisplayName(dto.CategoryName);
         entity.ItemKind = ItemOperationalPolicy.NormalizeItemKind(dto.ItemKind, dto.TrackingType, dto.CategoryName, dto.IsRental);
         entity.TrackingType = ItemOperationalPolicy.NormalizeTrackingType(dto.TrackingType, dto.ItemKind, dto.CategoryName, dto.IsRental);
+        var supportsInventory = ItemOperationalPolicy.SupportsInventory(entity.TrackingType);
+        var isAssetItem = ItemOperationalPolicy.IsAsset(entity.TrackingType);
         entity.Unit = UnitCatalogNormalizer.Normalize(dto.Unit);
-        entity.CurrentStock = dto.CurrentStock;
-        entity.SafetyStock = dto.SafetyStock;
+        entity.CurrentStock = supportsInventory ? dto.CurrentStock : 0m;
+        entity.SafetyStock = supportsInventory ? dto.SafetyStock : 0m;
         entity.PurchasePrice = dto.PurchasePrice;
         entity.SalePrice = dto.SalePrice;
         entity.RetailPrice = dto.RetailPrice;
@@ -427,7 +429,8 @@ public static class DtoMappings
         entity.PriceGradeB = dto.PriceGradeB;
         entity.PriceGradeC = dto.PriceGradeC;
         entity.SimpleMemo = dto.SimpleMemo;
-        entity.IsRental = dto.IsRental; entity.IsSale = dto.IsSale;
+        entity.IsRental = isAssetItem || dto.IsRental;
+        entity.IsSale = isAssetItem ? false : dto.IsSale;
         entity.SerialNumber = dto.SerialNumber; entity.MaterialNumber = dto.MaterialNumber;
         entity.InstallLocation = dto.InstallLocation; entity.RentalStartDate = dto.RentalStartDate;
         entity.RentalEndDate = dto.RentalEndDate; entity.Notes = dto.Notes; entity.IsDeleted = dto.IsDeleted;

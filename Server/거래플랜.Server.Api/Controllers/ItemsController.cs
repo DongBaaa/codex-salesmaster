@@ -199,6 +199,7 @@ public sealed class ItemsController : ControllerBase
         dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode);
         dto.CategoryName = await ItemCategoryOptionGuard.EnsureActiveOptionAsync(_dbContext, dto.CategoryName, cancellationToken);
         entity.Apply(dto);
+        await RemoveWarehouseStocksIfNonInventoryAsync(entity, cancellationToken);
         _dbContext.Items.Add(entity);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(entity.ToDto());
@@ -224,8 +225,21 @@ public sealed class ItemsController : ControllerBase
         dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, entity.OfficeCode);
         dto.CategoryName = await ItemCategoryOptionGuard.EnsureActiveOptionAsync(_dbContext, dto.CategoryName, cancellationToken);
         entity.Apply(dto);
+        await RemoveWarehouseStocksIfNonInventoryAsync(entity, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(entity.ToDto());
+    }
+
+    private async Task RemoveWarehouseStocksIfNonInventoryAsync(Item entity, CancellationToken cancellationToken)
+    {
+        if (ItemOperationalPolicy.SupportsInventory(entity.TrackingType))
+            return;
+
+        var warehouseStocks = await _dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == entity.Id)
+            .ToListAsync(cancellationToken);
+        if (warehouseStocks.Count > 0)
+            _dbContext.ItemWarehouseStocks.RemoveRange(warehouseStocks);
     }
 
     [HttpDelete("{id:guid}")]

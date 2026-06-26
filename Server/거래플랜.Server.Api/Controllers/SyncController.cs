@@ -6389,6 +6389,7 @@ public sealed class SyncController : ControllerBase
         var deletedItemCount = 0;
         var outOfScopeItemCount = 0;
         var outOfScopeWarehouseCount = 0;
+        var nonInventoryItemCount = 0;
         var affectedItemIds = new HashSet<Guid>();
         var acceptedStockKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -6419,6 +6420,24 @@ public sealed class SyncController : ControllerBase
             var scopedItem = await _dbContext.Items.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == itemId, cancellationToken);
             if (scopedItem is null || scopedItem.IsDeleted || !_officeScopeService.CanWriteOfficeForItems(scopedItem.OfficeCode, scopedItem.TenantCode))
                 continue;
+
+            if (!ItemOperationalPolicy.SupportsInventory(scopedItem.TrackingType))
+            {
+                nonInventoryItemCount++;
+                var nonInventoryRows = await _officeScopeService.ApplyWarehouseScope(_dbContext.ItemWarehouseStocks)
+                    .Where(x => x.ItemId == itemId)
+                    .ToListAsync(cancellationToken);
+                if (nonInventoryRows.Count > 0)
+                {
+                    _dbContext.ItemWarehouseStocks.RemoveRange(nonInventoryRows);
+                    scopedItem.CurrentStock = 0m;
+                    scopedItem.SafetyStock = 0m;
+                    scopedItem.UpdatedAtUtc = DateTime.UtcNow;
+                    affectedItemIds.Add(itemId);
+                }
+
+                continue;
+            }
 
             var desiredCodes = groupedByItem[itemId]
                 .Select(stock => stock.WarehouseCode)
@@ -6471,6 +6490,12 @@ public sealed class SyncController : ControllerBase
             if (!_officeScopeService.CanWriteOfficeForItems(item.OfficeCode, item.TenantCode))
             {
                 outOfScopeItemCount++;
+                continue;
+            }
+
+            if (!ItemOperationalPolicy.SupportsInventory(item.TrackingType))
+            {
+                nonInventoryItemCount++;
                 continue;
             }
 
@@ -6564,6 +6589,16 @@ public sealed class SyncController : ControllerBase
                 "item-warehouse-stock-skip-out-of-scope-warehouse",
                 $"재고 수량 {outOfScopeWarehouseCount:N0}건은 현재 계정이 수정할 수 없는 창고 범위라 서버 반영에서 제외했습니다.");
         }
+        if (nonInventoryItemCount > 0)
+        {
+            AddNotice(
+                result,
+                nameof(ItemWarehouseStock),
+                Guid.Empty,
+                "item-warehouse-stock-skip-non-inventory-item",
+                $"재고 추적 대상이 아닌 품목의 창고 수량 {nonInventoryItemCount:N0}건은 서버 반영에서 제외했습니다.");
+        }
+
         return new ItemWarehouseStockUpsertResult(affectedItemIds, acceptedStockKeys);
     }
 

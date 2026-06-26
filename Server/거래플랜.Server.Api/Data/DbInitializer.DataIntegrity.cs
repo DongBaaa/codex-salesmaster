@@ -243,9 +243,20 @@ public static partial class DbInitializer
         AppDbContext dbContext,
         CancellationToken cancellationToken)
     {
+        var activeInventoryItemIds = (await dbContext.Items.IgnoreQueryFilters()
+                .Where(current => !current.IsDeleted)
+                .Select(current => new
+                {
+                    current.Id,
+                    current.TrackingType
+                })
+                .ToListAsync(cancellationToken))
+            .Where(current => ItemOperationalPolicy.SupportsInventory(current.TrackingType))
+            .Select(current => current.Id)
+            .ToHashSet();
+
         var staleWarehouseStocks = await dbContext.ItemWarehouseStocks
-            .Where(current => !dbContext.Items.IgnoreQueryFilters()
-                .Any(item => !item.IsDeleted && item.Id == current.ItemId))
+            .Where(current => !activeInventoryItemIds.Contains(current.ItemId))
             .ToListAsync(cancellationToken);
         if (staleWarehouseStocks.Count > 0)
             dbContext.ItemWarehouseStocks.RemoveRange(staleWarehouseStocks);
@@ -304,7 +315,15 @@ public static partial class DbInitializer
         foreach (var item in items)
         {
             if (!ItemOperationalPolicy.SupportsInventory(item.TrackingType))
+            {
+                if (item.CurrentStock != 0m)
+                {
+                    item.CurrentStock = 0m;
+                    repairedCount++;
+                }
+
                 continue;
+            }
 
             var warehouseTotal = warehouseTotals.TryGetValue(item.Id, out var quantity)
                 ? quantity

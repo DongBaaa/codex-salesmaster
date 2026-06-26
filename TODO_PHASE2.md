@@ -171,3 +171,10 @@
 - [x] 인쇄 관련 targeted 테스트 PASS: `PrintEditPersistenceGuardTests|TradePrint|PrintDocumentRenderingSmoke|InvoicePrintLineOrder|InvoicePrintModelCurrentInfoSynchronizer` 필터 26/26 통과.
 - [x] Desktop 전체 테스트 PASS: 758/758 통과.
 - [ ] 공통 템플릿 엔티티, 템플릿 버전 관리, 드래그 앤 드롭 WPF Canvas 편집기는 기존 전표별 JSON 편집과 다른 스키마/동기화/권한 설계가 필요하므로 별도 설계 후 진행합니다.
+
+### 2026-06-27 렌탈/장비 품목 재고 추적 분리 보강 증거
+- [x] 서버 품목 저장 경로에서 `IsRental=true` 또는 장비 품목이 들어오면 `TrackingType=자산`, `ItemKind=장비`, 현재고/안전재고 0, 판매품목 해제로 정규화하도록 보강했습니다.
+- [x] 서버 품목 수정 경로에서 일반 재고 품목을 렌탈/장비 품목으로 바꾸면 기존 `ItemWarehouseStocks` 잔여 row를 제거하도록 보강했습니다.
+- [x] sync push에서 구형/오염 클라이언트가 자산 품목 창고재고를 보내도 서버가 저장하지 않고 기존 잔여 row를 제거하도록 보강했습니다.
+- [x] 서버 시작 정합성 보정에서 비재고/자산 품목의 창고재고 row를 제거하고 현재고 잔여값을 0으로 정리하도록 보강했습니다.
+- [x] 회귀테스트 PASS: `RentalItemInventoryGuardTests` 4/4 통과, 관련 서버 테스트 235/235 통과, 서버 전체 테스트 560/560 통과.
