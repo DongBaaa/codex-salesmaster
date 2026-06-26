@@ -4944,6 +4944,17 @@ WHERE ""AssignedUsername"" <> '';", ct);
             profile.Id = duplicate.Id;
             if (existing is not null && !CanEditRentalProfileEntityScope(existing, session))
                 return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구 데이터를 수정할 수 없습니다.");
+            if (existing is not null && incomingTemplateHasExplicitAssetCoverage)
+            {
+                var existingMergeTemplateItems = await LoadBillingTemplateItemsForDuplicateMergeAsync(existing, ct);
+                templateItems = MergeDuplicateBillingTemplateItems(existingMergeTemplateItems, templateItems, profile.BillingType);
+                profile.BillingType = ResolveProfileBillingTypeFromTemplateItems(templateItems, profile.BillingType);
+                profile.BillingTemplateJson = SerializeBillingTemplateItems(templateItems);
+                profile.MonthlyAmount = templateItems.Sum(item => ResolveTemplateMonthlyAmount(item));
+                profile.ItemName = BuildProfileItemName(profile, templateItems);
+                PreserveDuplicateBillingProfileOperationalState(profile, existing);
+                incomingTemplateHasExplicitAssetCoverage = HasExplicitIncludedAssetIds(templateItems);
+            }
         }
         else if (existing is not null && duplicate is not null && duplicate.Id != existing.Id)
             return LocalMutationResult.Denied("같은 청구 프로필이 이미 존재합니다.");
@@ -11373,6 +11384,156 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private static bool HasExplicitIncludedAssetIds(IReadOnlyList<RentalBillingTemplateItemModel> templateItems)
         => templateItems.Any(item =>
             (item.IncludedAssetIds ?? new List<Guid>()).Any(id => id != Guid.Empty));
+
+    private async Task<List<RentalBillingTemplateItemModel>> LoadBillingTemplateItemsForDuplicateMergeAsync(
+        LocalRentalBillingProfile existing,
+        CancellationToken ct)
+    {
+        var templateItems = GetBillingTemplateItems(existing, Array.Empty<LocalRentalAsset>());
+        if (HasExplicitIncludedAssetIds(templateItems))
+            return templateItems;
+
+        var linkedAssets = await _db.RentalAssets
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(asset => !asset.IsDeleted && asset.BillingProfileId == existing.Id)
+            .ToListAsync(ct);
+        return GetBillingTemplateItems(existing, linkedAssets);
+    }
+
+    private static List<RentalBillingTemplateItemModel> MergeDuplicateBillingTemplateItems(
+        IReadOnlyList<RentalBillingTemplateItemModel> existingItems,
+        IReadOnlyList<RentalBillingTemplateItemModel> incomingItems,
+        string? defaultBillingType)
+    {
+        var merged = existingItems
+            .Select(CloneBillingTemplateItem)
+            .ToList();
+
+        foreach (var incoming in incomingItems)
+        {
+            var incomingAssetIds = BuildDistinctIncludedAssetIds(incoming.IncludedAssetIds);
+            if (incomingAssetIds.Count == 0)
+                continue;
+
+            var key = BuildDuplicateBillingTemplateMergeKey(incoming, defaultBillingType);
+            var target = merged.FirstOrDefault(item =>
+                BuildDuplicateBillingTemplateMergeKey(item, defaultBillingType).Equals(key));
+            if (target is null)
+            {
+                merged.Add(CloneBillingTemplateItem(incoming));
+                continue;
+            }
+
+            MergeBillingTemplateItemIntoExisting(target, incoming, incomingAssetIds, defaultBillingType);
+        }
+
+        if (merged.Count == 0)
+            merged.AddRange(incomingItems.Select(CloneBillingTemplateItem));
+
+        return merged;
+    }
+
+    private static RentalBillingTemplateItemModel CloneBillingTemplateItem(RentalBillingTemplateItemModel item)
+        => new()
+        {
+            ItemId = item.ItemId == Guid.Empty ? Guid.NewGuid() : item.ItemId,
+            DisplayItemName = item.DisplayItemName ?? string.Empty,
+            BillingLineMode = item.BillingLineMode ?? string.Empty,
+            Specification = item.Specification ?? string.Empty,
+            Unit = item.Unit ?? string.Empty,
+            MaterialNumber = item.MaterialNumber ?? string.Empty,
+            RepresentativeAssetId = item.RepresentativeAssetId,
+            Quantity = item.Quantity,
+            UnitPrice = item.UnitPrice,
+            Amount = item.Amount,
+            Note = item.Note ?? string.Empty,
+            IncludedAssetIds = BuildDistinctIncludedAssetIds(item.IncludedAssetIds)
+        };
+
+    private static void MergeBillingTemplateItemIntoExisting(
+        RentalBillingTemplateItemModel target,
+        RentalBillingTemplateItemModel incoming,
+        IReadOnlyList<Guid> incomingAssetIds,
+        string? defaultBillingType)
+    {
+        target.IncludedAssetIds = BuildDistinctIncludedAssetIds(target.IncludedAssetIds);
+        var existingAssetIds = target.IncludedAssetIds.ToHashSet();
+        var addedAssetIds = incomingAssetIds
+            .Where(id => existingAssetIds.Add(id))
+            .ToList();
+        if (addedAssetIds.Count == 0)
+            return;
+
+        target.IncludedAssetIds.AddRange(addedAssetIds);
+        if (!target.RepresentativeAssetId.HasValue &&
+            incoming.RepresentativeAssetId.HasValue &&
+            target.IncludedAssetIds.Contains(incoming.RepresentativeAssetId.Value))
+        {
+            target.RepresentativeAssetId = incoming.RepresentativeAssetId;
+        }
+
+        if (string.IsNullOrWhiteSpace(target.Specification) && !string.IsNullOrWhiteSpace(incoming.Specification))
+            target.Specification = incoming.Specification.Trim();
+        if (string.IsNullOrWhiteSpace(target.MaterialNumber) && !string.IsNullOrWhiteSpace(incoming.MaterialNumber))
+            target.MaterialNumber = incoming.MaterialNumber.Trim();
+
+        var lineMode = ResolveTemplateBillingLineMode(target.BillingLineMode, defaultBillingType);
+        var currentAmount = ResolveTemplateMonthlyAmount(target);
+        var incomingAmount = ResolveTemplateMonthlyAmount(incoming);
+        var addedAmount = incomingAmount;
+        if (incomingAssetIds.Count > 0 && addedAssetIds.Count < incomingAssetIds.Count)
+        {
+            addedAmount = incomingAmount * addedAssetIds.Count / incomingAssetIds.Count;
+        }
+
+        var totalAmount = currentAmount + Math.Max(0m, addedAmount);
+        if (string.Equals(lineMode, "묶음", StringComparison.OrdinalIgnoreCase))
+        {
+            target.Quantity = 1m;
+            target.UnitPrice = totalAmount;
+            target.Amount = totalAmount;
+            return;
+        }
+
+        var currentQuantity = Math.Max(
+            NormalizeTemplateQuantity(target.Quantity),
+            BuildDistinctIncludedAssetIds(target.IncludedAssetIds).Count - addedAssetIds.Count);
+        var addedQuantity = addedAssetIds.Count;
+        var quantity = Math.Max(1m, currentQuantity + addedQuantity);
+        target.Quantity = quantity;
+        target.UnitPrice = quantity <= 0m ? 0m : totalAmount / quantity;
+        target.Amount = totalAmount;
+    }
+
+    private static DuplicateBillingTemplateMergeKey BuildDuplicateBillingTemplateMergeKey(
+        RentalBillingTemplateItemModel item,
+        string? defaultBillingType)
+        => new(
+            ResolveTemplateBillingLineMode(item.BillingLineMode, defaultBillingType),
+            RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(item.DisplayItemName),
+            (item.Unit ?? string.Empty).Trim(),
+            (item.Note ?? string.Empty).Trim());
+
+    private static void PreserveDuplicateBillingProfileOperationalState(
+        LocalRentalBillingProfile profile,
+        LocalRentalBillingProfile existing)
+    {
+        profile.BillingRunsJson = string.IsNullOrWhiteSpace(existing.BillingRunsJson) ? "[]" : existing.BillingRunsJson;
+        profile.LastBilledDate = existing.LastBilledDate;
+        profile.LastSettledDate = existing.LastSettledDate;
+        profile.SettledAmount = existing.SettledAmount;
+        profile.OutstandingAmount = existing.OutstandingAmount;
+        profile.SettlementStatus = existing.SettlementStatus;
+        profile.CompletionStatus = existing.CompletionStatus;
+        profile.BillingStatus = existing.BillingStatus;
+    }
+
+    private readonly record struct DuplicateBillingTemplateMergeKey(
+        string BillingLineMode,
+        string DisplayItemName,
+        string Unit,
+        string Note);
 
     private async Task SyncBillingProfileAssetsAsync(
         LocalRentalBillingProfile profile,

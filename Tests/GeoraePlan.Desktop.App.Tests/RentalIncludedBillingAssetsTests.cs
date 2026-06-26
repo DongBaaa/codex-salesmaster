@@ -1037,6 +1037,159 @@ public sealed class RentalIncludedBillingAssetsTests
         }
     }
 
+    [Fact]
+    public async Task SaveBillingProfileAsync_DuplicateProfileKeyMergesIncomingExplicitAssetsWithoutDroppingExistingAssets()
+    {
+        PrepareAppRoot("georaeplan-rental-duplicate-profile-merge-assets");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var existingProfileId = Guid.Parse("f2920000-1111-4444-8888-000000000001");
+            var incomingProfileId = Guid.Parse("f2920000-1111-4444-8888-000000000002");
+            var existingAssetId = Guid.Parse("f2920000-1111-4444-8888-0000000000a1");
+            var incomingAssetId = Guid.Parse("f2920000-1111-4444-8888-0000000000b2");
+            db.RentalAssets.AddRange(
+                CreateRentalAsset(
+                    "Duplicate Merge Customer",
+                    "DUP-MERGE-001",
+                    null,
+                    existingAssetId,
+                    monthlyFee: 80_000m),
+                CreateRentalAsset(
+                    "Duplicate Merge Customer",
+                    "DUP-MERGE-002",
+                    null,
+                    incomingAssetId,
+                    monthlyFee: 90_000m));
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var existingSave = await service.SaveBillingProfileAsync(
+                new LocalRentalBillingProfile
+                {
+                    Id = existingProfileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    CustomerName = "Duplicate Merge Customer",
+                    InstallSiteName = "Duplicate Merge Customer",
+                    BillingType = "개별",
+                    BillingAdvanceMode = "후불",
+                    BillingDay = 25,
+                    BillingCycleMonths = 1,
+                    MonthlyAmount = 80_000m,
+                    BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                    {
+                        new()
+                        {
+                            DisplayItemName = "Duplicate Rental",
+                            BillingLineMode = "개별",
+                            Quantity = 1m,
+                            UnitPrice = 80_000m,
+                            Amount = 80_000m,
+                            IncludedAssetIds = [existingAssetId]
+                        }
+                    })
+                },
+                CreateAdminSession());
+            Assert.True(existingSave.Success, existingSave.Message);
+            var existingStoredProfile = await db.RentalBillingProfiles.IgnoreQueryFilters()
+                .SingleAsync(profile => profile.Id == existingProfileId);
+            var existingRunsJson = JsonSerializer.Serialize(new List<RentalBillingRunModel>
+            {
+                new()
+                {
+                    RunId = Guid.Parse("f2920000-1111-4444-8888-0000000000f1"),
+                    RunKey = "2026-06",
+                    ScheduledDate = new DateOnly(2026, 6, 25),
+                    PeriodStartDate = new DateOnly(2026, 6, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    CycleMonths = 1,
+                    BilledAmount = 80_000m,
+                    SettledAmount = 10_000m,
+                    SettlementStatus = PaymentFlowConstants.SettlementStatusPartial
+                }
+            });
+            existingStoredProfile.BillingRunsJson = existingRunsJson;
+            existingStoredProfile.LastBilledDate = new DateOnly(2026, 6, 25);
+            existingStoredProfile.LastSettledDate = new DateOnly(2026, 6, 26);
+            existingStoredProfile.SettledAmount = 10_000m;
+            existingStoredProfile.OutstandingAmount = 70_000m;
+            existingStoredProfile.SettlementStatus = PaymentFlowConstants.SettlementStatusPartial;
+            existingStoredProfile.CompletionStatus = PaymentFlowConstants.CompletionPending;
+            await db.SaveChangesAsync();
+
+            var incomingSave = await service.SaveBillingProfileAsync(
+                new LocalRentalBillingProfile
+                {
+                    Id = incomingProfileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    CustomerName = "Duplicate Merge Customer",
+                    InstallSiteName = "Duplicate Merge Customer",
+                    BillingType = "개별",
+                    BillingAdvanceMode = "후불",
+                    BillingDay = 25,
+                    BillingCycleMonths = 1,
+                    MonthlyAmount = 90_000m,
+                    BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                    {
+                        new()
+                        {
+                            DisplayItemName = "Duplicate Rental",
+                            BillingLineMode = "개별",
+                            Quantity = 1m,
+                            UnitPrice = 90_000m,
+                            Amount = 90_000m,
+                            IncludedAssetIds = [incomingAssetId]
+                        }
+                    })
+                },
+                CreateAdminSession());
+
+            Assert.True(incomingSave.Success, incomingSave.Message);
+            Assert.Equal(existingProfileId, incomingSave.EntityId);
+
+            var storedAssets = await db.RentalAssets.IgnoreQueryFilters()
+                .Where(asset => asset.Id == existingAssetId || asset.Id == incomingAssetId)
+                .OrderBy(asset => asset.ManagementNumber)
+                .ToListAsync();
+            Assert.Equal(2, storedAssets.Count);
+            Assert.All(storedAssets, asset => Assert.Equal(existingProfileId, asset.BillingProfileId));
+
+            var storedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters()
+                .SingleAsync(profile => profile.Id == existingProfileId);
+            Assert.Equal(existingRunsJson, storedProfile.BillingRunsJson);
+            Assert.Equal(new DateOnly(2026, 6, 25), storedProfile.LastBilledDate);
+            Assert.Equal(new DateOnly(2026, 6, 26), storedProfile.LastSettledDate);
+            Assert.Equal(10_000m, storedProfile.SettledAmount);
+            Assert.Equal(70_000m, storedProfile.OutstandingAmount);
+            Assert.Equal(PaymentFlowConstants.SettlementStatusPartial, storedProfile.SettlementStatus);
+            var storedIncludedAssetIds = new RentalStateService(db)
+                .GetBillingTemplateItems(storedProfile)
+                .SelectMany(item => item.IncludedAssetIds)
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .OrderBy(id => id)
+                .ToList();
+            Assert.Equal(
+                new[] { existingAssetId, incomingAssetId }.OrderBy(id => id),
+                storedIncludedAssetIds);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
