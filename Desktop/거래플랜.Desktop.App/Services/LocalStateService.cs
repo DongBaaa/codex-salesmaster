@@ -5315,16 +5315,39 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	private async Task<decimal> GetRentalSettledAmountCoreAsync(Guid billingProfileId, Guid? billingRunId, CancellationToken ct)
 	{
+		if (billingProfileId == Guid.Empty)
+		{
+			return 0m;
+		}
+
+		var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync((LocalRentalBillingProfile current) => current.Id == billingProfileId, ct);
+		if (profile == null)
+		{
+			return 0m;
+		}
+
 		IQueryable<LocalTransaction> transactionQuery = from transaction in _db.Transactions.IgnoreQueryFilters().AsNoTracking()
-			where !transaction.IsDeleted && transaction.LinkedRentalBillingProfileId == billingProfileId
+			where !transaction.IsDeleted && transaction.LinkedRentalBillingProfileId == profile.Id
 			select transaction;
 		if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
 		{
 			transactionQuery = transactionQuery.Where((LocalTransaction transaction) => transaction.LinkedRentalBillingRunId == ((Guid?)billingRunId).Value);
 		}
-		var transactionSettledAmount = (await transactionQuery
-			.Select((LocalTransaction transaction) => transaction.SettlementAmount)
-			.ToListAsync(ct)).Sum();
+		var transactionRows = await transactionQuery
+			.Select((LocalTransaction transaction) => new
+			{
+				transaction.Id,
+				transaction.SettlementAmount,
+				transaction.TenantCode,
+				transaction.ResponsibleOfficeCode,
+				transaction.OfficeCode
+			})
+			.ToListAsync(ct);
+		var scopedTransactionRows = transactionRows
+			.Where(row => IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
+			.ToList();
+		HashSet<Guid> scopedTransactionIds = scopedTransactionRows.Select(row => row.Id).ToHashSet();
+		decimal transactionSettledAmount = scopedTransactionRows.Sum(row => row.SettlementAmount);
 
 		var directPaymentQuery =
 			from payment in _db.Payments.IgnoreQueryFilters().AsNoTracking()
@@ -5333,41 +5356,69 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			where !payment.IsDeleted &&
 			      !invoice.IsDeleted &&
 			      invoice.IsLatestVersion &&
-			      invoice.LinkedRentalBillingProfileId == billingProfileId &&
-			      !_db.Transactions.IgnoreQueryFilters().AsNoTracking().Any(transaction =>
-				      !transaction.IsDeleted &&
-				      transaction.Id == payment.Id &&
-				      transaction.LinkedRentalBillingProfileId == billingProfileId)
+			      invoice.LinkedRentalBillingProfileId == profile.Id
 			select new
 			{
+				PaymentId = payment.Id,
 				payment.Amount,
-				invoice.LinkedRentalBillingRunId
+				invoice.LinkedRentalBillingRunId,
+				invoice.TenantCode,
+				invoice.ResponsibleOfficeCode,
+				invoice.OfficeCode
 			};
 		if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
 		{
 			directPaymentQuery = directPaymentQuery.Where(row => row.LinkedRentalBillingRunId == billingRunId.Value);
 		}
 
-		var directPaymentSettledAmount = (await directPaymentQuery
-			.Select(row => row.Amount)
-			.ToListAsync(ct)).Sum();
+		var directPaymentRows = await directPaymentQuery.ToListAsync(ct);
+		decimal directPaymentSettledAmount = directPaymentRows
+			.Where(row =>
+				!scopedTransactionIds.Contains(row.PaymentId) &&
+				IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
+			.Sum(row => row.Amount);
 
 		return transactionSettledAmount + directPaymentSettledAmount;
 	}
 
 	private async Task<DateOnly?> GetRentalLastSettledDateCoreAsync(Guid billingProfileId, Guid? billingRunId, CancellationToken ct)
 	{
+		if (billingProfileId == Guid.Empty)
+		{
+			return null;
+		}
+
+		var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync((LocalRentalBillingProfile current) => current.Id == billingProfileId, ct);
+		if (profile == null)
+		{
+			return null;
+		}
+
 		IQueryable<LocalTransaction> transactionQuery = from transaction in _db.Transactions.IgnoreQueryFilters().AsNoTracking()
-			where !transaction.IsDeleted && transaction.LinkedRentalBillingProfileId == billingProfileId
+			where !transaction.IsDeleted && transaction.LinkedRentalBillingProfileId == profile.Id
 			select transaction;
 		if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
 		{
 			transactionQuery = transactionQuery.Where((LocalTransaction transaction) => transaction.LinkedRentalBillingRunId == ((Guid?)billingRunId).Value);
 		}
 
-		var transactionDates = await transactionQuery
-			.Select((LocalTransaction transaction) => transaction.TransactionDate)
+		var transactionRows = await transactionQuery
+			.Select((LocalTransaction transaction) => new
+			{
+				transaction.Id,
+				transaction.TransactionDate,
+				transaction.TenantCode,
+				transaction.ResponsibleOfficeCode,
+				transaction.OfficeCode
+			})
 			.ToListAsync(ct);
+		var scopedTransactionRows = transactionRows
+			.Where(row => IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
+			.ToList();
+		HashSet<Guid> scopedTransactionIds = scopedTransactionRows.Select(row => row.Id).ToHashSet();
+		var transactionDates = scopedTransactionRows
+			.Select(row => row.TransactionDate)
+			.ToList();
 
 		var directPaymentQuery =
 			from payment in _db.Payments.IgnoreQueryFilters().AsNoTracking()
@@ -5376,24 +5427,27 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			where !payment.IsDeleted &&
 			      !invoice.IsDeleted &&
 			      invoice.IsLatestVersion &&
-			      invoice.LinkedRentalBillingProfileId == billingProfileId &&
-			      !_db.Transactions.IgnoreQueryFilters().AsNoTracking().Any(transaction =>
-				      !transaction.IsDeleted &&
-				      transaction.Id == payment.Id &&
-				      transaction.LinkedRentalBillingProfileId == billingProfileId)
+			      invoice.LinkedRentalBillingProfileId == profile.Id
 			select new
 			{
+				PaymentId = payment.Id,
 				payment.PaymentDate,
-				invoice.LinkedRentalBillingRunId
+				invoice.LinkedRentalBillingRunId,
+				invoice.TenantCode,
+				invoice.ResponsibleOfficeCode,
+				invoice.OfficeCode
 			};
 		if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
 		{
 			directPaymentQuery = directPaymentQuery.Where(row => row.LinkedRentalBillingRunId == billingRunId.Value);
 		}
 
-		var directPaymentDates = await directPaymentQuery
+		var directPaymentDates = (await directPaymentQuery.ToListAsync(ct))
+			.Where(row =>
+				!scopedTransactionIds.Contains(row.PaymentId) &&
+				IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
 			.Select(row => row.PaymentDate)
-			.ToListAsync(ct);
+			.ToList();
 		var dates = transactionDates.Concat(directPaymentDates).ToList();
 		return dates.Count == 0 ? null : dates.Max();
 	}
@@ -7371,6 +7425,26 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 		string officeCode = ResolveResponsibleOfficeScopeForAccess(responsibleOfficeCode, managementCompanyCode);
 		return IsSharedOfficeScope(officeCode) || GetReadableRentalOfficeCodes(session).Contains(officeCode);
+	}
+
+	private static bool IsSameRentalSettlementScope(LocalRentalBillingProfile profile, string? tenantCode, string? responsibleOfficeCode, string? officeCode)
+	{
+		string profileOwnerOfficeCode = string.IsNullOrWhiteSpace(profile.ManagementCompanyCode)
+			? profile.OfficeCode
+			: profile.ManagementCompanyCode;
+		string profileOfficeCode = ResolveResponsibleOfficeScopeForAccess(profile.ResponsibleOfficeCode, profileOwnerOfficeCode);
+		string profileTenantCode = ResolveRentalEntityTenantCode(profile.TenantCode, profileOwnerOfficeCode, profile.ResponsibleOfficeCode);
+		string entityOfficeCode = ResolveResponsibleOfficeScopeForAccess(responsibleOfficeCode, officeCode);
+		string entityTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+			tenantCode,
+			entityOfficeCode,
+			profileTenantCode,
+			profileOfficeCode);
+
+		return string.Equals(entityTenantCode, profileTenantCode, StringComparison.OrdinalIgnoreCase) &&
+		       (IsSharedOfficeScope(profileOfficeCode) ||
+		        IsSharedOfficeScope(entityOfficeCode) ||
+		        string.Equals(entityOfficeCode, profileOfficeCode, StringComparison.OrdinalIgnoreCase));
 	}
 
 	private static string ResolveRentalEntityTenantCode(string? tenantCode, string? managementCompanyCode, string? responsibleOfficeCode)

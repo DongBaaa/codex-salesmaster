@@ -224,6 +224,104 @@ public sealed class LocalOperationalTenantScopeTests
     }
 
     [Fact]
+    public async Task RentalSettlementSummary_ExcludesOutOfScopeSettlementsForSameProfileId()
+    {
+        PrepareAppRoot("georaeplan-rental-settlement-summary-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var billingRunId = Guid.NewGuid();
+            var profile = CreateRentalBillingProfile(
+                tenantCode: TenantScopeCatalog.UsenetGroup,
+                officeCode: OfficeCodeCatalog.Usenet,
+                customerName: "Scoped rental settlement customer",
+                monthlyAmount: 1_000m);
+
+            var inScopeTransaction = CreateTransaction(
+                tenantCode: TenantScopeCatalog.UsenetGroup,
+                officeCode: OfficeCodeCatalog.Usenet,
+                customerId: Guid.NewGuid(),
+                note: "USENET rental settlement");
+            inScopeTransaction.LinkedRentalBillingProfileId = profile.Id;
+            inScopeTransaction.LinkedRentalBillingRunId = billingRunId;
+            inScopeTransaction.SettlementAmount = 100m;
+            inScopeTransaction.TransactionDate = new DateOnly(2026, 6, 20);
+
+            var outOfScopeTransaction = CreateTransaction(
+                tenantCode: TenantScopeCatalog.Itworld,
+                officeCode: OfficeCodeCatalog.Itworld,
+                customerId: Guid.NewGuid(),
+                note: "ITWORLD out-of-scope rental settlement");
+            outOfScopeTransaction.LinkedRentalBillingProfileId = profile.Id;
+            outOfScopeTransaction.LinkedRentalBillingRunId = billingRunId;
+            outOfScopeTransaction.SettlementAmount = 900m;
+            outOfScopeTransaction.TransactionDate = new DateOnly(2026, 6, 21);
+
+            var inScopeInvoice = CreateInvoice(
+                tenantCode: TenantScopeCatalog.UsenetGroup,
+                officeCode: OfficeCodeCatalog.Usenet,
+                customerId: Guid.NewGuid(),
+                invoiceNumber: "USENET-RENTAL-INV");
+            inScopeInvoice.LinkedRentalBillingProfileId = profile.Id;
+            inScopeInvoice.LinkedRentalBillingRunId = billingRunId;
+
+            var outOfScopeInvoice = CreateInvoice(
+                tenantCode: TenantScopeCatalog.Itworld,
+                officeCode: OfficeCodeCatalog.Itworld,
+                customerId: Guid.NewGuid(),
+                invoiceNumber: "ITWORLD-RENTAL-INV");
+            outOfScopeInvoice.LinkedRentalBillingProfileId = profile.Id;
+            outOfScopeInvoice.LinkedRentalBillingRunId = billingRunId;
+
+            var inScopePayment = new LocalPayment
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = inScopeInvoice.Id,
+                PaymentDate = new DateOnly(2026, 6, 22),
+                Amount = 30m
+            };
+            var outOfScopePayment = new LocalPayment
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = outOfScopeInvoice.Id,
+                PaymentDate = new DateOnly(2026, 6, 23),
+                Amount = 700m
+            };
+
+            db.RentalBillingProfiles.Add(profile);
+            db.Transactions.AddRange(inScopeTransaction, outOfScopeTransaction);
+            db.Invoices.AddRange(inScopeInvoice, outOfScopeInvoice);
+            db.Payments.AddRange(inScopePayment, outOfScopePayment);
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                AppPermissionNames.RentalViewAll);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var summary = await service.GetRentalSettlementSummaryAsync(
+                profile.Id,
+                billingRunId,
+                1_000m,
+                session);
+
+            Assert.Equal(1_000m, summary.BilledAmount);
+            Assert.Equal(130m, summary.SettledAmount);
+            Assert.Equal(870m, summary.OutstandingAmount);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task DeliveryViewAllInvoiceQueries_StayWithinCurrentTenant()
     {
         PrepareAppRoot("georaeplan-delivery-tenant-scope");

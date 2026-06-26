@@ -5276,19 +5276,37 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (billingProfileId == Guid.Empty)
             return 0m;
 
+        var profile = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
+        if (profile is null)
+            return 0m;
+
         var transactionQuery = _db.Transactions
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(transaction =>
                 !transaction.IsDeleted &&
-                transaction.LinkedRentalBillingProfileId == billingProfileId);
+                transaction.LinkedRentalBillingProfileId == profile.Id);
         if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
             transactionQuery = transactionQuery.Where(transaction => transaction.LinkedRentalBillingRunId == billingRunId.Value);
 
-        var transactionSettledAmount = (await transactionQuery
-                .Select(transaction => transaction.SettlementAmount)
-                .ToListAsync(ct))
-            .Sum();
+        var transactionRows = await transactionQuery
+            .Select(transaction => new
+            {
+                transaction.Id,
+                transaction.SettlementAmount,
+                transaction.TenantCode,
+                transaction.ResponsibleOfficeCode,
+                transaction.OfficeCode
+            })
+            .ToListAsync(ct);
+        var scopedTransactionRows = transactionRows
+            .Where(row => IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
+            .ToList();
+        var scopedTransactionIds = scopedTransactionRows.Select(row => row.Id).ToHashSet();
+        var transactionSettledAmount = scopedTransactionRows.Sum(row => row.SettlementAmount);
 
         var directPaymentQuery =
             from payment in _db.Payments.IgnoreQueryFilters().AsNoTracking()
@@ -5297,23 +5315,25 @@ WHERE ""AssignedUsername"" <> '';", ct);
             where !payment.IsDeleted &&
                   !invoice.IsDeleted &&
                   invoice.IsLatestVersion &&
-                  invoice.LinkedRentalBillingProfileId == billingProfileId &&
-                  !_db.Transactions.IgnoreQueryFilters().AsNoTracking().Any(transaction =>
-                      !transaction.IsDeleted &&
-                      transaction.Id == payment.Id &&
-                      transaction.LinkedRentalBillingProfileId == billingProfileId)
+                  invoice.LinkedRentalBillingProfileId == profile.Id
             select new
             {
+                PaymentId = payment.Id,
                 payment.Amount,
-                invoice.LinkedRentalBillingRunId
+                invoice.LinkedRentalBillingRunId,
+                invoice.TenantCode,
+                invoice.ResponsibleOfficeCode,
+                invoice.OfficeCode
             };
         if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
             directPaymentQuery = directPaymentQuery.Where(row => row.LinkedRentalBillingRunId == billingRunId.Value);
 
-        var directPaymentSettledAmount = (await directPaymentQuery
-                .Select(row => row.Amount)
-                .ToListAsync(ct))
-            .Sum();
+        var directPaymentRows = await directPaymentQuery.ToListAsync(ct);
+        var directPaymentSettledAmount = directPaymentRows
+            .Where(row =>
+                !scopedTransactionIds.Contains(row.PaymentId) &&
+                IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
+            .Sum(row => row.Amount);
 
         return Math.Max(0m, transactionSettledAmount + directPaymentSettledAmount);
     }
@@ -5326,18 +5346,39 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (billingProfileId == Guid.Empty)
             return null;
 
+        var profile = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
+        if (profile is null)
+            return null;
+
         var transactionQuery = _db.Transactions
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(transaction =>
                 !transaction.IsDeleted &&
-                transaction.LinkedRentalBillingProfileId == billingProfileId);
+                transaction.LinkedRentalBillingProfileId == profile.Id);
         if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
             transactionQuery = transactionQuery.Where(transaction => transaction.LinkedRentalBillingRunId == billingRunId.Value);
 
-        var transactionDates = await transactionQuery
-            .Select(transaction => transaction.TransactionDate)
+        var transactionRows = await transactionQuery
+            .Select(transaction => new
+            {
+                transaction.Id,
+                transaction.TransactionDate,
+                transaction.TenantCode,
+                transaction.ResponsibleOfficeCode,
+                transaction.OfficeCode
+            })
             .ToListAsync(ct);
+        var scopedTransactionRows = transactionRows
+            .Where(row => IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
+            .ToList();
+        var scopedTransactionIds = scopedTransactionRows.Select(row => row.Id).ToHashSet();
+        var transactionDates = scopedTransactionRows
+            .Select(row => row.TransactionDate)
+            .ToList();
 
         var directPaymentQuery =
             from payment in _db.Payments.IgnoreQueryFilters().AsNoTracking()
@@ -5346,22 +5387,25 @@ WHERE ""AssignedUsername"" <> '';", ct);
             where !payment.IsDeleted &&
                   !invoice.IsDeleted &&
                   invoice.IsLatestVersion &&
-                  invoice.LinkedRentalBillingProfileId == billingProfileId &&
-                  !_db.Transactions.IgnoreQueryFilters().AsNoTracking().Any(transaction =>
-                      !transaction.IsDeleted &&
-                      transaction.Id == payment.Id &&
-                      transaction.LinkedRentalBillingProfileId == billingProfileId)
+                  invoice.LinkedRentalBillingProfileId == profile.Id
             select new
             {
+                PaymentId = payment.Id,
                 payment.PaymentDate,
-                invoice.LinkedRentalBillingRunId
+                invoice.LinkedRentalBillingRunId,
+                invoice.TenantCode,
+                invoice.ResponsibleOfficeCode,
+                invoice.OfficeCode
             };
         if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
             directPaymentQuery = directPaymentQuery.Where(row => row.LinkedRentalBillingRunId == billingRunId.Value);
 
-        var directPaymentDates = await directPaymentQuery
+        var directPaymentDates = (await directPaymentQuery.ToListAsync(ct))
+            .Where(row =>
+                !scopedTransactionIds.Contains(row.PaymentId) &&
+                IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
             .Select(row => row.PaymentDate)
-            .ToListAsync(ct);
+            .ToList();
 
         var dates = transactionDates.Concat(directPaymentDates).ToList();
         return dates.Count == 0 ? null : dates.Max();
@@ -8712,6 +8756,73 @@ WHERE ""AssignedUsername"" <> '';", ct);
             session.OfficeCode);
         return officeWriteCheck(resolvedOfficeCode);
     }
+
+    private static bool IsSameRentalSettlementScope(
+        LocalRentalBillingProfile profile,
+        string? tenantCode,
+        string? responsibleOfficeCode,
+        string? officeCode)
+    {
+        var profileOfficeCode = RentalScopeNormalizer.ResolveResponsibleOfficeCode(
+            profile.TenantCode,
+            profile.OfficeCode,
+            profile.ManagementCompanyCode,
+            profile.ResponsibleOfficeCode,
+            profile.OfficeCode);
+        var profileTenantCode = ResolveRentalSettlementTenantCode(
+            profile.TenantCode,
+            profile.OfficeCode,
+            profile.ManagementCompanyCode,
+            profile.ResponsibleOfficeCode,
+            profile.TenantCode,
+            profileOfficeCode);
+        var entityOfficeCode = RentalScopeNormalizer.ResolveResponsibleOfficeCode(
+            tenantCode,
+            officeCode,
+            null,
+            responsibleOfficeCode,
+            profileOfficeCode);
+        var entityTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            tenantCode,
+            entityOfficeCode,
+            profileTenantCode,
+            profileOfficeCode);
+
+        return string.Equals(entityTenantCode, profileTenantCode, StringComparison.OrdinalIgnoreCase) &&
+               (IsSharedRentalSettlementOffice(profileOfficeCode) ||
+                IsSharedRentalSettlementOffice(entityOfficeCode) ||
+                string.Equals(entityOfficeCode, profileOfficeCode, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string ResolveRentalSettlementTenantCode(
+        string? tenantCode,
+        string? officeCode,
+        string? managementCompanyCode,
+        string? responsibleOfficeCode,
+        string? fallbackTenantCode,
+        string? fallbackOfficeCode)
+    {
+        if (TenantScopeCatalog.TryNormalizeTenantCode(tenantCode, out var normalizedTenantCode))
+            return normalizedTenantCode;
+
+        var resolvedOfficeCode = RentalScopeNormalizer.ResolveResponsibleOfficeCode(
+            tenantCode,
+            officeCode,
+            managementCompanyCode,
+            responsibleOfficeCode,
+            fallbackOfficeCode);
+        return TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            null,
+            resolvedOfficeCode,
+            fallbackTenantCode,
+            fallbackOfficeCode);
+    }
+
+    private static bool IsSharedRentalSettlementOffice(string? officeCode)
+        => string.Equals(
+            OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(officeCode, OfficeCodeCatalog.Shared),
+            OfficeCodeCatalog.Shared,
+            StringComparison.OrdinalIgnoreCase);
 
     private static string ResolveRentalEntityTenantCode(
         string? tenantCode,
