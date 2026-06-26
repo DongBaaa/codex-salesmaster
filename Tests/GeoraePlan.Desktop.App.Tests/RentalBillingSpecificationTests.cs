@@ -2,6 +2,7 @@ using System.Reflection;
 using \uAC70\uB798\uD50C\uB79C.Desktop.App.Data;
 using \uAC70\uB798\uD50C\uB79C.Desktop.App.Services;
 using \uAC70\uB798\uD50C\uB79C.Desktop.App.ViewModels;
+using \uAC70\uB798\uD50C\uB79C.Shared.Contracts;
 using Xunit;
 
 namespace GeoraePlan.Desktop.App.Tests;
@@ -410,6 +411,51 @@ public sealed class RentalBillingSpecificationTests
     }
 
     [Fact]
+    public void RentalBillingViewModel_IncludedAssetTemplateActionsRequireEditableSelection()
+    {
+        var assetId = Guid.Parse("13131313-1313-1313-1313-131313131313");
+        var templateItem = new RentalBillingTemplateEditorItem
+        {
+            DisplayItemName = "IMC2010",
+            BillingLineMode = "\uBB36\uC74C",
+            RepresentativeAssetId = assetId
+        };
+        templateItem.IncludedAssetIds.Add(assetId);
+        var includedAsset = new RentalBillingAssetOption
+        {
+            AssetId = assetId,
+            ItemName = "IMC2010"
+        };
+
+        var blocked = new RentalBillingViewModel(null!, null!, CreateUserSession());
+        blocked.TemplateItems.Add(templateItem);
+        SetPrivateField(blocked, "_selectedTemplateItem", templateItem);
+        SetPrivateField(blocked, "_selectedIncludedAsset", includedAsset);
+
+        Assert.False(blocked.CanRemoveIncludedAsset);
+        Assert.False(blocked.RemoveIncludedAssetCommand.CanExecute(null));
+        Assert.False(blocked.CanSetRepresentativeAsset);
+        Assert.False(blocked.SetRepresentativeAssetCommand.CanExecute(null));
+
+        var allowedTemplateItem = new RentalBillingTemplateEditorItem
+        {
+            DisplayItemName = "IMC2010",
+            BillingLineMode = "\uBB36\uC74C",
+            RepresentativeAssetId = assetId
+        };
+        allowedTemplateItem.IncludedAssetIds.Add(assetId);
+        var allowed = new RentalBillingViewModel(null!, null!, CreateUserSession(AppPermissionNames.RentalProfileEdit));
+        allowed.TemplateItems.Add(allowedTemplateItem);
+        SetPrivateField(allowed, "_selectedTemplateItem", allowedTemplateItem);
+        SetPrivateField(allowed, "_selectedIncludedAsset", includedAsset);
+
+        Assert.True(allowed.CanRemoveIncludedAsset);
+        Assert.True(allowed.RemoveIncludedAssetCommand.CanExecute(null));
+        Assert.True(allowed.CanSetRepresentativeAsset);
+        Assert.True(allowed.SetRepresentativeAssetCommand.CanExecute(null));
+    }
+
+    [Fact]
     public void RentalBillingViewModel_UpdateTemplateDerivedValuesWarnsWhenProfileAndTemplateAssetCountsDiffer()
     {
         var includedAssetId = Guid.Parse("12121212-1212-1212-1212-121212121212");
@@ -469,6 +515,21 @@ public sealed class RentalBillingSpecificationTests
         var method = target.GetType().GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
         method!.Invoke(target, args);
+    }
+
+    private static SessionState CreateUserSession(params string[] permissions)
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            Username = "user",
+            Role = DomainConstants.RoleUser,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = permissions.ToList()
+        });
+        return session;
     }
 
     private static T InvokePrivateStatic<T>(Type type, string methodName, params object?[] args)

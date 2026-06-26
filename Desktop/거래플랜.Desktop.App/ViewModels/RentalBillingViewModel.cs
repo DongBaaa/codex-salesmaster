@@ -194,10 +194,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                                            TemplateItems.IndexOf(SelectedTemplateItem) >= 0 &&
                                            TemplateItems.IndexOf(SelectedTemplateItem) < TemplateItems.Count - 1;
     public bool CanRemoveIncludedAsset => CanEditBillingProfileDetails &&
+                                          CanEditCurrentSelection &&
                                           SelectedTemplateItem is not null &&
                                           SelectedIncludedAsset is not null &&
                                           SelectedIncludedAsset.AssetId != Guid.Empty;
     public bool CanSetRepresentativeAsset => CanEditBillingProfileDetails &&
+                                             CanEditCurrentSelection &&
                                              SelectedTemplateItem is not null &&
                                              SelectedIncludedAsset is not null &&
                                              SelectedIncludedAsset.AssetId != Guid.Empty &&
@@ -1521,6 +1523,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanRemoveIncludedAsset))]
     private void RemoveIncludedAsset()
     {
+        if (!CanEditCurrentSelection)
+            return;
+
         if (SelectedTemplateItem is null ||
             SelectedIncludedAsset is null ||
             SelectedIncludedAsset.AssetId == Guid.Empty)
@@ -1577,6 +1582,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanSetRepresentativeAsset))]
     private void SetRepresentativeAsset()
     {
+        if (!CanEditCurrentSelection)
+            return;
+
         if (SelectedIncludedAsset is null)
             return;
 
