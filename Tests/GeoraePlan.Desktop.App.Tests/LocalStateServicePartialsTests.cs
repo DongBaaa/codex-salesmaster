@@ -3273,6 +3273,21 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public void RentalBillingWindow_CheckedDeleteButtonBindsEnabledState()
+    {
+        var xamlPath = Path.Combine(
+            FindRepositoryRoot(),
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "RentalBillingWindow.xaml");
+
+        var xaml = File.ReadAllText(xamlPath);
+
+        Assert.Contains("Command=\"{Binding DeleteCheckedCommand}\" IsEnabled=\"{Binding CanDeleteChecked}\"", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DataIntegrityAlertWindow_ShowsOnlyFixActionButtons()
     {
         var xamlPath = Path.Combine(

@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Globalization;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -43,6 +44,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private bool _suppressTemplateItemChangeHandling;
     private bool _updatingTemplateDerivedValues;
     private bool _isDisposed;
+    private readonly HashSet<RentalBillingViewRow> _observedBillingRows = new();
     private int _filterReloadVersion;
     private IReadOnlyList<LocalOffice>? _officeFilterSourceCache;
     private string _pendingFilterReloadSignature = string.Empty;
@@ -178,6 +180,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                                                    SelectedBillingHistory.CanDelete &&
                                                    CanDeleteSelectedBillingHistoryFinancialEffects;
     public bool CanDeleteSelected => SelectedRow is not null && CanEditCurrentSelection && !SelectedRow.IsAggregateRow;
+    public bool CanDeleteChecked => Rows.Any(row => row.IsSelected && CanDeleteBillingRow(row));
     public bool CanMarkCompletedSelected => SelectedRow is not null &&
                                             HasPersistedSelectedProfile &&
                                             CanEditCurrentSelection &&
@@ -555,6 +558,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         _contractDateRefreshCts?.Dispose();
         _contractDateRefreshCts = null;
         _searchDebouncer.Dispose();
+        UnsubscribeBillingRowSelectionHandlers();
     }
 
     private void StartInitialRowsLoad()
@@ -576,6 +580,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         await ReloadFiltersAsync();
         var row = await _rental.GetBillingRowAsync(profileId, _session, ReferenceDate);
         Rows.ReplaceWith(row is null ? Array.Empty<RentalBillingViewRow>() : new[] { row });
+        RebindBillingRowSelectionHandlers();
+        NotifyDeleteCheckedState();
         SelectRow(profileId);
         StatusMessage = SelectedRow is null
             ? "점검 항목의 청구 프로필을 목록에서 찾지 못했습니다. 필터, 권한, 삭제 상태를 확인하세요."
@@ -654,6 +660,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                     return;
 
                 Rows.ReplaceWith(rows);
+                RebindBillingRowSelectionHandlers();
+                NotifyDeleteCheckedState();
 
                 TotalCount = rows.Count;
                 DueCount = rows.Count(row => row.DaysRemaining.HasValue && row.DaysRemaining.Value <= 0);
@@ -1172,7 +1180,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         StatusMessage = result.Message;
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanDeleteChecked))]
     private async Task DeleteCheckedAsync()
     {
         var targets = Rows.Where(row => row.IsSelected).ToList();
@@ -1182,9 +1190,17 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return;
         }
 
+        if (!CanDeleteChecked)
+        {
+            StatusMessage = "권한이 있거나 담당지점 범위 안에 있는 선택 청구건이 없습니다.";
+            return;
+        }
+
         var aggregateTargets = targets.Where(row => row.IsAggregateRow).ToList();
-        var persistedTargets = targets.Where(row => row.HasPersistedProfile && !row.IsAggregateRow).ToList();
-        var unlinkedTargets = targets.Where(row => !row.HasPersistedProfile && !row.IsAggregateRow).ToList();
+        var editableTargets = targets.Where(CanDeleteBillingRow).ToList();
+        var skippedPermissionCount = targets.Count - aggregateTargets.Count - editableTargets.Count;
+        var persistedTargets = editableTargets.Where(row => row.HasPersistedProfile).ToList();
+        var unlinkedTargets = editableTargets.Where(row => !row.HasPersistedProfile).ToList();
         var skippedAggregateCount = aggregateTargets.Count;
         if (persistedTargets.Count == 0 && unlinkedTargets.Count == 0)
         {
@@ -1245,11 +1261,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         await ReloadAsync();
         NewProfile();
 
+        var skippedPermissionMessage = skippedPermissionCount > 0
+            ? $" / 권한/담당지점 제외 {skippedPermissionCount:N0}건"
+            : string.Empty;
         StatusMessage = failureMessages.Count == 0
-            ? BuildDeleteCheckedSuccessMessage(successCount, excludedUnlinkedCount, skippedAggregateCount)
+            ? BuildDeleteCheckedSuccessMessage(successCount, excludedUnlinkedCount, skippedAggregateCount, skippedPermissionCount)
             : skippedAggregateCount > 0
-                ? $"삭제/제외 성공 {successCount + excludedUnlinkedCount:N0}건 / 실패 {failureMessages.Count:N0}건 / 거래처 그룹 제외 {skippedAggregateCount:N0}건 - {string.Join(" | ", failureMessages.Take(3))}"
-                : $"삭제/제외 성공 {successCount + excludedUnlinkedCount:N0}건 / 실패 {failureMessages.Count:N0}건 - {string.Join(" | ", failureMessages.Take(3))}";
+                ? $"삭제/제외 성공 {successCount + excludedUnlinkedCount:N0}건 / 실패 {failureMessages.Count:N0}건 / 거래처 그룹 제외 {skippedAggregateCount:N0}건{skippedPermissionMessage} - {string.Join(" | ", failureMessages.Take(3))}"
+                : $"삭제/제외 성공 {successCount + excludedUnlinkedCount:N0}건 / 실패 {failureMessages.Count:N0}건{skippedPermissionMessage} - {string.Join(" | ", failureMessages.Take(3))}";
 
         if (conflictCount > 0)
         {
@@ -1264,7 +1283,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private static string BuildDeleteCheckedSuccessMessage(
         int deletedProfileCount,
         int excludedUnlinkedCount,
-        int skippedAggregateCount)
+        int skippedAggregateCount,
+        int skippedPermissionCount)
     {
         var parts = new List<string>();
         if (deletedProfileCount > 0)
@@ -1277,6 +1297,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         var message = string.Join(", ", parts) + " 완료.";
         if (skippedAggregateCount > 0)
             message += $" 거래처 그룹 {skippedAggregateCount:N0}건은 제외했습니다.";
+        if (skippedPermissionCount > 0)
+            message += $" 권한/담당지점 범위 밖 {skippedPermissionCount:N0}건은 제외했습니다.";
         return message;
     }
 
@@ -1755,6 +1777,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         OnPropertyChanged(nameof(CanRegisterSettlementSelected));
         OnPropertyChanged(nameof(CanDeleteSelectedBillingHistory));
         OnPropertyChanged(nameof(CanDeleteSelected));
+        NotifyDeleteCheckedState();
         OnPropertyChanged(nameof(CanMarkCompletedSelected));
         NotifyTemplateItemMoveState();
         OnPropertyChanged(nameof(CanRemoveIncludedAsset));
@@ -1767,6 +1790,42 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         ApplySelectedAssetsToTemplateCommand.NotifyCanExecuteChanged();
         DeleteSelectedBillingHistoryCommand.NotifyCanExecuteChanged();
         NotifyIncludedAssetAssignmentHistoryCommandState();
+    }
+
+    private bool CanDeleteBillingRow(RentalBillingViewRow row)
+        => CanEditRentalProfiles &&
+           !row.IsAggregateRow &&
+           CanOperateScope(ResolveProfileOfficeCode(row.Source, _session.OfficeCode));
+
+    private void NotifyDeleteCheckedState()
+    {
+        OnPropertyChanged(nameof(CanDeleteChecked));
+        DeleteCheckedCommand.NotifyCanExecuteChanged();
+    }
+
+    private void RebindBillingRowSelectionHandlers()
+    {
+        UnsubscribeBillingRowSelectionHandlers();
+        foreach (var row in Rows)
+        {
+            row.PropertyChanged += BillingRow_PropertyChanged;
+            _observedBillingRows.Add(row);
+        }
+    }
+
+    private void UnsubscribeBillingRowSelectionHandlers()
+    {
+        foreach (var row in _observedBillingRows)
+            row.PropertyChanged -= BillingRow_PropertyChanged;
+        _observedBillingRows.Clear();
+    }
+
+    private void BillingRow_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (!string.Equals(e.PropertyName, nameof(RentalBillingViewRow.IsSelected), StringComparison.Ordinal))
+            return;
+
+        NotifyDeleteCheckedState();
     }
 
     private void NotifyTemplateItemMoveState()

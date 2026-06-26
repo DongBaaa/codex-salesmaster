@@ -429,8 +429,10 @@ public sealed class RentalBillingHistoryRow
         : "완료";
 }
 
-public sealed class RentalBillingViewRow
+public sealed class RentalBillingViewRow : INotifyPropertyChanged
 {
+    private bool _isSelected;
+
     public Guid SelectionId { get; init; }
     public bool HasPersistedProfile { get; init; } = true;
     public LocalRentalBillingProfile Source { get; init; } = new();
@@ -515,7 +517,23 @@ public sealed class RentalBillingViewRow
             return string.IsNullOrWhiteSpace(SettlementStatus) ? PaymentFlowConstants.SettlementStatusUnpaid : SettlementStatus;
         }
     }
-    public bool IsSelected { get; set; }
+    public bool IsSelected
+    {
+        get => _isSelected;
+        set
+        {
+            if (_isSelected == value)
+                return;
+
+            _isSelected = value;
+            OnPropertyChanged();
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
 }
 
 public sealed class RentalAssetViewRow : INotifyPropertyChanged

@@ -254,7 +254,7 @@
                     <Button Content="완납 처리" Background="#00695C" BorderBrush="#00695C" Margin="0,0,6,6" Command="{Binding MarkCompletedCommand}" IsEnabled="{Binding CanMarkCompletedSelected}"/>
                     <Button Content="선택 청구 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,6,6" Command="{Binding DeleteCommand}" IsEnabled="{Binding CanDeleteSelected}"/>
                     <Button Content="그룹을 개별 청구건으로 보기" Background="#455A64" BorderBrush="#455A64" Margin="0,0,6,6" Command="{Binding ExpandSelectedSummaryCommand}" IsEnabled="{Binding CanExpandSelectedSummary}" ToolTip="거래처 그룹을 개별 청구 프로필로 전환합니다."/>
-                    <Button Content="체크 청구 일괄삭제" Background="#8E24AA" BorderBrush="#8E24AA" Margin="0,0,6,6" Command="{Binding DeleteCheckedCommand}"/>
+                    <Button Content="체크 청구 일괄삭제" Background="#8E24AA" BorderBrush="#8E24AA" Margin="0,0,6,6" Command="{Binding DeleteCheckedCommand}" IsEnabled="{Binding CanDeleteChecked}"/>
                     <Button Content="닫기 (F12)" Click="CloseButton_Click" Margin="0,0,0,6"/>
                 </WrapPanel>
             </DockPanel>

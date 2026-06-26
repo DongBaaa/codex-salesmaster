@@ -484,6 +484,40 @@ public sealed class RentalBillingSpecificationTests
         Assert.Contains("표시품목 포함 자산 1대", vm.GetBillingAssetCoverageStartWarning(), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void RentalBillingViewModel_CheckedDeleteRequiresEditableCheckedRowsAndRefreshesWhenSelectionChanges()
+    {
+        var blocked = new RentalBillingViewModel(null!, null!, CreateUserSession());
+        blocked.Rows.Add(CreateBillingDeleteRow(OfficeCodeCatalog.Usenet, isSelected: true));
+        InvokePrivateInstance(blocked, "RebindBillingRowSelectionHandlers");
+
+        Assert.False(blocked.CanDeleteChecked);
+        Assert.False(blocked.DeleteCheckedCommand.CanExecute(null));
+
+        var outside = new RentalBillingViewModel(null!, null!, CreateUserSession(AppPermissionNames.RentalProfileEdit));
+        outside.Rows.Add(CreateBillingDeleteRow(OfficeCodeCatalog.Yeonsu, isSelected: true));
+        InvokePrivateInstance(outside, "RebindBillingRowSelectionHandlers");
+
+        Assert.False(outside.CanDeleteChecked);
+        Assert.False(outside.DeleteCheckedCommand.CanExecute(null));
+
+        var allowedRow = CreateBillingDeleteRow(OfficeCodeCatalog.Usenet, isSelected: true);
+        var allowed = new RentalBillingViewModel(null!, null!, CreateUserSession(AppPermissionNames.RentalProfileEdit));
+        allowed.Rows.Add(allowedRow);
+        InvokePrivateInstance(allowed, "RebindBillingRowSelectionHandlers");
+
+        Assert.True(allowed.CanDeleteChecked);
+        Assert.True(allowed.DeleteCheckedCommand.CanExecute(null));
+
+        var canExecuteChangedCount = 0;
+        allowed.DeleteCheckedCommand.CanExecuteChanged += (_, _) => canExecuteChangedCount++;
+        allowedRow.IsSelected = false;
+
+        Assert.True(canExecuteChangedCount > 0);
+        Assert.False(allowed.CanDeleteChecked);
+        Assert.False(allowed.DeleteCheckedCommand.CanExecute(null));
+    }
+
     private static T GetPrivateField<T>(object target, string fieldName)
     {
         var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
@@ -530,6 +564,32 @@ public sealed class RentalBillingSpecificationTests
             Permissions = permissions.ToList()
         });
         return session;
+    }
+
+    private static RentalBillingViewRow CreateBillingDeleteRow(string officeCode, bool isSelected)
+    {
+        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+            officeCode,
+            OfficeCodeCatalog.Usenet);
+
+        return new RentalBillingViewRow
+        {
+            SelectionId = Guid.NewGuid(),
+            HasPersistedProfile = true,
+            Source = new LocalRentalBillingProfile
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                    TenantScopeCatalog.UsenetGroup,
+                    normalizedOfficeCode),
+                OfficeCode = normalizedOfficeCode,
+                ResponsibleOfficeCode = normalizedOfficeCode,
+                CustomerName = "Checked delete customer"
+            },
+            CustomerDisplayName = "Checked delete customer",
+            GroupedPersistedProfileCount = 1,
+            IsSelected = isSelected
+        };
     }
 
     private static T InvokePrivateStatic<T>(Type type, string methodName, params object?[] args)
