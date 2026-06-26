@@ -69,6 +69,7 @@ public static class PrintPreviewHelper
         DockPanel.SetDock(closeButton, Dock.Right);
         toolbar.Children.Add(closeButton);
 
+        DocumentViewer? viewer = null;
         var printed = false;
         var isPrinting = false;
         var printButton = new Button
@@ -95,11 +96,13 @@ public static class PrintPreviewHelper
                 description.Text = "거래플랜 인쇄창을 여는 중...";
 
                 ConfigureDocumentForA4(document);
+                var currentPageNumber = NormalizeCurrentPageNumber(viewer?.MasterPageNumber ?? 0);
                 if (!TradePrintExecutor.TryPrintDocument(
                         document,
                         jobName,
                         new Size(A4Width, A4Height),
-                        out var errorMessage))
+                        out var errorMessage,
+                        currentPageNumber))
                 {
                     if (string.IsNullOrWhiteSpace(errorMessage))
                     {
@@ -145,14 +148,12 @@ public static class PrintPreviewHelper
         Grid.SetRow(toolbar, 0);
         root.Children.Add(toolbar);
 
-        var viewer = new FlowDocumentScrollViewer
+        viewer = new DocumentViewer
         {
             Document = document,
             Margin = new Thickness(10),
             Background = Brushes.White,
-            Foreground = Brushes.Black,
-            IsToolBarVisible = true,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+            Foreground = Brushes.Black
         };
         Grid.SetRow(viewer, 1);
         root.Children.Add(viewer);
@@ -171,4 +172,6 @@ public static class PrintPreviewHelper
         document.ColumnGap = 0;
     }
 
+    private static int? NormalizeCurrentPageNumber(int masterPageNumber)
+        => masterPageNumber > 0 ? masterPageNumber : null;
 }

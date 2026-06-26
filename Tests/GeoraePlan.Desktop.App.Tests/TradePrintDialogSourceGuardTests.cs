@@ -171,6 +171,12 @@ public sealed class TradePrintDialogSourceGuardTests
             "거래플랜.Desktop.App",
             "Services",
             "WpfInvoicePrintService.cs"));
+        var flowPreviewHelper = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Services",
+            "PrintPreviewHelper.cs"));
 
         Assert.Contains("x:Name=\"CurrentPageRadioButton\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Content=\"현재 페이지\"", xaml, StringComparison.Ordinal);
@@ -181,6 +187,10 @@ public sealed class TradePrintDialogSourceGuardTests
         Assert.Contains("PreviewDocumentViewer?.MasterPageNumber", previewCodeBehind, StringComparison.Ordinal);
         Assert.Contains("CurrentPageNumberProvider", previewViewModel, StringComparison.Ordinal);
         Assert.Contains("currentPageNumber", printService, StringComparison.Ordinal);
+        Assert.Contains("new DocumentViewer", flowPreviewHelper, StringComparison.Ordinal);
+        Assert.Contains("viewer?.MasterPageNumber", flowPreviewHelper, StringComparison.Ordinal);
+        Assert.Contains("NormalizeCurrentPageNumber", flowPreviewHelper, StringComparison.Ordinal);
+        Assert.DoesNotContain("new FlowDocumentScrollViewer", flowPreviewHelper, StringComparison.Ordinal);
     }
 
     [Fact]
