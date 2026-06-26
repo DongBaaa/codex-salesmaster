@@ -185,6 +185,100 @@ public sealed class RentalBillingRunStateTests
     }
 
     [Fact]
+    public async Task StartBilling_GroupsSameModelIndividualIncludedAssetsIntoSingleInvoiceLine()
+    {
+        PrepareAppRoot("georaeplan-rental-start-individual-model-aggregate");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Individual aggregate customer";
+            var firstAssetId = Guid.NewGuid();
+            var secondAssetId = Guid.NewGuid();
+
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+
+            var firstAsset = CreateRentalAsset(firstAssetId, customerName, profileId);
+            firstAsset.ItemName = "IMC2010";
+            firstAsset.ManagementNumber = "IMC-A";
+            firstAsset.MachineNumber = "SN-A";
+            firstAsset.MonthlyFee = 50_000m;
+
+            var secondAsset = CreateRentalAsset(secondAssetId, customerName, profileId);
+            secondAsset.ItemName = "IMC2010";
+            secondAsset.ManagementNumber = "IMC-B";
+            secondAsset.MachineNumber = "SN-B";
+            secondAsset.MonthlyFee = 70_000m;
+
+            db.RentalAssets.AddRange(firstAsset, secondAsset);
+
+            var profile = CreateBillingProfile(profileId, [firstAssetId, secondAssetId], customerName, customerId);
+            profile.BillingType = "개별";
+            profile.MonthlyAmount = 120_000m;
+            profile.ItemName = "IMC2010";
+            profile.BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    DisplayItemName = "IMC2010",
+                    BillingLineMode = "개별",
+                    Quantity = 2m,
+                    Unit = "대",
+                    UnitPrice = 60_000m,
+                    Amount = 120_000m,
+                    IncludedAssetIds = [firstAssetId, secondAssetId]
+                }
+            });
+            db.RentalBillingProfiles.Add(profile);
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+
+            var result = await service.StartBillingAsync(profileId, new DateOnly(2026, 6, 25), session);
+
+            Assert.True(result.Success, result.Message);
+
+            var invoice = await db.Invoices
+                .Include(current => current.Lines)
+                .AsNoTracking()
+                .SingleAsync(current => current.LinkedRentalBillingProfileId == profileId);
+            var line = Assert.Single(invoice.Lines, current => !current.IsDeleted);
+            Assert.Equal("사무기기 렌탈대금[6월]", line.ItemNameOriginal);
+            Assert.Equal("IMC2010", line.SpecificationOriginal);
+            Assert.Equal(2m, line.Quantity);
+            Assert.Equal(60_000m, line.UnitPrice);
+            Assert.Equal(120_000m, line.LineAmount);
+            Assert.Equal(120_000m, invoice.TotalAmount);
+            Assert.Equal("IMC-A 외 1건", line.MaterialNumber);
+            Assert.Equal("SN-A 외 1건", line.SerialNumber);
+
+            var persistedProfile = await db.RentalBillingProfiles
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == profileId);
+            var run = Assert.Single(DeserializeRuns(persistedProfile.BillingRunsJson));
+            var runItem = Assert.Single(run.Items);
+            Assert.Equal("IMC2010", runItem.DisplayItemName);
+            Assert.Equal(2m, runItem.Quantity);
+            Assert.Equal(60_000m, runItem.UnitPrice);
+            Assert.Equal(120_000m, runItem.Amount);
+            Assert.Equal(
+                new[] { firstAssetId, secondAssetId }.OrderBy(id => id),
+                runItem.IncludedAssetIds.OrderBy(id => id));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task StartBilling_RejectsBundleTemplateWithZeroMonthlyAmount()
     {
         PrepareAppRoot("georaeplan-rental-bundle-zero-amount-guard");
