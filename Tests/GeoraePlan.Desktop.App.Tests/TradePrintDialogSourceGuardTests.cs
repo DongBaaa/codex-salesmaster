@@ -66,6 +66,35 @@ public sealed class TradePrintDialogSourceGuardTests
     }
 
     [Fact]
+    public void TradePrintWindow_UsesDedicatedPrinterPropertyActionWithoutClosingFallbackPrintWindow()
+    {
+        var repoRoot = FindRepositoryRoot();
+        var xaml = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "TradePrintWindow.xaml"));
+        var codeBehind = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "TradePrintWindow.xaml.cs"));
+
+        Assert.Contains("x:Name=\"PropertiesButton\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Click=\"OnPrinterPropertiesClick\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("FileName = \"rundll32.exe\"", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("printui.dll,PrintUIEntry /p /n", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("StatusTextBlock.Text = \"프린터 속성 창을 열었습니다.", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("StatusTextBlock.Text = \"프린터 속성 창을 열 수 없습니다.", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("MessageBox.Show(", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("$\"프린터 속성 창을 열 수 없습니다.", codeBehind, StringComparison.Ordinal);
+        Assert.DoesNotContain("new PrintDialog", codeBehind, StringComparison.Ordinal);
+        Assert.DoesNotContain("System.Windows.Controls.PrintDialog", codeBehind, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TradePrintExecutor_SavesPdfFileFromFixedDocument()
     {
         RunOnSta(() =>
