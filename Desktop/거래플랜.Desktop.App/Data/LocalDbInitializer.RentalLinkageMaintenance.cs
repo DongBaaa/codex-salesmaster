@@ -373,9 +373,22 @@ public static partial class LocalDbInitializer
 
             activeAssetsByProfileId.TryGetValue(profile.Id, out var linkedAssets);
             var hasLinkedAssets = linkedAssets is not null && linkedAssets.Count > 0;
-            var billingTemplateAssets = hasLinkedAssets
-                ? linkedAssets!
-                : ResolveBillingTemplateAssets(profile, assets, rentalStateService);
+            var billingTemplateAssets = ResolveBillingTemplateAssets(profile, assets, rentalStateService);
+            if (hasLinkedAssets)
+            {
+                var billingTemplateAssetsById = billingTemplateAssets
+                    .Where(asset => asset.Id != Guid.Empty)
+                    .GroupBy(asset => asset.Id)
+                    .ToDictionary(group => group.Key, group => group.First());
+                foreach (var linkedAsset in linkedAssets!)
+                {
+                    if (linkedAsset.Id != Guid.Empty)
+                        billingTemplateAssetsById[linkedAsset.Id] = linkedAsset;
+                }
+
+                billingTemplateAssets = billingTemplateAssetsById.Values.ToList();
+            }
+
             if (billingTemplateAssets.Count > 0 &&
                 TryNormalizeBillingTemplateFromLinkedAssets(profile, billingTemplateAssets, rentalStateService, out var normalizedTemplateJson, out var normalizedMonthlyAmount))
             {
@@ -508,11 +521,15 @@ public static partial class LocalDbInitializer
         if (linkedAssetIds.Count == 0)
             return false;
 
+        var rawTemplateItems = ParseStartupBillingTemplateItems(profile.BillingTemplateJson);
+        var hasExplicitIncludedAssetIds = rawTemplateItems?.Any(item =>
+            (item.IncludedAssetIds ?? []).Any(id => id != Guid.Empty)) == true;
+
         var templateItems = rentalStateService.GetBillingTemplateItems(profile, linkedAssets);
         if (templateItems.Count == 0)
             return false;
 
-        if (templateItems.Count == 1)
+        if (!hasExplicitIncludedAssetIds && templateItems.Count == 1)
         {
             var currentIds = (templateItems[0].IncludedAssetIds ?? [])
                 .Where(id => id != Guid.Empty)

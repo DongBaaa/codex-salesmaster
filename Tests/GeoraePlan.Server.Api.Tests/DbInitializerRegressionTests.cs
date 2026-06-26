@@ -831,7 +831,7 @@ public sealed class DbInitializerRegressionTests : IDisposable
     }
 
     [Fact]
-    public async Task RepairRentalCustomerLinkageAsync_RecalculatesBillingTemplateAndProfileAmountFromLinkedAssetFees()
+    public async Task RepairRentalCustomerLinkageAsync_RecalculatesExplicitBillingTemplateWithoutAddingProfileOnlyAssets()
     {
         var customerId = Guid.Parse("96666666-6666-6666-6666-666666666667");
         var profileId = Guid.Parse("97777777-7777-7777-7777-777777777777");
@@ -935,23 +935,24 @@ public sealed class DbInitializerRegressionTests : IDisposable
         await _dbContext.SaveChangesAsync();
 
         var profile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(current => current.Id == profileId);
-        Assert.Equal(330000m, profile.MonthlyAmount);
+        Assert.Equal(110000m, profile.MonthlyAmount);
 
         using var document = JsonDocument.Parse(profile.BillingTemplateJson);
         var item = document.RootElement.EnumerateArray().Single();
         Assert.Equal(1m, item.GetProperty("Quantity").GetDecimal());
-        Assert.Equal(330000m, item.GetProperty("UnitPrice").GetDecimal());
-        Assert.Equal(330000m, item.GetProperty("Amount").GetDecimal());
+        Assert.Equal(110000m, item.GetProperty("UnitPrice").GetDecimal());
+        Assert.Equal(110000m, item.GetProperty("Amount").GetDecimal());
         var includedAssetIds = item.GetProperty("IncludedAssetIds")
             .EnumerateArray()
             .Select(value => value.GetGuid())
             .OrderBy(value => value)
             .ToList();
-        Assert.Equal(new[] { firstAssetId, secondAssetId }.OrderBy(value => value), includedAssetIds);
+        Assert.Equal(new[] { firstAssetId }.OrderBy(value => value), includedAssetIds);
+        Assert.DoesNotContain(secondAssetId, includedAssetIds);
     }
 
     [Fact]
-    public async Task RepairRentalCustomerLinkageAsync_AddsMissingLinkedAssetsToMultiLineTemplate()
+    public async Task RepairRentalCustomerLinkageAsync_PreservesExplicitMultiLineTemplateAssets()
     {
         var customerId = Guid.Parse("97777777-7777-7777-7777-777777777701");
         var profileId = Guid.Parse("97777777-7777-7777-7777-777777777702");
@@ -1029,19 +1030,20 @@ public sealed class DbInitializerRegressionTests : IDisposable
         await _dbContext.SaveChangesAsync();
 
         var profile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(current => current.Id == profileId);
-        Assert.Equal(370000m, profile.MonthlyAmount);
+        Assert.Equal(330000m, profile.MonthlyAmount);
 
         using var document = JsonDocument.Parse(profile.BillingTemplateJson);
         var items = document.RootElement.EnumerateArray().ToList();
         Assert.Equal(2, items.Count);
-        Assert.Equal(150000m, items[0].GetProperty("Amount").GetDecimal());
+        Assert.Equal(110000m, items[0].GetProperty("Amount").GetDecimal());
         Assert.Equal(220000m, items[1].GetProperty("Amount").GetDecimal());
 
         var allIncludedAssetIds = items
             .SelectMany(item => item.GetProperty("IncludedAssetIds").EnumerateArray().Select(value => value.GetGuid()))
             .OrderBy(value => value)
             .ToList();
-        Assert.Equal(new[] { firstAssetId, missingAssetId, secondLineAssetId }.OrderBy(value => value), allIncludedAssetIds);
+        Assert.Equal(new[] { firstAssetId, secondLineAssetId }.OrderBy(value => value), allIncludedAssetIds);
+        Assert.DoesNotContain(missingAssetId, allIncludedAssetIds);
     }
 
     private static RentalAsset BuildRentalAsset(

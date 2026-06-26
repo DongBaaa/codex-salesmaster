@@ -349,9 +349,22 @@ public static partial class DbInitializer
 
             activeAssetsByProfileId.TryGetValue(profile.Id, out var linkedAssets);
             var hasLinkedAssets = linkedAssets is not null && linkedAssets.Count > 0;
-            var billingTemplateAssets = hasLinkedAssets
-                ? linkedAssets!
-                : ResolveBillingTemplateAssets(profile, assets);
+            var billingTemplateAssets = ResolveBillingTemplateAssets(profile, assets);
+            if (hasLinkedAssets)
+            {
+                var billingTemplateAssetsById = billingTemplateAssets
+                    .Where(asset => asset.Id != Guid.Empty)
+                    .GroupBy(asset => asset.Id)
+                    .ToDictionary(group => group.Key, group => group.First());
+                foreach (var linkedAsset in linkedAssets!)
+                {
+                    if (linkedAsset.Id != Guid.Empty)
+                        billingTemplateAssetsById[linkedAsset.Id] = linkedAsset;
+                }
+
+                billingTemplateAssets = billingTemplateAssetsById.Values.ToList();
+            }
+
             if (billingTemplateAssets.Count > 0 &&
                 TryNormalizeBillingTemplateFromLinkedAssets(profile, billingTemplateAssets, out var normalizedTemplateJson, out var normalizedMonthlyAmount))
             {
@@ -483,6 +496,8 @@ public static partial class DbInitializer
             return false;
 
         var templateItems = ParseStartupBillingTemplateItems(profile.BillingTemplateJson);
+        var hasExplicitIncludedAssetIds = templateItems?.Any(item =>
+            (item.IncludedAssetIds ?? []).Any(id => id != Guid.Empty)) == true;
         if (templateItems is null || templateItems.Count == 0)
         {
             var totalMonthlyFee = linkedAssetMap.Values.Sum(asset => Math.Max(0m, asset.MonthlyFee));
@@ -502,7 +517,7 @@ public static partial class DbInitializer
                 }
             ];
         }
-        else if (templateItems.Count == 1)
+        else if (!hasExplicitIncludedAssetIds && templateItems.Count == 1)
         {
             var currentIds = (templateItems[0].IncludedAssetIds ?? [])
                 .Where(id => id != Guid.Empty)
@@ -513,7 +528,8 @@ public static partial class DbInitializer
                 templateItems[0].IncludedAssetIds = linkedAssetIds;
         }
 
-        var changed = NormalizeTemplateAssetCoverageForStartup(templateItems, linkedAssetIds);
+        var changed = !hasExplicitIncludedAssetIds &&
+                      NormalizeTemplateAssetCoverageForStartup(templateItems, linkedAssetIds);
         foreach (var templateItem in templateItems)
         {
             var includedAssetIds = (templateItem.IncludedAssetIds ?? [])

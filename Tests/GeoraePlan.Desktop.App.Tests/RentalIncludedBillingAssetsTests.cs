@@ -576,6 +576,98 @@ public sealed class RentalIncludedBillingAssetsTests
     }
 
     [Fact]
+    public async Task LocalDbInitializer_RepairRentalCustomerLinkage_DoesNotAppendProfileOnlyAssetsToExplicitTemplate()
+    {
+        PrepareAppRoot("georaeplan-rental-initializer-explicit-template");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.Parse("f2650000-1111-4444-8888-000000000001");
+            var profileId = Guid.Parse("f2650000-1111-4444-8888-000000000002");
+            var selectedAssetId = Guid.Parse("f2650000-1111-4444-8888-0000000000a1");
+            var profileOnlyAssetId = Guid.Parse("f2650000-1111-4444-8888-0000000000b2");
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Initializer Explicit Customer",
+                NameMatchKey = "INITIALIZEREXPLICITCUSTOMER",
+                TradeType = CustomerTradeTypes.Sales,
+                IsDirty = false
+            });
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerId = customerId,
+                CustomerName = "Initializer Explicit Customer",
+                InstallSiteName = "HQ",
+                ItemName = "Explicit Rental",
+                BillingType = "개별",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                MonthlyAmount = 1m,
+                BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                {
+                    new()
+                    {
+                        ItemId = Guid.Parse("f2650000-1111-4444-8888-0000000000c3"),
+                        DisplayItemName = "Explicit Rental",
+                        BillingLineMode = "개별",
+                        Quantity = 1m,
+                        UnitPrice = 1m,
+                        Amount = 1m,
+                        IncludedAssetIds = [selectedAssetId]
+                    }
+                }),
+                IsActive = true,
+                IsDirty = false
+            });
+            db.RentalAssets.AddRange(
+                CreateRentalAsset("Initializer Explicit Customer", "INIT-SEL-001", profileId, selectedAssetId, monthlyFee: 80_000m),
+                CreateRentalAsset("Initializer Explicit Customer", "INIT-PROFILE-ONLY-001", profileId, profileOnlyAssetId, monthlyFee: 120_000m));
+            await db.SaveChangesAsync();
+
+            var method = typeof(LocalDbInitializer).GetMethod(
+                "RepairRentalCustomerLinkageAsync",
+                BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.NotNull(method);
+
+            var task = method!.Invoke(null, new object?[] { db }) as Task;
+            Assert.NotNull(task);
+            await task!;
+            await db.SaveChangesAsync();
+
+            var storedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters()
+                .SingleAsync(current => current.Id == profileId);
+            var storedTemplateItem = Assert.Single(JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(storedProfile.BillingTemplateJson) ?? []);
+
+            Assert.Equal(80_000m, storedProfile.MonthlyAmount);
+            Assert.Equal(1m, storedTemplateItem.Quantity);
+            Assert.Equal(80_000m, storedTemplateItem.UnitPrice);
+            Assert.Equal(80_000m, storedTemplateItem.Amount);
+            Assert.Equal([selectedAssetId], storedTemplateItem.IncludedAssetIds);
+            Assert.DoesNotContain(profileOnlyAssetId, storedTemplateItem.IncludedAssetIds);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public void ApplyAssetMonthlyFeesToBillingTemplate_IndividualMixedFeesKeepsQuantityAndAverageUnitPrice()
     {
         var method = typeof(RentalStateService).GetMethod(

@@ -4661,7 +4661,11 @@ public sealed class SyncService : IDisposable
         if (linkedAssetIds.Count == 0)
             return null;
 
-        templateItems[0].IncludedAssetIds = linkedAssetIds;
+        var hasExplicitIncludedAssetIds = templateItems.Any(item =>
+            (item.IncludedAssetIds ?? new List<Guid>()).Any(id => id != Guid.Empty));
+        if (!hasExplicitIncludedAssetIds)
+            templateItems[0].IncludedAssetIds = linkedAssetIds;
+
         var canonicalTemplateJson = _rental.SerializeBillingTemplateItems(templateItems);
         return string.IsNullOrWhiteSpace(canonicalTemplateJson)
             ? null

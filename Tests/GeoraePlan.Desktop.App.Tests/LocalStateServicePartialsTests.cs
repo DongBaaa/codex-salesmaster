@@ -3622,6 +3622,7 @@ public sealed class LocalStateServicePartialsTests
             var customerId = Guid.Parse("72222222-2222-2222-2222-222222222222");
             var localAssetAId = Guid.Parse("73333333-3333-3333-3333-333333333333");
             var localAssetBId = Guid.Parse("74444444-4444-4444-4444-444444444444");
+            var profileOnlyAssetId = Guid.Parse("74444444-4444-4444-4444-444444444445");
             var staleServerAssetId = Guid.Parse("75555555-5555-5555-5555-555555555555");
             var templateItemId = Guid.Parse("76666666-6666-6666-6666-666666666666");
             var localRevision = 200L;
@@ -3726,6 +3727,25 @@ public sealed class LocalStateServicePartialsTests
                     ManagementNumber = "A-002",
                     AssetStatus = "임대진행중",
                     IsDirty = false
+                },
+                new LocalRentalAsset
+                {
+                    Id = profileOnlyAssetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    BillingProfileId = profileId,
+                    AssetKey = "USENET|A-003|IMC2000",
+                    CustomerId = customerId,
+                    CustomerName = profile.CustomerName,
+                    CurrentCustomerName = profile.CustomerName,
+                    InstallSiteName = profile.InstallSiteName,
+                    InstallLocation = profile.InstallSiteName,
+                    ItemName = "IMC2000",
+                    ManagementNumber = "A-003",
+                    AssetStatus = "임대진행중",
+                    IsDirty = false
                 });
 
             var clientSnapshot = LocalMappings.ToDto(profile);
@@ -3806,6 +3826,10 @@ public sealed class LocalStateServicePartialsTests
             Assert.Equal(serverRevision, storedProfile.Revision);
             Assert.True(storedProfile.IsDirty);
             Assert.Equal(canonicalTemplateJson, storedProfile.BillingTemplateJson);
+            var storedTemplateItems = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(storedProfile.BillingTemplateJson) ?? [];
+            var storedIncludedAssetIds = Assert.Single(storedTemplateItems).IncludedAssetIds;
+            Assert.Equal([localAssetAId, localAssetBId], storedIncludedAssetIds);
+            Assert.DoesNotContain(profileOnlyAssetId, storedIncludedAssetIds);
 
             var rebasedDto = LocalMappings.ToDto(storedProfile);
             rebasedDto.ExpectedRevision = serverRevision;
