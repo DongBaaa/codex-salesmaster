@@ -588,6 +588,13 @@ function Resolve-IsolatedUserDefinitions {
     return $resolvedUsers
 }
 
+function Is-AdminUsername {
+    param([string]$Username)
+
+    $normalized = if ($null -eq $Username) { '' } else { $Username.Trim() }
+    return [string]::Equals($normalized, 'admin', [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 function Sync-IsolatedServerUsers {
     param(
         [Parameter(Mandatory = $true)][string]$TargetBaseUrl,
@@ -638,7 +645,14 @@ function Sync-IsolatedServerUsers {
         }
     }
 
-    foreach ($user in $Users) {
+    $usersToSync = @(
+        $Users |
+            Sort-Object `
+                @{ Expression = { if (Is-AdminUsername -Username ([string]$_.Username)) { 1 } else { 0 } } },
+                @{ Expression = { [string]$_.Username } }
+    )
+
+    foreach ($user in $usersToSync) {
         $permissions = @($user.Permissions | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
         $payload = @{
             username = [string]$user.Username

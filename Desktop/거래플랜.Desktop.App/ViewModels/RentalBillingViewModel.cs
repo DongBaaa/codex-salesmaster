@@ -4488,12 +4488,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private string BuildApplySelectedAssetsHint(int linkedAssetCount)
     {
         if (SelectedTemplateItem is null)
-            return "청구서 표시 품목을 선택하면 새 장비연결과 내부 포함 장비 안내가 표시됩니다.";
+            return "청구서 표시 품목(거래명세서 출력 라인)을 선택하면, 그 라인에 실제로 청구할 내부 포함 장비를 연결할 수 있습니다.";
 
         if (linkedAssetCount == 0)
-            return "새 장비연결로 설치현황 자산을 선택해 현재 품목에 연결하세요. 저장하면 설치 거래처/담당지점/상세정보가 현재 거래처 기준으로 반영됩니다.";
+            return "새 장비연결로 설치현황 자산을 선택해 현재 표시 라인의 내부 포함 장비로 연결하세요. 표시 품목명만 저장해도 자산은 자동 추가되지 않습니다.";
 
-        return $"현재 품목에 연결된 장비 {linkedAssetCount:N0}대를 확인했습니다. 새 장비연결로 자산을 더 추가하거나 내부 포함 장비에서 시리얼번호 기준으로 검토한 뒤 저장하세요.";
+        return $"현재 표시 라인에 실제 청구될 내부 포함 장비 {linkedAssetCount:N0}대를 확인했습니다. 새 장비연결로 자산을 더 추가하거나 시리얼번호 기준으로 검토한 뒤 저장하세요.";
     }
 
     private static string BuildTemplateSignature(IEnumerable<RentalBillingTemplateItemModel> items, string billingType)
