@@ -130,6 +130,7 @@ public sealed class PrintDocumentRenderingSmokeTests
             company.BusinessItem = "현재 종목";
             company.Address = "인천광역시 현재회사로 20";
             company.ContactNumber = "032-555-7777";
+            company.FaxNumber = "032-555-7778";
             company.BankAccountText = "신한은행 123-456-789 현재회사";
 
             var currentDefault = printService.CreateDefaultModel(
@@ -172,6 +173,8 @@ public sealed class PrintDocumentRenderingSmokeTests
             Assert.Contains("현재 연동 회사", estimateText);
             Assert.Contains("현재 회사 대표", estimateText);
             Assert.Contains("인천광역시 현재회사로 20", estimateText);
+            Assert.Contains("032-555-7778", estimateText);
+            Assert.DoesNotContain("032-222-4445", estimateText);
             Assert.DoesNotContain("스냅샷 공급자", estimateText);
             Assert.DoesNotContain("스냅샷 거래처", estimateText);
 
@@ -186,6 +189,8 @@ public sealed class PrintDocumentRenderingSmokeTests
             Assert.Contains("현재 연동 수신처", claimText);
             Assert.Contains("현재 연동 회사", claimText);
             Assert.Contains("현재 회사 대표", claimText);
+            Assert.Contains("032-555-7778", claimText);
+            Assert.DoesNotContain("032-222-4445", claimText);
             Assert.Contains("신한은행", claimText);
             Assert.Contains("123-456-789", claimText);
             Assert.DoesNotContain("스냅샷 공급자", claimText);
@@ -286,6 +291,7 @@ public sealed class PrintDocumentRenderingSmokeTests
             BusinessItem = "사무기기",
             Address = "인천광역시 남동구 테스트로 2",
             ContactNumber = "032-999-0000",
+            FaxNumber = "032-999-0001",
             BankAccountText = "국민은행 123-456-789 유즈넷"
         };
 

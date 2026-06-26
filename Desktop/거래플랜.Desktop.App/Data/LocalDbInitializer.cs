@@ -437,6 +437,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         {
             ("ProfileName", "TEXT NOT NULL DEFAULT ''"),
             ("OfficeCode", "TEXT NOT NULL DEFAULT 'USENET'"),
+            ("FaxNumber", "TEXT NOT NULL DEFAULT ''"),
             ("IsDefaultForOffice", "INTEGER NOT NULL DEFAULT 0"),
             ("IsActive", "INTEGER NOT NULL DEFAULT 1")
         };
@@ -878,6 +879,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                     BusinessItem = current.BusinessItem?.Trim() ?? string.Empty,
                     Address = string.IsNullOrWhiteSpace(current.Address) ? definition.Address : current.Address.Trim(),
                     ContactNumber = string.IsNullOrWhiteSpace(current.ContactNumber) ? definition.ContactNumber : current.ContactNumber.Trim(),
+                    FaxNumber = current.FaxNumber?.Trim() ?? string.Empty,
                     Email = current.Email?.Trim() ?? string.Empty,
                     BankAccountText = string.IsNullOrWhiteSpace(current.BankAccountText) ? definition.BankAccountText : current.BankAccountText,
                     StampImage = current.StampImage,
@@ -926,6 +928,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                 current.Address = definition.Address;
             if (string.IsNullOrWhiteSpace(current.ContactNumber))
                 current.ContactNumber = definition.ContactNumber;
+            current.FaxNumber = current.FaxNumber?.Trim() ?? string.Empty;
             current.IsDirty = false;
             current.UpdatedAtUtc = now;
         }

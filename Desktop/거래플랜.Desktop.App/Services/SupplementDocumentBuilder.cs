@@ -139,7 +139,7 @@ public static class SupplementDocumentBuilder
         AddLabelCell(grid, 6, 10, 6, 11, "연락처");
         AddMergedCell(grid, 6, 12, 6, 14, Safe(company.ContactNumber, printModel?.SupplierPhone ?? string.Empty));
         AddLabelCell(grid, 6, 15, 6, 16, "팩   스");
-        AddMergedCell(grid, 6, 17, 6, 19, Safe(customer.FaxNumber));
+        AddMergedCell(grid, 6, 17, 6, 19, Safe(company.FaxNumber));
 
         AddLabelCell(grid, 7, 1, 7, 6, "견적금액 (공급가액+세액)", fontSize: 13);
         AddMergedCell(grid, 7, 7, 7, 19, BuildAmountLabel(totalAmount), fontSize: 13, foreground: TitleBrush);
@@ -237,7 +237,7 @@ public static class SupplementDocumentBuilder
         AddLabelCell(grid, 6, 10, 6, 11, "연락처");
         AddMergedCell(grid, 6, 12, 6, 14, Safe(company.ContactNumber, printModel?.SupplierPhone ?? string.Empty));
         AddLabelCell(grid, 6, 15, 6, 16, "팩   스");
-        AddMergedCell(grid, 6, 17, 6, 19, Safe(customer.FaxNumber));
+        AddMergedCell(grid, 6, 17, 6, 19, Safe(company.FaxNumber));
 
         AddLabelCell(grid, 7, 1, 7, 6, "청구금액 (공급가액+세액)", fontSize: 13);
         AddMergedCell(grid, 7, 7, 7, 19, BuildAmountLabel(totalAmount), fontSize: 13, foreground: TitleBrush);

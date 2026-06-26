@@ -32,7 +32,7 @@ public static class DtoMappings
             TradeName = entity.TradeName, Representative = entity.Representative,
             BusinessNumber = entity.BusinessNumber, BusinessType = entity.BusinessType,
             BusinessItem = entity.BusinessItem, Address = entity.Address,
-            ContactNumber = entity.ContactNumber, Email = entity.Email,
+            ContactNumber = entity.ContactNumber, FaxNumber = entity.FaxNumber, Email = entity.Email,
             BankAccountText = entity.BankAccountText, StampImage = entity.StampImage,
             IsDefaultForOffice = entity.IsDefaultForOffice,
             IsActive = entity.IsActive
@@ -100,7 +100,7 @@ public static class DtoMappings
         entity.TradeName = dto.TradeName; entity.Representative = dto.Representative;
         entity.BusinessNumber = dto.BusinessNumber; entity.BusinessType = dto.BusinessType;
         entity.BusinessItem = dto.BusinessItem; entity.Address = dto.Address;
-        entity.ContactNumber = dto.ContactNumber; entity.Email = dto.Email;
+        entity.ContactNumber = dto.ContactNumber; entity.FaxNumber = dto.FaxNumber?.Trim() ?? entity.FaxNumber; entity.Email = dto.Email;
         entity.BankAccountText = dto.BankAccountText; entity.StampImage = dto.StampImage;
         entity.IsDefaultForOffice = dto.IsDefaultForOffice;
         entity.IsActive = dto.IsActive;

@@ -318,6 +318,7 @@ public static partial class DbInitializer
                    current.BusinessItem,
                    current.Address,
                    current.ContactNumber,
+                   current.FaxNumber,
                    current.Email,
                    current.BankAccountText)
                + (current.StampImage?.Length > 0 ? 1 : 0)
@@ -444,6 +445,7 @@ public static partial class DbInitializer
         changed |= TryAssignString(() => canonical.BusinessItem, value => canonical.BusinessItem = value, duplicate.BusinessItem, preferLonger: true);
         changed |= TryAssignString(() => canonical.Address, value => canonical.Address = value, duplicate.Address, preferLonger: true);
         changed |= TryAssignString(() => canonical.ContactNumber, value => canonical.ContactNumber = value, duplicate.ContactNumber);
+        changed |= TryAssignString(() => canonical.FaxNumber, value => canonical.FaxNumber = value, duplicate.FaxNumber);
         changed |= TryAssignString(() => canonical.Email, value => canonical.Email = value, duplicate.Email);
         changed |= TryAssignString(() => canonical.BankAccountText, value => canonical.BankAccountText = value, duplicate.BankAccountText, preferLonger: true);
 

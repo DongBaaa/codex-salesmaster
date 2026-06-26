@@ -617,6 +617,7 @@ public static partial class DbInitializer
                     BusinessItem = string.Empty,
                     Address = definition.Address,
                     ContactNumber = definition.ContactNumber,
+                    FaxNumber = string.Empty,
                     Email = string.Empty,
                     BankAccountText = "입금용 계좌번호를 입력하세요.",
                     IsDefaultForOffice = true,
@@ -644,6 +645,7 @@ public static partial class DbInitializer
                     BusinessItem = current.BusinessItem?.Trim() ?? string.Empty,
                     Address = string.IsNullOrWhiteSpace(current.Address) ? definition.Address : current.Address.Trim(),
                     ContactNumber = string.IsNullOrWhiteSpace(current.ContactNumber) ? definition.ContactNumber : current.ContactNumber.Trim(),
+                    FaxNumber = current.FaxNumber?.Trim() ?? string.Empty,
                     Email = current.Email?.Trim() ?? string.Empty,
                     BankAccountText = string.IsNullOrWhiteSpace(current.BankAccountText) ? "입금용 계좌번호를 입력하세요." : current.BankAccountText,
                     StampImage = current.StampImage,
@@ -689,6 +691,7 @@ public static partial class DbInitializer
             current.ContactNumber = string.IsNullOrWhiteSpace(current.ContactNumber)
                 ? definition.ContactNumber
                 : current.ContactNumber.Trim();
+            current.FaxNumber = current.FaxNumber?.Trim() ?? string.Empty;
             current.Email = current.Email?.Trim() ?? string.Empty;
             current.BankAccountText = string.IsNullOrWhiteSpace(current.BankAccountText)
                 ? "입금용 계좌번호를 입력하세요."
@@ -2173,6 +2176,7 @@ public static partial class DbInitializer
     {
         await EnsureColumnAsync(dbContext, "CompanyProfiles", "ProfileName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
         await EnsureColumnAsync(dbContext, "CompanyProfiles", "OfficeCode", $"TEXT NOT NULL DEFAULT '{OfficeCodeCatalog.Usenet}'", $"text NOT NULL DEFAULT '{OfficeCodeCatalog.Usenet}'", cancellationToken);
+        await EnsureColumnAsync(dbContext, "CompanyProfiles", "FaxNumber", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
         await EnsureColumnAsync(dbContext, "CompanyProfiles", "IsDefaultForOffice", "INTEGER NOT NULL DEFAULT 0", "boolean NOT NULL DEFAULT false", cancellationToken);
         await EnsureColumnAsync(dbContext, "CompanyProfiles", "IsActive", "INTEGER NOT NULL DEFAULT 1", "boolean NOT NULL DEFAULT true", cancellationToken);
 

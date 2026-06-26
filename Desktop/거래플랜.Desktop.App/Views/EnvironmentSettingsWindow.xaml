@@ -206,6 +206,7 @@
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
 
                                         <Label Grid.Row="0" Grid.Column="0" Content="프로필명"/>
@@ -233,10 +234,12 @@
                                         <TextBox Grid.Row="8" Grid.Column="1" Text="{Binding CompanyAddress, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8" IsEnabled="{Binding CanEditCompanyProfiles}"/>
                                         <Label Grid.Row="9" Grid.Column="0" Content="연락처"/>
                                         <TextBox Grid.Row="9" Grid.Column="1" Text="{Binding CompanyContactNumber, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8" IsEnabled="{Binding CanEditCompanyProfiles}"/>
-                                        <Label Grid.Row="10" Grid.Column="0" Content="이메일"/>
-                                        <TextBox Grid.Row="10" Grid.Column="1" Text="{Binding CompanyEmail, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8" IsEnabled="{Binding CanEditCompanyProfiles}"/>
-                                        <Label Grid.Row="11" Grid.Column="0" Content="계좌/안내문구"/>
-                                        <TextBox Grid.Row="11" Grid.Column="1" Text="{Binding CompanyBankAccountText, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="Wrap" Height="72" Margin="0,0,0,8" IsEnabled="{Binding CanEditCompanyProfiles}"/>
+                                        <Label Grid.Row="10" Grid.Column="0" Content="팩스"/>
+                                        <TextBox Grid.Row="10" Grid.Column="1" Text="{Binding CompanyFaxNumber, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8" IsEnabled="{Binding CanEditCompanyProfiles}"/>
+                                        <Label Grid.Row="11" Grid.Column="0" Content="이메일"/>
+                                        <TextBox Grid.Row="11" Grid.Column="1" Text="{Binding CompanyEmail, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8" IsEnabled="{Binding CanEditCompanyProfiles}"/>
+                                        <Label Grid.Row="12" Grid.Column="0" Content="계좌/안내문구"/>
+                                        <TextBox Grid.Row="12" Grid.Column="1" Text="{Binding CompanyBankAccountText, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="Wrap" Height="72" Margin="0,0,0,8" IsEnabled="{Binding CanEditCompanyProfiles}"/>
                                     </Grid>
 
                                     <Grid Margin="0,0,0,8">

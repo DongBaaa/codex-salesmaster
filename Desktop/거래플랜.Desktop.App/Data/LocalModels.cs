@@ -34,6 +34,7 @@ public sealed class LocalCompanyProfile : LocalSyncEntity
     public string BusinessItem { get; set; } = string.Empty;
     public string Address { get; set; } = string.Empty;
     public string ContactNumber { get; set; } = string.Empty;
+    public string FaxNumber { get; set; } = string.Empty;
     public string Email { get; set; } = string.Empty;
     public string BankAccountText { get; set; } = string.Empty;
     public byte[]? StampImage { get; set; }
@@ -664,4 +665,3 @@ public sealed class LocalRentalBillingLog : LocalSyncEntity
     public string Note { get; set; } = string.Empty;
     public string ResponsibleOfficeCode { get; set; } = DomainConstants.OfficeUsenet;
 }
-

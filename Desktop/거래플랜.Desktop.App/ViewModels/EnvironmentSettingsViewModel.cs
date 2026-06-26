@@ -52,6 +52,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     [ObservableProperty] private string _companyBusinessItem = string.Empty;
     [ObservableProperty] private string _companyAddress = string.Empty;
     [ObservableProperty] private string _companyContactNumber = string.Empty;
+    [ObservableProperty] private string _companyFaxNumber = string.Empty;
     [ObservableProperty] private string _companyEmail = string.Empty;
     [ObservableProperty] private string _companyBankAccountText = string.Empty;
     [ObservableProperty] private byte[]? _companyStampImage;
@@ -184,6 +185,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             BusinessItem = CompanyBusinessItem,
             Address = CompanyAddress,
             ContactNumber = CompanyContactNumber,
+            FaxNumber = CompanyFaxNumber,
             Email = CompanyEmail,
             BankAccountText = CompanyBankAccountText,
             StampImage = CompanyStampImage,
@@ -231,6 +233,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         CompanyBusinessItem = string.Empty;
         CompanyAddress = string.Empty;
         CompanyContactNumber = string.Empty;
+        CompanyFaxNumber = string.Empty;
         CompanyEmail = string.Empty;
         CompanyBankAccountText = string.Empty;
         CompanyStampImage = null;
@@ -962,6 +965,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         CompanyBusinessItem = profile.BusinessItem;
         CompanyAddress = profile.Address;
         CompanyContactNumber = profile.ContactNumber;
+        CompanyFaxNumber = profile.FaxNumber;
         CompanyEmail = profile.Email;
         CompanyBankAccountText = profile.BankAccountText;
         CompanyStampImage = profile.StampImage;

@@ -3350,6 +3350,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		profile.BusinessItem = (profile.BusinessItem ?? string.Empty).Trim();
 		profile.Address = (profile.Address ?? string.Empty).Trim();
 		profile.ContactNumber = (profile.ContactNumber ?? string.Empty).Trim();
+		profile.FaxNumber = (profile.FaxNumber ?? string.Empty).Trim();
 		profile.Email = (profile.Email ?? string.Empty).Trim();
 		profile.BankAccountText = profile.BankAccountText ?? string.Empty;
 		profile.IsActive = true;

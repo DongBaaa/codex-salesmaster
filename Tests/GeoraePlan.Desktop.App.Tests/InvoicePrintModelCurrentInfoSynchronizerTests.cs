@@ -97,6 +97,8 @@ public sealed class InvoicePrintModelCurrentInfoSynchronizerTests
         Assert.Contains("Safe(company.Representative, Safe(printModel?.SupplierRepresentative, \"대표자\"))", supplementDocumentBuilder);
         Assert.Contains("Safe(company.Address, printModel?.SupplierAddress ?? string.Empty)", supplementDocumentBuilder);
         Assert.Contains("Safe(company.ContactNumber, printModel?.SupplierPhone ?? string.Empty)", supplementDocumentBuilder);
+        Assert.Contains("Safe(company.FaxNumber)", supplementDocumentBuilder);
+        Assert.DoesNotContain("Safe(customer.FaxNumber)", supplementDocumentBuilder);
         Assert.True(
             supplementDocumentBuilder.IndexOf("customer.Recipient", StringComparison.Ordinal) <
             supplementDocumentBuilder.IndexOf("printModel?.BuyerName", StringComparison.Ordinal));

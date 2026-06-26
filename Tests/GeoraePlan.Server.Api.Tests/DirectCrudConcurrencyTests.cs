@@ -5518,6 +5518,54 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task CompanyProfileController_Upsert_PreservesFaxNumber_WhenLegacyClientOmitsField()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var profile = new CompanyProfile
+        {
+            Id = Guid.NewGuid(),
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileName = "USENET default",
+            TradeName = "USENET",
+            FaxNumber = "032-100-2000",
+            IsDefaultForOffice = true,
+            IsActive = true
+        };
+        dbContext.CompanyProfiles.Add(profile);
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.CompanyProfiles.IgnoreQueryFilters().FirstAsync(row => row.Id == profile.Id);
+        var legacyDto = stored.ToDto();
+        legacyDto.ExpectedRevision = stored.Revision;
+        legacyDto.TradeName = "USENET 수정";
+        legacyDto.FaxNumber = null;
+
+        var controller = new CompanyProfileController(dbContext, new OfficeScopeService(currentUser, dbContext));
+        var legacyResponse = await controller.Upsert(legacyDto, CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(legacyResponse.Result);
+        var afterLegacySave = await dbContext.CompanyProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == profile.Id);
+        Assert.Equal("USENET 수정", afterLegacySave.TradeName);
+        Assert.Equal("032-100-2000", afterLegacySave.FaxNumber);
+
+        var clearDto = afterLegacySave.ToDto();
+        clearDto.ExpectedRevision = afterLegacySave.Revision;
+        clearDto.FaxNumber = string.Empty;
+
+        var clearResponse = await controller.Upsert(clearDto, CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(clearResponse.Result);
+        Assert.Equal(string.Empty, await dbContext.CompanyProfiles.IgnoreQueryFilters()
+            .Where(row => row.Id == profile.Id)
+            .Select(row => row.FaxNumber)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task SyncPush_ReturnsAcceptedRevision_ForConsecutiveCompanyProfileSaves()
     {
         var currentUser = CreateAdminUser();

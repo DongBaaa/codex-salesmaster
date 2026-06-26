@@ -1820,6 +1820,7 @@ public sealed partial class MainViewModel : ObservableObject
             BusinessItem = CompanyBusinessItem,
             Address = CompanyAddress,
             ContactNumber = CompanyContactNumber,
+            FaxNumber = source?.FaxNumber ?? string.Empty,
             Email = CompanyEmail,
             BankAccountText = CompanyBankAccountText,
             StampImage = CompanyStampImage
