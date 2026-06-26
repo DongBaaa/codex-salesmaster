@@ -105,11 +105,15 @@ public sealed class PrintDocumentRenderingSmokeTests
                 company,
                 printWithDate: true,
                 printWithPrice: true);
+            savedSnapshot.SupplierBusinessNumber = "999-99-99999";
             savedSnapshot.SupplierName = "스냅샷 공급자";
             savedSnapshot.SupplierRepresentative = "스냅샷 대표";
+            savedSnapshot.SupplierPhone = "02-999-9999";
             savedSnapshot.SupplierAddress = "스냅샷 공급자 주소";
+            savedSnapshot.BuyerBusinessNumber = "888-88-88888";
             savedSnapshot.BuyerName = "스냅샷 거래처";
             savedSnapshot.BuyerRepresentative = "스냅샷 거래처 대표";
+            savedSnapshot.BuyerPhone = "02-888-8888";
             savedSnapshot.BuyerAddress = "스냅샷 거래처 주소";
             savedSnapshot.ManagerName = "스냅샷 담당자";
             savedSnapshot.BankAccountText = "스냅샷은행 000-000";
@@ -144,10 +148,18 @@ public sealed class PrintDocumentRenderingSmokeTests
             var fixedStatementDocument = printService.BuildFixedDocument(savedSnapshot);
             RenderFixedDocumentFirstPage(fixedStatementDocument);
             var fixedStatementText = NormalizeText(ReadFixedDocumentText(fixedStatementDocument));
+            Assert.Contains("555-66-77777", fixedStatementText);
             Assert.Contains("현재 연동 회사", fixedStatementText);
             Assert.Contains("현재 회사 대표", fixedStatementText);
+            Assert.Contains("032-555-7777", fixedStatementText);
+            Assert.Contains("222-33-44444", fixedStatementText);
             Assert.Contains("현재 연동 거래처", fixedStatementText);
             Assert.Contains("현재 거래처 대표", fixedStatementText);
+            Assert.Contains("032-222-4444", fixedStatementText);
+            Assert.DoesNotContain("999-99-99999", fixedStatementText);
+            Assert.DoesNotContain("02-999-9999", fixedStatementText);
+            Assert.DoesNotContain("888-88-88888", fixedStatementText);
+            Assert.DoesNotContain("02-888-8888", fixedStatementText);
             Assert.DoesNotContain("스냅샷 공급자", fixedStatementText);
             Assert.DoesNotContain("스냅샷 거래처", fixedStatementText);
 
@@ -160,8 +172,12 @@ public sealed class PrintDocumentRenderingSmokeTests
                 printWithPrice: true);
             RenderFlowDocumentFirstPage(nativeStatementDocument);
             var nativeStatementText = NormalizeText(ReadFlowDocumentText(nativeStatementDocument));
+            Assert.Contains("555-66-77777", nativeStatementText);
             Assert.Contains("현재 연동 회사", nativeStatementText);
+            Assert.Contains("032-555-7777", nativeStatementText);
+            Assert.Contains("222-33-44444", nativeStatementText);
             Assert.Contains("현재 연동 거래처", nativeStatementText);
+            Assert.Contains("032-222-4444", nativeStatementText);
             Assert.Contains("인천광역시 현재거래처로 10", nativeStatementText);
             Assert.DoesNotContain("스냅샷 공급자", nativeStatementText);
             Assert.DoesNotContain("스냅샷 거래처", nativeStatementText);
@@ -169,11 +185,16 @@ public sealed class PrintDocumentRenderingSmokeTests
             var estimateDocument = SupplementDocumentBuilder.BuildEstimateDocument(invoice, customer, company, savedSnapshot);
             RenderFixedDocumentFirstPage(estimateDocument);
             var estimateText = NormalizeText(ReadFixedDocumentText(estimateDocument));
+            var compactEstimateText = CompactText(estimateText);
+            Assert.Contains("555-66-77777", compactEstimateText);
+            Assert.DoesNotContain("999-99-99999", compactEstimateText);
             Assert.Contains("현재 연동 수신처", estimateText);
             Assert.Contains("현재 연동 회사", estimateText);
             Assert.Contains("현재 회사 대표", estimateText);
+            Assert.Contains("032-555-7777", estimateText);
             Assert.Contains("인천광역시 현재회사로 20", estimateText);
             Assert.Contains("032-555-7778", estimateText);
+            Assert.DoesNotContain("02-999-9999", estimateText);
             Assert.DoesNotContain("032-222-4445", estimateText);
             Assert.DoesNotContain("스냅샷 공급자", estimateText);
             Assert.DoesNotContain("스냅샷 거래처", estimateText);
@@ -186,10 +207,15 @@ public sealed class PrintDocumentRenderingSmokeTests
                 savedSnapshot);
             RenderFixedDocumentFirstPage(claimDocument);
             var claimText = NormalizeText(ReadFixedDocumentText(claimDocument));
+            var compactClaimText = CompactText(claimText);
+            Assert.Contains("555-66-77777", compactClaimText);
+            Assert.DoesNotContain("999-99-99999", compactClaimText);
             Assert.Contains("현재 연동 수신처", claimText);
             Assert.Contains("현재 연동 회사", claimText);
             Assert.Contains("현재 회사 대표", claimText);
+            Assert.Contains("032-555-7777", claimText);
             Assert.Contains("032-555-7778", claimText);
+            Assert.DoesNotContain("02-999-9999", claimText);
             Assert.DoesNotContain("032-222-4445", claimText);
             Assert.Contains("신한은행", claimText);
             Assert.Contains("123-456-789", claimText);
@@ -428,4 +454,7 @@ public sealed class PrintDocumentRenderingSmokeTests
 
     private static string NormalizeText(string text)
         => Regex.Replace(text.Replace("\r", " ").Replace("\n", " "), @"\s+", " ").Trim();
+
+    private static string CompactText(string text)
+        => Regex.Replace(text, @"\s+", string.Empty);
 }
