@@ -74,6 +74,9 @@
 
 - [x] 내부 재고이동 기본 흐름
 - [ ] `LocalItem`의 IsRental 품목 재고 추적 고도화
+  - [x] 서버 직접 저장/sync push/시작 보정에서 렌탈·장비 품목의 현재고·창고재고 잔여값 차단
+  - [x] Android 품목/전표 화면과 pending 저장 경로에서 비재고·자산 품목 재고값 표시/저장 차단
+  - [ ] PC/Android 운영 로컬 캐시 잔여 row 실데이터 정리 증거 누적
 - [ ] 임대 시작/종료 달력 뷰
 - [x] 재고 부족 알림(메인 대시보드 안전재고 카드 표시)
 - [ ] FIFO/원가배분/시리얼 운영 UI 고도화
@@ -178,3 +181,10 @@
 - [x] sync push에서 구형/오염 클라이언트가 자산 품목 창고재고를 보내도 서버가 저장하지 않고 기존 잔여 row를 제거하도록 보강했습니다.
 - [x] 서버 시작 정합성 보정에서 비재고/자산 품목의 창고재고 row를 제거하고 현재고 잔여값을 0으로 정리하도록 보강했습니다.
 - [x] 회귀테스트 PASS: `RentalItemInventoryGuardTests` 4/4 통과, 관련 서버 테스트 235/235 통과, 서버 전체 테스트 560/560 통과.
+
+### 2026-06-27 Android 렌탈/장비 품목 로컬 재고 표시/dirty 차단 증거
+- [x] `ItemEditPage`에서 비재고/자산 품목은 현재고·안전재고 입력을 비활성화하고 화면값을 0으로 고정했습니다.
+- [x] 모바일 품목 목록 상세와 전표 품목 선택 상세에서 비재고/자산 품목은 “재고 추적 대상 아님”으로 표시하고 창고재고 fallback row를 만들지 않도록 했습니다.
+- [x] 모바일 품목 저장 DTO와 네트워크 장애 pending 저장 경로 모두 `ItemOperationalPolicy`로 정규화해 비재고/자산 품목 현재고·안전재고가 0으로만 저장되도록 했습니다.
+- [x] 검증: `MobileNonInventoryItems_DoNotExposeOrQueueStockValues|MobileReleaseConfigurationTests` 85/85 PASS, Android Debug build PASS, Android 에뮬레이터 smoke/권장 동기화 PASS(`D:\거래플랜\테스트 시행\evidence\mobile-noninventory-20260627\mobile-smoke-20260627-030235.md`).
+- [ ] Android 실기기·운영망 장시간 실행 증거는 별도 기기 조건에서 추가 누적합니다.

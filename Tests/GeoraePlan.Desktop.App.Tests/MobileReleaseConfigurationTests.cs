@@ -249,6 +249,53 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void MobileNonInventoryItems_DoNotExposeOrQueueStockValues()
+    {
+        var root = FindRepositoryRoot();
+        var mobileRoot = Path.Combine(root, "Mobile", "GeoraePlan.Mobile.App");
+        var itemEditSource = File.ReadAllText(Path.Combine(
+                mobileRoot,
+                "Pages",
+                "ItemEditPage.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var itemsViewModelSource = File.ReadAllText(Path.Combine(
+                mobileRoot,
+                "ViewModels",
+                "ItemsViewModel.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var invoiceDraftSource = File.ReadAllText(Path.Combine(
+                mobileRoot,
+                "ViewModels",
+                "InvoiceDraftViewModel.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains("NormalizeItemOperationalFields(dto);", itemEditSource, StringComparison.Ordinal);
+        Assert.Contains("_currentStockEntry.IsEnabled = supportsInventory;", itemEditSource, StringComparison.Ordinal);
+        Assert.Contains("_safetyStockEntry.IsEnabled = supportsInventory;", itemEditSource, StringComparison.Ordinal);
+        Assert.Contains("ItemOperationalPolicy.NormalizeTrackingType(", itemEditSource, StringComparison.Ordinal);
+        Assert.Contains("ItemOperationalPolicy.SupportsInventory(dto.TrackingType)", itemEditSource, StringComparison.Ordinal);
+        Assert.Contains("dto.CurrentStock = 0m;", itemEditSource, StringComparison.Ordinal);
+        Assert.Contains("dto.SafetyStock = 0m;", itemEditSource, StringComparison.Ordinal);
+        Assert.Contains("dto.IsSale = false;", itemEditSource, StringComparison.Ordinal);
+        Assert.True(
+            CountOccurrences(itemEditSource, "ApplyStockFieldState(item);") >= 2,
+            "품목 편집 화면은 최초 표시와 충돌 후 재조회 모두에서 비재고 품목의 재고 입력을 잠가야 합니다.");
+
+        Assert.Contains("!SupportsInventoryTracking(SelectedItem)", itemsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("재고 추적 대상 아님", itemsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("if (!SupportsInventoryTracking(selected))", itemsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("selected.CurrentStock = 0m;", itemsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("selected.SafetyStock = 0m;", itemsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("SelectedItemBranchStocks.Clear();\n        if (SupportsInventoryTracking(selected))", itemsViewModelSource, StringComparison.Ordinal);
+
+        Assert.Contains("!SupportsInventoryTracking(SelectedItem)", invoiceDraftSource, StringComparison.Ordinal);
+        Assert.Contains("재고 추적 대상 아님", invoiceDraftSource, StringComparison.Ordinal);
+        Assert.Contains("if (item.Id == Guid.Empty || !SupportsInventoryTracking(item))", invoiceDraftSource, StringComparison.Ordinal);
+        Assert.Contains("if (!SupportsInventoryTracking(item))\n        {\n            item.CurrentStock = 0m;", invoiceDraftSource, StringComparison.Ordinal);
+        Assert.Contains("SelectedItemBranchStocks.Clear();\n            OnPropertyChanged(nameof(SelectedItemStockSummary));", invoiceDraftSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MobileItemCacheFallback_OnlyUsesCacheForRetryableFailures()
     {
         var root = FindRepositoryRoot();

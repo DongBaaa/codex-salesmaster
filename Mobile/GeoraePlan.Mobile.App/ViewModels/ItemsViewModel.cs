@@ -162,6 +162,8 @@ public sealed class ItemsViewModel : ObservableObject
 
     public string SelectedItemStockSummary => SelectedItem is null
         ? "재고 정보 없음"
+        : !SupportsInventoryTracking(SelectedItem)
+            ? "재고 추적 대상 아님"
         : $"현재재고 {SelectedItem.CurrentStock:N0} / 안전재고 {SelectedItem.SafetyStock:N0}";
 
     public string SelectedItemMemo => SelectedItem is null
@@ -599,24 +601,43 @@ public sealed class ItemsViewModel : ObservableObject
     private void PopulateSelectedItem(ItemDto selected, IEnumerable<ItemWarehouseStockDto> branchStocks)
     {
         selected.CategoryName = NormalizeCategoryName(selected.CategoryName);
+        if (!SupportsInventoryTracking(selected))
+        {
+            selected.CurrentStock = 0m;
+            selected.SafetyStock = 0m;
+        }
+
         SelectedItem = selected;
 
         SelectedItemBranchStocks.Clear();
-        foreach (var stock in branchStocks)
-            SelectedItemBranchStocks.Add(stock);
-
-        if (SelectedItemBranchStocks.Count == 0 && selected.Id != Guid.Empty)
+        if (SupportsInventoryTracking(selected))
         {
-            SelectedItemBranchStocks.Add(new ItemWarehouseStockDto
+            foreach (var stock in branchStocks)
+                SelectedItemBranchStocks.Add(stock);
+
+            if (SelectedItemBranchStocks.Count == 0 && selected.Id != Guid.Empty)
             {
-                ItemId = selected.Id,
-                WarehouseCode = "전체",
-                Quantity = selected.CurrentStock,
-                UpdatedAtUtc = selected.UpdatedAtUtc == default ? DateTime.UtcNow : selected.UpdatedAtUtc
-            });
+                SelectedItemBranchStocks.Add(new ItemWarehouseStockDto
+                {
+                    ItemId = selected.Id,
+                    WarehouseCode = "전체",
+                    Quantity = selected.CurrentStock,
+                    UpdatedAtUtc = selected.UpdatedAtUtc == default ? DateTime.UtcNow : selected.UpdatedAtUtc
+                });
+            }
         }
 
         OnPropertyChanged(nameof(SelectedItemBranchStocksHeight));
+    }
+
+    private static bool SupportsInventoryTracking(ItemDto item)
+    {
+        var trackingType = ItemOperationalPolicy.NormalizeTrackingType(
+            item.TrackingType,
+            item.ItemKind,
+            item.CategoryName,
+            item.IsRental);
+        return ItemOperationalPolicy.SupportsInventory(trackingType);
     }
 
     private IEnumerable<ItemDto> GetActiveSyncedItems(MobileSyncState state)

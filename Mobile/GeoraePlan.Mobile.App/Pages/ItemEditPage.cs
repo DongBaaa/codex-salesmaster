@@ -63,6 +63,7 @@ public sealed class ItemEditPage : ContentPage
             : isEdit
             ? "수정 후 저장하면 PC와 모바일 품목 목록에 함께 반영됩니다."
             : "필수 항목은 품명입니다. 재고/단가는 필요 시 0으로 둘 수 있습니다.";
+        ApplyStockFieldState(item);
 
         var title = GeoraePlanTheme.CreateSectionTitle(isEdit ? "품목 정보 수정" : "새 품목 등록", 18);
         var guide = GeoraePlanTheme.CreateBodyText("모바일에서는 전표 입력에 필요한 기본 품목 정보와 단가를 빠르게 등록합니다.", true, 12);
@@ -407,6 +408,7 @@ public sealed class ItemEditPage : ContentPage
         _salePriceEntry.Text = FormatDecimal(item.SalePrice);
         _retailPriceEntry.Text = FormatDecimal(item.RetailPrice);
         _memoEditor.Text = item.SimpleMemo ?? string.Empty;
+        ApplyStockFieldState(item);
     }
 
     private ItemDto BuildDto(string name, string tenantCode, string officeCode)
@@ -432,8 +434,61 @@ public sealed class ItemEditPage : ContentPage
         dto.SimpleMemo = _memoEditor.Text?.Trim() ?? string.Empty;
         dto.Notes = _source?.Notes ?? string.Empty;
         dto.ExpectedRevision = _source?.Revision ?? 0;
+        NormalizeItemOperationalFields(dto);
         StampMutation(dto);
         return dto;
+    }
+
+    private void ApplyStockFieldState(ItemDto? item)
+    {
+        var supportsInventory = item is null || SupportsInventoryTracking(item);
+        _currentStockEntry.IsEnabled = supportsInventory;
+        _safetyStockEntry.IsEnabled = supportsInventory;
+        if (!supportsInventory)
+        {
+            _currentStockEntry.Text = "0";
+            _safetyStockEntry.Text = "0";
+        }
+    }
+
+    private static bool SupportsInventoryTracking(ItemDto item)
+    {
+        var trackingType = ItemOperationalPolicy.NormalizeTrackingType(
+            item.TrackingType,
+            item.ItemKind,
+            item.CategoryName,
+            item.IsRental);
+        return ItemOperationalPolicy.SupportsInventory(trackingType);
+    }
+
+    private static void NormalizeItemOperationalFields(ItemDto dto)
+    {
+        dto.TrackingType = ItemOperationalPolicy.NormalizeTrackingType(
+            dto.TrackingType,
+            dto.ItemKind,
+            dto.CategoryName,
+            dto.IsRental);
+        dto.ItemKind = ItemOperationalPolicy.NormalizeItemKind(
+            dto.ItemKind,
+            dto.TrackingType,
+            dto.CategoryName,
+            dto.IsRental);
+
+        if (!ItemOperationalPolicy.SupportsInventory(dto.TrackingType))
+        {
+            dto.CurrentStock = 0m;
+            dto.SafetyStock = 0m;
+        }
+
+        if (ItemOperationalPolicy.IsAsset(dto.TrackingType))
+        {
+            dto.IsRental = true;
+            dto.IsSale = false;
+        }
+        else
+        {
+            dto.IsRental = false;
+        }
     }
 
     private static ItemDto BuildDeletedDto(ItemDto source)

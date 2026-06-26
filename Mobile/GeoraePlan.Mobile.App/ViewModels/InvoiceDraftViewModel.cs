@@ -400,6 +400,8 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         : "품목 메모는 전표 비고에 자동 입력하지 않습니다.";
     public string SelectedItemStockSummary => SelectedItem is null
         ? "재고 정보 없음"
+        : !SupportsInventoryTracking(SelectedItem)
+            ? "재고 추적 대상 아님"
         : $"현재재고 {SelectedItem.CurrentStock:N0} / 안전재고 {SelectedItem.SafetyStock:N0}";
     public string LineActionText => _editingLineId.HasValue ? "품목 수정" : "품목 추가";
     public string DraftSummary => LineItems.Count == 0
@@ -1348,7 +1350,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
 
     private void AddFallbackWholeStockRow(ItemDto item, decimal? quantity = null)
     {
-        if (item.Id == Guid.Empty)
+        if (item.Id == Guid.Empty || !SupportsInventoryTracking(item))
             return;
 
         SelectedItemBranchStocks.Add(new ItemWarehouseStockDto
@@ -1572,6 +1574,15 @@ public sealed class InvoiceDraftViewModel : ObservableObject
 
     private void PopulateSelectedSourceWarehouseStocks(IEnumerable<ItemWarehouseStockDto>? branchStocks, ItemDto item)
     {
+        if (!SupportsInventoryTracking(item))
+        {
+            item.CurrentStock = 0m;
+            item.SafetyStock = 0m;
+            SelectedItemBranchStocks.Clear();
+            OnPropertyChanged(nameof(SelectedItemStockSummary));
+            return;
+        }
+
         var stockList = (branchStocks ?? []).ToList();
         var selectedWarehouseStocks = stockList
             .Where(IsStockInSelectedSourceWarehouse)
@@ -1584,6 +1595,16 @@ public sealed class InvoiceDraftViewModel : ObservableObject
 
         if (SelectedItemBranchStocks.Count == 0)
             AddFallbackWholeStockRow(item, stockList.Count == 0 ? item.CurrentStock : 0m);
+    }
+
+    private static bool SupportsInventoryTracking(ItemDto item)
+    {
+        var trackingType = ItemOperationalPolicy.NormalizeTrackingType(
+            item.TrackingType,
+            item.ItemKind,
+            item.CategoryName,
+            item.IsRental);
+        return ItemOperationalPolicy.SupportsInventory(trackingType);
     }
 
     private bool IsStockInSelectedSourceWarehouse(ItemWarehouseStockDto stock)
