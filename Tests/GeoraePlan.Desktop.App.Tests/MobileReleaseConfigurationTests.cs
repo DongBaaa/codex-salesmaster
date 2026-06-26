@@ -22,6 +22,38 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void AndroidSettingsService_PersistsCustomBaseUrlWithoutExposingItInSettingsPage()
+    {
+        var root = FindRepositoryRoot();
+        var settingsSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "SettingsService.cs"));
+        var apiClientSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "GeoraePlanApiClient.cs"));
+        var settingsPageSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Pages",
+            "SettingsPage.cs"));
+
+        Assert.Contains("private const string BaseUrlKey = \"settings.api.baseUrl\";", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("Preferences.Default.Get(BaseUrlKey, string.Empty)", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("Preferences.Default.Set(BaseUrlKey, normalized);", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("Preferences.Default.Remove(BaseUrlKey);", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("var baseUrl = _settings.GetBaseUrl();", apiClientSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("nameof(SettingsViewModel.BaseUrl)", settingsPageSource, StringComparison.Ordinal);
+        Assert.Contains("모바일 앱은 거래플랜 운영 서버에 고정 연결됩니다.", settingsPageSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AndroidManifest_AllowsCameraCaptureIntentDiscovery()
     {
         var manifest = File.ReadAllText(Path.Combine(

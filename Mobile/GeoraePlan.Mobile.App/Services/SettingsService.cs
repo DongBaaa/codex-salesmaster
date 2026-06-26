@@ -1,19 +1,32 @@
-﻿using GeoraePlan.Mobile.App.Configuration;
+using GeoraePlan.Mobile.App.Configuration;
 
 namespace GeoraePlan.Mobile.App.Services;
 
 public sealed class SettingsService
 {
+    private const string BaseUrlKey = "settings.api.baseUrl";
     private const string LastUsernameKey = "settings.last.username";
     private const string RememberUsernameKey = "settings.remember.username";
     private const string RememberPasswordKey = "settings.remember.password";
     private const string SavedPasswordKey = "settings.saved.password";
 
     public string GetBaseUrl()
-        => NormalizeBaseUrl(ApiOptions.DefaultBaseUrl);
+    {
+        var saved = Preferences.Default.Get(BaseUrlKey, string.Empty);
+        return NormalizeBaseUrl(string.IsNullOrWhiteSpace(saved) ? ApiOptions.DefaultBaseUrl : saved);
+    }
 
     public Task SaveBaseUrlAsync(string baseUrl)
-        => Task.CompletedTask;
+    {
+        var normalized = NormalizeBaseUrl(baseUrl);
+        var defaultBaseUrl = NormalizeBaseUrl(ApiOptions.DefaultBaseUrl);
+        if (string.Equals(normalized, defaultBaseUrl, StringComparison.OrdinalIgnoreCase))
+            Preferences.Default.Remove(BaseUrlKey);
+        else
+            Preferences.Default.Set(BaseUrlKey, normalized);
+
+        return Task.CompletedTask;
+    }
 
     public string GetLastUsername()
         => Preferences.Default.Get(LastUsernameKey, string.Empty);

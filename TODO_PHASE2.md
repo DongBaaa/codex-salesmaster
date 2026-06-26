@@ -109,3 +109,12 @@
 - [x] Android 저장/dirty E2E PASS: `D:\거래플랜\테스트 시행\기록\mobile-write-e2e-20260626-215827.md`.
 - [x] 앱 내부 저장소 증거: `D:\거래플랜\테스트 시행\기록\mobile-sqlite-json-backup-evidence-20260626-220259.md`.
 - [x] Android 0.2.69 signed APK 및 stable 업데이트 manifest 생성/배포 완료.
+
+### 2026-06-26 Android BaseUrl 설정 저장/적용 보강 완료 증거
+- [x] Android `SettingsService.SaveBaseUrlAsync`가 더 이상 no-op이 아니며, 기본 운영 서버와 다른 URL은 `Preferences`에 저장하고 기본값과 같으면 저장값을 제거합니다.
+- [x] `SettingsService.GetBaseUrl`은 저장된 URL을 우선 사용하고 값이 없으면 `ApiOptions.DefaultBaseUrl`로 돌아갑니다.
+- [x] `ApiClient`는 기존처럼 `SettingsService.GetBaseUrl()`을 통해 실제 요청 base URL을 결정하므로 저장값 반영 경로가 끊기지 않습니다.
+- [x] Settings 화면은 기존 정책대로 “모바일 앱은 거래플랜 운영 서버에 고정 연결됩니다.” 안내를 유지하며 BaseUrl 입력 UI를 노출하지 않습니다.
+- [x] 검증: Android 설정 저장 source guard 87/87 PASS, Android Debug build PASS, Android 에뮬레이터 smoke PASS(`mobile-smoke-20260626-222120.md`), 전체 데스크톱 테스트 747/747 PASS.
+- [x] Android 0.2.70 / version code 181 signed APK, stable 업데이트 manifest, live 배포 완료(`20260626-android-baseurl-settings-v070`).
+- [ ] ngrok/Cloudflare Tunnel UI 노출과 운영 정책 전환은 별도 설계 항목으로 유지합니다.
