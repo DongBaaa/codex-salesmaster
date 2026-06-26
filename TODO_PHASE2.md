@@ -61,7 +61,7 @@
   - [x] 전체 업무 화면별 수동 QA 체크리스트 정례화
   - [ ] 전체 업무 화면별 실제 수동 QA 증거 누적
 - [x] 세션 만료 자동 재로그인/갱신 및 401 후 재시도
-- [ ] 로컬 확장 마스터(담당지점/창고/선택값)와 재고이동의 서버 동기화 범위 확대
+- [x] 로컬 확장 마스터(담당지점/창고/선택값)와 재고이동의 서버 동기화 범위 확대
   - [x] 선택값 저장/삭제 동시성 및 무결성 회귀
   - [x] 창고별 재고 pull, 서버 누락 행 정리, dirty 보존 회귀
   - [x] 재고이동 생성/확정/삭제/복구/영구삭제 권한·scope 회귀
@@ -156,3 +156,9 @@
 - [x] 403 권한/범위 거부 시 서버 미생성 및 dirty 0건 PASS: `D:\거래플랜\테스트 시행\evidence\android-write-sales-403-20260627-021427\mobile-write-e2e-20260627-021427.md`.
 - [x] 수금 stale invoice revision 충돌 시 저장 거부/서버 미반영 PASS: `D:\거래플랜\테스트 시행\evidence\android-payment-stale-sales-20260627-021637\mobile-payment-e2e-sales-20260627-021638.md`.
 - [ ] 실기기·운영망·장시간 실행·재로그인 증거는 운영망/기기 조건이 필요하므로 후속 미완료로 유지합니다.
+
+### 2026-06-27 확장 마스터/재고이동 동기화 범위 재검증 증거
+- [x] 선택값, 창고별 재고, 재고이동 scope/권한/동기화 항목의 기존 하위 TODO가 모두 완료 상태임을 확인했습니다.
+- [x] Desktop 회귀테스트 PASS: `SelectionOption|ItemCategoryOption|ItemWarehouseStock|InventoryTransferScope|InventoryStock|DataIntegrityDuplicateMergeTests.MergeDuplicateIssueAsync_ItemMergeMovesReferencesAndAggregatesWarehouseStock` 필터 28/28 통과.
+- [x] Server 회귀테스트 PASS: `ItemCategoryOption|ItemWarehouseStock|InventoryTransfer|WarehouseStock|OfficeOnlyUser_InventoryTransferScope` 필터 56/56 통과.
+- [ ] 운영 화면 실제 수동 QA 증거(USENET/YEONSU/ITWORLD 계정별 거래처 선택, 전표 출고창고, 재고이동 창고 선택 제한)는 별도 항목으로 유지합니다.
