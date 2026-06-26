@@ -139,6 +139,33 @@ public sealed class WpfGlobalUiGuardTests
     }
 
     [Fact]
+    public void PeriodLedgerWindow_ShowsReportSummaryBalanceAndCollectionRate()
+    {
+        var root = FindRepositoryRoot();
+        var xaml = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "PeriodLedgerWindow.xaml"));
+        var viewModel = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "ViewModels",
+            "PeriodLedgerViewModel.cs"));
+
+        Assert.Contains("Text=\"요약\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"미수잔액\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"수금율\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("SummaryReceivableBalanceText", xaml, StringComparison.Ordinal);
+        Assert.Contains("SummaryCollectionRateText", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Visibility=\"Collapsed\"", ExtractPeriodLedgerSummaryBlock(xaml), StringComparison.Ordinal);
+        Assert.Contains("FormatCollectionRate", viewModel, StringComparison.Ordinal);
+        Assert.Contains("totals.ReceiptAmount + Math.Max(0m, totals.ReceivableBalance)", viewModel, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EveryViewReferencedInteractionHandler_ExistsInCodeBehind()
     {
         var root = FindRepositoryRoot();
@@ -289,6 +316,12 @@ public sealed class WpfGlobalUiGuardTests
 
         return source[start..end];
     }
+
+    private static string ExtractPeriodLedgerSummaryBlock(string source)
+        => ExtractBlock(
+            source,
+            "<TextBlock Grid.Row=\"0\" Grid.ColumnSpan=\"2\"\n                                       Text=\"요약\"",
+            "<TextBlock Grid.Row=\"3\"\n                               Text=\"화면은 거래 1건을 1줄로 보여주고");
 
     private static void AssertImmediateSelectionCheckbox(string root, string viewName, string actionMarker)
     {

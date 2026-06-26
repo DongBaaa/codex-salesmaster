@@ -445,10 +445,12 @@
                             Background="#122038"
                             BorderBrush="#2E4060"
                             BorderThickness="1"
-                            CornerRadius="6"
-                            Visibility="Collapsed">
+                            CornerRadius="6">
                         <Grid>
                             <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
@@ -474,8 +476,14 @@
                             <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SummaryPaymentAmountText}" TextAlignment="Right" FontWeight="Bold" Margin="0,5,0,0"/>
                             <TextBlock Grid.Row="4" Text="누적잔액" Foreground="#9FB3C8" Margin="0,5,0,0"/>
                             <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding SummaryRunningBalanceText}" TextAlignment="Right" FontWeight="Bold" Margin="0,5,0,0"/>
-                            <TextBlock Grid.Row="5" Text="거래 건수" Foreground="#9FB3C8" Margin="0,5,0,0"/>
-                            <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding SummaryCountText}" TextAlignment="Right" FontWeight="Bold" Margin="0,5,0,0"/>
+                            <TextBlock Grid.Row="5" Text="미수잔액" Foreground="#9FB3C8" Margin="0,5,0,0"/>
+                            <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding SummaryReceivableBalanceText}" TextAlignment="Right" FontWeight="Bold" Margin="0,5,0,0"/>
+                            <TextBlock Grid.Row="6" Text="수금율" Foreground="#9FB3C8" Margin="0,5,0,0"/>
+                            <TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding SummaryCollectionRateText}" TextAlignment="Right" FontWeight="Bold" Foreground="#A5D6A7" Margin="0,5,0,0"/>
+                            <TextBlock Grid.Row="7" Text="순이익" Foreground="#9FB3C8" Margin="0,5,0,0"/>
+                            <TextBlock Grid.Row="7" Grid.Column="1" Text="{Binding SummaryProfitText}" TextAlignment="Right" FontWeight="Bold" Margin="0,5,0,0"/>
+                            <TextBlock Grid.Row="8" Text="거래 건수" Foreground="#9FB3C8" Margin="0,5,0,0"/>
+                            <TextBlock Grid.Row="8" Grid.Column="1" Text="{Binding SummaryCountText}" TextAlignment="Right" FontWeight="Bold" Margin="0,5,0,0"/>
                         </Grid>
                     </Border>
 

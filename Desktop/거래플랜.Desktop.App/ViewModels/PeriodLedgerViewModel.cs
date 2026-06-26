@@ -45,6 +45,8 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
     [ObservableProperty] private string _summaryReceiptAmountText = "0";
     [ObservableProperty] private string _summaryPaymentAmountText = "0";
     [ObservableProperty] private string _summaryRunningBalanceText = "0";
+    [ObservableProperty] private string _summaryReceivableBalanceText = "0";
+    [ObservableProperty] private string _summaryCollectionRateText = "-";
     [ObservableProperty] private string _summaryCountText = "0건";
     [ObservableProperty] private string _summaryProfitText = "-";
 
@@ -345,6 +347,8 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
         SummaryReceiptAmountText = FormatAmount(result.Totals.ReceiptAmount);
         SummaryPaymentAmountText = FormatAmount(result.Totals.PaymentAmount);
         SummaryRunningBalanceText = FormatAmount(result.Totals.RunningBalance);
+        SummaryReceivableBalanceText = FormatAmount(result.Totals.ReceivableBalance);
+        SummaryCollectionRateText = FormatCollectionRate(result.Totals);
         SummaryProfitText = result.Totals.ProfitAmount.HasValue ? FormatAmount(result.Totals.ProfitAmount.Value) : "-";
         SummaryCountText = $"{rowCount:N0}건";
     }
@@ -358,6 +362,19 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
 
     private static string FormatAmount(decimal amount)
         => amount.ToString("#,##0", CultureInfo.CurrentCulture);
+
+    private static string FormatCollectionRate(PeriodLedgerTotals totals)
+    {
+        if (totals.ReceiptAmount <= 0m && totals.ReceivableBalance <= 0m)
+            return "-";
+
+        var baseAmount = totals.ReceiptAmount + Math.Max(0m, totals.ReceivableBalance);
+        if (baseAmount <= 0m)
+            return "-";
+
+        var rate = Math.Round(totals.ReceiptAmount / baseAmount * 100m, 1, MidpointRounding.AwayFromZero);
+        return rate.ToString("0.0'%' ", CultureInfo.CurrentCulture).Trim();
+    }
 
     partial void OnSelectedLedgerTypeChanged(PeriodLedgerType value)
     {
