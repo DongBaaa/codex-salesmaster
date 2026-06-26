@@ -49,6 +49,17 @@ public sealed class MobileReleaseConfigurationTests
             "GeoraePlan.Mobile.App",
             "ViewModels",
             "SettingsViewModel.cs"));
+        var connectionTestServiceSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "MobileConnectionTestService.cs"));
+        var mauiProgramSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "MauiProgram.cs"));
 
         Assert.Contains("private const string BaseUrlKey = \"settings.api.baseUrl\";", settingsSource, StringComparison.Ordinal);
         Assert.Contains("Preferences.Default.Get(BaseUrlKey, string.Empty)", settingsSource, StringComparison.Ordinal);
@@ -60,10 +71,15 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("nameof(SettingsViewModel.BaseUrl)", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("nameof(SettingsViewModel.IsConnectionSettingsVisible)", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("고급 연결 설정", settingsPageSource, StringComparison.Ordinal);
+        Assert.Contains("연결 테스트", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("운영 서버로 초기화", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("ToggleConnectionSettingsCommand = new AsyncCommand(", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("TestConnectionCommand = new AsyncCommand(TestConnectionAsync", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("ResetConnectionCommand = new AsyncCommand(ResetConnectionAsync);", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("catch (ArgumentException ex)", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("new Uri(new Uri(normalizedBaseUrl.TrimEnd('/') + \"/\"), \"healthz\")", connectionTestServiceSource, StringComparison.Ordinal);
+        Assert.Contains("ConnectionTestTimeout = TimeSpan.FromSeconds(8)", connectionTestServiceSource, StringComparison.Ordinal);
+        Assert.Contains("builder.Services.AddSingleton<MobileConnectionTestService>();", mauiProgramSource, StringComparison.Ordinal);
     }
 
     [Fact]

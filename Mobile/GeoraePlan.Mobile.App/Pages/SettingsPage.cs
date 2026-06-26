@@ -77,6 +77,10 @@ public sealed class SettingsPage : ContentPage
         saveConnectionButton.SetBinding(Button.CommandProperty, nameof(SettingsViewModel.SaveCommand));
         saveConnectionButton.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.IsConnectionSettingsVisible));
 
+        var testConnectionButton = GeoraePlanTheme.CreateButton("연결 테스트", GeoraePlanTheme.Purple);
+        testConnectionButton.SetBinding(Button.CommandProperty, nameof(SettingsViewModel.TestConnectionCommand));
+        testConnectionButton.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.IsConnectionSettingsVisible));
+
         var resetConnectionButton = GeoraePlanTheme.CreateButton("운영 서버로 초기화", GeoraePlanTheme.Brown);
         resetConnectionButton.SetBinding(Button.CommandProperty, nameof(SettingsViewModel.ResetConnectionCommand));
         resetConnectionButton.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.IsConnectionSettingsVisible));
@@ -96,6 +100,7 @@ public sealed class SettingsPage : ContentPage
                         advancedConnectionButton,
                         baseUrlEntry,
                         connectionHelpLabel,
+                        testConnectionButton,
                         saveConnectionButton,
                         resetConnectionButton,
                         integrityAccessLabel,

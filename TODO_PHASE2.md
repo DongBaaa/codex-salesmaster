@@ -125,4 +125,13 @@
 - [x] Android 에뮬레이터 UI-tree 기준으로 설정 화면 진입, 고급 연결 설정 토글, URL 입력칸, 연결 URL 저장, 운영 서버 초기화 버튼과 초기화 완료 메시지를 확인했습니다.
 - [x] 검증: Android 설정 source guard 87/87 PASS, Android Debug build PASS, Android smoke PASS(`mobile-smoke-20260626-224340.md`), 전체 데스크톱 테스트 747/747 PASS.
 - [x] Android 0.2.71 / version code 182 signed APK, stable 업데이트 manifest, live 배포 완료(`20260626-android-advanced-baseurl-v071`).
+- [x] Android 0.2.72에서 고급 연결 URL 저장 전 `/healthz` 연결 테스트 버튼과 성공/실패 메시지를 추가했습니다.
 - [ ] ngrok/Cloudflare Tunnel 자체 발급/연결 자동화는 별도 인프라 작업으로 유지합니다.
+
+
+### 2026-06-26 Android 고급 연결 테스트 완료 증거
+- [x] Settings 고급 연결 설정에 “연결 테스트” 버튼을 추가했습니다.
+- [x] 입력한 BaseUrl을 정규화한 뒤 `/healthz`를 8초 timeout으로 확인하고, 성공/실패/404/timeout 메시지를 사용자에게 표시합니다.
+- [x] Android 에뮬레이터 UI-tree 기준으로 고급 연결 설정 토글, 연결 테스트 버튼, `http://10.0.2.2:19080/healthz` 성공 메시지를 확인했습니다.
+- [x] 검증: Android 설정 source guard 87/87 PASS, Android Debug build PASS, Android smoke PASS(`mobile-smoke-20260626-230301.md`), 전체 데스크톱 테스트 747/747 PASS.
+- [x] Android 0.2.72 / version code 183 signed APK, stable 업데이트 manifest, live 배포 완료(`20260626-android-connection-test-v072`).

@@ -21,6 +21,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<MobileRefreshCoordinator>();
         builder.Services.AddSingleton<PaymentAttachmentDraftStore>();
         builder.Services.AddSingleton<GeoraePlanApiClient>();
+        builder.Services.AddSingleton<MobileConnectionTestService>();
         builder.Services.AddSingleton<MobileAppUpdateService>();
         builder.Services.AddSingleton<MobileInvoicePdfExportService>();
         builder.Services.AddSingleton<SyncCoordinator>();

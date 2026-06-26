@@ -48,6 +48,9 @@ public sealed class SettingsService
     public string GetDefaultBaseUrl()
         => NormalizeBaseUrl(ApiOptions.DefaultBaseUrl);
 
+    public string NormalizeBaseUrlForConnectionTest(string? baseUrl)
+        => NormalizeBaseUrl(baseUrl);
+
     public string GetLastUsername()
         => Preferences.Default.Get(LastUsernameKey, string.Empty);
 

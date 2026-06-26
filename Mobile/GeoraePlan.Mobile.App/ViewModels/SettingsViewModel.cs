@@ -8,6 +8,7 @@ public sealed class SettingsViewModel : ObservableObject
     private readonly SettingsService _settings;
     private readonly SessionStore _sessionStore;
     private readonly MobileAppUpdateService _updateService;
+    private readonly MobileConnectionTestService _connectionTestService;
     private AppUpdatePackageDto? _pendingAndroidUpdate;
 
     private string _baseUrl = string.Empty;
@@ -21,15 +22,22 @@ public sealed class SettingsViewModel : ObservableObject
     private bool _isUpdateAvailable;
     private bool _isCheckingForUpdate;
     private bool _isConnectionSettingsVisible;
+    private bool _isTestingConnection;
     private bool _canViewIntegrityReport;
     private bool _canManageRecycleBin;
 
-    public SettingsViewModel(SettingsService settings, SessionStore sessionStore, MobileAppUpdateService updateService)
+    public SettingsViewModel(
+        SettingsService settings,
+        SessionStore sessionStore,
+        MobileAppUpdateService updateService,
+        MobileConnectionTestService connectionTestService)
     {
         _settings = settings;
         _sessionStore = sessionStore;
         _updateService = updateService;
+        _connectionTestService = connectionTestService;
         SaveCommand = new AsyncCommand(SaveAsync);
+        TestConnectionCommand = new AsyncCommand(TestConnectionAsync, () => !IsTestingConnection);
         ResetConnectionCommand = new AsyncCommand(ResetConnectionAsync);
         ToggleConnectionSettingsCommand = new AsyncCommand(ToggleConnectionSettingsAsync);
         LogoutCommand = new AsyncCommand(LogoutAsync);
@@ -99,6 +107,16 @@ public sealed class SettingsViewModel : ObservableObject
         set => SetProperty(ref _isConnectionSettingsVisible, value);
     }
 
+    public bool IsTestingConnection
+    {
+        get => _isTestingConnection;
+        set
+        {
+            if (SetProperty(ref _isTestingConnection, value))
+                TestConnectionCommand.NotifyCanExecuteChanged();
+        }
+    }
+
     public string IntegrityAccessText
     {
         get => _integrityAccessText;
@@ -118,6 +136,7 @@ public sealed class SettingsViewModel : ObservableObject
     }
 
     public AsyncCommand SaveCommand { get; }
+    public AsyncCommand TestConnectionCommand { get; }
     public AsyncCommand ResetConnectionCommand { get; }
     public AsyncCommand ToggleConnectionSettingsCommand { get; }
     public AsyncCommand LogoutCommand { get; }
@@ -166,6 +185,26 @@ public sealed class SettingsViewModel : ObservableObject
         BaseUrl = _settings.GetDefaultBaseUrl();
         RefreshConnectionModeText();
         StatusMessage = "운영 서버 기본 연결로 초기화했습니다.";
+    }
+
+    public async Task TestConnectionAsync()
+    {
+        if (IsTestingConnection)
+            return;
+
+        try
+        {
+            IsTestingConnection = true;
+            StatusMessage = "연결 테스트 중...";
+            var result = await _connectionTestService.TestAsync(BaseUrl);
+            if (!string.IsNullOrWhiteSpace(result.NormalizedBaseUrl))
+                BaseUrl = result.NormalizedBaseUrl;
+            StatusMessage = result.Message;
+        }
+        finally
+        {
+            IsTestingConnection = false;
+        }
     }
 
     public async Task LogoutAsync()
