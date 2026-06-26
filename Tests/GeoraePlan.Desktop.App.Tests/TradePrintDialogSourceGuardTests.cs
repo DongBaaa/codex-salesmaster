@@ -30,6 +30,7 @@ public sealed class TradePrintDialogSourceGuardTests
 
         Assert.Contains("파일 저장(XPS)", xaml, StringComparison.Ordinal);
         Assert.Contains("PDF 저장", xaml, StringComparison.Ordinal);
+        Assert.Contains("복합기가 잡히지 않으면 PDF 저장 후 복합기/다른 PC에서 출력하세요.", xaml, StringComparison.Ordinal);
         Assert.Contains("SaveDocumentAsXps", executor, StringComparison.Ordinal);
         Assert.Contains("SaveDocumentAsPdf", executor, StringComparison.Ordinal);
         Assert.Contains("XpsDocument.CreateXpsDocumentWriter", executor, StringComparison.Ordinal);
@@ -62,7 +63,9 @@ public sealed class TradePrintDialogSourceGuardTests
         Assert.Contains("PrintButton.IsEnabled = hasPrinter", codeBehind, StringComparison.Ordinal);
         Assert.Contains("등록된 프린터를 찾지 못했습니다", codeBehind, StringComparison.Ordinal);
         Assert.Contains("PDF 저장 또는 파일 저장(XPS)", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("프린터가 없거나 복합기 연결이 안 되면 PDF 저장 또는 파일 저장(XPS)", codeBehind, StringComparison.Ordinal);
         Assert.Contains("파일 저장 전용으로 인쇄창을 표시합니다", executor, StringComparison.Ordinal);
+        Assert.Contains("프린터가 없거나 복합기 연결이 안 되면 PDF 저장 또는 파일 저장(XPS)", executor, StringComparison.Ordinal);
     }
 
     [Fact]

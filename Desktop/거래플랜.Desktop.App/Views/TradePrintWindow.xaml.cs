@@ -177,7 +177,7 @@ public partial class TradePrintWindow : Window
             item = PrinterComboBox.SelectedItem as PrinterListItem;
             if (item is null)
             {
-                ShowValidationError("인쇄할 프린터를 선택하세요. 프린터가 없으면 파일 저장(XPS)을 사용하세요.");
+                ShowValidationError("인쇄할 프린터를 선택하세요. 프린터가 없거나 복합기 연결이 안 되면 PDF 저장 또는 파일 저장(XPS)을 사용하세요.");
                 return false;
             }
         }

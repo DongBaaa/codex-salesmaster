@@ -74,7 +74,7 @@
                            Foreground="#EAF2FF"
                            FontSize="22"
                            FontWeight="Bold"/>
-                <TextBlock Text="Windows 기본 인쇄창 대신 거래플랜 안에서 프린터, 페이지, 매수를 선택해 바로 인쇄하거나 문서 파일로 저장합니다."
+                <TextBlock Text="Windows 기본 인쇄창 대신 거래플랜 안에서 프린터, 페이지, 매수를 선택해 바로 인쇄하거나 문서 파일로 저장합니다. 복합기가 잡히지 않으면 PDF 저장 후 복합기/다른 PC에서 출력하세요."
                            Foreground="#A7D1FF"
                            Margin="0,6,0,0"
                            TextWrapping="Wrap"/>
