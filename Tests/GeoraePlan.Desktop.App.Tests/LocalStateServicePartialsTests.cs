@@ -11894,6 +11894,91 @@ public sealed class LocalStateServicePartialsTests
         }
     }
 
+    [Fact]
+    public async Task RentalAssetViewModel_ReloadPreservesCheckedAssetsAndStableOrder()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-asset-selection-stable-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var assetAId = Guid.Parse("b1000000-0000-0000-0000-000000000001");
+            var assetBId = Guid.Parse("b1000000-0000-0000-0000-000000000002");
+            var assetCId = Guid.Parse("b1000000-0000-0000-0000-000000000003");
+            db.RentalAssets.AddRange(
+                CreateSelectionStableAsset(assetCId, "선택 안정 거래처", "SEL-003"),
+                CreateSelectionStableAsset(assetAId, "선택 안정 거래처", "SEL-001"),
+                CreateSelectionStableAsset(assetBId, "선택 안정 거래처", "SEL-002"));
+            await db.SaveChangesAsync();
+
+            var session = CreateUserSession(AppPermissionNames.RentalAssetEdit);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+            var viewModel = new RentalAssetViewModel(rental, local, new RentalDocumentService(), null!, session);
+
+            await viewModel.LoadAsync();
+            await viewModel.ReloadCommand.ExecuteAsync(null);
+
+            Assert.Equal(
+                new[] { "SEL-001", "SEL-002", "SEL-003" },
+                viewModel.Rows.Select(row => row.Source.ManagementNumber).ToArray());
+            Assert.False(viewModel.CanDeleteChecked);
+            Assert.False(viewModel.DeleteCheckedCommand.CanExecute(null));
+
+            var canExecuteChangedCount = 0;
+            viewModel.DeleteCheckedCommand.CanExecuteChanged += (_, _) => canExecuteChangedCount++;
+            viewModel.Rows[0].IsSelected = true;
+            viewModel.Rows[2].IsSelected = true;
+
+            Assert.True(canExecuteChangedCount > 0);
+            Assert.True(viewModel.CanDeleteChecked);
+            Assert.True(viewModel.DeleteCheckedCommand.CanExecute(null));
+            var checkedIdsBeforeReload = viewModel.Rows
+                .Where(row => row.IsSelected)
+                .Select(row => row.Source.Id)
+                .OrderBy(id => id)
+                .ToArray();
+
+            await db.RentalAssets
+                .IgnoreQueryFilters()
+                .Where(asset => asset.Id == assetBId)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(asset => asset.Revision, 2)
+                    .SetProperty(asset => asset.Notes, "재조회 후에도 체크 선택과 정렬 유지"));
+
+            await viewModel.ReloadCommand.ExecuteAsync(null);
+
+            Assert.Equal(
+                new[] { "SEL-001", "SEL-002", "SEL-003" },
+                viewModel.Rows.Select(row => row.Source.ManagementNumber).ToArray());
+            Assert.Equal(
+                checkedIdsBeforeReload,
+                viewModel.Rows
+                    .Where(row => row.IsSelected)
+                    .Select(row => row.Source.Id)
+                    .OrderBy(id => id)
+                    .ToArray());
+            Assert.True(viewModel.CanDeleteChecked);
+            Assert.True(viewModel.DeleteCheckedCommand.CanExecute(null));
+
+            foreach (var row in viewModel.Rows)
+                row.IsSelected = false;
+
+            Assert.False(viewModel.CanDeleteChecked);
+            Assert.False(viewModel.DeleteCheckedCommand.CanExecute(null));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static SessionState CreateUserSession(params string[] permissions)
     {
         var session = new SessionState();
@@ -11908,6 +11993,27 @@ public sealed class LocalStateServicePartialsTests
         });
         return session;
     }
+
+    private static LocalRentalAsset CreateSelectionStableAsset(
+        Guid id,
+        string customerName,
+        string managementNumber)
+        => new()
+        {
+            Id = id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            AssetKey = $"SELECTION-STABLE-{managementNumber}",
+            CustomerName = customerName,
+            CurrentCustomerName = customerName,
+            ItemName = "선택 안정 복합기",
+            ManagementNumber = managementNumber,
+            AssetStatus = "임대진행중",
+            BillingEligibilityStatus = "청구대상",
+            IsDirty = false
+        };
 
     private static SessionState CreateUserSession(string tenantCode, string officeCode, string scopeType, params string[] permissions)
     {

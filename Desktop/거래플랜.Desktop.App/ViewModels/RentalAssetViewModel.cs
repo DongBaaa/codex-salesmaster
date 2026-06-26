@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
@@ -120,7 +120,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         ? CanCreateAsset
         : SelectedRow.HasFullDetail && CanEditCurrentSelection;
     public bool CanDeleteSelected => SelectedRow is not null && CanEditCurrentSelection;
-    public bool CanDeleteChecked => Rows.Any(CanEditAssetRow);
+    public bool CanDeleteChecked => Rows.Any(row => row.IsSelected && CanEditAssetRow(row));
     public bool CanReplaceSelected => SelectedRow is not null &&
                                       SelectedRow.HasFullDetail &&
                                       CanEditCurrentSelection &&
@@ -418,6 +418,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             var requestVersion = Interlocked.Increment(ref _filterReloadVersion);
             var selectedRowBeforeReload = SelectedRow;
             var selectedRowId = selectedRowBeforeReload?.Source.Id;
+            var checkedAssetIds = GetCheckedAssetIds();
             var preserveSelectedEditor = ShouldPreserveSelectedEditorDuringReload();
             IsBusy = true;
             try
@@ -441,7 +442,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 if (requestVersion != Volatile.Read(ref _filterReloadVersion))
                     return;
 
-                Rows.ReplaceWith(rows);
+                ApplyCheckedAssetSelection(rows, checkedAssetIds);
+                ReplaceRows(rows);
                 RefreshRentalAssetMutationCommandStates();
 
                 if (selectedRowId.HasValue)
@@ -510,7 +512,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         try
         {
             var row = await _rental.GetAssetRowAsync(assetId, _session);
-            Rows.ReplaceWith(row is null ? Array.Empty<RentalAssetViewRow>() : new[] { row });
+            ReplaceRows(row is null ? Array.Empty<RentalAssetViewRow>() : new[] { row });
             RefreshRentalAssetMutationCommandStates();
         }
         finally
@@ -1058,6 +1060,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             if (index >= 0)
             {
                 fullRow.IsSelected = current?.IsSelected ?? fullRow.IsSelected;
+                if (current is not null)
+                    current.PropertyChanged -= HandleRentalAssetRowPropertyChanged;
+                fullRow.PropertyChanged += HandleRentalAssetRowPropertyChanged;
                 Rows[index] = fullRow;
             }
 
@@ -1149,6 +1154,41 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         _selectedAssetDetailLoadCts?.Cancel();
         _selectedAssetDetailLoadCts?.Dispose();
         _selectedAssetDetailLoadCts = null;
+    }
+
+    private HashSet<Guid> GetCheckedAssetIds()
+        => Rows
+            .Where(row => row.IsSelected)
+            .Select(row => row.Source.Id)
+            .Where(id => id != Guid.Empty)
+            .ToHashSet();
+
+    private static void ApplyCheckedAssetSelection(
+        IEnumerable<RentalAssetViewRow> rows,
+        IReadOnlySet<Guid> checkedAssetIds)
+    {
+        foreach (var row in rows)
+            row.IsSelected = checkedAssetIds.Contains(row.Source.Id);
+    }
+
+    private void ReplaceRows(IEnumerable<RentalAssetViewRow> rows)
+    {
+        foreach (var row in Rows)
+            row.PropertyChanged -= HandleRentalAssetRowPropertyChanged;
+
+        var list = rows.ToList();
+        foreach (var row in list)
+            row.PropertyChanged += HandleRentalAssetRowPropertyChanged;
+
+        Rows.ReplaceWith(list);
+    }
+
+    private void HandleRentalAssetRowPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (!string.Equals(e.PropertyName, nameof(RentalAssetViewRow.IsSelected), StringComparison.Ordinal))
+            return;
+
+        RefreshRentalAssetMutationCommandStates();
     }
 
     private void ApplyAssetStatusUiRules()

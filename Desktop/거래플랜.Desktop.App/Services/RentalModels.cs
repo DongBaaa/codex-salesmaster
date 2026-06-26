@@ -1,6 +1,8 @@
 ﻿using 거래플랜.Desktop.App.Data;
 using 거래플랜.Shared.Contracts;
 
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
 
 namespace 거래플랜.Desktop.App.Services;
@@ -516,8 +518,10 @@ public sealed class RentalBillingViewRow
     public bool IsSelected { get; set; }
 }
 
-public sealed class RentalAssetViewRow
+public sealed class RentalAssetViewRow : INotifyPropertyChanged
 {
+    private bool _isSelected;
+
     public LocalRentalAsset Source { get; init; } = new();
     public bool HasFullDetail { get; init; } = true;
     public string ResponsibleOfficeName { get; init; } = string.Empty;
@@ -526,7 +530,23 @@ public sealed class RentalAssetViewRow
     public string InstallLocationDisplay { get; init; } = string.Empty;
     public string BillingEligibilityStatus { get; init; } = string.Empty;
     public bool HasDataIssue { get; init; }
-    public bool IsSelected { get; set; }
+    public bool IsSelected
+    {
+        get => _isSelected;
+        set
+        {
+            if (_isSelected == value)
+                return;
+
+            _isSelected = value;
+            OnPropertyChanged();
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
 }
 
 public static class RentalAssetStatusRules
