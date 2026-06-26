@@ -54,6 +54,15 @@
 - APK+AAB 동시 생성:
   - `powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\mobile\Build-GeoraePlanAndroidApk.ps1" -ProjectRoot "D:\거래플랜" -SigningConfigPath "D:\거래플랜\Mobile\GeoraePlan.Mobile.App\android-signing.local.json" -PackageFormat both`
 
+### 직접 `dotnet build` 할 때
+- 기본 권장은 위 전용 빌드 스크립트 사용입니다.
+- 그래도 직접 빌드할 때는 프로젝트가 `ANDROID_SDK_ROOT`, `ANDROID_HOME`, `%LOCALAPPDATA%\GeoraePlan.Android\android-sdk`, `JAVA_HOME`, Android Studio JBR 경로를 순서대로 자동 감지합니다.
+- `XA5300: Android SDK 디렉터리를 찾을 수 없습니다`가 나오면 아래처럼 SDK/JDK 경로를 명시합니다.
+
+```powershell
+dotnet build "D:\거래플랜\Mobile\GeoraePlan.Mobile.App\GeoraePlan.Mobile.App.csproj" -f net8.0-android -c Debug -p:AndroidSdkDirectory="$env:LOCALAPPDATA\GeoraePlan.Android\android-sdk" -p:JavaSdkDirectory="C:\Program Files\Android\Android Studio\jbr"
+```
+
 ## Android Studio로 직접 확인하는 방법
 - 이 프로젝트는 **.NET MAUI Android 앱**이라서 Android Studio가 앱을 직접 Gradle 빌드하는 구조는 아닙니다.
 - 대신 Android Studio를 **에뮬레이터(Device Manager) / Logcat / 장치 확인** 용도로 쓰고, APK 빌드/설치는 거래플랜 스크립트가 자동으로 처리합니다.

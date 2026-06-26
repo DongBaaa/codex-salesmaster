@@ -28,6 +28,14 @@
     <DefineConstants>$(DefineConstants);GEORAEPLAN_MOBILE_LOCAL_TEST</DefineConstants>
     <AndroidManifestPlaceholders>usesCleartextTraffic=true</AndroidManifestPlaceholders>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net8.0-android'">
+    <AndroidSdkDirectory Condition="'$(AndroidSdkDirectory)' == '' and '$(ANDROID_SDK_ROOT)' != '' and Exists('$(ANDROID_SDK_ROOT)')">$(ANDROID_SDK_ROOT)</AndroidSdkDirectory>
+    <AndroidSdkDirectory Condition="'$(AndroidSdkDirectory)' == '' and '$(ANDROID_HOME)' != '' and Exists('$(ANDROID_HOME)')">$(ANDROID_HOME)</AndroidSdkDirectory>
+    <AndroidSdkDirectory Condition="'$(AndroidSdkDirectory)' == '' and '$(LOCALAPPDATA)' != '' and Exists('$(LOCALAPPDATA)\GeoraePlan.Android\android-sdk')">$(LOCALAPPDATA)\GeoraePlan.Android\android-sdk</AndroidSdkDirectory>
+    <JavaSdkDirectory Condition="'$(JavaSdkDirectory)' == '' and '$(JAVA_HOME)' != '' and Exists('$(JAVA_HOME)\bin\java.exe')">$(JAVA_HOME)</JavaSdkDirectory>
+    <JavaSdkDirectory Condition="'$(JavaSdkDirectory)' == '' and '$(ProgramFiles)' != '' and Exists('$(ProgramFiles)\Android\Android Studio\jbr\bin\java.exe')">$(ProgramFiles)\Android\Android Studio\jbr</JavaSdkDirectory>
+    <JavaSdkDirectory Condition="'$(JavaSdkDirectory)' == '' and '$(LOCALAPPDATA)' != '' and Exists('$(LOCALAPPDATA)\Programs\Android Studio\jbr\bin\java.exe')">$(LOCALAPPDATA)\Programs\Android Studio\jbr</JavaSdkDirectory>
+  </PropertyGroup>
   <ItemGroup>
     <MauiIcon Remove="Resources\AppIcon\appicon.svg" />
     <MauiIcon Remove="Resources\AppIcon\appiconfg.svg" />
