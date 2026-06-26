@@ -12985,7 +12985,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Where(profile => profile.CustomerId == asset.CustomerId.Value);
 
         var candidates = (await profiles.ToListAsync(ct))
-            .Where(profile => MatchesBillingProfileAutoLinkScope(profile, assetScope))
+            .Where(profile =>
+                MatchesBillingProfileAutoLinkScope(profile, assetScope) &&
+                CanAutoLinkAssetToBillingProfileTemplate(profile, asset.Id))
             .ToList();
 
         if (candidates.Count == 0)
@@ -13008,6 +13010,18 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         return null;
+    }
+
+    private bool CanAutoLinkAssetToBillingProfileTemplate(LocalRentalBillingProfile profile, Guid assetId)
+    {
+        var explicitTemplateAssetIds = GetBillingTemplateItems(profile, Array.Empty<LocalRentalAsset>())
+            .SelectMany(item => item.IncludedAssetIds ?? Enumerable.Empty<Guid>())
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToHashSet();
+
+        return explicitTemplateAssetIds.Count == 0 ||
+               (assetId != Guid.Empty && explicitTemplateAssetIds.Contains(assetId));
     }
 
     private static bool MatchesBillingProfileAutoLinkScope(
