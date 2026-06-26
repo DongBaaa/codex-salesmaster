@@ -215,8 +215,19 @@ public static class MobilePendingScopeFilter
         IReadOnlyDictionary<Guid, ItemDto> itemMap)
         => stock.ItemId != Guid.Empty &&
            itemMap.TryGetValue(stock.ItemId, out var item) &&
+           SupportsInventoryTracking(item) &&
            MobileSessionScopeFilter.CanAccessItem(snapshot, item) &&
            MobileSessionScopeFilter.CanAccessWarehouse(snapshot, stock.WarehouseCode);
+
+    private static bool SupportsInventoryTracking(ItemDto item)
+    {
+        var trackingType = ItemOperationalPolicy.NormalizeTrackingType(
+            item.TrackingType,
+            item.ItemKind,
+            item.CategoryName,
+            item.IsRental);
+        return ItemOperationalPolicy.SupportsInventory(trackingType);
+    }
 
     private static bool CanAccessPayment(
         SessionSnapshot snapshot,

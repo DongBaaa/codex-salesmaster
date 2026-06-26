@@ -296,6 +296,40 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void MobileSync_PrunesNonInventoryItemWarehouseStocksBeforePullCacheAndPush()
+    {
+        var root = FindRepositoryRoot();
+        var mobileRoot = Path.Combine(root, "Mobile", "GeoraePlan.Mobile.App");
+        var coordinatorSource = File.ReadAllText(Path.Combine(
+                mobileRoot,
+                "Services",
+                "SyncCoordinator.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var pendingScopeFilterSource = File.ReadAllText(Path.Combine(
+                mobileRoot,
+                "Services",
+                "MobilePendingScopeFilter.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains("NormalizeNonInventoryItemStocks(state);", coordinatorSource, StringComparison.Ordinal);
+        Assert.True(
+            CountOccurrences(coordinatorSource, "NormalizeNonInventoryItemStocks(state);") >= 2,
+            "Android 동기화는 pull 캐시 반영 후와 push 직전 모두 비재고/자산 품목 재고 row를 정리해야 합니다.");
+        Assert.Contains("NormalizeNonInventoryItemStocks(state.SyncedItems);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("NormalizeNonInventoryItemStocks(state.PendingPush.Items);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("RemoveNonInventoryItemWarehouseStocks(state.SyncedItemWarehouseStocks, itemMap);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("RemoveNonInventoryItemWarehouseStocks(state.PendingPush.ItemWarehouseStocks, itemMap);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("item.CurrentStock = 0m;", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("item.SafetyStock = 0m;", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("item.IsSale = false;", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("!SupportsInventoryTracking(item)", coordinatorSource, StringComparison.Ordinal);
+
+        Assert.Contains("SupportsInventoryTracking(item) &&\n           MobileSessionScopeFilter.CanAccessItem", pendingScopeFilterSource, StringComparison.Ordinal);
+        Assert.Contains("ItemOperationalPolicy.NormalizeTrackingType(", pendingScopeFilterSource, StringComparison.Ordinal);
+        Assert.Contains("ItemOperationalPolicy.SupportsInventory(trackingType)", pendingScopeFilterSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void MobileItemCacheFallback_OnlyUsesCacheForRetryableFailures()
     {
         var root = FindRepositoryRoot();

@@ -566,6 +566,7 @@ public sealed class SyncCoordinator
         try
         {
             state.Normalize();
+            NormalizeNonInventoryItemStocks(state);
             var scopedPush = MobilePendingScopeFilter.CreateScopedPushRequest(_sessionStore.GetSnapshot(), state);
             if (HasPendingServerSyncPayload(scopedPush))
             {
@@ -1164,6 +1165,7 @@ public sealed class SyncCoordinator
         state.SyncedRentalAssets = MergeById(state.SyncedRentalAssets, response.RentalAssets);
         state.SyncedRentalAssetAssignmentHistories = MergeById(state.SyncedRentalAssetAssignmentHistories, response.RentalAssetAssignmentHistories);
         state.SyncedRentalBillingLogs = MergeById(state.SyncedRentalBillingLogs, response.RentalBillingLogs);
+        NormalizeNonInventoryItemStocks(state);
         await ApplyPurgeRecordsAsync(state, response.PurgeRecords, ct);
     }
 
@@ -1201,6 +1203,84 @@ public sealed class SyncCoordinator
             .OrderBy(stock => stock.ItemId)
             .ThenBy(stock => stock.WarehouseCode, StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+    private static void NormalizeNonInventoryItemStocks(MobileSyncState state)
+    {
+        state.Normalize();
+        NormalizeNonInventoryItemStocks(state.SyncedItems);
+        NormalizeNonInventoryItemStocks(state.PendingPush.Items);
+
+        var itemMap = state.SyncedItems
+            .Where(item => item.Id != Guid.Empty && !item.IsDeleted)
+            .GroupBy(item => item.Id)
+            .ToDictionary(group => group.Key, group => group.OrderByDescending(item => item.UpdatedAtUtc).First());
+
+        foreach (var item in state.PendingPush.Items.Where(item => item.Id != Guid.Empty))
+        {
+            if (item.IsDeleted)
+                itemMap.Remove(item.Id);
+            else
+                itemMap[item.Id] = item;
+        }
+
+        RemoveNonInventoryItemWarehouseStocks(state.SyncedItemWarehouseStocks, itemMap);
+        RemoveNonInventoryItemWarehouseStocks(state.PendingPush.ItemWarehouseStocks, itemMap);
+    }
+
+    private static void NormalizeNonInventoryItemStocks(IEnumerable<ItemDto> items)
+    {
+        foreach (var item in items)
+        {
+            var trackingType = ItemOperationalPolicy.NormalizeTrackingType(
+                item.TrackingType,
+                item.ItemKind,
+                item.CategoryName,
+                item.IsRental);
+            var itemKind = ItemOperationalPolicy.NormalizeItemKind(
+                item.ItemKind,
+                trackingType,
+                item.CategoryName,
+                item.IsRental);
+            item.TrackingType = trackingType;
+            item.ItemKind = itemKind;
+
+            if (!ItemOperationalPolicy.SupportsInventory(trackingType))
+            {
+                item.CurrentStock = 0m;
+                item.SafetyStock = 0m;
+            }
+
+            if (ItemOperationalPolicy.IsAsset(trackingType))
+            {
+                item.IsRental = true;
+                item.IsSale = false;
+            }
+            else
+            {
+                item.IsRental = false;
+            }
+        }
+    }
+
+    private static void RemoveNonInventoryItemWarehouseStocks(
+        List<ItemWarehouseStockDto> stocks,
+        IReadOnlyDictionary<Guid, ItemDto> itemMap)
+    {
+        stocks.RemoveAll(stock =>
+            stock.ItemId != Guid.Empty &&
+            itemMap.TryGetValue(stock.ItemId, out var item) &&
+            !SupportsInventoryTracking(item));
+    }
+
+    private static bool SupportsInventoryTracking(ItemDto item)
+    {
+        var trackingType = ItemOperationalPolicy.NormalizeTrackingType(
+            item.TrackingType,
+            item.ItemKind,
+            item.CategoryName,
+            item.IsRental);
+        return ItemOperationalPolicy.SupportsInventory(trackingType);
+    }
 
     private async Task ApplyPurgeRecordsAsync(MobileSyncState state, IEnumerable<RecycleBinPurgeRecordDto>? purgeRecords, CancellationToken ct)
     {
