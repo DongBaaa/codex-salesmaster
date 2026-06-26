@@ -67,9 +67,13 @@ public static class TradePrintExecutor
                 return false;
             }
 
-            var printTicket = BuildPrintTicket(dialog.PrintOptions.PrintQueue, dialog.PrintOptions.CopyCount, dialog.PrintOptions.Collate);
+            var copyExpandedPaginator = BuildCopyPaginator(targetPaginator, dialog.PrintOptions.CopyCount, dialog.PrintOptions.Collate);
+            var driverCopyCount = ReferenceEquals(copyExpandedPaginator, targetPaginator)
+                ? dialog.PrintOptions.CopyCount
+                : 1;
+            var printTicket = BuildPrintTicket(dialog.PrintOptions.PrintQueue, driverCopyCount, dialog.PrintOptions.Collate);
             var writer = PrintQueue.CreateXpsDocumentWriter(dialog.PrintOptions.PrintQueue);
-            writer.Write(targetPaginator, printTicket);
+            writer.Write(copyExpandedPaginator, printTicket);
             return true;
         }
         catch (PrintQueueException ex)
@@ -193,6 +197,40 @@ public static class TradePrintExecutor
         }
 
         return true;
+    }
+
+    private static DocumentPaginator BuildCopyPaginator(
+        DocumentPaginator source,
+        int copyCount,
+        bool collate)
+    {
+        if (copyCount <= 1)
+            return source;
+
+        var pageCount = ResolvePageCount(source);
+        if (pageCount <= 0)
+            return source;
+
+        var normalizedCopyCount = Math.Clamp(copyCount, 1, 999);
+        var pages = new List<int>(checked(pageCount * normalizedCopyCount));
+        if (collate)
+        {
+            for (var copy = 0; copy < normalizedCopyCount; copy++)
+            {
+                for (var page = 1; page <= pageCount; page++)
+                    pages.Add(page);
+            }
+        }
+        else
+        {
+            for (var page = 1; page <= pageCount; page++)
+            {
+                for (var copy = 0; copy < normalizedCopyCount; copy++)
+                    pages.Add(page);
+            }
+        }
+
+        return new PageSelectionDocumentPaginator(source, pages);
     }
 
     private static PrintTicket BuildPrintTicket(PrintQueue printQueue, int copyCount, bool collate)
