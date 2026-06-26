@@ -116,6 +116,29 @@ public sealed class WpfGlobalUiGuardTests
     }
 
     [Fact]
+    public void MainWindowDashboardCards_DisplayCalculatedMetricsAndSafetyStockAlerts()
+    {
+        var root = FindRepositoryRoot();
+        var xaml = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "MainWindow.xaml"));
+
+        Assert.Contains("DashboardMetricCardStyle", xaml, StringComparison.Ordinal);
+        Assert.Contains("DashboardMonthlySales", xaml, StringComparison.Ordinal);
+        Assert.Contains("DashboardMonthlyAverageSales", xaml, StringComparison.Ordinal);
+        Assert.Contains("DashboardMonthlyInvoiceCount", xaml, StringComparison.Ordinal);
+        Assert.Contains("DashboardReceivable", xaml, StringComparison.Ordinal);
+        Assert.Contains("DashboardPayable", xaml, StringComparison.Ordinal);
+        Assert.Contains("DashboardCustomerCount", xaml, StringComparison.Ordinal);
+        Assert.Contains("DashboardSafetyStockAlerts", xaml, StringComparison.Ordinal);
+        Assert.Contains("DashboardSalesTrendPercent", xaml, StringComparison.Ordinal);
+        Assert.Contains("안전재고 알림", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("<Border Background=\"Transparent\" Margin=\"0,0,8,0\" CornerRadius=\"6\" Padding=\"10\"/>", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EveryViewReferencedInteractionHandler_ExistsInCodeBehind()
     {
         var root = FindRepositoryRoot();
