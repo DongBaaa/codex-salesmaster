@@ -92,6 +92,62 @@ public sealed class RentalBillingProfileCustomerScopeTests
     }
 
     [Fact]
+    public async Task GetBillingRowsAsync_UsesLinkedCustomerCurrentNameForDisplayAndSearch()
+    {
+        PrepareAppRoot("georaeplan-billing-profile-customer-current-display-search");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var customer = CreateCustomer(customerId, OfficeCodeCatalog.Usenet, TenantScopeCatalog.UsenetGroup);
+            customer.NameOriginal = "현재 연동 거래처";
+            customer.NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(customer.NameOriginal);
+            customer.BusinessNumber = "888-88-88888";
+            db.Customers.Add(customer);
+
+            var profileId = Guid.NewGuid();
+            var profile = CreateProfile(profileId, customerId, OfficeCodeCatalog.Usenet);
+            profile.CustomerName = "과거 청구 프로필명";
+            profile.BusinessNumber = "000-00-00000";
+            profile.ProfileKey = "USENET|NAME:과거청구프로필명|묶음|후불|25|1";
+            db.RentalBillingProfiles.Add(profile);
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            var service = new RentalStateService(db);
+
+            var row = await service.GetBillingRowAsync(profileId, session, new DateOnly(2026, 6, 25));
+
+            Assert.NotNull(row);
+            Assert.Equal("현재 연동 거래처", row!.CustomerDisplayName);
+
+            var rows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    SearchText = "현재 연동",
+                    ExpandCustomerSummaryRows = true,
+                    IncludeHistoryRows = false,
+                    ReferenceDate = new DateOnly(2026, 6, 25)
+                },
+                session);
+
+            var searchRow = Assert.Single(rows);
+            Assert.Equal(profileId, searchRow.SelectionId);
+            Assert.Equal("현재 연동 거래처", searchRow.CustomerDisplayName);
+            Assert.DoesNotContain("과거 청구 프로필명", searchRow.CustomerDisplayName, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SaveBillingProfileAsync_DoesNotAutoLinkSameTenantCustomerFromDifferentOffice()
     {
         PrepareAppRoot("georaeplan-billing-profile-customer-office-mismatch");

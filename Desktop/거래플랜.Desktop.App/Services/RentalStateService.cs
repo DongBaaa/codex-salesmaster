@@ -1169,20 +1169,24 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return await profileQuery.ToListAsync(ct);
     }
 
-    private static async Task<List<LocalRentalBillingProfile>> LoadBillingProfileSearchResultsAsync(
+    private async Task<List<LocalRentalBillingProfile>> LoadBillingProfileSearchResultsAsync(
         IQueryable<LocalRentalBillingProfile> baseQuery,
         string keyword,
         int? profileResultLimit,
         CancellationToken ct)
     {
+        var normalizedKeyword = RentalCatalogValueNormalizer.NormalizeLooseKey(keyword);
+        var linkedCustomerIds = await GetBoundedAssetSearchCustomerIdsAsync(keyword, normalizedKeyword, ct);
+
         if (!profileResultLimit.HasValue)
-            return await ApplyBillingProfileSearchContainsFilter(baseQuery, keyword).ToListAsync(ct);
+            return await ApplyBillingProfileSearchContainsFilter(baseQuery, keyword, linkedCustomerIds).ToListAsync(ct);
 
         var profiles = new List<LocalRentalBillingProfile>(profileResultLimit.Value);
         await AddDistinctBillingProfilePrefixSearchResultsAsync(
             profiles,
             baseQuery,
             keyword,
+            linkedCustomerIds,
             profileResultLimit.Value,
             ct);
 
@@ -1190,7 +1194,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         {
             await AddDistinctBillingProfileSearchResultsAsync(
                 profiles,
-                ApplyBillingProfileSearchContainsFilter(baseQuery, keyword),
+                ApplyBillingProfileSearchContainsFilter(baseQuery, keyword, linkedCustomerIds),
                 profileResultLimit.Value,
                 orderByListColumns: false,
                 ct);
@@ -1229,6 +1233,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         List<LocalRentalBillingProfile> profiles,
         IQueryable<LocalRentalBillingProfile> baseQuery,
         string keyword,
+        IReadOnlyCollection<Guid> linkedCustomerIds,
         int maxResults,
         CancellationToken ct)
     {
@@ -1258,13 +1263,20 @@ WHERE ""AssignedUsername"" <> '';", ct);
             baseQuery.Where(profile => profile.Notes.StartsWith(keyword)),
             remaining,
             ct);
+        var linkedCustomerCandidates = linkedCustomerIds.Count == 0
+            ? new List<LocalRentalBillingProfile>()
+            : await LoadBoundedBillingProfileSearchCandidatesAsync(
+                baseQuery.Where(profile => profile.CustomerId.HasValue && linkedCustomerIds.Contains(profile.CustomerId.Value)),
+                remaining,
+                ct);
 
         profiles.AddRange(MergeBillingProfileSearchCandidates(
             remaining,
             customerNameCandidates,
             businessNumberCandidates,
             itemNameCandidates,
-            notesCandidates));
+            notesCandidates,
+            linkedCustomerCandidates));
     }
 
     private static async Task<List<LocalRentalBillingProfile>> LoadBoundedBillingProfileSearchCandidatesAsync(
@@ -1334,12 +1346,20 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
     private static IQueryable<LocalRentalBillingProfile> ApplyBillingProfileSearchContainsFilter(
         IQueryable<LocalRentalBillingProfile> query,
-        string keyword)
-        => query.Where(profile =>
-            profile.CustomerName.Contains(keyword) ||
-            profile.BusinessNumber.Contains(keyword) ||
-            profile.ItemName.Contains(keyword) ||
-            profile.Notes.Contains(keyword));
+        string keyword,
+        IReadOnlyCollection<Guid>? linkedCustomerIds = null)
+        => linkedCustomerIds is { Count: > 0 }
+            ? query.Where(profile =>
+                profile.CustomerName.Contains(keyword) ||
+                profile.BusinessNumber.Contains(keyword) ||
+                profile.ItemName.Contains(keyword) ||
+                profile.Notes.Contains(keyword) ||
+                (profile.CustomerId.HasValue && linkedCustomerIds.Contains(profile.CustomerId.Value)))
+            : query.Where(profile =>
+                profile.CustomerName.Contains(keyword) ||
+                profile.BusinessNumber.Contains(keyword) ||
+                profile.ItemName.Contains(keyword) ||
+                profile.Notes.Contains(keyword));
 
     public Task<IReadOnlyList<RentalBillingHistoryRow>> GetBillingHistoryRowsAsync(
         IReadOnlyCollection<Guid> profileIds,
@@ -1794,7 +1814,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             if (!profile.CustomerId.HasValue || profile.CustomerId.Value == Guid.Empty)
                 continue;
 
-            if (NeedsBillingProfileCustomerNameLookup(profile) && seenCustomerIds.Add(profile.CustomerId.Value))
+            if (seenCustomerIds.Add(profile.CustomerId.Value))
                 customerIds.Add(profile.CustomerId.Value);
         }
 
@@ -1897,17 +1917,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         return result;
-    }
-
-    private static bool NeedsBillingProfileCustomerNameLookup(LocalRentalBillingProfile profile)
-    {
-        if (!profile.CustomerId.HasValue || profile.CustomerId.Value == Guid.Empty)
-            return false;
-
-        if (string.IsNullOrWhiteSpace(profile.CustomerName))
-            return true;
-
-        return !string.IsNullOrWhiteSpace(profile.ProfileKey);
     }
 
     private RentalBillingViewRow CreateBillingViewRow(
@@ -3949,26 +3958,46 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         var profileCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(customerNameValue);
-        if (!string.IsNullOrWhiteSpace(profileCustomerName))
+        if (!string.IsNullOrWhiteSpace(linkedCustomerName))
         {
-            if (!string.IsNullOrWhiteSpace(linkedCustomerName) &&
-                string.Equals(
-                    RentalCatalogValueNormalizer.NormalizeLooseKey(profileCustomerName),
-                    RentalCatalogValueNormalizer.NormalizeLooseKey(linkedCustomerName),
-                    StringComparison.OrdinalIgnoreCase))
+            var legacyAlias = TryResolveBillingProfileAliasFromProfileKey(profileKey, linkedCustomerName);
+            if (!string.IsNullOrWhiteSpace(legacyAlias))
+                return legacyAlias;
+
+            if (!string.IsNullOrWhiteSpace(profileCustomerName) &&
+                IsBillingProfileCustomerAliasForLinkedCustomer(profileCustomerName, linkedCustomerName))
             {
-                var legacyAlias = TryResolveBillingProfileAliasFromProfileKey(profileKey, linkedCustomerName);
-                if (!string.IsNullOrWhiteSpace(legacyAlias))
-                    return legacyAlias;
+                return profileCustomerName;
             }
 
-            return profileCustomerName;
+            return linkedCustomerName;
         }
 
-        if (!string.IsNullOrWhiteSpace(linkedCustomerName))
-            return linkedCustomerName;
+        if (!string.IsNullOrWhiteSpace(profileCustomerName))
+            return profileCustomerName;
 
         return "(거래처 미지정)";
+    }
+
+    private static bool IsBillingProfileCustomerAliasForLinkedCustomer(string profileCustomerName, string linkedCustomerName)
+    {
+        var profileDisplayName = RentalCatalogValueNormalizer.NormalizeDisplayText(profileCustomerName);
+        var linkedDisplayName = RentalCatalogValueNormalizer.NormalizeDisplayText(linkedCustomerName);
+        if (string.IsNullOrWhiteSpace(profileDisplayName) || string.IsNullOrWhiteSpace(linkedDisplayName))
+            return false;
+
+        if (string.Equals(profileDisplayName, linkedDisplayName, StringComparison.CurrentCultureIgnoreCase))
+            return false;
+
+        if (profileDisplayName.StartsWith(linkedDisplayName, StringComparison.CurrentCultureIgnoreCase))
+            return true;
+
+        var profileKey = RentalCatalogValueNormalizer.NormalizeLooseKey(profileDisplayName);
+        var linkedKey = RentalCatalogValueNormalizer.NormalizeLooseKey(linkedDisplayName);
+        return !string.IsNullOrWhiteSpace(profileKey) &&
+               !string.IsNullOrWhiteSpace(linkedKey) &&
+               profileKey.Length > linkedKey.Length &&
+               profileKey.StartsWith(linkedKey, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string TryResolveBillingProfileAliasFromProfileKey(string? profileKey, string linkedCustomerName)
