@@ -1222,6 +1222,36 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void AndroidSyncStateStore_UsesSqlitePrimaryStorageWithJsonMigrationFallback()
+    {
+        var root = FindRepositoryRoot();
+        var projectSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "GeoraePlan.Mobile.App.csproj"));
+        var storeSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "JsonSyncStateStore.cs"));
+
+        Assert.Contains("Microsoft.Data.Sqlite.Core", projectSource, StringComparison.Ordinal);
+        Assert.Contains("SQLitePCLRaw.bundle_e_sqlite3", projectSource, StringComparison.Ordinal);
+        Assert.Contains("private const string StateTableName = \"mobile_sync_states\";", storeSource, StringComparison.Ordinal);
+        Assert.Contains("private string DatabasePath => Path.Combine(StateDirectory, \"mobile-sync-state.db\");", storeSource, StringComparison.Ordinal);
+        Assert.Contains("SQLitePCL.Batteries_V2.Init();", storeSource, StringComparison.Ordinal);
+        Assert.Contains("CREATE TABLE IF NOT EXISTS {StateTableName}", storeSource, StringComparison.Ordinal);
+        Assert.Contains("INSERT OR REPLACE INTO {StateTableName}", storeSource, StringComparison.Ordinal);
+        Assert.Contains("await TrySaveJsonBackupAsync(filePath, state, ct);", storeSource, StringComparison.Ordinal);
+        Assert.Contains("SQLite 저장은 완료됐지만 JSON 백업 저장에는 실패했습니다", storeSource, StringComparison.Ordinal);
+        Assert.Contains("await TryRecoverOrQuarantineLegacyStateAsync(stateKey, filePath, fresh, ct);", storeSource, StringComparison.Ordinal);
+        Assert.Contains("기존 JSON 모바일 동기화 상태를 SQLite로 이전했습니다", storeSource, StringComparison.Ordinal);
+        Assert.Contains("SQLite 모바일 동기화 상태 저장에 실패해 JSON 백업 저장소로 전환합니다", storeSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AndroidPendingStatus_SummarizesEveryPendingPushCollection()
     {
         var root = FindRepositoryRoot();

@@ -20,7 +20,7 @@
 - [x] .NET MAUI Android 클라이언트 기본 앱 구성
 - [x] 동일한 `/sync/pull`, `/sync/push` API 재사용
 - [x] JSON 기반 모바일 동기화 상태 / 대기 업로드 캐시
-- [ ] 오프라인 SQLite 고도화 (현재는 `JsonSyncStateStore` 기반)
+- [x] 오프라인 SQLite 고도화 (`JsonSyncStateStore` 명칭 유지, SQLite 주 저장소 + scoped JSON 백업/마이그레이션)
 - [ ] 터치 최적화 전표 입력 UI 추가 고도화
 - [ ] 실기기 운영 E2E 회귀 테스트 시나리오 정례화
   - [x] Android 에뮬레이터 로컬 테스트 서버 기본/확장 smoke PASS(로그인, 홈, 렌탈 조회, 판매/구매/수금·지급 초안, 거래처, 품목, 전표, 동기화, 권장 동기화 실행)
@@ -100,3 +100,12 @@
 ---
 
 *참고: 기존 문서의 `사용자 관리 UI (현재 API만 존재)` 항목은 현재 코드 상태와 맞지 않아 완료 항목으로 정정함.*
+
+### 2026-06-26 Android 오프라인 SQLite 고도화 완료 증거
+- [x] 모바일 동기화 상태 저장소를 `files/sync-states/mobile-sync-state.db` SQLite DB로 전환했습니다.
+- [x] 기존 scoped/legacy JSON 상태는 현재 계정 소유자 정보가 맞을 때 SQLite로 자동 이전하고, 계정 없는 미전송 초안은 기존 정책대로 격리합니다.
+- [x] SQLite 저장 성공 후에도 동일 scoped JSON 백업을 남겨 DB 파일 손상/오픈 실패 시 JSON fallback이 가능하도록 보강했습니다.
+- [x] Android 에뮬레이터 로컬 테스트 서버 기준 smoke PASS: `D:\거래플랜\테스트 시행\기록\mobile-smoke-20260626-220042.md`.
+- [x] Android 저장/dirty E2E PASS: `D:\거래플랜\테스트 시행\기록\mobile-write-e2e-20260626-215827.md`.
+- [x] 앱 내부 저장소 증거: `D:\거래플랜\테스트 시행\기록\mobile-sqlite-json-backup-evidence-20260626-220259.md`.
+- [x] Android 0.2.69 signed APK 및 stable 업데이트 manifest 생성/배포 완료.
