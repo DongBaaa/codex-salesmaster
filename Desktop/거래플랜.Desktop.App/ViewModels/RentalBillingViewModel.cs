@@ -3401,6 +3401,13 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                     continue;
                 }
 
+                if (TryPreserveIndividualAggregateTemplateItem(item, includedAssetIds, assetLookup, out var aggregateValueChanged))
+                {
+                    valueChanged |= aggregateValueChanged;
+                    rebuiltItems.Add(item);
+                    continue;
+                }
+
                 collectionChanged = true;
                 var sourceNote = item.Note;
                 for (var index = 0; index < includedAssetIds.Count; index++)
@@ -3446,6 +3453,75 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         }
 
         return collectionChanged || valueChanged;
+    }
+
+    private bool TryPreserveIndividualAggregateTemplateItem(
+        RentalBillingTemplateEditorItem item,
+        IReadOnlyList<Guid> includedAssetIds,
+        IReadOnlyDictionary<Guid, RentalBillingAssetOption> assetLookup,
+        out bool valueChanged)
+    {
+        valueChanged = false;
+        if (!IsTemplateItemIndividualMode(item) || includedAssetIds.Count <= 1)
+            return false;
+
+        var includedAssets = includedAssetIds
+            .Select(id => assetLookup.TryGetValue(id, out var asset) ? asset : null)
+            .Where(asset => asset is not null)
+            .Cast<RentalBillingAssetOption>()
+            .ToList();
+        if (includedAssets.Count != includedAssetIds.Count)
+            return false;
+
+        var modelNames = includedAssets
+            .Select(asset => RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset.ItemName))
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        if (modelNames.Count != 1)
+            return false;
+
+        var linkedFees = includedAssets
+            .Select(asset => Math.Max(0m, asset.MonthlyFee))
+            .Distinct()
+            .ToList();
+        if (linkedFees.Count != 1)
+            return false;
+
+        var quantity = item.Quantity <= 0m ? includedAssetIds.Count : item.Quantity;
+        if (quantity != includedAssetIds.Count)
+            return false;
+
+        var unitPrice = Math.Max(0m, item.UnitPrice);
+        if (unitPrice <= 0m && item.Amount > 0m)
+            unitPrice = item.Amount / includedAssetIds.Count;
+        if (unitPrice < 0m)
+            return false;
+
+        valueChanged |= SetIfChanged(() => item.DisplayItemName, value => item.DisplayItemName = value, modelNames[0]);
+        valueChanged |= SetIfChanged(() => item.BillingLineMode, value => item.BillingLineMode = value, "개별");
+        valueChanged |= SetIfChanged(() => item.RepresentativeAssetId, value => item.RepresentativeAssetId = value, null);
+        valueChanged |= SetIfChanged(() => item.Quantity, value => item.Quantity = value, includedAssetIds.Count);
+        valueChanged |= SetIfChanged(() => item.UnitPrice, value => item.UnitPrice = value, unitPrice);
+
+        var normalizedIncludedAssetIds = includedAssetIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (!item.IncludedAssetIds.SequenceEqual(normalizedIncludedAssetIds))
+        {
+            item.IncludedAssetIds.Clear();
+            foreach (var assetId in normalizedIncludedAssetIds)
+                item.IncludedAssetIds.Add(assetId);
+            valueChanged = true;
+        }
+
+        item.NormalizeCalculatedAmount();
+        item.IncludedAssetSummary = BuildIncludedAssetSummary(item.IncludedAssetIds);
+        item.RepresentativeAssetSummary = BuildRepresentativeAssetSummary(item);
+        ApplyTemplateSalesFieldDefaults(item);
+        ApplyTemplateMonthlyFeesToPendingAssetEdits(item);
+        return true;
     }
 
     private bool MergeIndividualTemplateItemsWithSameModelAndPrice(
@@ -4081,8 +4157,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             .Select(asset => Math.Max(0m, asset!.MonthlyFee))
             .ToList();
         if (linkedAssetFees.Count != includedAssetIds.Count ||
-            linkedAssetFees.Distinct().Count() != 1 ||
-            linkedAssetFees[0] != unitPrice)
+            linkedAssetFees.Distinct().Count() != 1)
         {
             return false;
         }

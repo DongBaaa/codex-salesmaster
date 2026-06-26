@@ -788,6 +788,83 @@ public sealed class RentalIncludedBillingAssetsTests
     }
 
     [Fact]
+    public async Task SaveBillingProfile_IndividualSameFeeAggregateUpdatesAssetMonthlyFeesFromEditedUnitPrice()
+    {
+        PrepareAppRoot("georaeplan-rental-individual-same-fee-edit-save");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("f2810000-1111-4444-8888-000000000001");
+            var assetAId = Guid.Parse("f2810000-1111-4444-8888-0000000000a1");
+            var assetBId = Guid.Parse("f2810000-1111-4444-8888-0000000000b2");
+            db.RentalAssets.AddRange(
+                CreateRentalAsset("Same Fee Save Customer", "SAME-SAVE-001", null, assetAId, monthlyFee: 50_000m, itemName: "IMC2010"),
+                CreateRentalAsset("Same Fee Save Customer", "SAME-SAVE-002", null, assetBId, monthlyFee: 50_000m, itemName: "IMC2010"));
+            await db.SaveChangesAsync();
+
+            var templateItems = new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    DisplayItemName = "IMC2010",
+                    BillingLineMode = "\uAC1C\uBCC4",
+                    Quantity = 2m,
+                    UnitPrice = 60_000m,
+                    Amount = 120_000m,
+                    IncludedAssetIds = [assetAId, assetBId]
+                }
+            };
+            var profile = new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Same Fee Save Customer",
+                InstallSiteName = "Same Fee Save Customer",
+                BillingType = "\uAC1C\uBCC4",
+                BillingAdvanceMode = "\uC120\uBD88",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                MonthlyAmount = 120_000m,
+                BillingTemplateJson = JsonSerializer.Serialize(templateItems)
+            };
+
+            var result = await new RentalStateService(db).SaveBillingProfileAsync(profile, CreateAdminSession());
+
+            Assert.True(result.Success, result.Message);
+            var storedAssets = await db.RentalAssets.IgnoreQueryFilters()
+                .Where(asset => asset.Id == assetAId || asset.Id == assetBId)
+                .OrderBy(asset => asset.ManagementNumber)
+                .ToListAsync();
+            Assert.Equal(2, storedAssets.Count);
+            Assert.All(storedAssets, asset =>
+            {
+                Assert.Equal(profileId, asset.BillingProfileId);
+                Assert.Equal(60_000m, asset.MonthlyFee);
+            });
+
+            var storedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters()
+                .SingleAsync(current => current.Id == profileId);
+            var storedTemplateItem = Assert.Single(new RentalStateService(db).GetBillingTemplateItems(storedProfile));
+            Assert.Equal(2m, storedTemplateItem.Quantity);
+            Assert.Equal(60_000m, storedTemplateItem.UnitPrice);
+            Assert.Equal(120_000m, storedTemplateItem.Amount);
+            Assert.Equal(new[] { assetAId, assetBId }, storedTemplateItem.IncludedAssetIds);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task GetIncludedBillingAssetsAsync_BatchesManyExplicitIncludedAssetIds()
     {
         PrepareAppRoot("georaeplan-rental-included-assets-explicit-batch");
@@ -1202,7 +1279,8 @@ public sealed class RentalIncludedBillingAssetsTests
         string managementNumber,
         Guid? billingProfileId,
         Guid? assetId = null,
-        decimal monthlyFee = 100_000m)
+        decimal monthlyFee = 100_000m,
+        string itemName = "Rental Copier")
     {
         var resolvedAssetId = assetId ?? Guid.NewGuid();
         return new LocalRentalAsset
@@ -1219,7 +1297,7 @@ public sealed class RentalIncludedBillingAssetsTests
             CurrentCustomerName = customerName,
             BillingProfileId = billingProfileId,
             ItemCategoryName = "Copier",
-            ItemName = "Rental Copier",
+            ItemName = itemName,
             MachineNumber = $"SN-{assetId:N}",
             InstallSiteName = "HQ",
             InstallLocation = "HQ",

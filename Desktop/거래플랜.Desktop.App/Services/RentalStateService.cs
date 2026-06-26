@@ -11364,8 +11364,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 if (unitPrice > 0m &&
                     quantity == includedAssetIds.Count &&
                     linkedFees.Count == includedAssetIds.Count &&
-                    linkedFees.Distinct().Count() == 1 &&
-                    linkedFees[0] == unitPrice)
+                    linkedFees.Distinct().Count() == 1)
                 {
                     monthlyFee = unitPrice;
                 }
