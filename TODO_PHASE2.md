@@ -206,3 +206,11 @@
 - [x] USENET office-only 사용자가 YEONSU 품목/창고 row를 push 후보에 싣지 않는 회귀테스트를 추가했습니다.
 - [x] 회귀 테스트 PASS: 창고재고 push scope targeted 8/8, 동기화/권한 확장 회귀 17/17, Desktop 전체 764/764.
 - [x] PC 1.1.616 설치/업데이트 패키지 생성 및 Linux PC live manifest 반영 PASS(SHA256 `D5257567787922951B1279734BC3714F493A222F3E344C795622044BEC22426B`).
+
+### 2026-06-27 PC 로컬 UI smoke 및 계정별 scope 회귀 추가 증거
+- [x] PC 1.1.620 소스 기준 로컬 테스트 실행환경 준비 PASS: Debug build 0 오류/0 경고, 테스트 앱/서버 publish 완료.
+- [x] Desktop UI smoke PASS: `D:\거래플랜\테스트 시행\evidence\desktop-ui-smoke-20260627-0511\desktop-ui-smoke-20260627-051106.md`.
+  - 로그인, 메인 버튼, 거래처 관리, 품목/재고 관리, 판매(매출), 구매(매입) 창 생성/필수 표시값 확인 PASS.
+- [x] 계정별 권한/범위 API 회귀 PASS: `D:\거래플랜\테스트 시행\evidence\account-scope-regression-20260627-0512.md`.
+  - ITWORLD TenantAll, USENET TenantAll, YEONSU OfficeOnly의 거래처/품목/판매구매/수금지급/렌탈/납품배송 readable/writable scope 확인 PASS.
+- [ ] 실제 운영망·실기기·장시간 실행 UI 증거는 별도 기기/운영 조건에서 추가 누적합니다.
