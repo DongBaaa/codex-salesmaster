@@ -104,6 +104,20 @@ public sealed class MasterUiWiringGuardTests
     }
 
     [Fact]
+    public void RentalBillingWindow_ExplainsDisplayItemsAndIncludedAssetsSeparately()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var xaml = ReadAppFile(appRoot, "Views", "RentalBillingWindow.xaml");
+
+        AssertContainsAll(
+            xaml,
+            "거래명세서에 보일 라인입니다.",
+            "실제 청구 대상 자산은 '연결장비'에 표시된 내부 포함 장비만 적용됩니다.",
+            "내부 포함 장비 (실제 청구 대상 자산)",
+            "이 목록의 장비만 청구/전표 생성 대상입니다.");
+    }
+
+    [Fact]
     public void InventoryWindow_ItemActionsUseScopedItemCommandsAndGuardedServices()
     {
         var appRoot = FindDesktopAppRoot();

@@ -701,6 +701,10 @@
                                    Foreground="#90CAF9" Margin="0,0,0,8" TextWrapping="Wrap"/>
 
                         <TextBlock Text="청구서 표시 품목" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,6"/>
+                        <TextBlock Text="거래명세서에 보일 라인입니다. 실제 청구 대상 자산은 '연결장비'에 표시된 내부 포함 장비만 적용됩니다."
+                                   Foreground="#90CAF9"
+                                   Margin="0,0,0,8"
+                                   TextWrapping="Wrap"/>
                         <DataGrid ItemsSource="{Binding TemplateItems}" SelectedItem="{Binding SelectedTemplateItem}" Height="210" Margin="0,0,0,10" IsReadOnly="{Binding IsCustomerGroupSelection}">
                             <DataGrid.Columns>
                                 <DataGridTemplateColumn Header="라인유형" Width="90">
@@ -725,12 +729,12 @@
                             </DataGrid.Columns>
                         </DataGrid>
 
-                        <Expander Header="내부 포함 장비" IsExpanded="False" Margin="0,0,0,10" IsEnabled="{Binding CanEditBillingProfileDetails}">
+                        <Expander Header="내부 포함 장비 (실제 청구 대상 자산)" IsExpanded="False" Margin="0,0,0,10" IsEnabled="{Binding CanEditBillingProfileDetails}">
                             <StackPanel>
                                 <WrapPanel Margin="0,8,0,8">
                                     <Button Content="대표자산 지정" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,8,0" Command="{Binding SetRepresentativeAssetCommand}" IsEnabled="{Binding CanSetRepresentativeAsset}"/>
                                     <Button Content="선택 장비 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,8,0" Command="{Binding RemoveIncludedAssetCommand}" IsEnabled="{Binding CanRemoveIncludedAsset}"/>
-                                    <TextBlock Text="삭제 후 저장하면 해당 장비는 현재 청구 연결에서 해제됩니다." Foreground="#90CAF9" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                                    <TextBlock Text="이 목록의 장비만 청구/전표 생성 대상입니다. 삭제 후 저장하면 해당 장비는 현재 청구 연결에서 해제됩니다." Foreground="#90CAF9" VerticalAlignment="Center" TextWrapping="Wrap"/>
                                 </WrapPanel>
                                 <DataGrid ItemsSource="{Binding IncludedAssets}" SelectedItem="{Binding SelectedIncludedAsset}" Height="190" Margin="0,0,0,10">
                                     <DataGrid.Columns>
