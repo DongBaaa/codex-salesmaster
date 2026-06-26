@@ -802,6 +802,7 @@ public sealed partial class MainViewModel : ObservableObject
         {
             if (SelectedCustomerFilter is null)
             {
+                ClearPreviewCustomerInfo();
                 await RefreshCustomerFinancialPreviewAsync(null);
                 RequestRefreshPreviewCustomerContract(null);
             }
@@ -815,7 +816,11 @@ public sealed partial class MainViewModel : ObservableObject
         if (inv is null)
         {
             if (SelectedCustomerFilter is null)
+            {
+                ClearPreviewCustomerInfo();
                 await RefreshCustomerFinancialPreviewAsync(null);
+                RequestRefreshPreviewCustomerContract(null);
+            }
             return;
         }
 
@@ -858,10 +863,39 @@ public sealed partial class MainViewModel : ObservableObject
             }
             else
             {
+                ClearPreviewCustomerInfo();
                 await RefreshCustomerFinancialPreviewAsync(null);
                 RequestRefreshPreviewCustomerContract(null);
             }
         }
+    }
+
+    private void ClearPreviewCustomerInfo()
+    {
+        PreviewCustomerName = string.Empty;
+        PreviewCustomerBizNumber = string.Empty;
+        PreviewCustomerPhone = string.Empty;
+        PreviewCustomerAddress = string.Empty;
+        PreviewCustomerNotes = string.Empty;
+        PreviewCustomerDepartment = string.Empty;
+        PreviewCustomerContactPerson = string.Empty;
+
+        _suppressCustomerSave = true;
+        try
+        {
+            EditCustBizNumber = string.Empty;
+            EditCustPhone = string.Empty;
+            EditCustDept = string.Empty;
+            EditCustContactPerson = string.Empty;
+            EditCustAddress = string.Empty;
+            EditCustNotes = string.Empty;
+        }
+        finally
+        {
+            _suppressCustomerSave = false;
+        }
+
+        CustomerInlineSaveStatus = "거래처 또는 전표를 선택하면 거래처 정보가 표시됩니다.";
     }
 
     private bool IsCurrentInvoicePreview(int version)

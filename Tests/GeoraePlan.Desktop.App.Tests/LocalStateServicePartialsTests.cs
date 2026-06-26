@@ -837,6 +837,67 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task MainViewModel_LoadPreviewAsync_ClearsStaleCustomerInfoWhenInvoiceSelectionIsCleared()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "georaeplan-main-preview-clear-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var officeAccess = new OfficeAccessService();
+            var dispatcher = new SyncRequestDispatcher();
+            var diagnostics = new SyncDiagnosticsService(session);
+            var localState = new LocalStateService(db, officeAccess, dispatcher, session);
+            var rental = new RentalStateService(db);
+            var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
+            using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
+            var viewModel = new MainViewModel(localState, sync, new BackupService(), rental, diagnostics, api, session)
+            {
+                PreviewCustomerName = "이전 거래처",
+                PreviewCustomerBizNumber = "111-11-11111",
+                PreviewCustomerPhone = "02-111-1111",
+                PreviewCustomerAddress = "이전 주소",
+                PreviewCustomerNotes = "이전 메모",
+                PreviewCustomerDepartment = "이전 부서",
+                PreviewCustomerContactPerson = "이전 담당자",
+                EditCustBizNumber = "111-11-11111",
+                EditCustPhone = "02-111-1111",
+                EditCustDept = "이전 부서",
+                EditCustContactPerson = "이전 담당자",
+                EditCustAddress = "이전 주소",
+                EditCustNotes = "이전 메모"
+            };
+
+            await InvokePrivateInstanceTaskResultAsync(viewModel, "LoadPreviewAsync", null, 0);
+
+            Assert.Equal(string.Empty, viewModel.PreviewCustomerName);
+            Assert.Equal(string.Empty, viewModel.PreviewCustomerBizNumber);
+            Assert.Equal(string.Empty, viewModel.PreviewCustomerPhone);
+            Assert.Equal(string.Empty, viewModel.PreviewCustomerAddress);
+            Assert.Equal(string.Empty, viewModel.PreviewCustomerNotes);
+            Assert.Equal(string.Empty, viewModel.PreviewCustomerDepartment);
+            Assert.Equal(string.Empty, viewModel.PreviewCustomerContactPerson);
+            Assert.Equal(string.Empty, viewModel.EditCustBizNumber);
+            Assert.Equal(string.Empty, viewModel.EditCustPhone);
+            Assert.Equal(string.Empty, viewModel.EditCustDept);
+            Assert.Equal(string.Empty, viewModel.EditCustContactPerson);
+            Assert.Equal(string.Empty, viewModel.EditCustAddress);
+            Assert.Equal(string.Empty, viewModel.EditCustNotes);
+            Assert.Contains("거래처 또는 전표를 선택", viewModel.CustomerInlineSaveStatus);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task MainViewModel_LoadInvoiceListAsync_KeepsSelectedInvoiceAfterListRefresh()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "georaeplan-main-selection-probe-" + Guid.NewGuid().ToString("N"));
