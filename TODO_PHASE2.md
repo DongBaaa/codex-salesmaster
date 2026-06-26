@@ -24,6 +24,7 @@
 - [ ] 터치 최적화 전표 입력 UI 추가 고도화
 - [ ] 실기기 운영 E2E 회귀 테스트 시나리오 정례화
   - [x] Android 에뮬레이터 로컬 테스트 서버 기본/확장 smoke PASS(로그인, 홈, 렌탈 조회, 판매/구매/수금·지급 초안, 거래처, 품목, 전표, 동기화, 권장 동기화 실행)
+  - [x] Android 에뮬레이터 로컬 테스트 서버 저장 E2E PASS(판매 저장, 매입 저장, 판매 저장 거부 422, 판매 dirty 동기화, 수금 저장, 지급 저장, 수금 저장 거부 422)
   - [ ] 실기기/운영망 기준 장시간 실행·재로그인·권한 거부 E2E 증거 누적
 
 ---
@@ -52,7 +53,8 @@
   - [x] PC/서버 핵심 범위 회귀: 전표 저장 scope, 로컬 운영 scope, 공유 dirty 권한, 마스터 CRUD scope, 휴지통 scope, office scope/paging, sync push coverage
   - [ ] Android 실기기/에뮬레이터 기준 조회/저장/동기화/권한 거부 E2E
     - [x] 에뮬레이터 로컬 테스트 서버 조회/초안/동기화 smoke PASS(mobile-smoke-20260626-205314, mobile-smoke-20260626-205501)
-    - [ ] 저장 성공/저장 거부/권한 거부/운영망 기준 E2E 증거 누적
+    - [x] 에뮬레이터 로컬 테스트 서버 저장 성공/저장 거부/dirty push E2E PASS(mobile-write-e2e-20260626-210155, mobile-write-e2e-20260626-210415, mobile-write-e2e-20260626-210634, mobile-write-e2e-20260626-210854, mobile-payment-e2e-sales-20260626-211141, mobile-payment-e2e-purchase-20260626-211401, mobile-payment-e2e-sales-20260626-211621)
+    - [ ] 권한 거부/운영망 기준 E2E 증거 누적
   - [x] 전체 업무 화면별 수동 QA 체크리스트 정례화
   - [ ] 전체 업무 화면별 실제 수동 QA 증거 누적
 - [x] 세션 만료 자동 재로그인/갱신 및 401 후 재시도
