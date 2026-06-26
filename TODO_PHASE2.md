@@ -199,3 +199,4 @@
 - [x] PC 수동 재고 조정 서비스가 재고 추적 대상이 아닌 품목의 0이 아닌 재고 입력을 거부하고 기존 잔여 row를 정리합니다.
 - [x] 회귀 테스트 PASS: `SyncItemWarehouseStockPullTests|LocalIntegrityInventoryResidueTests` 8/8, 동기화/재고 관련 확장 필터 24/24.
 - [ ] 사용자 PC별 오래된 로컬 DB와 운영망 현장 실행 증거는 별도 조건에서 추가 누적합니다.
+- [x] PC 1.1.615 설치/업데이트 패키지 생성 및 Linux PC live manifest 반영 PASS(SHA256 `F7161495B4E07F1ECF97F3F95D418F2A6785C855CEFE1069AD0BE28F213376FB`).
