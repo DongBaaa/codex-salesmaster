@@ -423,6 +423,81 @@ public sealed class RentalIncludedBillingAssetsTests
     }
 
     [Fact]
+    public async Task SaveBillingProfile_IndividualMixedFeeAggregateDoesNotOverwriteAssetMonthlyFees()
+    {
+        PrepareAppRoot("georaeplan-rental-individual-mixed-fee-save");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("f2800000-1111-4444-8888-000000000001");
+            var assetAId = Guid.Parse("f2800000-1111-4444-8888-0000000000a1");
+            var assetBId = Guid.Parse("f2800000-1111-4444-8888-0000000000b2");
+            db.RentalAssets.AddRange(
+                CreateRentalAsset("Mixed Fee Save Customer", "MIXED-SAVE-001", null, assetAId, monthlyFee: 50_000m),
+                CreateRentalAsset("Mixed Fee Save Customer", "MIXED-SAVE-002", null, assetBId, monthlyFee: 70_000m));
+            await db.SaveChangesAsync();
+
+            var templateItems = new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    DisplayItemName = "Rental Copier",
+                    BillingLineMode = "개별",
+                    Quantity = 2m,
+                    UnitPrice = 60_000m,
+                    Amount = 120_000m,
+                    IncludedAssetIds = [assetAId, assetBId]
+                }
+            };
+            var profile = new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Mixed Fee Save Customer",
+                InstallSiteName = "Mixed Fee Save Customer",
+                BillingType = "개별",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                MonthlyAmount = 120_000m,
+                BillingTemplateJson = JsonSerializer.Serialize(templateItems)
+            };
+
+            var result = await new RentalStateService(db).SaveBillingProfileAsync(profile, CreateAdminSession());
+
+            Assert.True(result.Success, result.Message);
+            var storedAssets = await db.RentalAssets.IgnoreQueryFilters()
+                .Where(asset => asset.Id == assetAId || asset.Id == assetBId)
+                .OrderBy(asset => asset.ManagementNumber)
+                .ToListAsync();
+            Assert.Equal(2, storedAssets.Count);
+            Assert.All(storedAssets, asset => Assert.Equal(profileId, asset.BillingProfileId));
+            Assert.Equal(50_000m, storedAssets.Single(asset => asset.Id == assetAId).MonthlyFee);
+            Assert.Equal(70_000m, storedAssets.Single(asset => asset.Id == assetBId).MonthlyFee);
+
+            var storedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters()
+                .SingleAsync(current => current.Id == profileId);
+            var storedTemplateItem = Assert.Single(new RentalStateService(db).GetBillingTemplateItems(storedProfile));
+            Assert.Equal(2m, storedTemplateItem.Quantity);
+            Assert.Equal(60_000m, storedTemplateItem.UnitPrice);
+            Assert.Equal(120_000m, storedTemplateItem.Amount);
+            Assert.Equal(new[] { assetAId, assetBId }, storedTemplateItem.IncludedAssetIds);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task GetIncludedBillingAssetsAsync_BatchesManyExplicitIncludedAssetIds()
     {
         PrepareAppRoot("georaeplan-rental-included-assets-explicit-batch");
