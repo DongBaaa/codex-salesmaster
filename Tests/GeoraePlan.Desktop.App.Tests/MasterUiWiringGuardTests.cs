@@ -138,6 +138,35 @@ public sealed class MasterUiWiringGuardTests
     }
 
     [Fact]
+    public void RentalCustomerOnboardingWindow_UsesSameDisplayItemAndIncludedAssetTerminology()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var xaml = ReadAppFile(appRoot, "Views", "RentalCustomerOnboardingWindow.xaml");
+        var viewModel = ReadAppFile(appRoot, "ViewModels", "RentalCustomerOnboardingViewModel.cs");
+
+        AssertContainsAll(
+            xaml,
+            "표시품목/장비 연결",
+            "표시 라인 추가",
+            "선택 표시 라인 삭제",
+            "선택 장비를 내부 포함 장비로 연결",
+            "청구서 표시 품목은 거래명세서/청구서에 인쇄될 출력 라인입니다.",
+            "실제 청구/전표 대상 자산은 표시 라인에 연결한 내부 포함 장비만 적용됩니다.",
+            "표시 품목명",
+            "내부 포함 장비",
+            "표시품목/내부 포함 장비 요약",
+            "실제 청구 대상 내부 포함 장비",
+            "실제 청구/전표 대상이 됩니다.");
+
+        AssertContainsAll(
+            viewModel,
+            "청구서 표시 품목(거래명세서 출력 라인)을 선택하면 실제 청구할 내부 포함 장비를 연결할 수 있습니다.",
+            "현재 표시 라인의 내부 포함 장비로 연결하세요.",
+            "표시 품목명만 저장해도 자산은 자동 추가되지 않습니다.",
+            "현재 표시 라인의 내부 포함 장비로 연결할 수 있습니다.");
+    }
+
+    [Fact]
     public void InventoryWindow_ItemActionsUseScopedItemCommandsAndGuardedServices()
     {
         var appRoot = FindDesktopAppRoot();
