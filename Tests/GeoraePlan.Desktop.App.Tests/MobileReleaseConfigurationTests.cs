@@ -70,10 +70,16 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("var baseUrl = _settings.GetBaseUrl();", apiClientSource, StringComparison.Ordinal);
         Assert.Contains("nameof(SettingsViewModel.BaseUrl)", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("nameof(SettingsViewModel.IsConnectionSettingsVisible)", settingsPageSource, StringComparison.Ordinal);
+        Assert.Contains("nameof(SettingsViewModel.CanEditConnectionSettings)", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("고급 연결 설정", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("연결 테스트", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("운영 서버로 초기화", settingsPageSource, StringComparison.Ordinal);
-        Assert.Contains("ToggleConnectionSettingsCommand = new AsyncCommand(", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("OpenAdvancedConnectionSettingsAsync", settingsPageSource, StringComparison.Ordinal);
+        Assert.Contains("DisplayAlert(", settingsPageSource, StringComparison.Ordinal);
+        Assert.Contains("ToggleConnectionSettingsCommand = new AsyncCommand(ToggleConnectionSettingsAsync, () => CanEditConnectionSettings);", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("CanEditConnectionSettings = session.CanEditSettings;", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("if (!EnsureCanEditConnectionSettings())", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("고급 연결 설정은 관리자 또는 Settings.Edit 권한 계정만 사용할 수 있습니다.", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("TestConnectionCommand = new AsyncCommand(TestConnectionAsync", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("ResetConnectionCommand = new AsyncCommand(ResetConnectionAsync);", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("StatusMessage = \"저장 전 연결 테스트 중...\";", settingsViewModelSource, StringComparison.Ordinal);

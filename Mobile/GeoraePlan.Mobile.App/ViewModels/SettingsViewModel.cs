@@ -25,6 +25,7 @@ public sealed class SettingsViewModel : ObservableObject
     private bool _isTestingConnection;
     private bool _canViewIntegrityReport;
     private bool _canManageRecycleBin;
+    private bool _canEditConnectionSettings;
 
     public SettingsViewModel(
         SettingsService settings,
@@ -39,7 +40,7 @@ public sealed class SettingsViewModel : ObservableObject
         SaveCommand = new AsyncCommand(SaveAsync);
         TestConnectionCommand = new AsyncCommand(TestConnectionAsync, () => !IsTestingConnection);
         ResetConnectionCommand = new AsyncCommand(ResetConnectionAsync);
-        ToggleConnectionSettingsCommand = new AsyncCommand(ToggleConnectionSettingsAsync);
+        ToggleConnectionSettingsCommand = new AsyncCommand(ToggleConnectionSettingsAsync, () => CanEditConnectionSettings);
         LogoutCommand = new AsyncCommand(LogoutAsync);
         CheckForUpdatesCommand = new AsyncCommand(CheckForUpdatesAsync);
         InstallUpdateCommand = new AsyncCommand(InstallUpdateAsync);
@@ -135,6 +136,16 @@ public sealed class SettingsViewModel : ObservableObject
         set => SetProperty(ref _canManageRecycleBin, value);
     }
 
+    public bool CanEditConnectionSettings
+    {
+        get => _canEditConnectionSettings;
+        set
+        {
+            if (SetProperty(ref _canEditConnectionSettings, value))
+                ToggleConnectionSettingsCommand.NotifyCanExecuteChanged();
+        }
+    }
+
     public AsyncCommand SaveCommand { get; }
     public AsyncCommand TestConnectionCommand { get; }
     public AsyncCommand ResetConnectionCommand { get; }
@@ -156,6 +167,9 @@ public sealed class SettingsViewModel : ObservableObject
         var session = _sessionStore.GetSnapshot();
         CanViewIntegrityReport = session.CanViewIntegrityReport;
         CanManageRecycleBin = session.CanManageRecycleBin;
+        CanEditConnectionSettings = session.CanEditSettings;
+        if (!CanEditConnectionSettings)
+            IsConnectionSettingsVisible = false;
         IntegrityAccessText = CanViewIntegrityReport
             ? "운영 서버 무결성 결과를 읽기 전용으로 확인할 수 있습니다."
             : "운영점검은 관리자 또는 Settings.Edit 권한 계정만 사용할 수 있습니다.";
@@ -164,6 +178,9 @@ public sealed class SettingsViewModel : ObservableObject
 
     public async Task SaveAsync()
     {
+        if (!EnsureCanEditConnectionSettings())
+            return;
+
         if (IsTestingConnection)
             return;
 
@@ -201,6 +218,9 @@ public sealed class SettingsViewModel : ObservableObject
 
     public async Task ResetConnectionAsync()
     {
+        if (!EnsureCanEditConnectionSettings())
+            return;
+
         await _settings.ResetBaseUrlAsync();
         BaseUrl = _settings.GetDefaultBaseUrl();
         RefreshConnectionModeText();
@@ -209,6 +229,9 @@ public sealed class SettingsViewModel : ObservableObject
 
     public async Task TestConnectionAsync()
     {
+        if (!EnsureCanEditConnectionSettings())
+            return;
+
         if (IsTestingConnection)
             return;
 
@@ -239,10 +262,25 @@ public sealed class SettingsViewModel : ObservableObject
 
     private Task ToggleConnectionSettingsAsync()
     {
+        if (!EnsureCanEditConnectionSettings())
+            return Task.CompletedTask;
+
         IsConnectionSettingsVisible = !IsConnectionSettingsVisible;
         if (IsConnectionSettingsVisible)
             StatusMessage = "고급 연결 설정은 현장 터널/테스트 서버 확인 때만 사용하세요.";
+        else
+            StatusMessage = "고급 연결 설정을 닫았습니다.";
         return Task.CompletedTask;
+    }
+
+    private bool EnsureCanEditConnectionSettings()
+    {
+        if (CanEditConnectionSettings)
+            return true;
+
+        IsConnectionSettingsVisible = false;
+        StatusMessage = "고급 연결 설정은 관리자 또는 Settings.Edit 권한 계정만 사용할 수 있습니다.";
+        return false;
     }
 
     public async Task InstallUpdateAsync()

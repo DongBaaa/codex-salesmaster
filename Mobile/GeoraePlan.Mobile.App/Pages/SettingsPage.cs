@@ -59,12 +59,16 @@ public sealed class SettingsPage : ContentPage
         connectionModeLabel.SetBinding(Label.TextProperty, nameof(SettingsViewModel.ConnectionModeText));
 
         var advancedConnectionButton = GeoraePlanTheme.CreateButton("고급 연결 설정", GeoraePlanTheme.SecondaryButton);
-        advancedConnectionButton.SetBinding(Button.CommandProperty, nameof(SettingsViewModel.ToggleConnectionSettingsCommand));
+        advancedConnectionButton.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.CanEditConnectionSettings));
+        advancedConnectionButton.SetBinding(VisualElement.IsEnabledProperty, nameof(SettingsViewModel.CanEditConnectionSettings));
+        advancedConnectionButton.Clicked += (_, _) =>
+            MobileErrorHandler.FireAndForget(OpenAdvancedConnectionSettingsAsync, "고급 연결 설정 열기");
 
         var baseUrlEntry = GeoraePlanTheme.CreateEntry("https://trade.2884.kr 또는 터널 URL");
         baseUrlEntry.Keyboard = Keyboard.Url;
         baseUrlEntry.SetBinding(Entry.TextProperty, nameof(SettingsViewModel.BaseUrl));
         baseUrlEntry.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.IsConnectionSettingsVisible));
+        baseUrlEntry.SetBinding(VisualElement.IsEnabledProperty, nameof(SettingsViewModel.CanEditConnectionSettings));
 
         var connectionHelpLabel = GeoraePlanTheme.CreateBodyText(
             "현장 터널/테스트 서버가 필요할 때만 변경하세요. 연결 테스트가 성공해야 저장되며, 접속 오류가 나면 운영 서버로 초기화할 수 있습니다.",
@@ -76,14 +80,17 @@ public sealed class SettingsPage : ContentPage
         saveConnectionButton.TextColor = Colors.Black;
         saveConnectionButton.SetBinding(Button.CommandProperty, nameof(SettingsViewModel.SaveCommand));
         saveConnectionButton.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.IsConnectionSettingsVisible));
+        saveConnectionButton.SetBinding(VisualElement.IsEnabledProperty, nameof(SettingsViewModel.CanEditConnectionSettings));
 
         var testConnectionButton = GeoraePlanTheme.CreateButton("연결 테스트", GeoraePlanTheme.Purple);
         testConnectionButton.SetBinding(Button.CommandProperty, nameof(SettingsViewModel.TestConnectionCommand));
         testConnectionButton.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.IsConnectionSettingsVisible));
+        testConnectionButton.SetBinding(VisualElement.IsEnabledProperty, nameof(SettingsViewModel.CanEditConnectionSettings));
 
         var resetConnectionButton = GeoraePlanTheme.CreateButton("운영 서버로 초기화", GeoraePlanTheme.Brown);
         resetConnectionButton.SetBinding(Button.CommandProperty, nameof(SettingsViewModel.ResetConnectionCommand));
         resetConnectionButton.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.IsConnectionSettingsVisible));
+        resetConnectionButton.SetBinding(VisualElement.IsEnabledProperty, nameof(SettingsViewModel.CanEditConnectionSettings));
 
         Content = new ScrollView
         {
@@ -152,6 +159,33 @@ await _viewModel.LoadAsync();
         value.SetBinding(Label.TextProperty, bindingPath);
         grid.Add(value, 1, 0);
         return grid;
+    }
+
+    private async Task OpenAdvancedConnectionSettingsAsync()
+    {
+        if (!_viewModel.CanEditConnectionSettings)
+        {
+            _viewModel.StatusMessage = "고급 연결 설정은 관리자 또는 Settings.Edit 권한 계정만 사용할 수 있습니다.";
+            await DisplayAlert("권한 확인", _viewModel.StatusMessage, "확인");
+            return;
+        }
+
+        if (!_viewModel.IsConnectionSettingsVisible)
+        {
+            var confirmed = await DisplayAlert(
+                "고급 연결 설정",
+                "운영 서버 URL을 잘못 변경하면 앱 접속이 중단될 수 있습니다. 관리자 안내를 받은 경우에만 계속하세요.",
+                "계속",
+                "취소");
+
+            if (!confirmed)
+            {
+                _viewModel.StatusMessage = "고급 연결 설정 열기를 취소했습니다.";
+                return;
+            }
+        }
+
+        await _viewModel.ToggleConnectionSettingsCommand.ExecuteAsync();
     }
 
     private static void HandleLoggedOut()
