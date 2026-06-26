@@ -52,11 +52,12 @@
 - [x] 관리자 전용 UI 기본 비활성화/숨김 반영 (사용자 관리, 재고이동, 지점 제한 등)
 - [ ] 지점/권한 정책을 전표 저장/조회/수정 전 구간으로 확장
   - [x] PC/서버 핵심 범위 회귀: 전표 저장 scope, 로컬 운영 scope, 공유 dirty 권한, 마스터 CRUD scope, 휴지통 scope, office scope/paging, sync push coverage
-  - [ ] Android 실기기/에뮬레이터 기준 조회/저장/동기화/권한 거부 E2E
+  - [x] Android 에뮬레이터 기준 조회/저장/동기화/권한 거부 E2E
     - [x] 에뮬레이터 로컬 테스트 서버 조회/초안/동기화 smoke PASS(mobile-smoke-20260626-205314, mobile-smoke-20260626-205501)
     - [x] 에뮬레이터 로컬 테스트 서버 저장 성공/저장 거부/dirty push E2E PASS(mobile-write-e2e-20260626-210155, mobile-write-e2e-20260626-210415, mobile-write-e2e-20260626-210634, mobile-write-e2e-20260626-210854, mobile-payment-e2e-sales-20260626-211141, mobile-payment-e2e-purchase-20260626-211401, mobile-payment-e2e-sales-20260626-211621)
     - [x] 에뮬레이터 로컬 테스트 서버 권한 거부 403 E2E PASS(mobile-write-e2e-20260626-212730, mobile-payment-e2e-sales-20260626-212953)
-    - [ ] 운영망/실기기 기준 권한 거부 E2E 증거 누적
+    - [x] 2026-06-27 에뮬레이터 로컬 테스트 서버 재검증 PASS: smoke+권장 동기화(`mobile-smoke-20260627-020200`), 판매/구매 전표 저장(`mobile-write-e2e-20260627-020402`, `mobile-write-e2e-20260627-020608`), 판매/구매 수금·지급(`mobile-payment-e2e-sales-20260627-020813`, `mobile-payment-e2e-purchase-20260627-021011`), 판매 dirty push(`mobile-write-e2e-20260627-021209`), 403 권한 거부/dirty 0건(`mobile-write-e2e-20260627-021427`), 수금 stale revision 충돌(`mobile-payment-e2e-sales-20260627-021638`).
+    - [ ] 운영망/실기기 기준 장시간 실행·재로그인·권한 거부 E2E 증거 누적
   - [x] 전체 업무 화면별 수동 QA 체크리스트 정례화
   - [ ] 전체 업무 화면별 실제 수동 QA 증거 누적
 - [x] 세션 만료 자동 재로그인/갱신 및 401 후 재시도
@@ -144,3 +145,14 @@
 - [x] Android 에뮬레이터 UI-tree 기준으로 0.2.73 설정 화면, 고급 연결 설정, 저장 버튼, “연결 테스트 성공 후 운영 서버 기본 연결로 저장했습니다.” 메시지를 확인했습니다.
 - [x] 검증: Android 설정 source guard 87/87 PASS, Android Debug build PASS, Android smoke PASS(`mobile-smoke-20260626-231832.md`), 전체 데스크톱 테스트 747/747 PASS.
 - [x] Android 0.2.73 / version code 184 signed APK, stable 업데이트 manifest, live 배포 완료(`20260626-android-save-preflight-v073`).
+
+### 2026-06-27 Android 에뮬레이터 핵심 E2E 재검증 증거
+- [x] Android 환경 점검 PASS: dotnet, `maui-android`, JDK/keytool, Android SDK/adb, Android Studio 확인.
+- [x] 에뮬레이터 `Medium_Phone_API_36.1` 부팅 및 adb 연결 확인 후 검증했습니다.
+- [x] 로컬 격리 테스트 API `http://127.0.0.1:19080` healthz/readyz 정상 상태에서 모바일 앱의 `http://10.0.2.2:19080` 연결로 로그인·조회·동기화 smoke PASS: `D:\거래플랜\테스트 시행\evidence\android-smoke-20260627-020159\mobile-smoke-20260627-020200.md`.
+- [x] 판매/구매 전표 작성 후 서버 저장·재조회 PASS: `D:\거래플랜\테스트 시행\evidence\android-write-sales-20260627-020402\mobile-write-e2e-20260627-020402.md`, `D:\거래플랜\테스트 시행\evidence\android-write-purchase-20260627-020608\mobile-write-e2e-20260627-020608.md`.
+- [x] 판매 수금/구매 지급 저장 후 서버 재조회 PASS: `D:\거래플랜\테스트 시행\evidence\android-payment-sales-20260627-020813\mobile-payment-e2e-sales-20260627-020813.md`, `D:\거래플랜\테스트 시행\evidence\android-payment-purchase-20260627-021010\mobile-payment-e2e-purchase-20260627-021011.md`.
+- [x] 모바일 판매전표 오프라인 dirty 저장 후 수동 동기화 push PASS: `D:\거래플랜\테스트 시행\evidence\android-write-sales-offline-20260627-021209\mobile-write-e2e-20260627-021209.md`.
+- [x] 403 권한/범위 거부 시 서버 미생성 및 dirty 0건 PASS: `D:\거래플랜\테스트 시행\evidence\android-write-sales-403-20260627-021427\mobile-write-e2e-20260627-021427.md`.
+- [x] 수금 stale invoice revision 충돌 시 저장 거부/서버 미반영 PASS: `D:\거래플랜\테스트 시행\evidence\android-payment-stale-sales-20260627-021637\mobile-payment-e2e-sales-20260627-021638.md`.
+- [ ] 실기기·운영망·장시간 실행·재로그인 증거는 운영망/기기 조건이 필요하므로 후속 미완료로 유지합니다.

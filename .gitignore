@@ -102,6 +102,7 @@ temp/
 양식/
 자료기간별 조회/
 테스트 시행/실행환경/
+테스트 시행/evidence/
 Server/거래플랜.Server.Api/Data/Seeds/rental-assignment-history-workbook-seed.json
 
 # Private/publication cleanup
