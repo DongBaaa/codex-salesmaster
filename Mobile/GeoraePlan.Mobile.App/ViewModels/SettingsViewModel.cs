@@ -26,6 +26,7 @@ public sealed class SettingsViewModel : ObservableObject
     private bool _canViewIntegrityReport;
     private bool _canManageRecycleBin;
     private bool _canEditConnectionSettings;
+    private bool _hasCustomBaseUrl;
 
     public SettingsViewModel(
         SettingsService settings,
@@ -146,6 +147,12 @@ public sealed class SettingsViewModel : ObservableObject
         }
     }
 
+    public bool HasCustomBaseUrl
+    {
+        get => _hasCustomBaseUrl;
+        set => SetProperty(ref _hasCustomBaseUrl, value);
+    }
+
     public AsyncCommand SaveCommand { get; }
     public AsyncCommand TestConnectionCommand { get; }
     public AsyncCommand ResetConnectionCommand { get; }
@@ -218,9 +225,6 @@ public sealed class SettingsViewModel : ObservableObject
 
     public async Task ResetConnectionAsync()
     {
-        if (!EnsureCanEditConnectionSettings())
-            return;
-
         await _settings.ResetBaseUrlAsync();
         BaseUrl = _settings.GetDefaultBaseUrl();
         RefreshConnectionModeText();
@@ -363,6 +367,7 @@ public sealed class SettingsViewModel : ObservableObject
 
     private void RefreshConnectionModeText()
     {
+        HasCustomBaseUrl = _settings.HasCustomBaseUrl();
         ConnectionModeText = _settings.HasCustomBaseUrl()
             ? $"고급 연결 사용 중: {_settings.GetBaseUrl()}"
             : $"운영 서버 기본 연결: {_settings.GetDefaultBaseUrl()}";

@@ -43,12 +43,24 @@ public sealed class MobileReleaseConfigurationTests
             "GeoraePlan.Mobile.App",
             "Pages",
             "SettingsPage.cs"));
+        var loginPageSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Pages",
+            "LoginPage.cs"));
         var settingsViewModelSource = File.ReadAllText(Path.Combine(
             root,
             "Mobile",
             "GeoraePlan.Mobile.App",
             "ViewModels",
             "SettingsViewModel.cs"));
+        var loginViewModelSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "LoginViewModel.cs"));
         var connectionTestServiceSource = File.ReadAllText(Path.Combine(
             root,
             "Mobile",
@@ -71,6 +83,8 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("nameof(SettingsViewModel.BaseUrl)", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("nameof(SettingsViewModel.IsConnectionSettingsVisible)", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("nameof(SettingsViewModel.CanEditConnectionSettings)", settingsPageSource, StringComparison.Ordinal);
+        Assert.Contains("nameof(SettingsViewModel.HasCustomBaseUrl)", settingsPageSource, StringComparison.Ordinal);
+        Assert.Contains("safeResetConnectionButton", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("고급 연결 설정", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("연결 테스트", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("운영 서버로 초기화", settingsPageSource, StringComparison.Ordinal);
@@ -78,10 +92,13 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("DisplayAlert(", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("ToggleConnectionSettingsCommand = new AsyncCommand(ToggleConnectionSettingsAsync, () => CanEditConnectionSettings);", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("CanEditConnectionSettings = session.CanEditSettings;", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("public bool HasCustomBaseUrl", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("HasCustomBaseUrl = _settings.HasCustomBaseUrl();", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("if (!EnsureCanEditConnectionSettings())", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("고급 연결 설정은 관리자 또는 Settings.Edit 권한 계정만 사용할 수 있습니다.", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("TestConnectionCommand = new AsyncCommand(TestConnectionAsync", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("ResetConnectionCommand = new AsyncCommand(ResetConnectionAsync);", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("await _settings.ResetBaseUrlAsync();", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("StatusMessage = \"저장 전 연결 테스트 중...\";", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("if (!result.IsSuccess)", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("StatusMessage = $\"저장 중단: {result.Message}\";", settingsViewModelSource, StringComparison.Ordinal);
@@ -90,6 +107,14 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("new Uri(new Uri(normalizedBaseUrl.TrimEnd('/') + \"/\"), \"healthz\")", connectionTestServiceSource, StringComparison.Ordinal);
         Assert.Contains("ConnectionTestTimeout = TimeSpan.FromSeconds(8)", connectionTestServiceSource, StringComparison.Ordinal);
         Assert.Contains("builder.Services.AddSingleton<MobileConnectionTestService>();", mauiProgramSource, StringComparison.Ordinal);
+
+        Assert.Contains("nameof(LoginViewModel.ConnectionModeText)", loginPageSource, StringComparison.Ordinal);
+        Assert.Contains("nameof(LoginViewModel.ResetConnectionCommand)", loginPageSource, StringComparison.Ordinal);
+        Assert.Contains("nameof(LoginViewModel.HasCustomBaseUrl)", loginPageSource, StringComparison.Ordinal);
+        Assert.Contains("ResetConnectionCommand = new AsyncCommand(ResetConnectionAsync);", loginViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("public bool HasCustomBaseUrl", loginViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("await _settings.ResetBaseUrlAsync();", loginViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("ConnectionModeText = HasCustomBaseUrl", loginViewModelSource, StringComparison.Ordinal);
     }
 
     [Fact]

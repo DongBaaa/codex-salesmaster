@@ -65,6 +65,14 @@ public sealed class LoginPage : ContentPage
         var loginButton = GeoraePlanTheme.CreateButton("로그인", GeoraePlanTheme.Accent);
         loginButton.SetBinding(Button.CommandProperty, nameof(LoginViewModel.LoginCommand));
 
+        var connectionModeLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: true, fontSize: 12);
+        connectionModeLabel.SetBinding(Label.TextProperty, nameof(LoginViewModel.ConnectionModeText));
+
+        var resetConnectionButton = GeoraePlanTheme.CreateButton("운영 서버로 초기화", GeoraePlanTheme.Brown);
+        resetConnectionButton.SetBinding(Button.CommandProperty, nameof(LoginViewModel.ResetConnectionCommand));
+        resetConnectionButton.SetBinding(VisualElement.IsVisibleProperty, nameof(LoginViewModel.HasCustomBaseUrl));
+        resetConnectionButton.SetBinding(VisualElement.IsEnabledProperty, nameof(LoginViewModel.HasCustomBaseUrl));
+
         var activity = new ActivityIndicator { Color = GeoraePlanTheme.Accent };
         activity.SetBinding(ActivityIndicator.IsRunningProperty, nameof(LoginViewModel.IsBusy));
         activity.SetBinding(ActivityIndicator.IsVisibleProperty, nameof(LoginViewModel.IsBusy));
@@ -102,6 +110,8 @@ public sealed class LoginPage : ContentPage
                         passwordEntry,
                         rememberGrid,
                         loginButton,
+                        connectionModeLabel,
+                        resetConnectionButton,
                         activity,
                         statusLabel)
                 }

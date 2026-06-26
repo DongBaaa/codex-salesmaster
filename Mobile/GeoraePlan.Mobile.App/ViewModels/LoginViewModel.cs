@@ -10,10 +10,12 @@ public sealed class LoginViewModel : ObservableObject
     private readonly GeoraePlanApiClient _api;
 
     private string _baseUrl = string.Empty;
+    private string _connectionModeText = string.Empty;
     private string _username = string.Empty;
     private string _password = string.Empty;
     private string _statusMessage = "아이디와 비밀번호를 입력하세요.";
     private bool _isBusy;
+    private bool _hasCustomBaseUrl;
     private bool _rememberUsername = true;
     private bool _rememberPassword;
 
@@ -23,6 +25,7 @@ public sealed class LoginViewModel : ObservableObject
         _sessionStore = sessionStore;
         _api = api;
         LoginCommand = new AsyncCommand(LoginAsync);
+        ResetConnectionCommand = new AsyncCommand(ResetConnectionAsync);
     }
 
     public event Action? LoginSucceeded;
@@ -31,6 +34,12 @@ public sealed class LoginViewModel : ObservableObject
     {
         get => _baseUrl;
         set => SetProperty(ref _baseUrl, value);
+    }
+
+    public string ConnectionModeText
+    {
+        get => _connectionModeText;
+        set => SetProperty(ref _connectionModeText, value);
     }
 
     public string Username
@@ -71,6 +80,12 @@ public sealed class LoginViewModel : ObservableObject
         }
     }
 
+    public bool HasCustomBaseUrl
+    {
+        get => _hasCustomBaseUrl;
+        set => SetProperty(ref _hasCustomBaseUrl, value);
+    }
+
     public string StatusMessage
     {
         get => _statusMessage;
@@ -84,10 +99,11 @@ public sealed class LoginViewModel : ObservableObject
     }
 
     public AsyncCommand LoginCommand { get; }
+    public AsyncCommand ResetConnectionCommand { get; }
 
     public async Task InitializeAsync()
     {
-        BaseUrl = _settings.GetBaseUrl();
+        RefreshConnectionMode();
         RememberUsername = _settings.GetRememberUsername();
         RememberPassword = _settings.GetRememberPassword();
         Username = RememberUsername ? _settings.GetLastUsername() : string.Empty;
@@ -139,5 +155,24 @@ public sealed class LoginViewModel : ObservableObject
             if (!RememberPassword)
                 Password = string.Empty;
         }
+    }
+
+    public async Task ResetConnectionAsync()
+    {
+        if (IsBusy)
+            return;
+
+        await _settings.ResetBaseUrlAsync();
+        RefreshConnectionMode();
+        StatusMessage = "운영 서버 기본 연결로 초기화했습니다. 다시 로그인하세요.";
+    }
+
+    private void RefreshConnectionMode()
+    {
+        BaseUrl = _settings.GetBaseUrl();
+        HasCustomBaseUrl = _settings.HasCustomBaseUrl();
+        ConnectionModeText = HasCustomBaseUrl
+            ? $"고급 연결 URL 사용 중: {BaseUrl}"
+            : $"운영 서버 기본 연결: {BaseUrl}";
     }
 }

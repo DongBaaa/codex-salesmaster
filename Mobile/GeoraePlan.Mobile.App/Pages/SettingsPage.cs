@@ -58,6 +58,11 @@ public sealed class SettingsPage : ContentPage
         var connectionModeLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false);
         connectionModeLabel.SetBinding(Label.TextProperty, nameof(SettingsViewModel.ConnectionModeText));
 
+        var safeResetConnectionButton = GeoraePlanTheme.CreateButton("운영 서버 연결 복구", GeoraePlanTheme.Brown);
+        safeResetConnectionButton.SetBinding(Button.CommandProperty, nameof(SettingsViewModel.ResetConnectionCommand));
+        safeResetConnectionButton.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.HasCustomBaseUrl));
+        safeResetConnectionButton.SetBinding(VisualElement.IsEnabledProperty, nameof(SettingsViewModel.HasCustomBaseUrl));
+
         var advancedConnectionButton = GeoraePlanTheme.CreateButton("고급 연결 설정", GeoraePlanTheme.SecondaryButton);
         advancedConnectionButton.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.CanEditConnectionSettings));
         advancedConnectionButton.SetBinding(VisualElement.IsEnabledProperty, nameof(SettingsViewModel.CanEditConnectionSettings));
@@ -104,6 +109,7 @@ public sealed class SettingsPage : ContentPage
                         GeoraePlanTheme.CreateSectionTitle("앱 설정"),
                         GeoraePlanTheme.CreateBodyText("모바일 앱은 기본적으로 거래플랜 운영 서버에 연결됩니다."),
                         connectionModeLabel,
+                        safeResetConnectionButton,
                         advancedConnectionButton,
                         baseUrlEntry,
                         connectionHelpLabel,
