@@ -355,6 +355,8 @@ public sealed class MasterUiWiringGuardTests
             "ExpectedConcurrencyStamp = string.IsNullOrWhiteSpace(_editConcurrencyStamp)",
             "saveResult.ConcurrencyConflict",
             "saveResult.PermissionDenied",
+            ".GroupBy(row => row.Id)",
+            ".Select(group => group.First())",
             "await _local.DeleteInvoiceAsync(row.Id, _session, row.Revision)",
             "result.ConcurrencyConflict ? \"동시 수정 충돌\" : result.PermissionDenied ? \"권한 없음\" : \"삭제 실패\"",
             "var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));");
