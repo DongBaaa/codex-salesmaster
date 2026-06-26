@@ -467,9 +467,25 @@ public sealed class RentalBillingRunStateTests
             var bundleAssetId = Guid.NewGuid();
             var individualAssetIds = new[] { Guid.NewGuid(), Guid.NewGuid() };
             db.Customers.Add(CreateCustomer(customerId, customerName));
-            db.RentalAssets.Add(CreateRentalAsset(bundleAssetId, customerName, profileId));
-            foreach (var assetId in individualAssetIds)
-                db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
+
+            var bundleAsset = CreateRentalAsset(bundleAssetId, customerName, profileId);
+            bundleAsset.ItemName = "IMC2000";
+            bundleAsset.ManagementNumber = "BUNDLE-MN";
+            bundleAsset.MachineNumber = "BUNDLE-SN";
+            bundleAsset.MonthlyFee = 30_000m;
+
+            var firstIndividualAsset = CreateRentalAsset(individualAssetIds[0], customerName, profileId);
+            firstIndividualAsset.ItemName = "IMC2010";
+            firstIndividualAsset.ManagementNumber = "IND-A";
+            firstIndividualAsset.MachineNumber = "IND-SN-A";
+            firstIndividualAsset.MonthlyFee = 80_000m;
+
+            var secondIndividualAsset = CreateRentalAsset(individualAssetIds[1], customerName, profileId);
+            secondIndividualAsset.ItemName = "IMC2010";
+            secondIndividualAsset.ManagementNumber = "IND-B";
+            secondIndividualAsset.MachineNumber = "IND-SN-B";
+            secondIndividualAsset.MonthlyFee = 120_000m;
+            db.RentalAssets.AddRange(bundleAsset, firstIndividualAsset, secondIndividualAsset);
 
             var profile = CreateBillingProfile(profileId, [bundleAssetId, .. individualAssetIds], customerName, customerId);
             profile.BillingType = "혼합";
@@ -483,6 +499,7 @@ public sealed class RentalBillingRunStateTests
                     BillingLineMode = "묶음",
                     RepresentativeAssetId = bundleAssetId,
                     Quantity = 1m,
+                    Unit = "식",
                     UnitPrice = 30_000m,
                     Amount = 30_000m,
                     IncludedAssetIds = [bundleAssetId]
@@ -491,7 +508,8 @@ public sealed class RentalBillingRunStateTests
                 {
                     DisplayItemName = "Individual device fee",
                     BillingLineMode = "개별",
-                    Quantity = 1m,
+                    Quantity = 2m,
+                    Unit = "대",
                     UnitPrice = 100_000m,
                     Amount = 200_000m,
                     IncludedAssetIds = individualAssetIds.ToList()
@@ -518,23 +536,54 @@ public sealed class RentalBillingRunStateTests
 
             Assert.Equal(4, orderedLines.Count);
             Assert.Equal(Enumerable.Range(1, 4), orderedLines.Select(line => line.OrderIndex));
+            Assert.Equal(
+                new[]
+                {
+                    "사무기기 렌탈대금[5월]",
+                    "사무기기 렌탈대금[6월]",
+                    "사무기기 렌탈대금[5월]",
+                    "사무기기 렌탈대금[6월]"
+                },
+                orderedLines.Select(line => line.ItemNameOriginal));
             Assert.All(orderedLines, line =>
                 Assert.Contains("사무기기 렌탈대금", line.ItemNameOriginal, StringComparison.Ordinal));
             Assert.All(orderedLines.Take(2), line =>
             {
+                Assert.Equal("IMC2000", line.SpecificationOriginal);
+                Assert.Equal("식", line.Unit);
+                Assert.Equal(1m, line.Quantity);
+                Assert.Equal(30_000m, line.UnitPrice);
                 Assert.Equal(30_000m, line.LineAmount);
+                Assert.Equal("BUNDLE-MN", line.MaterialNumber);
+                Assert.Equal("BUNDLE-SN", line.SerialNumber);
             });
             Assert.All(orderedLines.Skip(2), line =>
             {
+                Assert.Equal("IMC2010", line.SpecificationOriginal);
+                Assert.Equal("대", line.Unit);
                 Assert.Equal(2m, line.Quantity);
+                Assert.Equal(100_000m, line.UnitPrice);
                 Assert.Equal(200_000m, line.LineAmount);
+                Assert.Equal("IND-A 외 1건", line.MaterialNumber);
+                Assert.Equal("IND-SN-A 외 1건", line.SerialNumber);
             });
             Assert.Equal(460_000m, invoice.TotalAmount);
 
             var persisted = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(current => current.Id == profileId);
             var run = Assert.Single(DeserializeRuns(persisted.BillingRunsJson));
+            Assert.Equal(2, run.Items.Count);
             Assert.Equal("묶음", run.Items[0].BillingLineMode);
+            Assert.Equal("Bundle support fee", run.Items[0].DisplayItemName);
+            Assert.Equal(1m, run.Items[0].Quantity);
+            Assert.Equal(30_000m, run.Items[0].Amount);
+            Assert.Equal([bundleAssetId], run.Items[0].IncludedAssetIds);
             Assert.Equal("개별", run.Items[1].BillingLineMode);
+            Assert.Equal("Individual device fee", run.Items[1].DisplayItemName);
+            Assert.Equal(2m, run.Items[1].Quantity);
+            Assert.Equal(200_000m, run.Items[1].Amount);
+            Assert.Equal(
+                individualAssetIds.OrderBy(id => id),
+                run.Items[1].IncludedAssetIds.OrderBy(id => id));
         }
         finally
         {
