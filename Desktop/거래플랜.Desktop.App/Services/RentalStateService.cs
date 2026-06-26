@@ -9944,24 +9944,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     session,
                     ct);
 
-                if (billingAssetCandidates.Count == 1 || CanAutoLinkAllBillingCandidates(profile.CustomerId, billingAssetCandidates))
-                {
-                    templateItem.IncludedAssetIds ??= new List<Guid>();
-                    foreach (var candidateAsset in billingAssetCandidates)
-                    {
-                        if (!templateItem.IncludedAssetIds.Contains(candidateAsset.Id))
-                            templateItem.IncludedAssetIds.Add(candidateAsset.Id);
-
-                        if (!assetsById.ContainsKey(candidateAsset.Id))
-                            assetsById[candidateAsset.Id] = candidateAsset;
-                    }
-
-                    templateAssetIds = templateItem.IncludedAssetIds
-                        .Where(id => id != Guid.Empty)
-                        .Distinct()
-                        .ToList();
-                }
-
                 if (templateAssetIds.Count == 0 && billingAssetCandidates.Count > 0)
                 {
                     return (false,
@@ -10278,15 +10260,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
     {
         var normalized = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(displayItemName ?? string.Empty);
         return string.IsNullOrWhiteSpace(normalized) ? "렌탈 임대료" : normalized;
-    }
-
-    private static bool CanAutoLinkAllBillingCandidates(Guid? customerId, IReadOnlyCollection<LocalRentalAsset> candidates)
-    {
-        if (!customerId.HasValue || customerId.Value == Guid.Empty || candidates.Count <= 1)
-            return false;
-
-        var expectedCustomerId = customerId.Value;
-        return candidates.All(asset => asset.CustomerId == expectedCustomerId);
     }
 
     private static List<DateOnly> BuildBillingMonths(RentalBillingRunModel run)

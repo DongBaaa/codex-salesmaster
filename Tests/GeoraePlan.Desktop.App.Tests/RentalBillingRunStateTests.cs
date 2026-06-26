@@ -808,6 +808,81 @@ public sealed class RentalBillingRunStateTests
         }
     }
 
+    [Fact]
+    public async Task StartBilling_DoesNotAutoSelectUnlinkedCandidateAssets()
+    {
+        PrepareAppRoot("georaeplan-rental-start-no-auto-candidate-link");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var firstAssetId = Guid.NewGuid();
+            var secondAssetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "No auto candidate customer";
+
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+
+            var firstAsset = CreateRentalAsset(firstAssetId, customerName, profileId);
+            firstAsset.CustomerId = customerId;
+            firstAsset.BillingProfileId = null;
+            var secondAsset = CreateRentalAsset(secondAssetId, customerName, profileId);
+            secondAsset.CustomerId = customerId;
+            secondAsset.BillingProfileId = null;
+            db.RentalAssets.AddRange(firstAsset, secondAsset);
+
+            var profile = CreateBillingProfile(profileId, firstAssetId, customerName, customerId);
+            profile.BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    DisplayItemName = "Manual selection required",
+                    BillingLineMode = "묶음",
+                    Quantity = 1m,
+                    UnitPrice = 100_000m,
+                    Amount = 100_000m,
+                    IncludedAssetIds = []
+                }
+            });
+            db.RentalBillingProfiles.Add(profile);
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+
+            var result = await service.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+
+            Assert.False(result.Success);
+            Assert.Contains("연결된 설치장비가 없습니다", result.Message);
+            Assert.Empty(await db.Invoices.AsNoTracking().ToListAsync());
+
+            var storedAssets = await db.RentalAssets
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(asset => asset.Id == firstAssetId || asset.Id == secondAssetId)
+                .OrderBy(asset => asset.ManagementNumber)
+                .ToListAsync();
+            Assert.Equal(2, storedAssets.Count);
+            Assert.All(storedAssets, asset => Assert.Null(asset.BillingProfileId));
+
+            var storedProfile = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == profileId);
+            var storedTemplateItem = Assert.Single(DeserializeTemplateItems(storedProfile.BillingTemplateJson));
+            Assert.Empty(storedTemplateItem.IncludedAssetIds);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
