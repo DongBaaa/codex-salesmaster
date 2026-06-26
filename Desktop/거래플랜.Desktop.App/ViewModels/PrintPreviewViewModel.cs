@@ -51,7 +51,7 @@ public sealed partial class PrintPreviewViewModel : ObservableObject
             return;
 
         IsPrinting = true;
-        StatusMessage = "프린터 선택 창을 여는 중...";
+        StatusMessage = "거래플랜 인쇄창을 여는 중...";
 
         try
         {

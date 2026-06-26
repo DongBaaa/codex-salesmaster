@@ -92,20 +92,30 @@ public static class PrintPreviewHelper
                 isPrinting = true;
                 printButton.IsEnabled = false;
                 closeButton.IsEnabled = false;
-                description.Text = "프린터 선택 창을 여는 중...";
+                description.Text = "거래플랜 인쇄창을 여는 중...";
 
-                var dlg = new PrintDialog();
-                if (dlg.ShowDialog() != true)
+                ConfigureDocumentForA4(document);
+                if (!TradePrintExecutor.TryPrintDocument(
+                        document,
+                        jobName,
+                        new Size(A4Width, A4Height),
+                        out var errorMessage))
                 {
-                    description.Text = "인쇄를 취소했습니다.";
+                    if (string.IsNullOrWhiteSpace(errorMessage))
+                    {
+                        description.Text = "인쇄를 취소했습니다.";
+                        return;
+                    }
+
+                    description.Text = errorMessage;
+                    MessageBox.Show(
+                        errorMessage,
+                        "인쇄 오류",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
                     return;
                 }
 
-                ConfigureDocumentForA4(document);
-
-                var paginator = ((IDocumentPaginatorSource)document).DocumentPaginator;
-                paginator.PageSize = new Size(A4Width, A4Height);
-                dlg.PrintDocument(paginator, jobName);
                 printed = true;
                 description.Text = "인쇄를 완료했습니다.";
                 previewWindow.Close();

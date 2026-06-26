@@ -66,7 +66,7 @@ public sealed class SourceExceptionHandlingGuardTests
             "Desktop",
             "거래플랜.Desktop.App",
             "Services",
-            "WpfInvoicePrintService.cs"));
+            "TradePrintExecutor.cs"));
         Assert.Contains("AppLogger.Warn(\"PRINT\"", printService, StringComparison.Ordinal);
     }
 

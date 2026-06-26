@@ -109,53 +109,11 @@ public sealed class WpfInvoicePrintService : IPrintService
     public bool TryPrint(IDocumentPaginatorSource document, string jobName, out string? errorMessage)
     {
         ArgumentNullException.ThrowIfNull(document);
-        errorMessage = null;
-
-        try
-        {
-            using var printServer = new LocalPrintServer();
-            if (!printServer.GetPrintQueues(new[] { EnumeratedPrintQueueTypes.Local }).Any())
-            {
-                errorMessage = "설치된 프린터가 없습니다. 프린터를 먼저 설치하세요.";
-                return false;
-            }
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Warn("PRINT", $"프린터 목록 확인 실패: {ex.Message}");
-        }
-
-        try
-        {
-            var dialog = new PrintDialog();
-            if (dialog.ShowDialog() != true)
-                return false;
-
-            var paginator = document.DocumentPaginator;
-            paginator.PageSize = new Size(A4Width, A4Height);
-            dialog.PrintDocument(paginator, string.IsNullOrWhiteSpace(jobName) ? "전표 인쇄" : jobName);
-            return true;
-        }
-        catch (PrintQueueException ex)
-        {
-            errorMessage = $"프린터 오류: {ex.Message}";
-            return false;
-        }
-        catch (PrintSystemException ex)
-        {
-            errorMessage = $"인쇄 시스템 오류: {ex.Message}";
-            return false;
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            errorMessage = $"인쇄 권한 오류: {ex.Message}";
-            return false;
-        }
-        catch (Exception ex)
-        {
-            errorMessage = $"인쇄 중 오류가 발생했습니다: {ex.Message}";
-            return false;
-        }
+        return TradePrintExecutor.TryPrintDocument(
+            document,
+            string.IsNullOrWhiteSpace(jobName) ? "전표 인쇄" : jobName,
+            new Size(A4Width, A4Height),
+            out errorMessage);
     }
 
     private static bool IsPurchase(InvoicePrintModel model)
