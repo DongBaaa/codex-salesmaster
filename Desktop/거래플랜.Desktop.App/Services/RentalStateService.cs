@@ -11398,8 +11398,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Where(edit => edit is not null && edit.AssetId != Guid.Empty)
             .GroupBy(edit => edit.AssetId)
             .ToDictionary(group => group.Key, group => group.Last());
-        foreach (var assetId in assetLinkEditMap.Keys)
-            includedAssetIds.Add(assetId);
 
         var hasAssetLinkInstruction = includedAssetIds.Count > 0 || assetLinkEdits is not null;
         if (!hasAssetLinkInstruction)

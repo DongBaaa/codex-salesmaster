@@ -232,6 +232,107 @@ public sealed class RentalIncludedBillingAssetsTests
     }
 
     [Fact]
+    public async Task SaveBillingProfileAsync_DoesNotTreatAssetLinkEditAsSelection()
+    {
+        PrepareAppRoot("georaeplan-rental-included-assets-edit-not-selection");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("f2311000-1111-4444-8888-000000000001");
+            var selectedAssetId = Guid.Parse("f2311000-1111-4444-8888-0000000000a1");
+            var editedButUnselectedAssetId = Guid.Parse("f2311000-1111-4444-8888-0000000000b1");
+
+            db.RentalAssets.AddRange(
+                CreateRentalAsset(
+                    "Edit Is Not Selection Customer",
+                    "EDIT-SEL-001",
+                    billingProfileId: null,
+                    selectedAssetId,
+                    monthlyFee: 80_000m),
+                CreateRentalAsset(
+                    "Edit Is Not Selection Customer",
+                    "EDIT-UNSEL-001",
+                    billingProfileId: null,
+                    editedButUnselectedAssetId,
+                    monthlyFee: 90_000m));
+            await db.SaveChangesAsync();
+
+            var profile = new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Edit Is Not Selection Customer",
+                ItemName = "Selected Rental Only",
+                BillingType = "개별",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                {
+                    new()
+                    {
+                        DisplayItemName = "Selected Rental Only",
+                        BillingLineMode = "개별",
+                        Quantity = 1m,
+                        UnitPrice = 80_000m,
+                        Amount = 80_000m,
+                        IncludedAssetIds = [selectedAssetId]
+                    }
+                })
+            };
+
+            var result = await new RentalStateService(db).SaveBillingProfileAsync(
+                profile,
+                CreateAdminSession(),
+                [
+                    new RentalBillingAssetLinkEdit
+                    {
+                        AssetId = editedButUnselectedAssetId,
+                        CustomerName = "Edit Is Not Selection Customer",
+                        InstallLocation = "Should Not Link",
+                        MonthlyFee = 123_456m,
+                        Notes = "edit only"
+                    }
+                ]);
+
+            Assert.True(result.Success, result.Message);
+
+            var selectedAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == selectedAssetId);
+            var editedButUnselectedAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == editedButUnselectedAssetId);
+
+            Assert.Equal(profileId, selectedAsset.BillingProfileId);
+            Assert.Null(editedButUnselectedAsset.BillingProfileId);
+            Assert.Equal("HQ", editedButUnselectedAsset.InstallLocation);
+            Assert.Equal(90_000m, editedButUnselectedAsset.MonthlyFee);
+
+            var persistedProfile = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .SingleAsync(current => current.Id == profileId);
+            var persistedItems = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(
+                persistedProfile.BillingTemplateJson) ?? [];
+            var persistedAssetIds = persistedItems
+                .SelectMany(item => item.IncludedAssetIds)
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+
+            Assert.Equal([selectedAssetId], persistedAssetIds);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task GetBillingRowsAsync_UsesTemplateIncludedAssetsAsProfileAssets()
     {
         PrepareAppRoot("georaeplan-rental-billing-template-assets-row");
