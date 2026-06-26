@@ -67,7 +67,7 @@ public sealed class SettingsPage : ContentPage
         baseUrlEntry.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.IsConnectionSettingsVisible));
 
         var connectionHelpLabel = GeoraePlanTheme.CreateBodyText(
-            "현장 터널/테스트 서버가 필요할 때만 변경하세요. 접속 오류가 나면 운영 서버로 초기화할 수 있습니다.",
+            "현장 터널/테스트 서버가 필요할 때만 변경하세요. 연결 테스트가 성공해야 저장되며, 접속 오류가 나면 운영 서버로 초기화할 수 있습니다.",
             muted: true,
             fontSize: 12);
         connectionHelpLabel.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.IsConnectionSettingsVisible));

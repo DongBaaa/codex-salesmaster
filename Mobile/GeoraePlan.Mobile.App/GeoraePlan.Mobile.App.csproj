@@ -10,8 +10,8 @@
     <Nullable>enable</Nullable>
     <ApplicationTitle>거래플랜</ApplicationTitle>
     <ApplicationId>kr.georaeplan.mobile</ApplicationId>
-    <ApplicationDisplayVersion>0.2.72</ApplicationDisplayVersion>
-    <ApplicationVersion>183</ApplicationVersion>
+    <ApplicationDisplayVersion>0.2.73</ApplicationDisplayVersion>
+    <ApplicationVersion>184</ApplicationVersion>
     <SupportedOSPlatformVersion>21.0</SupportedOSPlatformVersion>
     <AndroidManifestPlaceholders>usesCleartextTraffic=false</AndroidManifestPlaceholders>
   </PropertyGroup>

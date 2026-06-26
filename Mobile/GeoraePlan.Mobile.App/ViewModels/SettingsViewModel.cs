@@ -164,18 +164,38 @@ public sealed class SettingsViewModel : ObservableObject
 
     public async Task SaveAsync()
     {
+        if (IsTestingConnection)
+            return;
+
         try
         {
-            await _settings.SaveBaseUrlAsync(BaseUrl);
+            IsTestingConnection = true;
+            StatusMessage = "저장 전 연결 테스트 중...";
+
+            var result = await _connectionTestService.TestAsync(BaseUrl);
+            if (!string.IsNullOrWhiteSpace(result.NormalizedBaseUrl))
+                BaseUrl = result.NormalizedBaseUrl;
+
+            if (!result.IsSuccess)
+            {
+                StatusMessage = $"저장 중단: {result.Message}";
+                return;
+            }
+
+            await _settings.SaveBaseUrlAsync(result.NormalizedBaseUrl);
             BaseUrl = _settings.GetBaseUrl();
             RefreshConnectionModeText();
             StatusMessage = _settings.HasCustomBaseUrl()
-                ? "고급 연결 URL을 저장했습니다. 다음 요청부터 해당 서버로 연결합니다."
-                : "운영 서버 기본 연결로 저장했습니다.";
+                ? "연결 테스트 성공 후 고급 연결 URL을 저장했습니다. 다음 요청부터 해당 서버로 연결합니다."
+                : "연결 테스트 성공 후 운영 서버 기본 연결로 저장했습니다.";
         }
         catch (ArgumentException ex)
         {
             StatusMessage = ex.Message;
+        }
+        finally
+        {
+            IsTestingConnection = false;
         }
     }
 

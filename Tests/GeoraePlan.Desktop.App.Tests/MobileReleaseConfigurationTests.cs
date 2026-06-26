@@ -76,6 +76,10 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("ToggleConnectionSettingsCommand = new AsyncCommand(", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("TestConnectionCommand = new AsyncCommand(TestConnectionAsync", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("ResetConnectionCommand = new AsyncCommand(ResetConnectionAsync);", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("StatusMessage = \"저장 전 연결 테스트 중...\";", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("if (!result.IsSuccess)", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("StatusMessage = $\"저장 중단: {result.Message}\";", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("await _settings.SaveBaseUrlAsync(result.NormalizedBaseUrl);", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("catch (ArgumentException ex)", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("new Uri(new Uri(normalizedBaseUrl.TrimEnd('/') + \"/\"), \"healthz\")", connectionTestServiceSource, StringComparison.Ordinal);
         Assert.Contains("ConnectionTestTimeout = TimeSpan.FromSeconds(8)", connectionTestServiceSource, StringComparison.Ordinal);

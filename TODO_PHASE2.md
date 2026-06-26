@@ -135,3 +135,12 @@
 - [x] Android 에뮬레이터 UI-tree 기준으로 고급 연결 설정 토글, 연결 테스트 버튼, `http://10.0.2.2:19080/healthz` 성공 메시지를 확인했습니다.
 - [x] 검증: Android 설정 source guard 87/87 PASS, Android Debug build PASS, Android smoke PASS(`mobile-smoke-20260626-230301.md`), 전체 데스크톱 테스트 747/747 PASS.
 - [x] Android 0.2.72 / version code 183 signed APK, stable 업데이트 manifest, live 배포 완료(`20260626-android-connection-test-v072`).
+- [x] Android 0.2.73에서 고급 연결 URL 저장 전에 `/healthz` 연결 테스트 성공을 필수로 적용했습니다.
+
+
+### 2026-06-26 Android 고급 연결 저장 전 검증 완료 증거
+- [x] “연결 URL 저장” 버튼이 먼저 `/healthz` 연결 테스트를 수행하고, 실패 시 저장하지 않도록 변경했습니다.
+- [x] 저장 전 검증 중/실패/성공 후 저장 메시지를 분리했습니다.
+- [x] Android 에뮬레이터 UI-tree 기준으로 0.2.73 설정 화면, 고급 연결 설정, 저장 버튼, “연결 테스트 성공 후 운영 서버 기본 연결로 저장했습니다.” 메시지를 확인했습니다.
+- [x] 검증: Android 설정 source guard 87/87 PASS, Android Debug build PASS, Android smoke PASS(`mobile-smoke-20260626-231832.md`), 전체 데스크톱 테스트 747/747 PASS.
+- [x] Android 0.2.73 / version code 184 signed APK, stable 업데이트 manifest, live 배포 완료(`20260626-android-save-preflight-v073`).
