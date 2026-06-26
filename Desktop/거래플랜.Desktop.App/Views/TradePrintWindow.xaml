@@ -234,6 +234,11 @@
                            VerticalAlignment="Center"/>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="PDF 저장"
+                            Style="{StaticResource DialogButtonStyle}"
+                            MinWidth="112"
+                            Background="#526985"
+                            Click="OnSavePdfClick"/>
                     <Button Content="파일 저장(XPS)"
                             Style="{StaticResource DialogButtonStyle}"
                             MinWidth="132"

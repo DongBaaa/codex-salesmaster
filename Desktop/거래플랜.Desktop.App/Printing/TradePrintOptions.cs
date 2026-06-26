@@ -9,7 +9,14 @@ public sealed record TradePrintDialogResult(
     IReadOnlyList<int>? PageNumbers,
     bool ReversePageOrder,
     bool SaveToFile = false,
-    string? OutputFilePath = null);
+    string? OutputFilePath = null,
+    TradePrintFileFormat FileFormat = TradePrintFileFormat.Xps);
+
+public enum TradePrintFileFormat
+{
+    Xps = 0,
+    Pdf = 1
+}
 
 public static class TradePrintPageRangeParser
 {

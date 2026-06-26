@@ -3,9 +3,15 @@ using System.IO.Packaging;
 using System.Printing;
 using System.Windows;
 using System.Windows.Documents;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Xps;
 using System.Windows.Xps.Packaging;
+using QuestPDF.Fluent;
+using QuestPDF.Infrastructure;
+using 거래플랜.Desktop.App.Printing;
 using 거래플랜.Desktop.App.Views;
+using WpfSize = System.Windows.Size;
 
 namespace 거래플랜.Desktop.App.Services;
 
@@ -13,6 +19,8 @@ public static class TradePrintExecutor
 {
     public const double A4Width = 793.7;
     public const double A4Height = 1122.5;
+    private const double PdfPointPerDeviceIndependentPixel = 72d / 96d;
+    private const double PdfRenderDpi = 144d;
 
     private static readonly EnumeratedPrintQueueTypes[] InstalledPrinterQueueTypes =
     [
@@ -25,12 +33,12 @@ public static class TradePrintExecutor
         IDocumentPaginatorSource document,
         string jobName,
         out string? errorMessage)
-        => TryPrintDocument(document, jobName, new Size(A4Width, A4Height), out errorMessage);
+        => TryPrintDocument(document, jobName, new WpfSize(A4Width, A4Height), out errorMessage);
 
     public static bool TryPrintDocument(
         IDocumentPaginatorSource document,
         string jobName,
-        Size pageSize,
+        WpfSize pageSize,
         out string? errorMessage)
     {
         ArgumentNullException.ThrowIfNull(document);
@@ -57,7 +65,10 @@ public static class TradePrintExecutor
             var targetPaginator = BuildTargetPaginator(paginator, dialog.PrintOptions.PageNumbers, dialog.PrintOptions.ReversePageOrder, pageCount);
             if (dialog.PrintOptions.SaveToFile)
             {
-                SaveDocumentAsXps(targetPaginator, dialog.PrintOptions.OutputFilePath);
+                if (dialog.PrintOptions.FileFormat == TradePrintFileFormat.Pdf)
+                    SaveDocumentAsPdf(targetPaginator, dialog.PrintOptions.OutputFilePath);
+                else
+                    SaveDocumentAsXps(targetPaginator, dialog.PrintOptions.OutputFilePath);
                 return true;
             }
 
@@ -273,6 +284,89 @@ public static class TradePrintExecutor
         writer.Write(paginator);
     }
 
+    private static void SaveDocumentAsPdf(DocumentPaginator paginator, string? outputFilePath)
+    {
+        if (string.IsNullOrWhiteSpace(outputFilePath))
+            throw new InvalidOperationException("저장할 PDF 파일 경로가 비어 있습니다.");
+
+        var directory = Path.GetDirectoryName(outputFilePath);
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+            throw new DirectoryNotFoundException("PDF를 저장할 폴더를 찾을 수 없습니다.");
+
+        QuestPDF.Settings.License = LicenseType.Community;
+
+        var pageCount = ResolvePageCount(paginator);
+        if (pageCount <= 0)
+            throw new InvalidOperationException("PDF로 저장할 문서 페이지가 없습니다.");
+
+        var pageSize = paginator.PageSize;
+        if (pageSize.Width <= 0 || pageSize.Height <= 0)
+            pageSize = new WpfSize(A4Width, A4Height);
+
+        var renderedPages = new List<byte[]>(pageCount);
+        for (var pageIndex = 0; pageIndex < pageCount; pageIndex++)
+        {
+            using var page = paginator.GetPage(pageIndex);
+            if (page == DocumentPage.Missing)
+                continue;
+
+            renderedPages.Add(RenderDocumentPageToPng(page, pageSize));
+        }
+
+        if (renderedPages.Count == 0)
+            throw new InvalidOperationException("PDF로 저장할 문서 페이지를 렌더링하지 못했습니다.");
+
+        var pageWidthPoints = (float)(pageSize.Width * PdfPointPerDeviceIndependentPixel);
+        var pageHeightPoints = (float)(pageSize.Height * PdfPointPerDeviceIndependentPixel);
+        Document.Create(container =>
+        {
+            foreach (var pageImage in renderedPages)
+            {
+                container.Page(page =>
+                {
+                    page.Size(pageWidthPoints, pageHeightPoints, Unit.Point);
+                    page.Margin(0);
+                    page.Content().Image(pageImage).FitArea();
+                });
+            }
+        }).GeneratePdf(outputFilePath);
+    }
+
+    private static byte[] RenderDocumentPageToPng(DocumentPage page, WpfSize pageSize)
+    {
+        var pixelWidth = Math.Max(1, (int)Math.Ceiling(pageSize.Width * PdfRenderDpi / 96d));
+        var pixelHeight = Math.Max(1, (int)Math.Ceiling(pageSize.Height * PdfRenderDpi / 96d));
+        var visual = page.Visual;
+
+        if (visual is UIElement element)
+        {
+            element.Measure(pageSize);
+            element.Arrange(new Rect(pageSize));
+            element.UpdateLayout();
+        }
+
+        var drawingVisual = new DrawingVisual();
+        using (var context = drawingVisual.RenderOpen())
+        {
+            context.DrawRectangle(Brushes.White, null, new Rect(pageSize));
+            context.DrawRectangle(new VisualBrush(visual), null, new Rect(pageSize));
+        }
+
+        var bitmap = new RenderTargetBitmap(
+            pixelWidth,
+            pixelHeight,
+            PdfRenderDpi,
+            PdfRenderDpi,
+            PixelFormats.Pbgra32);
+        bitmap.Render(drawingVisual);
+
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using var stream = new MemoryStream();
+        encoder.Save(stream);
+        return stream.ToArray();
+    }
+
     private static Window? ResolveActiveOwner()
     {
         var current = Application.Current;
@@ -312,7 +406,7 @@ public static class TradePrintExecutor
 
         public override int PageCount => _pageNumbers.Count;
 
-        public override Size PageSize
+        public override WpfSize PageSize
         {
             get => _source.PageSize;
             set => _source.PageSize = value;

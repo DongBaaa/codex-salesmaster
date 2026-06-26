@@ -108,7 +108,7 @@ public partial class TradePrintWindow : Window
 
     private void OnOkClick(object sender, RoutedEventArgs e)
     {
-        if (TryBuildPrintOptions(saveToFile: false, outputFilePath: null, out var options))
+        if (TryBuildPrintOptions(saveToFile: false, outputFilePath: null, TradePrintFileFormat.Xps, out var options))
         {
             PrintOptions = options;
             DialogResult = true;
@@ -116,22 +116,31 @@ public partial class TradePrintWindow : Window
     }
 
     private void OnSaveFileClick(object sender, RoutedEventArgs e)
+        => SaveToFile(TradePrintFileFormat.Xps);
+
+    private void OnSavePdfClick(object sender, RoutedEventArgs e)
+        => SaveToFile(TradePrintFileFormat.Pdf);
+
+    private void SaveToFile(TradePrintFileFormat fileFormat)
     {
-        var defaultFileName = MakeSafeFileName($"거래플랜-인쇄문서-{DateTime.Now:yyyyMMdd-HHmm}.xps");
+        var extension = fileFormat == TradePrintFileFormat.Pdf ? ".pdf" : ".xps";
+        var defaultFileName = MakeSafeFileName($"거래플랜-인쇄문서-{DateTime.Now:yyyyMMdd-HHmm}{extension}");
         var dialog = new SaveFileDialog
         {
             Title = "인쇄 문서 파일 저장",
-            Filter = "XPS 문서 (*.xps)|*.xps",
+            Filter = fileFormat == TradePrintFileFormat.Pdf
+                ? "PDF 문서 (*.pdf)|*.pdf"
+                : "XPS 문서 (*.xps)|*.xps",
             FileName = defaultFileName,
             AddExtension = true,
-            DefaultExt = ".xps",
+            DefaultExt = extension,
             OverwritePrompt = true
         };
 
         if (dialog.ShowDialog(this) != true)
             return;
 
-        if (TryBuildPrintOptions(saveToFile: true, dialog.FileName, out var options))
+        if (TryBuildPrintOptions(saveToFile: true, dialog.FileName, fileFormat, out var options))
         {
             PrintOptions = options;
             DialogResult = true;
@@ -141,6 +150,7 @@ public partial class TradePrintWindow : Window
     private bool TryBuildPrintOptions(
         bool saveToFile,
         string? outputFilePath,
+        TradePrintFileFormat fileFormat,
         out TradePrintDialogResult? options)
     {
         options = null;
@@ -206,7 +216,8 @@ public partial class TradePrintWindow : Window
             pageNumbers,
             ReverseOrderCheckBox.IsChecked == true,
             saveToFile,
-            outputFilePath);
+            outputFilePath,
+            fileFormat);
         return true;
     }
 
