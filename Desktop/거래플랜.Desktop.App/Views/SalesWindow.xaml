@@ -591,9 +591,14 @@
                             <CheckBox Content="세금계산서 발행 완료"
                                       IsChecked="{Binding TaxInvoiceIssued, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                       Visibility="{Binding ShowTaxInvoiceIssuedOption, Converter={StaticResource BoolToVisibilityConverter}}"
-                                      Margin="0,0,0,10"
+                                      Margin="0,0,0,4"
                                       Foreground="#EAF2FF"
                                       VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding TaxInvoiceNumberDisplay, StringFormat=세금계산서 번호: {0}}"
+                                       Visibility="{Binding ShowTaxInvoiceIssuedOption, Converter={StaticResource BoolToVisibilityConverter}}"
+                                       Foreground="#B7C9E6"
+                                       TextWrapping="Wrap"
+                                       Margin="0,0,0,10"/>
                             <Button Style="{StaticResource BaseButtonStyle}" Content="세금계산서 인쇄"
                                     Height="36"
                                     HorizontalAlignment="Stretch"

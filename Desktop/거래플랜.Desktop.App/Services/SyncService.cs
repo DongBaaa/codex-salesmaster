@@ -2270,6 +2270,19 @@ public sealed class SyncService : IDisposable
                 SynchronizeTrackedInvoiceAssignment(assigned.Key, assigned.Value);
             }
 
+            foreach (var assigned in result.AssignedTaxInvoiceNumbers)
+            {
+                await _db.Invoices.IgnoreQueryFilters()
+                    .Where(invoice => invoice.Id == assigned.Key)
+                    .ExecuteUpdateAsync(
+                        setters => setters
+                            .SetProperty(invoice => invoice.TaxInvoiceNumber, assigned.Value)
+                            .SetProperty(invoice => invoice.IsDirty, false),
+                        ct);
+
+                SynchronizeTrackedTaxInvoiceAssignment(assigned.Key, assigned.Value);
+            }
+
             await MarkOutboxAcknowledgedAsync(req, result.AcceptedRevisions, ct);
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
@@ -5604,6 +5617,19 @@ public sealed class SyncService : IDisposable
                 continue;
 
             entry.Entity.InvoiceNumber = invoiceNumber;
+            entry.Entity.IsDirty = false;
+            entry.State = EntityState.Unchanged;
+        }
+    }
+
+    private void SynchronizeTrackedTaxInvoiceAssignment(Guid invoiceId, string taxInvoiceNumber)
+    {
+        foreach (var entry in _db.ChangeTracker.Entries<LocalInvoice>())
+        {
+            if (entry.Entity.Id != invoiceId)
+                continue;
+
+            entry.Entity.TaxInvoiceNumber = taxInvoiceNumber;
             entry.Entity.IsDirty = false;
             entry.State = EntityState.Unchanged;
         }

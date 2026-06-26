@@ -1140,6 +1140,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             OfficeCode = SelectedInvoiceOfficeCode,
             ResponsibleOfficeCode = SelectedInvoiceOfficeCode,
             InvoiceNumber = _editingInvoice?.InvoiceNumber ?? string.Empty,
+            TaxInvoiceNumber = _editingInvoice?.TaxInvoiceNumber ?? string.Empty,
             LocalTempNumber = string.IsNullOrWhiteSpace(_editingInvoice?.LocalTempNumber)
                 ? $"M-{(IsPurchaseLikeDocument ? "P" : "S")}-{DateTime.Now:yyyyMMdd-HHmmss}"
                 : _editingInvoice!.LocalTempNumber,

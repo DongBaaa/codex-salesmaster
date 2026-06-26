@@ -411,6 +411,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             ("CostStatus", "TEXT NOT NULL DEFAULT '미확인'"),
             ("VatMode", $"TEXT NOT NULL DEFAULT '{InvoiceVatModes.Included}'"),
             ("TaxInvoiceIssued", "INTEGER NOT NULL DEFAULT 0"),
+            ("TaxInvoiceNumber", "TEXT NOT NULL DEFAULT ''"),
             ("PurchaseReceivingRequired", "INTEGER NOT NULL DEFAULT 0"),
             ("PurchaseReceivingStatus", "TEXT NOT NULL DEFAULT ''"),
             ("PurchaseReceivedAtUtc", "TEXT NULL"),
@@ -552,6 +553,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_RentalProfileReference\" ON \"Invoices\" (\"IsDeleted\", \"LinkedRentalBillingProfileId\", \"LinkedRentalBillingRunId\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_SourceWarehouseCode\" ON \"Invoices\" (\"SourceWarehouseCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_PurchaseReceivingStatus\" ON \"Invoices\" (\"PurchaseReceivingStatus\");");
+        await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Invoices_TaxInvoiceNumber\" ON \"Invoices\" (\"TaxInvoiceNumber\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Customers_OfficeCode\" ON \"Customers\" (\"OfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Customers_ResponsibleOfficeCode\" ON \"Customers\" (\"ResponsibleOfficeCode\");");
         await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_Customers_IntegrityOfficeActive\" ON \"Customers\" (\"OfficeCode\", \"IsDeleted\");");

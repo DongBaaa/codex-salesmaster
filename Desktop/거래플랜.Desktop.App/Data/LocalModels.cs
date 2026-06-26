@@ -180,6 +180,7 @@ public sealed class LocalInvoice : LocalSyncEntity
     public string OfficeCode { get; set; } = string.Empty;
     public string InvoiceNumber { get; set; } = string.Empty;
     public string LocalTempNumber { get; set; } = string.Empty;
+    public string TaxInvoiceNumber { get; set; } = string.Empty;
     public VoucherType VoucherType { get; set; }
     public DateOnly InvoiceDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
     public decimal TotalAmount { get; set; }

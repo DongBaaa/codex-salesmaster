@@ -9,7 +9,7 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class TaxInvoiceIssuedPersistenceTests
 {
     [Fact]
-    public void InvoiceListRow_TaxInvoiceDisplay_UsesCenteredVMarker()
+    public void InvoiceListRow_TaxInvoiceDisplay_UsesIssuedLabelOrAssignedNumber()
     {
         var issued = InvoiceListRow.From(
             new LocalInvoice
@@ -30,8 +30,19 @@ public sealed class TaxInvoiceIssuedPersistenceTests
             },
             "테스트 거래처",
             showCustomerName: true);
+        var assigned = InvoiceListRow.From(
+            new LocalInvoice
+            {
+                InvoiceDate = new DateOnly(2026, 4, 30),
+                VoucherType = VoucherType.Sales,
+                TaxInvoiceIssued = true,
+                TaxInvoiceNumber = "TAX-202604-0003"
+            },
+            "테스트 거래처",
+            showCustomerName: true);
 
-        Assert.Equal("V", issued.TaxInvoiceDisplay);
+        Assert.Equal("발행", issued.TaxInvoiceDisplay);
+        Assert.Equal("TAX-202604-0003", assigned.TaxInvoiceDisplay);
         Assert.Equal(string.Empty, notIssued.TaxInvoiceDisplay);
     }
 

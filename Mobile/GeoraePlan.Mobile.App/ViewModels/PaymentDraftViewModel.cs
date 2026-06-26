@@ -603,6 +603,7 @@ public sealed class PaymentDraftViewModel : ObservableObject
             ResponsibleOfficeCode = invoice.ResponsibleOfficeCode,
             InvoiceNumber = invoice.InvoiceNumber,
             LocalTempNumber = invoice.LocalTempNumber,
+            TaxInvoiceNumber = invoice.TaxInvoiceNumber,
             LinkedRentalBillingProfileId = invoice.LinkedRentalBillingProfileId,
             LinkedRentalBillingRunId = invoice.LinkedRentalBillingRunId,
             VersionGroupId = invoice.VersionGroupId,

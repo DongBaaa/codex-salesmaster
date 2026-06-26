@@ -1403,6 +1403,9 @@ public sealed class SyncController : ControllerBase
                     entity.InvoiceNumber = await _invoiceNumberService.GenerateAsync(entity.CustomerId, entity.InvoiceDate, cancellationToken);
                     result.AssignedInvoiceNumbers[dto.Id] = entity.InvoiceNumber;
                 }
+                var assignedTaxInvoiceNumber = await TaxInvoiceNumberAssignmentService.EnsureAssignedAsync(_dbContext, entity, cancellationToken);
+                if (!string.IsNullOrWhiteSpace(assignedTaxInvoiceNumber))
+                    result.AssignedTaxInvoiceNumbers[dto.Id] = assignedTaxInvoiceNumber;
 
                 ApplyInvoiceLines(entity, dto.Lines ?? []);
                 var createdStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
@@ -1463,6 +1466,9 @@ public sealed class SyncController : ControllerBase
                 entity.InvoiceNumber = await _invoiceNumberService.GenerateAsync(entity.CustomerId, entity.InvoiceDate, cancellationToken);
                 result.AssignedInvoiceNumbers[dto.Id] = entity.InvoiceNumber;
             }
+            var updatedTaxInvoiceNumber = await TaxInvoiceNumberAssignmentService.EnsureAssignedAsync(_dbContext, entity, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(updatedTaxInvoiceNumber))
+                result.AssignedTaxInvoiceNumbers[dto.Id] = updatedTaxInvoiceNumber;
             AddRentalSettlementTarget(rentalSettlementTargets, entity.LinkedRentalBillingProfileId, entity.LinkedRentalBillingRunId);
             if (entity.IsDeleted)
                 acceptedDeletedInvoiceIds.Add(entity.Id);

@@ -2267,6 +2267,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				LinkedRentalBillingRunId = invoice.LinkedRentalBillingRunId,
 				InvoiceNumber = invoice.InvoiceNumber,
 				LocalTempNumber = invoice.LocalTempNumber,
+				TaxInvoiceNumber = invoice.TaxInvoiceNumber,
 				InvoiceDate = invoice.InvoiceDate,
 				VoucherType = invoice.VoucherType,
 				TotalAmount = invoice.TotalAmount,
@@ -2795,6 +2796,9 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			OfficeCode = ownerOfficeCode,
 			InvoiceNumber = ((!string.IsNullOrWhiteSpace(invoice.InvoiceNumber)) ? invoice.InvoiceNumber : (latest?.InvoiceNumber ?? string.Empty)),
 			LocalTempNumber = ((!string.IsNullOrWhiteSpace(invoice.LocalTempNumber)) ? invoice.LocalTempNumber : (latest?.LocalTempNumber ?? string.Empty)),
+			TaxInvoiceNumber = invoice.TaxInvoiceIssued
+				? ((!string.IsNullOrWhiteSpace(invoice.TaxInvoiceNumber)) ? invoice.TaxInvoiceNumber : (latest?.TaxInvoiceNumber ?? string.Empty))
+				: string.Empty,
 			VoucherType = invoice.VoucherType,
 			InvoiceDate = invoice.InvoiceDate,
 			TotalAmount = totalAmount,
@@ -7878,6 +7882,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			VersionNumber = invoice.VersionNumber,
 			InvoiceNumber = invoice.InvoiceNumber,
 			LocalTempNumber = invoice.LocalTempNumber,
+			TaxInvoiceNumber = invoice.TaxInvoiceNumber,
 			CustomerId = invoice.CustomerId,
 			VoucherType = invoice.VoucherType,
 			InvoiceDate = invoice.InvoiceDate,

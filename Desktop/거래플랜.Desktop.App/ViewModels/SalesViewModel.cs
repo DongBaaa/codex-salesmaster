@@ -57,7 +57,12 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     private string _customerNote = string.Empty;
     [ObservableProperty] private decimal _customerBalance;   // 총미수금/미지불
     [ObservableProperty] private decimal _customerAdvanceBalance;
-    [ObservableProperty] private bool _taxInvoiceIssued;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(TaxInvoiceNumberDisplay))]
+    private bool _taxInvoiceIssued;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(TaxInvoiceNumberDisplay))]
+    private string _taxInvoiceNumber = string.Empty;
     [ObservableProperty] private bool _isVatNone;
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(PurchaseReceivingStatusDisplay))]
@@ -193,6 +198,9 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     public bool CanPrintTaxInvoice => IsSalesDocument;
     public bool ShowPaymentAction => IsSalesDocument || IsPurchaseDocument;
     public bool ShowTaxInvoiceIssuedOption => IsSalesDocument || IsPurchaseDocument;
+    public string TaxInvoiceNumberDisplay => !string.IsNullOrWhiteSpace(TaxInvoiceNumber)
+        ? TaxInvoiceNumber
+        : TaxInvoiceIssued ? "서버 동기화 후 자동 채번" : "미발행";
     public bool ShowPurchaseReceivingOptions => IsPurchaseDocument;
     public string PurchaseReceivingStatusDisplay => IsPurchaseDocument
         ? InvoiceReceivingStatuses.Normalize(PurchaseReceivingStatus, true, PurchaseReceivingRequired)
@@ -486,6 +494,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         _customerPurchasePriceByItem.Clear();
         _customerPurchasePriceCustomerId = null;
         TaxInvoiceIssued = false;
+        TaxInvoiceNumber = string.Empty;
         IsVatNone = false;
         InvoiceMemo = string.Empty;
         WorkDate = DateOnly.FromDateTime(DateTime.Today);
@@ -1272,6 +1281,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             .Append('|').Append(InvoiceMemo ?? string.Empty)
             .Append('|').Append(IsVatNone ? InvoiceVatModes.None : InvoiceVatModes.Included)
             .Append('|').Append(TaxInvoiceIssued ? "1" : "0")
+            .Append('|').Append(TaxInvoiceNumber ?? string.Empty)
             .Append('|').Append(PurchaseReceivingRequired ? "1" : "0")
             .Append('|').Append(PurchaseReceivingStatus ?? string.Empty)
             .Append('|').Append(PurchaseReceivedAtUtc?.ToString("O") ?? string.Empty)
@@ -1512,6 +1522,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             Memo = InvoiceMemo,
             VatMode = IsVatNone ? InvoiceVatModes.None : InvoiceVatModes.Included,
             TaxInvoiceIssued = TaxInvoiceIssued,
+            TaxInvoiceNumber = TaxInvoiceNumber,
             PurchaseReceivingRequired = IsPurchaseDocument && PurchaseReceivingRequired,
             PurchaseReceivingStatus = InvoiceReceivingStatuses.Normalize(
                 PurchaseReceivingStatus,
@@ -1575,6 +1586,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             CurrentConcurrencyStamp = savedInvoice.ConcurrencyStamp;
             _linkedRentalBillingProfileId = savedInvoice.LinkedRentalBillingProfileId;
             _linkedRentalBillingRunId = savedInvoice.LinkedRentalBillingRunId;
+            TaxInvoiceNumber = savedInvoice.TaxInvoiceNumber;
             LastSavedBy = savedInvoice.LastSavedByUsername;
             LastSavedAtDisplay = savedInvoice.LastSavedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
             VersionDisplay = $"v{savedInvoice.VersionNumber}";
@@ -1620,6 +1632,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         InvoiceMemo = inv.Memo;
         IsVatNone = InvoiceVatModes.IsNone(inv.VatMode);
         TaxInvoiceIssued = inv.TaxInvoiceIssued;
+        TaxInvoiceNumber = inv.TaxInvoiceNumber;
         PurchaseReceivingRequired = inv.VoucherType == VoucherType.Purchase &&
                                     (inv.PurchaseReceivingRequired ||
                                      InvoiceReceivingStatuses.IsConfirmed(inv.PurchaseReceivingStatus) ||
@@ -2419,6 +2432,11 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             new System.Windows.Documents.Run($"작성일: {invoice.InvoiceDate:yyyy-MM-dd}")));
         headerParagraph.Inlines.Add(new System.Windows.Documents.Run(
             $"    발행유형: {(invoice.VoucherType == VoucherType.Sales ? "세금계산서" : "계산서")}"));
+        if (!string.IsNullOrWhiteSpace(invoice.TaxInvoiceNumber))
+        {
+            headerParagraph.Inlines.Add(new System.Windows.Documents.Run(
+                $"    관리번호: {invoice.TaxInvoiceNumber}"));
+        }
         document.Blocks.Add(headerParagraph);
 
         var partyTable = new System.Windows.Documents.Table

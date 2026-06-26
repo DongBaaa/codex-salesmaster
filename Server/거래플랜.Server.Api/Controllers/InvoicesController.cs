@@ -164,6 +164,7 @@ public sealed class InvoicesController : ControllerBase
         {
             entity.InvoiceNumber = await _invoiceNumberService.GenerateAsync(entity.CustomerId, entity.InvoiceDate, cancellationToken);
         }
+        await TaxInvoiceNumberAssignmentService.EnsureAssignedAsync(_dbContext, entity, cancellationToken);
 
         ApplyInvoiceLines(entity, dto.Lines);
         var currentStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
@@ -253,6 +254,7 @@ public sealed class InvoicesController : ControllerBase
         };
 
         entity.Apply(dto);
+        await TaxInvoiceNumberAssignmentService.EnsureAssignedAsync(_dbContext, entity, cancellationToken);
         _dbContext.InvoiceLines.RemoveRange(entity.Lines);
         entity.Lines.Clear();
         ApplyInvoiceLines(entity, dto.Lines);

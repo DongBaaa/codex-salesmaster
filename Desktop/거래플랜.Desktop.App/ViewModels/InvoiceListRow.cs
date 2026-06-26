@@ -14,6 +14,7 @@ public sealed class InvoiceListRow
     public Guid CustomerId { get; init; }
     public string InvoiceNumber { get; init; } = string.Empty;
     public string LocalTempNumber { get; init; } = string.Empty;
+    public string TaxInvoiceNumber { get; init; } = string.Empty;
     public DateOnly InvoiceDate { get; init; }
     public string CustomerName { get; init; } = string.Empty;
     public string FirstItemSummary { get; init; } = string.Empty;
@@ -36,7 +37,9 @@ public sealed class InvoiceListRow
     public string DisplayNumber => string.IsNullOrEmpty(InvoiceNumber) ? LocalTempNumber : InvoiceNumber;
     public Guid EffectiveVersionGroupId => VersionGroupId == Guid.Empty ? Id : VersionGroupId;
     public string InvoiceDateDisplay => InvoiceDate.ToString("yyyy/MM/dd");
-    public string TaxInvoiceDisplay => TaxInvoiceIssued ? "V" : string.Empty;
+    public string TaxInvoiceDisplay => !string.IsNullOrWhiteSpace(TaxInvoiceNumber)
+        ? TaxInvoiceNumber
+        : TaxInvoiceIssued ? "발행" : string.Empty;
     public string PurchaseReceivingDisplay => VoucherType == VoucherType.Purchase
         ? InvoiceReceivingStatuses.Normalize(PurchaseReceivingStatus, true, PurchaseReceivingRequired)
         : string.Empty;
@@ -62,6 +65,7 @@ public sealed class InvoiceListRow
             CustomerId = inv.CustomerId,
             InvoiceNumber = inv.InvoiceNumber,
             LocalTempNumber = inv.LocalTempNumber,
+            TaxInvoiceNumber = inv.TaxInvoiceNumber,
             InvoiceDate = inv.InvoiceDate,
             CustomerName = customerName,
             FirstItemSummary = firstItemSummary,
@@ -103,6 +107,7 @@ public sealed class InvoiceListRow
             CustomerId = summary.CustomerId,
             InvoiceNumber = summary.InvoiceNumber,
             LocalTempNumber = summary.LocalTempNumber,
+            TaxInvoiceNumber = summary.TaxInvoiceNumber,
             InvoiceDate = summary.InvoiceDate,
             CustomerName = customerName,
             FirstItemSummary = firstItemSummary,

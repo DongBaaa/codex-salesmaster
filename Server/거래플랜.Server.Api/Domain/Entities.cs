@@ -235,6 +235,7 @@ public sealed class Invoice : TrackedEntity
     public string ResponsibleOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
     public string InvoiceNumber { get; set; } = string.Empty;
     public string LocalTempNumber { get; set; } = string.Empty;
+    public string TaxInvoiceNumber { get; set; } = string.Empty;
     public Guid? LinkedRentalBillingProfileId { get; set; }
     public Guid? LinkedRentalBillingRunId { get; set; }
     public Guid VersionGroupId { get; set; }

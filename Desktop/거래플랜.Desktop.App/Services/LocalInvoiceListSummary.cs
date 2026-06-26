@@ -12,6 +12,7 @@ public sealed class LocalInvoiceListSummary
     public Guid? LinkedRentalBillingRunId { get; set; }
     public string InvoiceNumber { get; set; } = string.Empty;
     public string LocalTempNumber { get; set; } = string.Empty;
+    public string TaxInvoiceNumber { get; set; } = string.Empty;
     public DateOnly InvoiceDate { get; set; }
     public VoucherType VoucherType { get; set; }
     public decimal TotalAmount { get; set; }

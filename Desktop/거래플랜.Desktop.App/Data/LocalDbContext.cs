@@ -235,6 +235,8 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalInvoice>()
             .HasIndex(i => i.PurchaseReceivingStatus);
         model.Entity<LocalInvoice>()
+            .HasIndex(i => i.TaxInvoiceNumber);
+        model.Entity<LocalInvoice>()
             .HasIndex(i => i.ResponsibleOfficeCode);
         model.Entity<LocalInvoice>()
             .HasIndex(i => i.OfficeCode);

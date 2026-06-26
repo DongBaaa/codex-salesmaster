@@ -594,7 +594,7 @@
                                     </DataGrid.ContextMenu>
                                     <DataGrid.Columns>
                                         <DataGridTextColumn Header="일자" Binding="{Binding InvoiceDateDisplay}" Width="98"/>
-                                        <DataGridTextColumn Header="세금계산서" Binding="{Binding TaxInvoiceDisplay}" Width="90">
+                                        <DataGridTextColumn Header="세금계산서" Binding="{Binding TaxInvoiceDisplay}" Width="132">
                                             <DataGridTextColumn.ElementStyle>
                                                 <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
                                                     <Setter Property="HorizontalAlignment" Value="Center"/>

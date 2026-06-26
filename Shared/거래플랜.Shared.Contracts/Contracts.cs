@@ -327,6 +327,7 @@ public sealed class InvoiceDto : SyncEntityDto
     public string ResponsibleOfficeCode { get; set; } = OfficeCodeCatalog.Usenet;
     public string InvoiceNumber { get; set; } = string.Empty;
     public string LocalTempNumber { get; set; } = string.Empty;
+    public string TaxInvoiceNumber { get; set; } = string.Empty;
     public Guid? LinkedRentalBillingProfileId { get; set; }
     public Guid? LinkedRentalBillingRunId { get; set; }
     public Guid VersionGroupId { get; set; }
@@ -764,6 +765,8 @@ public sealed class SyncPushResult
     public List<SyncAcceptedRevisionDto> AcceptedRevisions { get; set; } = new();
     /// <summary>Key = local invoice Id, Value = assigned server InvoiceNumber.</summary>
     public Dictionary<Guid, string> AssignedInvoiceNumbers { get; set; } = new();
+    /// <summary>Key = local invoice Id, Value = assigned server TaxInvoiceNumber.</summary>
+    public Dictionary<Guid, string> AssignedTaxInvoiceNumbers { get; set; } = new();
 }
 
 public sealed class SyncAcceptedRevisionDto

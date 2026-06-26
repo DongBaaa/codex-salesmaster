@@ -270,6 +270,7 @@ public static partial class DbInitializer
         await EnsureInvoiceOfficeCodeColumnAsync(dbContext, cancellationToken);
         await EnsureInvoiceTenantCodeColumnAsync(dbContext, cancellationToken);
         await EnsureInvoiceTaxInvoiceIssuedColumnAsync(dbContext, cancellationToken);
+        await EnsureInvoiceTaxInvoiceNumberColumnAsync(dbContext, cancellationToken);
         await EnsureInvoiceVatModeColumnAsync(dbContext, cancellationToken);
         await EnsureInvoicePurchaseReceivingColumnsAsync(dbContext, cancellationToken);
         await EnsureInvoiceVersionColumnsAsync(dbContext, cancellationToken);
@@ -2456,6 +2457,32 @@ public static partial class DbInitializer
                     """,
                     cancellationToken);
             }
+        }
+        catch (Exception ignoredDbInitializerException)
+        {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
+        }
+    }
+
+    private static async Task EnsureInvoiceTaxInvoiceNumberColumnAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        await EnsureColumnAsync(
+            dbContext,
+            "Invoices",
+            "TaxInvoiceNumber",
+            "TEXT NOT NULL DEFAULT ''",
+            "text NOT NULL DEFAULT ''",
+            cancellationToken);
+
+        try
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                CREATE INDEX IF NOT EXISTS "IX_Invoices_TaxInvoiceNumber" ON "Invoices" ("TaxInvoiceNumber");
+                """,
+                cancellationToken);
         }
         catch (Exception ignoredDbInitializerException)
         {

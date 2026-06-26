@@ -1025,6 +1025,7 @@ public static class DtoMappings
             ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(entity.ResponsibleOfficeCode, entity.OfficeCode, OfficeCodeCatalog.Usenet),
             InvoiceNumber = entity.InvoiceNumber,
             LocalTempNumber = entity.LocalTempNumber,
+            TaxInvoiceNumber = entity.TaxInvoiceNumber,
             LinkedRentalBillingProfileId = entity.LinkedRentalBillingProfileId,
             LinkedRentalBillingRunId = entity.LinkedRentalBillingRunId,
             VersionGroupId = entity.VersionGroupId == Guid.Empty ? entity.Id : entity.VersionGroupId,
@@ -1077,6 +1078,11 @@ public static class DtoMappings
         entity.LocalTempNumber = dto.LocalTempNumber; entity.VoucherType = dto.VoucherType;
         entity.SourceWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(dto.SourceWarehouseCode, dto.ResponsibleOfficeCode, dto.OfficeCode);
         entity.InvoiceDate = dto.InvoiceDate; entity.VatMode = InvoiceVatModes.Normalize(dto.VatMode); entity.TaxInvoiceIssued = dto.TaxInvoiceIssued;
+        var incomingTaxInvoiceNumber = dto.TaxInvoiceNumber?.Trim() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(incomingTaxInvoiceNumber))
+            entity.TaxInvoiceNumber = incomingTaxInvoiceNumber;
+        else if (!dto.TaxInvoiceIssued)
+            entity.TaxInvoiceNumber = string.Empty;
         entity.PurchaseReceivingRequired = dto.PurchaseReceivingRequired;
         entity.PurchaseReceivingStatus = InvoiceReceivingStatuses.Normalize(dto.PurchaseReceivingStatus, dto.VoucherType == VoucherType.Purchase, dto.PurchaseReceivingRequired);
         entity.PurchaseReceivedAtUtc = NormalizeUtc(dto.PurchaseReceivedAtUtc);
