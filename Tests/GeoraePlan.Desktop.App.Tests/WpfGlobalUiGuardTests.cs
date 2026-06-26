@@ -124,6 +124,12 @@ public sealed class WpfGlobalUiGuardTests
             "Desktop",
             "거래플랜.Desktop.App",
             "MainWindow.xaml"));
+        var viewModel = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "ViewModels",
+            "MainViewModel.cs"));
 
         Assert.Contains("DashboardMetricCardStyle", xaml, StringComparison.Ordinal);
         Assert.Contains("DashboardMonthlySales", xaml, StringComparison.Ordinal);
@@ -134,6 +140,14 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("DashboardCustomerCount", xaml, StringComparison.Ordinal);
         Assert.Contains("DashboardSafetyStockAlerts", xaml, StringComparison.Ordinal);
         Assert.Contains("DashboardSalesTrendPercent", xaml, StringComparison.Ordinal);
+        Assert.Contains("DashboardMonthlySalesChartPoints", xaml, StringComparison.Ordinal);
+        Assert.Contains("SalesAmountText", xaml, StringComparison.Ordinal);
+        Assert.Contains("BarHeight", xaml, StringComparison.Ordinal);
+        Assert.Contains("IsCurrentMonth", xaml, StringComparison.Ordinal);
+        Assert.Contains("UpdateDashboardMonthlySalesChart", viewModel, StringComparison.Ordinal);
+        Assert.Contains("const int monthCount = 6", viewModel, StringComparison.Ordinal);
+        Assert.Contains("invoice.VoucherType == VoucherType.Sales", viewModel, StringComparison.Ordinal);
+        Assert.Contains("DashboardMonthlySalesChartPoint", viewModel, StringComparison.Ordinal);
         Assert.Contains("안전재고 알림", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("<Border Background=\"Transparent\" Margin=\"0,0,8,0\" CornerRadius=\"6\" Padding=\"10\"/>", xaml, StringComparison.Ordinal);
     }

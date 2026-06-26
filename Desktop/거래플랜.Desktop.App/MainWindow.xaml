@@ -334,6 +334,91 @@
             </UniformGrid>
         </Border>
 
+        <Border DockPanel.Dock="Top"
+                Background="#0F1D31"
+                Padding="12,8"
+                BorderBrush="#2E4060"
+                BorderThickness="0,0,0,1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="150"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,12,0">
+                    <TextBlock Text="월별 매출 차트"
+                               Foreground="#4FC3F7"
+                               FontWeight="Bold"
+                               FontSize="13"/>
+                    <TextBlock Text="최근 6개월 판매전표 기준"
+                               Foreground="#9FB3C8"
+                               FontSize="11"
+                               Margin="0,3,0,0"/>
+                </StackPanel>
+
+                <ItemsControl Grid.Column="1"
+                              ItemsSource="{Binding DashboardMonthlySalesChartPoints}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <UniformGrid Rows="1" Columns="6"/>
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Background="#1A2B4A"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="8,6"
+                                    Margin="0,0,8,0"
+                                    ToolTip="{Binding SalesAmountText}">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="BorderBrush" Value="#2E4060"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsCurrentMonth}" Value="True">
+                                                <Setter Property="BorderBrush" Value="#A5D6A7"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <Grid Height="112">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="*"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.Row="0"
+                                               Text="{Binding SalesAmountText}"
+                                               Foreground="#EAF2FF"
+                                               FontWeight="Bold"
+                                               FontSize="11"
+                                               TextAlignment="Center"
+                                               TextTrimming="CharacterEllipsis"/>
+                                    <Grid Grid.Row="1"
+                                          Height="76"
+                                          VerticalAlignment="Bottom"
+                                          Margin="0,3,0,3">
+                                        <Rectangle Width="28"
+                                                   Height="{Binding BarHeight}"
+                                                   Fill="#4FC3F7"
+                                                   RadiusX="3"
+                                                   RadiusY="3"
+                                                   VerticalAlignment="Bottom"
+                                                   HorizontalAlignment="Center"/>
+                                    </Grid>
+                                    <TextBlock Grid.Row="2"
+                                               Text="{Binding MonthLabel}"
+                                               Foreground="#9FB3C8"
+                                               FontSize="11"
+                                               TextAlignment="Center"/>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </Grid>
+        </Border>
+
         <Border DockPanel.Dock="Top" Background="#102039" Padding="12,10" BorderBrush="#2E4060" BorderThickness="0,0,0,1">
             <StackPanel>
                 <DockPanel LastChildFill="False">
