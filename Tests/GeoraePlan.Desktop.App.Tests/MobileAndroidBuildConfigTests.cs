@@ -1,4 +1,4 @@
-﻿using Xunit;
+using Xunit;
 
 namespace GeoraePlan.Desktop.App.Tests;
 
