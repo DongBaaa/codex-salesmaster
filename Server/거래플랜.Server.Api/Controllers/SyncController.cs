@@ -792,6 +792,10 @@ public sealed class SyncController : ControllerBase
             await PopulateAcceptedRevisionsAsync(result, validInventoryTransfers, _dbContext.InventoryTransfers, nameof(InventoryTransfer), cancellationToken);
             await PopulateAcceptedRevisionsAsync(result, scopedRentalCompanies, _dbContext.RentalManagementCompanies, nameof(RentalManagementCompany), cancellationToken);
             await PopulateAcceptedRevisionsAsync(result, validRentalProfiles, _dbContext.RentalBillingProfiles, nameof(RentalBillingProfile), cancellationToken);
+            PopulateResolvedRentalBillingProfileAcceptedRevisionAliases(
+                result,
+                acceptedRentalProfiles,
+                incomingRentalProfileIdMap);
             await DeduplicateOpenConflictLogsForResultAsync(result.Conflicts, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             await DeleteReplacedStoragePathsIfUnreferencedAsync(replacedStoragePaths);
@@ -862,6 +866,50 @@ public sealed class SyncController : ControllerBase
             .ToListAsync(cancellationToken);
 
         result.AcceptedRevisions.AddRange(rows);
+    }
+
+    private static void PopulateResolvedRentalBillingProfileAcceptedRevisionAliases(
+        SyncPushResult result,
+        IReadOnlyCollection<RentalBillingProfileDto> acceptedProfiles,
+        IReadOnlyDictionary<string, List<Guid>> incomingProfileIdsByKey)
+    {
+        if (acceptedProfiles.Count == 0 || incomingProfileIdsByKey.Count == 0)
+            return;
+
+        var acceptedByCanonicalId = result.AcceptedRevisions
+            .Where(revision => string.Equals(revision.EntityName, nameof(RentalBillingProfile), StringComparison.OrdinalIgnoreCase))
+            .GroupBy(revision => revision.EntityId)
+            .ToDictionary(group => group.Key, group => group.First());
+        var alreadyRecordedIds = acceptedByCanonicalId.Keys.ToHashSet();
+
+        foreach (var profile in acceptedProfiles)
+        {
+            if (profile.Id == Guid.Empty ||
+                string.IsNullOrWhiteSpace(profile.ProfileKey) ||
+                !acceptedByCanonicalId.TryGetValue(profile.Id, out var canonicalRevision) ||
+                !incomingProfileIdsByKey.TryGetValue(profile.ProfileKey.Trim(), out var originalIds))
+            {
+                continue;
+            }
+
+            foreach (var originalId in originalIds)
+            {
+                if (originalId == Guid.Empty ||
+                    originalId == profile.Id ||
+                    !alreadyRecordedIds.Add(originalId))
+                {
+                    continue;
+                }
+
+                result.AcceptedRevisions.Add(new SyncAcceptedRevisionDto
+                {
+                    EntityName = nameof(RentalBillingProfile),
+                    EntityId = originalId,
+                    Revision = canonicalRevision.Revision,
+                    UpdatedAtUtc = canonicalRevision.UpdatedAtUtc
+                });
+            }
+        }
     }
 
     private async Task<List<TDto>> UpsertEntitiesAsync<TEntity, TDto>(

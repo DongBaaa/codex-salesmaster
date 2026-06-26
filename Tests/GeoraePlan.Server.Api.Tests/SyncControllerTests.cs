@@ -4635,6 +4635,127 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_ReusedRentalBillingProfile_ReturnsAcceptedRevisionAliasForOriginalIncomingId_WhenBatchHasOtherConflict()
+    {
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "유즈넷"
+        });
+
+        var existingProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "USENET|ALIAS-ACCEPTED-PROFILE|개별|후불|25|1|전자세금계산서",
+            CustomerName = "accepted alias rental customer",
+            BusinessNumber = "555-10-11111",
+            ItemName = "IMC2010",
+            BillingType = "개별",
+            BillingAdvanceMode = "후불",
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            BillingMethod = "전자세금계산서",
+            BillingDay = 25,
+            BillingCycleMonths = 1,
+            MonthlyAmount = 55_000m
+        };
+        var conflictingCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "accepted alias conflict customer",
+            NameMatchKey = "ACCEPTEDALIASCONFLICTCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        _dbContext.RentalBillingProfiles.Add(existingProfile);
+        _dbContext.Customers.Add(conflictingCustomer);
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var storedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == existingProfile.Id);
+        var storedCustomer = await _dbContext.Customers.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(customer => customer.Id == conflictingCustomer.Id);
+        var originalIncomingProfileId = Guid.NewGuid();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-profile-accepted-alias-with-conflict",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = originalIncomingProfileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = existingProfile.ProfileKey,
+                    CustomerName = existingProfile.CustomerName,
+                    BusinessNumber = existingProfile.BusinessNumber,
+                    ItemName = existingProfile.ItemName,
+                    BillingType = existingProfile.BillingType,
+                    BillingAdvanceMode = existingProfile.BillingAdvanceMode,
+                    ManagementCompanyCode = existingProfile.ManagementCompanyCode,
+                    BillingMethod = existingProfile.BillingMethod,
+                    BillingDay = 28,
+                    BillingCycleMonths = 1,
+                    MonthlyAmount = 77_000m,
+                    Revision = storedProfile.Revision,
+                    CreatedAtUtc = storedProfile.CreatedAtUtc,
+                    UpdatedAtUtc = storedProfile.UpdatedAtUtc.AddMinutes(5)
+                }
+            ],
+            Customers =
+            [
+                new CustomerDto
+                {
+                    Id = conflictingCustomer.Id,
+                    TenantCode = conflictingCustomer.TenantCode,
+                    OfficeCode = conflictingCustomer.OfficeCode,
+                    ResponsibleOfficeCode = conflictingCustomer.ResponsibleOfficeCode,
+                    NameOriginal = "accepted alias conflict customer changed",
+                    NameMatchKey = "ACCEPTEDALIASCONFLICTCUSTOMERCHANGED",
+                    TradeType = CustomerClassificationNormalizer.Sales,
+                    Revision = storedCustomer.Revision,
+                    ExpectedRevision = storedCustomer.Revision + 1,
+                    CreatedAtUtc = storedCustomer.CreatedAtUtc,
+                    UpdatedAtUtc = storedCustomer.UpdatedAtUtc.AddMinutes(5)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(Customer) &&
+            conflict.EntityId == conflictingCustomer.Id.ToString("D"));
+
+        var rentalAcceptedRevisions = result.AcceptedRevisions
+            .Where(revision => revision.EntityName == nameof(RentalBillingProfile))
+            .ToList();
+        Assert.Contains(rentalAcceptedRevisions, revision => revision.EntityId == existingProfile.Id);
+        Assert.Contains(rentalAcceptedRevisions, revision => revision.EntityId == originalIncomingProfileId);
+
+        _dbContext.ChangeTracker.Clear();
+        var profiles = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .ToListAsync();
+        var savedProfile = Assert.Single(profiles);
+        Assert.Equal(existingProfile.Id, savedProfile.Id);
+        Assert.Equal(28, savedProfile.BillingDay);
+        Assert.Equal(77_000m, savedProfile.MonthlyAmount);
+    }
+
+    [Fact]
     public async Task Push_AcceptsRentalBillingProfile_WhenReferencedManagementCompanyIsInSameBatch()
     {
         var companyId = Guid.NewGuid();
