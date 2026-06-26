@@ -4,6 +4,7 @@ using System.Printing;
 using System.Windows;
 using Microsoft.Win32;
 using 거래플랜.Desktop.App.Printing;
+using 거래플랜.Desktop.App.Services;
 
 namespace 거래플랜.Desktop.App.Views;
 
@@ -139,6 +140,48 @@ public partial class TradePrintWindow : Window
                 "프린터 속성",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
+        }
+    }
+
+    private void OnOpenPrinterManagementClick(object sender, RoutedEventArgs e)
+    {
+        if (TryOpenPrinterManagement())
+        {
+            StatusTextBlock.Text = "Windows 프린터 관리 화면을 열었습니다. 복합기를 추가하거나 연결을 확인한 뒤 새로고침을 누르세요.";
+            return;
+        }
+
+        StatusTextBlock.Text = "Windows 프린터 관리 화면을 열 수 없습니다. 제어판 > 장치 및 프린터에서 복합기 연결을 확인하세요.";
+        MessageBox.Show(
+            this,
+            "Windows 프린터 관리 화면을 열 수 없습니다.\n제어판 > 장치 및 프린터에서 복합기 연결을 확인한 뒤 거래플랜 인쇄창에서 새로고침을 누르세요.",
+            "프린터 관리",
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
+    }
+
+    private static bool TryOpenPrinterManagement()
+    {
+        return TryStartShellProcess("ms-settings:printers") ||
+               TryStartShellProcess("control.exe", "printers");
+    }
+
+    private static bool TryStartShellProcess(string fileName, string? arguments = null)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments ?? string.Empty,
+                UseShellExecute = true
+            });
+            return true;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or FileNotFoundException or System.ComponentModel.Win32Exception)
+        {
+            AppLogger.Warn("PRINT", $"프린터 관리 화면 실행 실패({fileName}): {ex.Message}");
+            return false;
         }
     }
 

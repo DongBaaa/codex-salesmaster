@@ -96,6 +96,7 @@
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
 
                     <ComboBox x:Name="PrinterComboBox"
@@ -110,8 +111,15 @@
                             Height="34"
                             Margin="10,0,0,0"
                             Click="OnPrinterPropertiesClick"/>
-                    <Button x:Name="RefreshPrintersButton"
+                    <Button x:Name="OpenPrinterManagementButton"
                             Grid.Column="2"
+                            Content="프린터 관리"
+                            Width="112"
+                            Height="34"
+                            Margin="8,0,0,0"
+                            Click="OnOpenPrinterManagementClick"/>
+                    <Button x:Name="RefreshPrintersButton"
+                            Grid.Column="3"
                             Content="새로고침"
                             Width="96"
                             Height="34"

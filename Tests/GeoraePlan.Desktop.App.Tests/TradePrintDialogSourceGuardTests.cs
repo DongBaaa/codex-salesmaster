@@ -98,6 +98,33 @@ public sealed class TradePrintDialogSourceGuardTests
     }
 
     [Fact]
+    public void TradePrintWindow_CanOpenWindowsPrinterManagementFromDedicatedDialog()
+    {
+        var repoRoot = FindRepositoryRoot();
+        var xaml = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "TradePrintWindow.xaml"));
+        var codeBehind = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "TradePrintWindow.xaml.cs"));
+
+        Assert.Contains("x:Name=\"OpenPrinterManagementButton\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Click=\"OnOpenPrinterManagementClick\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("프린터 관리", xaml, StringComparison.Ordinal);
+        Assert.Contains("OnOpenPrinterManagementClick", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("TryOpenPrinterManagement", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("ms-settings:printers", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("control.exe", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("printers", codeBehind, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TradePrintWindow_CanRefreshPrinterListWithoutClosingDialog()
     {
         var repoRoot = FindRepositoryRoot();
