@@ -45,26 +45,38 @@ public static class TradePrintExecutor
         errorMessage = null;
 
         LocalPrintServer? printServer = null;
-        try
+        (IReadOnlyList<PrintQueue> PrintQueues, PrintQueue? DefaultPrintQueue) LoadPrinterSnapshot()
         {
-            IReadOnlyList<PrintQueue> printQueues = Array.Empty<PrintQueue>();
-            PrintQueue? defaultQueue = null;
+            printServer ??= new LocalPrintServer();
+            return (LoadInstalledPrintQueues(printServer), TryGetDefaultPrintQueue(printServer));
+        }
+
+        (IReadOnlyList<PrintQueue> PrintQueues, PrintQueue? DefaultPrintQueue) LoadPrinterSnapshotSafely()
+        {
             try
             {
-                printServer = new LocalPrintServer();
-                printQueues = LoadInstalledPrintQueues(printServer);
-                defaultQueue = TryGetDefaultPrintQueue(printServer);
+                return LoadPrinterSnapshot();
             }
             catch (Exception ex) when (ex is PrintSystemException or InvalidOperationException or UnauthorizedAccessException)
             {
                 AppLogger.Warn("PRINT", $"프린터 시스템을 열 수 없어 파일 저장 전용으로 인쇄창을 표시합니다: {ex.Message}");
+                return (Array.Empty<PrintQueue>(), null);
             }
+        }
+
+        try
+        {
+            IReadOnlyList<PrintQueue> printQueues = Array.Empty<PrintQueue>();
+            PrintQueue? defaultQueue = null;
+            var printerSnapshot = LoadPrinterSnapshotSafely();
+            printQueues = printerSnapshot.PrintQueues;
+            defaultQueue = printerSnapshot.DefaultPrintQueue;
 
             var paginator = document.DocumentPaginator;
             paginator.PageSize = pageSize;
             var pageCount = ResolvePageCount(paginator);
 
-            var dialog = new TradePrintWindow(printQueues, defaultQueue, pageCount)
+            var dialog = new TradePrintWindow(printQueues, defaultQueue, pageCount, LoadPrinterSnapshotSafely)
             {
                 Owner = ResolveActiveOwner()
             };

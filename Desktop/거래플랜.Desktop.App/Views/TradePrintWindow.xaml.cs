@@ -10,25 +10,32 @@ namespace 거래플랜.Desktop.App.Views;
 public partial class TradePrintWindow : Window
 {
     private readonly int _pageCount;
+    private readonly Func<(IReadOnlyList<PrintQueue> PrintQueues, PrintQueue? DefaultPrintQueue)>? _printerRefreshProvider;
+    private bool _isRefreshingPrinters;
 
     public TradePrintDialogResult? PrintOptions { get; private set; }
 
     public TradePrintWindow(
         IReadOnlyList<PrintQueue> printQueues,
         PrintQueue? defaultPrintQueue,
-        int pageCount)
+        int pageCount,
+        Func<(IReadOnlyList<PrintQueue> PrintQueues, PrintQueue? DefaultPrintQueue)>? printerRefreshProvider = null)
     {
         ArgumentNullException.ThrowIfNull(printQueues);
 
         InitializeComponent();
         _pageCount = Math.Max(0, pageCount);
+        _printerRefreshProvider = printerRefreshProvider;
         PopulatePrinters(printQueues, defaultPrintQueue);
         PageCountTextBlock.Text = _pageCount > 0
             ? $"문서 총 {_pageCount:N0}쪽"
             : "문서 페이지 수를 아직 확인하지 못했습니다.";
     }
 
-    private void PopulatePrinters(IReadOnlyList<PrintQueue> printQueues, PrintQueue? defaultPrintQueue)
+    private int PopulatePrinters(
+        IReadOnlyList<PrintQueue> printQueues,
+        PrintQueue? defaultPrintQueue,
+        string? preferredQueueName = null)
     {
         var defaultName = SafeRead(defaultPrintQueue, q => q.FullName);
         var items = printQueues
@@ -38,14 +45,23 @@ public partial class TradePrintWindow : Window
             .ThenBy(static item => item.DisplayName, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
 
+        PrinterListItem? preferredItem = null;
+        if (!string.IsNullOrWhiteSpace(preferredQueueName))
+            preferredItem = items.FirstOrDefault(item => IsSameQueue(item.Queue, preferredQueueName));
+
         PrinterComboBox.ItemsSource = items;
-        PrinterComboBox.SelectedItem = items.FirstOrDefault(static item => item.IsDefault) ?? items.FirstOrDefault();
+        PrinterComboBox.SelectedItem =
+            preferredItem ??
+            items.FirstOrDefault(static item => item.IsDefault) ??
+            items.FirstOrDefault();
         UpdatePrinterActionState();
 
         if (items.Count == 0)
         {
             StatusTextBlock.Text = "등록된 프린터를 찾지 못했습니다. PDF 저장 또는 파일 저장(XPS)으로 문서를 저장한 뒤 복합기에서 출력하세요.";
         }
+
+        return items.Count;
     }
 
     private void OnPrinterSelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -104,6 +120,39 @@ public partial class TradePrintWindow : Window
                 "프린터 속성",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
+        }
+    }
+
+    private void OnRefreshPrintersClick(object sender, RoutedEventArgs e)
+    {
+        if (_printerRefreshProvider is null)
+        {
+            StatusTextBlock.Text = "현재 화면에서는 프린터 목록을 다시 불러올 수 없습니다. 인쇄창을 다시 열어 확인하세요.";
+            return;
+        }
+
+        var selectedQueueName = GetSelectedQueueName();
+        _isRefreshingPrinters = true;
+        UpdatePrinterActionState();
+        StatusTextBlock.Text = "프린터 목록을 다시 불러오는 중입니다...";
+
+        try
+        {
+            var snapshot = _printerRefreshProvider();
+            var printQueues = snapshot.PrintQueues ?? Array.Empty<PrintQueue>();
+            var printerCount = PopulatePrinters(printQueues, snapshot.DefaultPrintQueue, selectedQueueName);
+            StatusTextBlock.Text = printerCount == 0
+                ? "새로고침 후에도 등록된 프린터를 찾지 못했습니다. PDF 저장 또는 파일 저장(XPS)으로 문서를 저장한 뒤 복합기에서 출력하세요."
+                : $"프린터 목록을 새로고침했습니다. {printerCount:N0}대 중 사용할 프린터를 선택하세요.";
+        }
+        catch (Exception ex) when (ex is PrintSystemException or InvalidOperationException or UnauthorizedAccessException)
+        {
+            StatusTextBlock.Text = $"프린터 목록을 새로고침하지 못했습니다. PDF 저장 또는 파일 저장(XPS)을 사용하세요. ({ex.Message})";
+        }
+        finally
+        {
+            _isRefreshingPrinters = false;
+            UpdatePrinterActionState();
         }
     }
 
@@ -266,6 +315,18 @@ public partial class TradePrintWindow : Window
         var hasPrinter = PrinterComboBox.SelectedItem is PrinterListItem;
         PropertiesButton.IsEnabled = hasPrinter;
         PrintButton.IsEnabled = hasPrinter;
+        RefreshPrintersButton.IsEnabled = _printerRefreshProvider is not null && !_isRefreshingPrinters;
+    }
+
+    private string GetSelectedQueueName()
+    {
+        if (PrinterComboBox.SelectedItem is not PrinterListItem item)
+            return string.Empty;
+
+        var queueName = SafeRead(item.Queue, static q => q.FullName);
+        if (string.IsNullOrWhiteSpace(queueName))
+            queueName = SafeRead(item.Queue, static q => q.Name);
+        return queueName;
     }
 
     private static bool IsSameQueue(PrintQueue queue, string? defaultFullName)

@@ -98,6 +98,39 @@ public sealed class TradePrintDialogSourceGuardTests
     }
 
     [Fact]
+    public void TradePrintWindow_CanRefreshPrinterListWithoutClosingDialog()
+    {
+        var repoRoot = FindRepositoryRoot();
+        var xaml = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "TradePrintWindow.xaml"));
+        var codeBehind = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "TradePrintWindow.xaml.cs"));
+        var executor = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Services",
+            "TradePrintExecutor.cs"));
+
+        Assert.Contains("x:Name=\"RefreshPrintersButton\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Click=\"OnRefreshPrintersClick\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("_printerRefreshProvider", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("OnRefreshPrintersClick", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("GetSelectedQueueName()", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("프린터 목록을 새로고침했습니다", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("LoadPrinterSnapshotSafely", executor, StringComparison.Ordinal);
+        Assert.Contains("new TradePrintWindow(printQueues, defaultQueue, pageCount, LoadPrinterSnapshotSafely)", executor, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TradePrintExecutor_SavesPdfFileFromFixedDocument()
     {
         RunOnSta(() =>
