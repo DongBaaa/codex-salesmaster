@@ -4473,6 +4473,168 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_ReusesExistingRentalBillingProfile_MergesTemplateAndPreservesBillingState_WhenIncomingIdDiffers()
+    {
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "유즈넷"
+        });
+
+        var itemId = Guid.NewGuid();
+        var existingAssetId = Guid.NewGuid();
+        var incomingAssetId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        const string profileKey = "USENET|1234567890|중복프로필거래처|개별|후불|25|1|전자세금계산서";
+        var existingTemplateJson = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                ItemId = itemId,
+                DisplayItemName = "IMC2010",
+                BillingLineMode = "개별",
+                Quantity = 1m,
+                UnitPrice = 55_000m,
+                Amount = 55_000m,
+                IncludedAssetIds = new[] { existingAssetId }
+            }
+        });
+        var incomingTemplateJson = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                ItemId = itemId,
+                DisplayItemName = "IMC2010",
+                BillingLineMode = "개별",
+                Quantity = 1m,
+                UnitPrice = 55_000m,
+                Amount = 55_000m,
+                IncludedAssetIds = new[] { incomingAssetId }
+            }
+        });
+        var existingRunsJson = JsonSerializer.Serialize(new[]
+        {
+            new SyncRentalBillingRunSnapshot
+            {
+                RunId = runId,
+                RunKey = "2026-06",
+                ScheduledDate = new DateOnly(2026, 6, 25),
+                PeriodStartDate = new DateOnly(2026, 6, 1),
+                PeriodEndDate = new DateOnly(2026, 6, 30),
+                PeriodLabel = "2026-06",
+                Status = "완료",
+                BilledAmount = 55_000m,
+                SettledAmount = 20_000m,
+                SettlementStatus = "부분입금",
+                SettledDate = new DateOnly(2026, 6, 26)
+            }
+        });
+
+        var existing = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = profileKey,
+            CustomerName = "중복프로필거래처",
+            BusinessNumber = "123-45-67890",
+            ItemName = "IMC2010",
+            BillingType = "개별",
+            BillingAdvanceMode = "후불",
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            BillingMethod = "전자세금계산서",
+            BillingDay = 25,
+            BillingCycleMonths = 1,
+            MonthlyAmount = 55_000m,
+            LastBilledDate = new DateOnly(2026, 6, 25),
+            LastSettledDate = new DateOnly(2026, 6, 26),
+            SettledAmount = 20_000m,
+            OutstandingAmount = 35_000m,
+            SettlementStatus = "부분입금",
+            CompletionStatus = "미완료",
+            BillingStatus = "청구완료",
+            BillingTemplateJson = existingTemplateJson,
+            BillingRunsJson = existingRunsJson
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var storedBefore = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == existing.Id);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-profile-duplicate-template-merge",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = profileKey,
+                    CustomerName = "중복프로필거래처",
+                    BusinessNumber = "123-45-67890",
+                    ItemName = "IMC2010",
+                    BillingType = "개별",
+                    BillingAdvanceMode = "후불",
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    BillingMethod = "전자세금계산서",
+                    BillingDay = 28,
+                    BillingCycleMonths = 1,
+                    MonthlyAmount = 77_000m,
+                    BillingTemplateJson = incomingTemplateJson,
+                    BillingRunsJson = "[]",
+                    CreatedAtUtc = storedBefore.CreatedAtUtc,
+                    UpdatedAtUtc = storedBefore.UpdatedAtUtc.AddMinutes(5),
+                    Revision = storedBefore.Revision
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+
+        _dbContext.ChangeTracker.Clear();
+        var profiles = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .ToListAsync();
+        var storedProfile = Assert.Single(profiles);
+        Assert.Equal(existing.Id, storedProfile.Id);
+        Assert.Equal(28, storedProfile.BillingDay);
+        Assert.Equal(77_000m, storedProfile.MonthlyAmount);
+        Assert.Equal(new DateOnly(2026, 6, 25), storedProfile.LastBilledDate);
+        Assert.Equal(new DateOnly(2026, 6, 26), storedProfile.LastSettledDate);
+        Assert.Equal(20_000m, storedProfile.SettledAmount);
+        Assert.Equal(35_000m, storedProfile.OutstandingAmount);
+        Assert.Equal("부분입금", storedProfile.SettlementStatus);
+        Assert.Equal("미완료", storedProfile.CompletionStatus);
+        Assert.Equal("청구완료", storedProfile.BillingStatus);
+
+        using var templateDocument = JsonDocument.Parse(storedProfile.BillingTemplateJson);
+        var includedAssetIds = templateDocument.RootElement
+            .EnumerateArray()
+            .SelectMany(item => item.GetProperty("IncludedAssetIds").EnumerateArray())
+            .Select(value => value.GetGuid())
+            .OrderBy(value => value)
+            .ToArray();
+        Assert.Equal(new[] { existingAssetId, incomingAssetId }.OrderBy(value => value), includedAssetIds);
+
+        using var runsDocument = JsonDocument.Parse(storedProfile.BillingRunsJson);
+        Assert.Contains(runsDocument.RootElement.EnumerateArray(), run =>
+            run.GetProperty("RunId").GetGuid() == runId &&
+            run.GetProperty("SettlementStatus").GetString() == "부분입금");
+    }
+
+    [Fact]
     public async Task Push_AcceptsRentalBillingProfile_WhenReferencedManagementCompanyIsInSameBatch()
     {
         var companyId = Guid.NewGuid();

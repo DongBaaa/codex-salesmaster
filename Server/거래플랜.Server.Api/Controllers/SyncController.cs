@@ -693,7 +693,12 @@ public sealed class SyncController : ControllerBase
             var scopedRentalProfiles = await PrepareScopedRentalBillingProfilesAsync(requestedRentalProfiles, result, cancellationToken);
             var rentalProfileRestoreCustomerIds = await BuildRentalBillingProfileRestoreCustomerIdsAsync(scopedRentalProfiles, result, cancellationToken);
             var validRentalProfiles = await FilterValidRentalBillingProfilesAsync(scopedRentalProfiles, result, cancellationToken);
-            var acceptedRentalProfiles = await UpsertRentalBillingProfilesAsync(validRentalProfiles, result, deviceId, cancellationToken);
+            var acceptedRentalProfiles = await UpsertRentalBillingProfilesAsync(
+                validRentalProfiles,
+                incomingRentalProfileIdMap,
+                result,
+                deviceId,
+                cancellationToken);
             await RestoreLinkedDeletedCustomerContractsForRentalBillingProfilesAsync(acceptedRentalProfiles, rentalProfileRestoreCustomerIds, cancellationToken);
             if (validRentalProfiles.Count > 0)
             {
@@ -3624,6 +3629,7 @@ public sealed class SyncController : ControllerBase
 
     private async Task<List<RentalBillingProfileDto>> UpsertRentalBillingProfilesAsync(
         IEnumerable<RentalBillingProfileDto> payload,
+        IReadOnlyDictionary<string, List<Guid>> incomingProfileIdsByKey,
         SyncPushResult result,
         string deviceId,
         CancellationToken cancellationToken)
@@ -3671,7 +3677,14 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
+            var reusesExistingNaturalKey = IsIncomingRentalBillingProfileIdReusedByNaturalKey(
+                dto,
+                entity.Id,
+                incomingProfileIdsByKey);
             dto.Id = entity.Id;
+            if (reusesExistingNaturalKey)
+                PreserveDuplicateRentalBillingProfileState(entity, dto);
+
             entity.Apply(dto);
             RegisterProcessedMutation(dto, nameof(RentalBillingProfile), deviceId);
             await ResolveHistoricalConflictsAsync(nameof(RentalBillingProfile), entity.Id, "후속 동기화가 정상 반영되어 기존 충돌을 자동 해결했습니다.", cancellationToken);
@@ -3681,6 +3694,42 @@ public sealed class SyncController : ControllerBase
 
         return accepted;
     }
+
+    private static bool IsIncomingRentalBillingProfileIdReusedByNaturalKey(
+        RentalBillingProfileDto dto,
+        Guid existingEntityId,
+        IReadOnlyDictionary<string, List<Guid>> incomingProfileIdsByKey)
+    {
+        if (string.IsNullOrWhiteSpace(dto.ProfileKey))
+            return false;
+
+        if (!incomingProfileIdsByKey.TryGetValue(dto.ProfileKey.Trim(), out var incomingIds))
+            return false;
+
+        return incomingIds.Any(incomingId => incomingId != Guid.Empty && incomingId != existingEntityId);
+    }
+
+    private static void PreserveDuplicateRentalBillingProfileState(
+        RentalBillingProfile entity,
+        RentalBillingProfileDto dto)
+    {
+        dto.BillingTemplateJson = RentalDuplicateNormalizer.MergeBillingTemplateJson(
+            entity.BillingTemplateJson,
+            dto.BillingTemplateJson);
+        dto.BillingRunsJson = RentalDuplicateNormalizer.MergeBillingRunsJson(
+            entity.BillingRunsJson,
+            dto.BillingRunsJson);
+        dto.LastBilledDate = entity.LastBilledDate ?? dto.LastBilledDate;
+        dto.LastSettledDate = entity.LastSettledDate ?? dto.LastSettledDate;
+        dto.SettledAmount = entity.SettledAmount != 0m ? entity.SettledAmount : dto.SettledAmount;
+        dto.OutstandingAmount = entity.OutstandingAmount != 0m ? entity.OutstandingAmount : dto.OutstandingAmount;
+        dto.SettlementStatus = PreserveExistingText(entity.SettlementStatus, dto.SettlementStatus);
+        dto.CompletionStatus = PreserveExistingText(entity.CompletionStatus, dto.CompletionStatus);
+        dto.BillingStatus = PreserveExistingText(entity.BillingStatus, dto.BillingStatus);
+    }
+
+    private static string PreserveExistingText(string? existingValue, string? incomingValue)
+        => string.IsNullOrWhiteSpace(existingValue) ? incomingValue?.Trim() ?? string.Empty : existingValue.Trim();
 
     private async Task<List<RentalBillingProfileDto>> FilterValidRentalBillingProfilesAsync(
         IEnumerable<RentalBillingProfileDto> payload,
