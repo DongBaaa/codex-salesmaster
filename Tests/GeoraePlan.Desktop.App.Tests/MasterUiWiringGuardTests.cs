@@ -83,6 +83,18 @@ public sealed class MasterUiWiringGuardTests
             "IsEnabled=\"{Binding HasSelectedCustomer}\"",
             xaml,
             StringComparison.Ordinal);
+        Assert.Contains(
+            "Text=\"{Binding PreviewCustomerName, Mode=OneWay}\"",
+            xaml,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Style=\"{StaticResource CopyablePreviewCustomerNameTextBoxStyle}\"",
+            xaml,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ToolTip=\"거래처명을 선택해 복사할 수 있습니다.\"",
+            xaml,
+            StringComparison.Ordinal);
         Assert.True(
             CountOccurrences(xaml, "IsReadOnly=\"{Binding IsPreviewCustomerInfoReadOnly}\"") >= 5,
             "전표 선택 상태의 거래처 정보 입력칸은 비활성화하지 말고 읽기전용으로 둬야 텍스트 선택/복사가 가능합니다.");
