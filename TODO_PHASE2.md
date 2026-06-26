@@ -162,3 +162,12 @@
 - [x] Desktop 회귀테스트 PASS: `SelectionOption|ItemCategoryOption|ItemWarehouseStock|InventoryTransferScope|InventoryStock|DataIntegrityDuplicateMergeTests.MergeDuplicateIssueAsync_ItemMergeMovesReferencesAndAggregatesWarehouseStock` 필터 28/28 통과.
 - [x] Server 회귀테스트 PASS: `ItemCategoryOption|ItemWarehouseStock|InventoryTransfer|WarehouseStock|OfficeOnlyUser_InventoryTransferScope` 필터 56/56 통과.
 - [ ] 운영 화면 실제 수동 QA 증거(USENET/YEONSU/ITWORLD 계정별 거래처 선택, 전표 출고창고, 재고이동 창고 선택 제한)는 별도 항목으로 유지합니다.
+
+
+### 2026-06-27 인쇄 편집/저장 경로 회귀 가드 증거
+- [x] 현재 소스에는 TODO에 적힌 `PrintTemplate`/`PrintTemplateVersion` 공통 엔티티·서버 API·마이그레이션이 실제로 존재하지 않음을 확인했습니다.
+- [x] 현재 납품 가능한 출력물 편집 경로는 전표별 `InvoicePrintModel` JSON 저장 방식입니다. 저장 위치는 PC 로컬 설정 키 `InvoicePrint:{invoiceId:N}`이며, 판매 화면과 메인 미리보기 모두 저장 JSON을 다시 읽고 현재 거래처/회사 정보 및 전표 라인 순서를 재동기화합니다.
+- [x] `PrintEditWindow`/`PrintEditViewModel` 기준으로 거래명세서·견적서·대금청구서 편집, 품목 라인 편집, 미리보기, 저장 명령, JSON 직렬화/역직렬화, 현재 정보/라인 순서 동기화 경로를 회귀테스트로 고정했습니다.
+- [x] 인쇄 관련 targeted 테스트 PASS: `PrintEditPersistenceGuardTests|TradePrint|PrintDocumentRenderingSmoke|InvoicePrintLineOrder|InvoicePrintModelCurrentInfoSynchronizer` 필터 26/26 통과.
+- [x] Desktop 전체 테스트 PASS: 758/758 통과.
+- [ ] 공통 템플릿 엔티티, 템플릿 버전 관리, 드래그 앤 드롭 WPF Canvas 편집기는 기존 전표별 JSON 편집과 다른 스키마/동기화/권한 설계가 필요하므로 별도 설계 후 진행합니다.
