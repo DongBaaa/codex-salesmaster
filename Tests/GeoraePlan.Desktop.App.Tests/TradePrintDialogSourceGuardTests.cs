@@ -131,6 +131,25 @@ public sealed class TradePrintDialogSourceGuardTests
     }
 
     [Fact]
+    public void TradePrintExecutor_LoadsDirectAndDeployedPrinterQueuesForCopierConnections()
+    {
+        var repoRoot = FindRepositoryRoot();
+        var executor = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Services",
+            "TradePrintExecutor.cs"));
+
+        Assert.Contains("InstalledPrinterQueueTypeGroups", executor, StringComparison.Ordinal);
+        Assert.Contains("EnumeratedPrintQueueTypes.DirectPrinting", executor, StringComparison.Ordinal);
+        Assert.Contains("EnumeratedPrintQueueTypes.PushedMachineConnection", executor, StringComparison.Ordinal);
+        Assert.Contains("EnumeratedPrintQueueTypes.PushedUserConnection", executor, StringComparison.Ordinal);
+        Assert.Contains("EnumeratedPrintQueueTypes.WorkOffline", executor, StringComparison.Ordinal);
+        Assert.Contains("프린터 목록 확인 실패({typeNames})", executor, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TradePrintExecutor_SavesPdfFileFromFixedDocument()
     {
         RunOnSta(() =>

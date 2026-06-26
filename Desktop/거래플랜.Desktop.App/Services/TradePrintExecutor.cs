@@ -22,11 +22,17 @@ public static class TradePrintExecutor
     private const double PdfPointPerDeviceIndependentPixel = 72d / 96d;
     private const double PdfRenderDpi = 144d;
 
-    private static readonly EnumeratedPrintQueueTypes[] InstalledPrinterQueueTypes =
+    private static readonly EnumeratedPrintQueueTypes[][] InstalledPrinterQueueTypeGroups =
     [
-        EnumeratedPrintQueueTypes.Local,
-        EnumeratedPrintQueueTypes.Connections,
-        EnumeratedPrintQueueTypes.Shared
+        [
+            EnumeratedPrintQueueTypes.Local,
+            EnumeratedPrintQueueTypes.Connections,
+            EnumeratedPrintQueueTypes.Shared
+        ],
+        [EnumeratedPrintQueueTypes.DirectPrinting],
+        [EnumeratedPrintQueueTypes.PushedMachineConnection],
+        [EnumeratedPrintQueueTypes.PushedUserConnection],
+        [EnumeratedPrintQueueTypes.WorkOffline]
     ];
 
     public static bool TryPrintDocument(
@@ -140,14 +146,18 @@ public static class TradePrintExecutor
     {
         var queuesByName = new Dictionary<string, PrintQueue>(StringComparer.OrdinalIgnoreCase);
 
-        try
+        foreach (var queueTypes in InstalledPrinterQueueTypeGroups)
         {
-            foreach (var queue in printServer.GetPrintQueues(InstalledPrinterQueueTypes))
-                AddQueue(queue);
-        }
-        catch (PrintSystemException ex)
-        {
-            AppLogger.Warn("PRINT", $"프린터 목록 확인 실패: {ex.Message}");
+            try
+            {
+                foreach (var queue in printServer.GetPrintQueues(queueTypes))
+                    AddQueue(queue);
+            }
+            catch (PrintSystemException ex)
+            {
+                var typeNames = string.Join(", ", queueTypes.Select(static type => type.ToString()));
+                AppLogger.Warn("PRINT", $"프린터 목록 확인 실패({typeNames}): {ex.Message}");
+            }
         }
 
         try
