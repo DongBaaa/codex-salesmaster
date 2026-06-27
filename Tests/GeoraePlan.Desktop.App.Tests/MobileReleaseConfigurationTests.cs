@@ -2525,6 +2525,8 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("server-$voucherSlug-payment-camera-attachment-upload", source, StringComparison.Ordinal);
         Assert.Contains("AttachmentMimeType", source, StringComparison.Ordinal);
         Assert.Contains("image/", source, StringComparison.Ordinal);
+        Assert.Contains("-Needles @('첨부 1건')", source, StringComparison.Ordinal);
+        Assert.Contains("$selectedDump.Content -notmatch '\\.(jpg|jpeg|png)'", source, StringComparison.Ordinal);
         Assert.Contains("카메라", source, StringComparison.Ordinal);
     }
 

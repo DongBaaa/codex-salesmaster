@@ -1234,9 +1234,13 @@ function Select-CameraAttachmentFromDevice {
         -DeviceId $DeviceId `
         -EvidenceDirectory $EvidenceDirectory `
         -Name "mobile-payment-e2e-$Timestamp-camera-attachment-selected" `
-        -Needles @('첨부 1건', '카메라') `
+        -Needles @('첨부 1건') `
         -StepName 'camera attachment selected' `
         -TimeoutSeconds 90
+    if ($selectedDump.Content -notmatch '\.(jpg|jpeg|png)') {
+        throw 'camera attachment selected 확인 실패. 촬영 이미지 파일명이 화면에 표시되지 않았습니다.'
+    }
+
     return $selectedDump
 }
 
