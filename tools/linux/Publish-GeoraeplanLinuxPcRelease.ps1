@@ -23,6 +23,10 @@ param(
     [switch]$AcceptRentalTemplateItemReferenceRisk,
     [switch]$SkipAndroidSigningContinuityCheck,
     [switch]$AcceptAndroidSigningCertificateChange,
+    [string]$LocalCacheAppDataRoot = '',
+    [string]$LocalCacheEvidenceDirectory = '',
+    [switch]$RequireLocalCacheConsistencyCheck,
+    [switch]$FailOnLocalCacheWarning,
     [string]$PreDeployBaseUrl = '',
     [string]$PreDeploySecretPath = '',
     [string]$PreDeployOutputDirectory = '',
@@ -468,7 +472,11 @@ function Invoke-ReleaseOperationalGate {
         [string]$OutputDirectory = '',
         [string[]]$AllowedIntegrityWarningCodes = @(),
         [string]$ReleaseId = '',
-        [bool]$FailOnOperationalWarnings = $false
+        [bool]$FailOnOperationalWarnings = $false,
+        [string]$LocalCacheAppDataRoot = '',
+        [string]$LocalCacheEvidenceDirectory = '',
+        [bool]$RequireLocalCacheConsistencyCheck = $false,
+        [bool]$FailOnLocalCacheWarning = $false
     )
 
     $operationalGateScript = Join-Path $Root 'tools\ops\Invoke-GeoraePlanOperationalGate.ps1'
@@ -506,6 +514,18 @@ function Invoke-ReleaseOperationalGate {
     }
     if ($FailOnOperationalWarnings) {
         $gateArgs += '-FailOnOperationalWarnings'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($LocalCacheAppDataRoot)) {
+        $gateArgs += @('-LocalCacheAppDataRoot', $LocalCacheAppDataRoot)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($LocalCacheEvidenceDirectory)) {
+        $gateArgs += @('-LocalCacheEvidenceDirectory', $LocalCacheEvidenceDirectory)
+    }
+    if ($RequireLocalCacheConsistencyCheck) {
+        $gateArgs += '-RequireLocalCacheConsistencyCheck'
+    }
+    if ($FailOnLocalCacheWarning) {
+        $gateArgs += '-FailOnLocalCacheWarning'
     }
 
     Write-Host "$($Phase)_operational_gate_start base_url=$BaseUrl output=$OutputDirectory"
@@ -720,7 +740,11 @@ if ($MirrorToLive -and -not $SkipPreDeployOperationalGate.IsPresent) {
         -OutputDirectory $PreDeployOutputDirectory `
         -AllowedIntegrityWarningCodes $PreDeployAllowedIntegrityWarningCodes `
         -ReleaseId $ReleaseId `
-        -FailOnOperationalWarnings ([bool]$FailOnOperationalWarnings)
+        -FailOnOperationalWarnings ([bool]$FailOnOperationalWarnings) `
+        -LocalCacheAppDataRoot $LocalCacheAppDataRoot `
+        -LocalCacheEvidenceDirectory $LocalCacheEvidenceDirectory `
+        -RequireLocalCacheConsistencyCheck ([bool]$RequireLocalCacheConsistencyCheck) `
+        -FailOnLocalCacheWarning ([bool]$FailOnLocalCacheWarning)
 }
 elseif ($MirrorToLive -and $SkipPreDeployOperationalGate.IsPresent) {
     Write-Warning 'Pre-deploy operational gate was skipped by request. Use only when a separate strict gate has already passed.'
@@ -833,7 +857,11 @@ try {
                 -OutputDirectory $PostDeployOutputDirectory `
                 -AllowedIntegrityWarningCodes $PostDeployAllowedIntegrityWarningCodes `
                 -ReleaseId $ReleaseId `
-                -FailOnOperationalWarnings ([bool]$FailOnOperationalWarnings)
+                -FailOnOperationalWarnings ([bool]$FailOnOperationalWarnings) `
+                -LocalCacheAppDataRoot $LocalCacheAppDataRoot `
+                -LocalCacheEvidenceDirectory $LocalCacheEvidenceDirectory `
+                -RequireLocalCacheConsistencyCheck ([bool]$RequireLocalCacheConsistencyCheck) `
+                -FailOnLocalCacheWarning ([bool]$FailOnLocalCacheWarning)
         }
         else {
             Write-Warning 'Post-deploy operational gate was skipped by request. Use only when a separate strict gate has already passed.'

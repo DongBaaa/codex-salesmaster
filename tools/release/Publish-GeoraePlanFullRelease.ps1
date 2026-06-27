@@ -10,6 +10,10 @@ param(
     [switch]$AllowLegacyAndroidDebugSigning,
     [switch]$SkipAndroidSigningContinuityCheck,
     [switch]$AcceptAndroidSigningCertificateChange,
+    [string]$LocalCacheAppDataRoot = '',
+    [string]$LocalCacheEvidenceDirectory = '',
+    [switch]$RequireLocalCacheConsistencyCheck,
+    [switch]$FailOnLocalCacheWarning,
     [string]$DesktopMinimumSupportedVersion,
     [string]$AndroidMinimumSupportedVersion,
     [switch]$MandatoryDesktop,
@@ -359,6 +363,18 @@ if ($DeployToLinuxPc) {
     }
     if ($AcceptAndroidSigningCertificateChange) {
         $linuxArgs += '-AcceptAndroidSigningCertificateChange'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($LocalCacheAppDataRoot)) {
+        $linuxArgs += @('-LocalCacheAppDataRoot', $LocalCacheAppDataRoot)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($LocalCacheEvidenceDirectory)) {
+        $linuxArgs += @('-LocalCacheEvidenceDirectory', $LocalCacheEvidenceDirectory)
+    }
+    if ($RequireLocalCacheConsistencyCheck) {
+        $linuxArgs += '-RequireLocalCacheConsistencyCheck'
+    }
+    if ($FailOnLocalCacheWarning) {
+        $linuxArgs += '-FailOnLocalCacheWarning'
     }
     if (-not [string]::IsNullOrWhiteSpace($PreDeployBaseUrl)) {
         $linuxArgs += @('-PreDeployBaseUrl', $PreDeployBaseUrl)

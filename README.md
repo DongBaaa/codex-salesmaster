@@ -121,6 +121,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\linux
 - 새 작업에서는 `tools\\linux` 스크립트만 사용합니다.
 - 유료 납품/엄격 release에서는 operational warning을 배포 차단으로 보기 위해 `-FailOnOperationalWarnings`를 유지합니다.
 - Android APK를 live에 반영할 때는 현재 live APK와 새 APK의 signing certificate SHA-256이 자동 비교됩니다. 값이 바뀌면 기존 설치본은 제자리 업데이트가 불가능하므로, 재설치/전환 계획이 검증된 경우에만 `-AcceptAndroidSigningCertificateChange`를 명시합니다.
+- 사용자 PC 로컬 캐시까지 납품 증거에 포함할 때는 `-LocalCacheAppDataRoot "<사용자 AppData 루트>" -RequireLocalCacheConsistencyCheck`를 추가합니다. 이 옵션이 켜진 상태에서 로컬 캐시 점검이 skip되면 live 관찰/운영 게이트가 실패합니다.
 
 ## 인쇄 기본 동작
 - `[완료]` 판매(매출) 창에서 `출력물 편집` 후 데이터 저장

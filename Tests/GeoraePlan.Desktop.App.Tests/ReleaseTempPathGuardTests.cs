@@ -971,6 +971,49 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public void StrictReleaseCanRequireLocalCacheConsistencyObservation()
+    {
+        var liveObservation = ReadRepositoryFile("테스트 시행", "Invoke-LiveObservationCheck.ps1");
+        var operationalGate = ReadRepositoryFile("tools", "ops", "Invoke-GeoraePlanOperationalGate.ps1");
+        var linuxRelease = ReadRepositoryFile("tools", "linux", "Publish-GeoraeplanLinuxPcRelease.ps1");
+        var fullRelease = ReadRepositoryFile("tools", "release", "Publish-GeoraePlanFullRelease.ps1");
+        var deployAfterTest = ReadRepositoryFile("테스트 시행", "Deploy-After-Test.ps1");
+        var verificationDeploy = ReadRepositoryFile("테스트 시행", "검증완료-반영.ps1");
+
+        Assert.Contains("[switch]$RequireLocalCacheConsistencyCheck", liveObservation, StringComparison.Ordinal);
+        Assert.Contains("[switch]$FailOnLocalCacheWarning", liveObservation, StringComparison.Ordinal);
+        Assert.Contains("로컬 캐시 검증이 필수로 지정되었지만 실행되지 않았습니다", liveObservation, StringComparison.Ordinal);
+        Assert.Contains("로컬 캐시 일치 검증 경고가 확인되었습니다", liveObservation, StringComparison.Ordinal);
+        Assert.Contains("$localCacheWarningFailure = $FailOnLocalCacheWarning", liveObservation, StringComparison.Ordinal);
+        Assert.Contains("- 로컬 캐시 필수 점검:", liveObservation, StringComparison.Ordinal);
+        Assert.Contains("- 로컬 캐시 Warning 실패 처리:", liveObservation, StringComparison.Ordinal);
+
+        Assert.Contains("[string]$LocalCacheAppDataRoot = \"\"", operationalGate, StringComparison.Ordinal);
+        Assert.Contains("[string]$LocalCacheEvidenceDirectory = \"\"", operationalGate, StringComparison.Ordinal);
+        Assert.Contains("[switch]$RequireLocalCacheConsistencyCheck", operationalGate, StringComparison.Ordinal);
+        Assert.Contains("[switch]$FailOnLocalCacheWarning", operationalGate, StringComparison.Ordinal);
+        Assert.Contains("$liveObservationArgs += @('-LocalCacheAppDataRoot', $LocalCacheAppDataRoot)", operationalGate, StringComparison.Ordinal);
+        Assert.Contains("$liveObservationArgs += @('-LocalCacheEvidenceDirectory', $LocalCacheEvidenceDirectory)", operationalGate, StringComparison.Ordinal);
+        Assert.Contains("$liveObservationArgs += '-RequireLocalCacheConsistencyCheck'", operationalGate, StringComparison.Ordinal);
+        Assert.Contains("$liveObservationArgs += '-FailOnLocalCacheWarning'", operationalGate, StringComparison.Ordinal);
+
+        foreach (var source in new[] { linuxRelease, fullRelease, deployAfterTest, verificationDeploy })
+        {
+            Assert.Contains("[string]$LocalCacheAppDataRoot", source, StringComparison.Ordinal);
+            Assert.Contains("[string]$LocalCacheEvidenceDirectory", source, StringComparison.Ordinal);
+            Assert.Contains("[switch]$RequireLocalCacheConsistencyCheck", source, StringComparison.Ordinal);
+            Assert.Contains("[switch]$FailOnLocalCacheWarning", source, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("-RequireLocalCacheConsistencyCheck ([bool]$RequireLocalCacheConsistencyCheck)", linuxRelease, StringComparison.Ordinal);
+        Assert.Contains("-FailOnLocalCacheWarning ([bool]$FailOnLocalCacheWarning)", linuxRelease, StringComparison.Ordinal);
+        Assert.Contains("$linuxArgs += '-RequireLocalCacheConsistencyCheck'", fullRelease, StringComparison.Ordinal);
+        Assert.Contains("$linuxArgs += '-FailOnLocalCacheWarning'", fullRelease, StringComparison.Ordinal);
+        Assert.Contains("$linuxArgs += '-RequireLocalCacheConsistencyCheck'", deployAfterTest, StringComparison.Ordinal);
+        Assert.Contains("$linuxArgs += '-FailOnLocalCacheWarning'", deployAfterTest, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LocalCacheConsistencyDetectsNonInventoryAndAssetWarehouseStockResidues()
     {
         var source = ReadRepositoryFile(

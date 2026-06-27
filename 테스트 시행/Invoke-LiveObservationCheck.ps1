@@ -15,6 +15,8 @@ param(
     [string]$LocalCacheAppDataRoot = "",
     [string]$LocalCacheEvidenceDirectory = "",
     [switch]$SkipLocalCacheConsistencyCheck,
+    [switch]$RequireLocalCacheConsistencyCheck,
+    [switch]$FailOnLocalCacheWarning,
     [string]$OutputPath = ""
 )
 
@@ -880,6 +882,14 @@ else {
 }
 
 $localCacheResult = Test-LocalCacheConsistencyProbe -ProjectRoot $ProjectRoot -BaseUrl $resolvedBaseUrl -ProbeUsername $ProbeUsername -ProbePassword $ProbePassword -BearerToken $BearerToken -LocalCacheAppDataRoot $LocalCacheAppDataRoot -LocalCacheEvidenceDirectory $LocalCacheEvidenceDirectory -SkipLocalCacheConsistencyCheck ([bool]$SkipLocalCacheConsistencyCheck)
+if ($RequireLocalCacheConsistencyCheck -and $localCacheResult.Skipped) {
+    $localCacheResult = [pscustomobject]@{
+        Success = $false
+        Skipped = $false
+        Message = "로컬 캐시 검증이 필수로 지정되었지만 실행되지 않았습니다: $($localCacheResult.Message)"
+        Report = [string]$localCacheResult.Report
+    }
+}
 
 $failedSamples = $samples | Where-Object { -not $_.HealthOk -or -not $_.ManifestOk -or -not $_.DesktopPackageOk -or -not $_.AndroidPackageOk -or -not $_.DataOk }
 $warningMessages = New-Object System.Collections.Generic.List[string]
@@ -889,8 +899,12 @@ if (-not $androidSigningResult.Skipped -and -not $androidSigningResult.Success) 
 if (-not $androidSigningResult.Skipped -and $androidSigningResult.IsDebugSigning) {
     $warningMessages.Add("Android APK가 debug signing 인증서로 서명되어 있습니다: $($androidSigningResult.CertificateDn)") | Out-Null
 }
+if (-not $localCacheResult.Skipped -and $localCacheResult.Success -and [string]::Equals([string]$localCacheResult.Message, 'WARN', [System.StringComparison]::OrdinalIgnoreCase)) {
+    $warningMessages.Add("로컬 캐시 일치 검증 경고가 확인되었습니다: $($localCacheResult.Report)") | Out-Null
+}
 $androidSigningFailure = $FailOnAndroidDebugSigning -and -not $androidSigningResult.Skipped -and $androidSigningResult.IsDebugSigning
-$overallStatus = if ($failedSamples.Count -gt 0 -or -not $localCacheResult.Success -or $androidSigningFailure) {
+$localCacheWarningFailure = $FailOnLocalCacheWarning -and -not $localCacheResult.Skipped -and $localCacheResult.Success -and [string]::Equals([string]$localCacheResult.Message, 'WARN', [System.StringComparison]::OrdinalIgnoreCase)
+$overallStatus = if ($failedSamples.Count -gt 0 -or -not $localCacheResult.Success -or $androidSigningFailure -or $localCacheWarningFailure) {
     "FAIL"
 }
 elseif ($warningMessages.Count -gt 0) {
@@ -939,6 +953,8 @@ else {
     "WARN - $($androidSigningResult.Message)"
 }
 $lines.Add("- Android APK signing 점검: $androidSigningSummary") | Out-Null
+$lines.Add("- 로컬 캐시 필수 점검: $([bool]$RequireLocalCacheConsistencyCheck)") | Out-Null
+$lines.Add("- 로컬 캐시 Warning 실패 처리: $([bool]$FailOnLocalCacheWarning)") | Out-Null
 $localCacheSummary = if ($localCacheResult.Skipped) { "SKIP - $($localCacheResult.Message)" } elseif ($localCacheResult.Success) { "$($localCacheResult.Message) - $($localCacheResult.Report)" } else { "FAIL - $($localCacheResult.Message)" }
 $lines.Add("- 로컬 캐시 점검: $localCacheSummary") | Out-Null
 $lines.Add("") | Out-Null

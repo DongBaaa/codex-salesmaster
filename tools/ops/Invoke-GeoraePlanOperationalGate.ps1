@@ -7,8 +7,12 @@ param(
     [string]$ApprovedTargetsPath = "",
     [string]$PlatformStateRoot = "",
     [string]$OutputDirectory = "",
+    [string]$LocalCacheAppDataRoot = "",
+    [string]$LocalCacheEvidenceDirectory = "",
     [switch]$FailOnIntegrityWarnings,
     [switch]$FailOnOperationalWarnings,
+    [switch]$RequireLocalCacheConsistencyCheck,
+    [switch]$FailOnLocalCacheWarning,
     [string[]]$AllowedIntegrityWarningCodes = @(),
     [switch]$SkipWriteSafetyChecks,
     [switch]$UseEphemeralOperationalWrites,
@@ -668,7 +672,31 @@ $liveObservationScript = Join-Path $resolvedRoot '테스트 시행\Invoke-LiveOb
 $liveObservationReport = Join-Path $OutputDirectory 'live-observation.md'
 if (Test-Path -LiteralPath $liveObservationScript) {
     try {
-        $scriptOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File $liveObservationScript -ProjectRoot $resolvedRoot -BaseUrl $BaseUrl -Channel $Channel -SampleCount 2 -IntervalSeconds 5 -OutputPath $liveObservationReport 2>&1 | Out-String -Width 4096
+        $liveObservationArgs = @(
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-File', $liveObservationScript,
+            '-ProjectRoot', $resolvedRoot,
+            '-BaseUrl', $BaseUrl,
+            '-Channel', $Channel,
+            '-SampleCount', '2',
+            '-IntervalSeconds', '5',
+            '-OutputPath', $liveObservationReport
+        )
+        if (-not [string]::IsNullOrWhiteSpace($LocalCacheAppDataRoot)) {
+            $liveObservationArgs += @('-LocalCacheAppDataRoot', $LocalCacheAppDataRoot)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($LocalCacheEvidenceDirectory)) {
+            $liveObservationArgs += @('-LocalCacheEvidenceDirectory', $LocalCacheEvidenceDirectory)
+        }
+        if ($RequireLocalCacheConsistencyCheck) {
+            $liveObservationArgs += '-RequireLocalCacheConsistencyCheck'
+        }
+        if ($FailOnLocalCacheWarning) {
+            $liveObservationArgs += '-FailOnLocalCacheWarning'
+        }
+
+        $scriptOutput = & powershell @liveObservationArgs 2>&1 | Out-String -Width 4096
         Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "`n## live observation script"
         Add-Content -LiteralPath $logPath -Encoding UTF8 -Value $scriptOutput
         if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $liveObservationReport)) {
@@ -1387,6 +1415,11 @@ $reportLines.Add(('- Channel: `{0}`' -f $Channel)) | Out-Null
 $reportLines.Add(('- OutputDirectory: `{0}`' -f $OutputDirectory)) | Out-Null
 $reportLines.Add(('- 무결성 Warning 실패 처리: `{0}`' -f ([bool]$FailOnIntegrityWarnings))) | Out-Null
 $reportLines.Add(('- 운영 Warning 실패 처리: `{0}`' -f ([bool]$FailOnOperationalWarnings))) | Out-Null
+$reportLines.Add(('- 로컬 캐시 필수 점검: `{0}`' -f ([bool]$RequireLocalCacheConsistencyCheck))) | Out-Null
+$reportLines.Add(('- 로컬 캐시 Warning 실패 처리: `{0}`' -f ([bool]$FailOnLocalCacheWarning))) | Out-Null
+if (-not [string]::IsNullOrWhiteSpace($LocalCacheAppDataRoot)) {
+    $reportLines.Add(('- 로컬 캐시 AppDataRoot: `{0}`' -f $LocalCacheAppDataRoot)) | Out-Null
+}
 $reportLines.Add(('- 쓰기 안전성 점검 생략: `{0}`' -f ([bool]$SkipWriteSafetyChecks))) | Out-Null
 if ($normalizedAllowedIntegrityWarningCodes.Count -gt 0) {
     $reportLines.Add(('- 허용 Warning 코드: `{0}`' -f ($normalizedAllowedIntegrityWarningCodes -join ', '))) | Out-Null
