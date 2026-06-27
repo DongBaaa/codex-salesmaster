@@ -40,6 +40,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\relea
 ```
 
 > 유료 납품/엄격 release에서는 live 전/후 operational gate를 생략하지 않고 `-FailOnOperationalWarnings`로 warning도 차단합니다. gate 생략 옵션은 별도 엄격 gate가 이미 통과한 긴급 상황에서만 사용합니다.
+> Android APK가 포함된 live 반영은 새 APK와 현재 live APK의 signing certificate SHA-256을 비교합니다. 불일치하면 기존 설치본 업데이트가 실패하므로 기본 차단하며, 재설치/전환 공지가 검증된 경우에만 `-AcceptAndroidSigningCertificateChange`를 사용합니다.
 
 ## 4. SSH 설정
 

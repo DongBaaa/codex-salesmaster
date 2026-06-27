@@ -8,6 +8,8 @@ param(
     [switch]$DisableAndroidAot,
     [switch]$DisableAndroidTrimming,
     [switch]$AllowLegacyAndroidDebugSigning,
+    [switch]$SkipAndroidSigningContinuityCheck,
+    [switch]$AcceptAndroidSigningCertificateChange,
     [string]$DesktopMinimumSupportedVersion,
     [string]$AndroidMinimumSupportedVersion,
     [switch]$MandatoryDesktop,
@@ -177,6 +179,28 @@ function Resolve-ProjectFile {
     return $match.FullName
 }
 
+function Resolve-AndroidDeploymentPackage {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$AndroidVersion
+    )
+
+    $deploymentRoot = Join-Path $ProjectRoot '배포'
+    $exactPath = Join-Path $deploymentRoot "거래플랜-안드로이드-v$AndroidVersion-signed.apk"
+    if (Test-Path -LiteralPath $exactPath) {
+        return (Resolve-Path -LiteralPath $exactPath).Path
+    }
+
+    $candidate = Get-ChildItem -LiteralPath $deploymentRoot -File -Filter '거래플랜-안드로이드-v*-signed.apk' -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($null -eq $candidate) {
+        throw "Android deployment APK not found after build under $deploymentRoot"
+    }
+
+    return $candidate.FullName
+}
+
 $ErrorActionPreference = 'Stop'
 
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
@@ -249,6 +273,33 @@ if ($LASTEXITCODE -ne 0) {
     throw 'android apk build failed.'
 }
 
+if ($DeployToLinuxPc -and -not $SkipAndroidSigningContinuityCheck) {
+    $androidSigningContinuityScript = Join-Path $ProjectRoot 'tools\mobile\Test-GeoraePlanAndroidSigningContinuity.ps1'
+    if (-not (Test-Path -LiteralPath $androidSigningContinuityScript)) {
+        throw "Android signing continuity script not found: $androidSigningContinuityScript"
+    }
+
+    $localAndroidApk = Resolve-AndroidDeploymentPackage -ProjectRoot $ProjectRoot -AndroidVersion $androidVersion
+    $continuityBaseUrl = if (-not [string]::IsNullOrWhiteSpace($PreDeployBaseUrl)) { $PreDeployBaseUrl } else { 'https://trade.2884.kr' }
+    $continuityArgs = @(
+        '-NoProfile'
+        '-ExecutionPolicy', 'Bypass'
+        '-File', $androidSigningContinuityScript
+        '-ProjectRoot', $ProjectRoot
+        '-LocalApkPath', $localAndroidApk
+        '-BaseUrl', $continuityBaseUrl
+        '-Channel', $Channel
+    )
+    if ($AcceptAndroidSigningCertificateChange) {
+        $continuityArgs += '-AcceptCertificateChange'
+    }
+
+    & powershell @continuityArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Android signing certificate continuity check failed.'
+    }
+}
+
 $updateAssetsScript = Join-Path $ProjectRoot 'tools\release\Publish-GeoraePlanUpdateAssets.ps1'
 $updateArgs = @(
     '-NoProfile'
@@ -302,6 +353,12 @@ if ($DeployToLinuxPc) {
     }
     if ($AcceptRentalTemplateItemReferenceRisk) {
         $linuxArgs += '-AcceptRentalTemplateItemReferenceRisk'
+    }
+    if ($SkipAndroidSigningContinuityCheck) {
+        $linuxArgs += '-SkipAndroidSigningContinuityCheck'
+    }
+    if ($AcceptAndroidSigningCertificateChange) {
+        $linuxArgs += '-AcceptAndroidSigningCertificateChange'
     }
     if (-not [string]::IsNullOrWhiteSpace($PreDeployBaseUrl)) {
         $linuxArgs += @('-PreDeployBaseUrl', $PreDeployBaseUrl)

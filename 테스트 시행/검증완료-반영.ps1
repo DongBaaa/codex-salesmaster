@@ -22,6 +22,8 @@ param(
     [switch]$SkipPostDeployOperationalGate,
     [switch]$FailOnOperationalWarnings,
     [switch]$AcceptRentalTemplateItemReferenceRisk,
+    [switch]$SkipAndroidSigningContinuityCheck,
+    [switch]$AcceptAndroidSigningCertificateChange,
     [string]$PreDeployBaseUrl = '',
     [string]$PreDeploySecretPath = '',
     [string]$PreDeployOutputDirectory = '',

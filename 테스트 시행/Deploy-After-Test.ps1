@@ -23,6 +23,8 @@ param(
     [switch]$SkipPostDeployOperationalGate,
     [switch]$FailOnOperationalWarnings,
     [switch]$AcceptRentalTemplateItemReferenceRisk,
+    [switch]$SkipAndroidSigningContinuityCheck,
+    [switch]$AcceptAndroidSigningCertificateChange,
     [string]$PreDeployBaseUrl = '',
     [string]$PreDeploySecretPath = '',
     [string]$PreDeployOutputDirectory = '',
@@ -571,6 +573,12 @@ if (-not $SkipLinuxPc) {
     }
     if ($AcceptRentalTemplateItemReferenceRisk) {
         $linuxArgs += '-AcceptRentalTemplateItemReferenceRisk'
+    }
+    if ($SkipAndroidSigningContinuityCheck) {
+        $linuxArgs += '-SkipAndroidSigningContinuityCheck'
+    }
+    if ($AcceptAndroidSigningCertificateChange) {
+        $linuxArgs += '-AcceptAndroidSigningCertificateChange'
     }
     if (-not [string]::IsNullOrWhiteSpace($PreDeployBaseUrl)) {
         $linuxArgs += @('-PreDeployBaseUrl', $PreDeployBaseUrl)

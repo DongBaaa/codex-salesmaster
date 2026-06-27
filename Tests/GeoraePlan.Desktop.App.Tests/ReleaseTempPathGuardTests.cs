@@ -960,9 +960,11 @@ public sealed class ReleaseTempPathGuardTests
         {
             Assert.Contains("-FailOnOperationalWarnings", source, StringComparison.Ordinal);
             Assert.Contains("유료 납품", source, StringComparison.Ordinal);
+            Assert.Contains("AcceptAndroidSigningCertificateChange", source, StringComparison.Ordinal);
         }
 
         Assert.Contains("operational warning을 배포 차단", readme, StringComparison.Ordinal);
+        Assert.Contains("signing certificate SHA-256", readme, StringComparison.Ordinal);
         Assert.Contains("live 전/후 operational gate를 생략하지 않고", linuxRunbook, StringComparison.Ordinal);
         Assert.Contains("live 전/후 operational gate를 생략하지 않고", updateGuide, StringComparison.Ordinal);
         Assert.Contains("live 관찰/운영 게이트 warning도 배포 차단", testReadme, StringComparison.Ordinal);
@@ -1114,6 +1116,71 @@ public sealed class ReleaseTempPathGuardTests
             "$solution = Get-ChildItem",
             "& $dotnetExe build",
             "& powershell @androidArgs");
+    }
+
+    [Fact]
+    public void FullReleaseBlocksAndroidSigningCertificateChangeBeforePublishingManifest()
+    {
+        var fullRelease = ReadRepositoryFile(
+            "tools",
+            "release",
+            "Publish-GeoraePlanFullRelease.ps1");
+        var continuityScript = ReadRepositoryFile(
+            "tools",
+            "mobile",
+            "Test-GeoraePlanAndroidSigningContinuity.ps1");
+        var linuxRelease = ReadRepositoryFile(
+            "tools",
+            "linux",
+            "Publish-GeoraeplanLinuxPcRelease.ps1");
+        var deployAfterTest = ReadRepositoryFile(
+            "테스트 시행",
+            "Deploy-After-Test.ps1");
+        var verificationDeploy = ReadRepositoryFile(
+            "테스트 시행",
+            "검증완료-반영.ps1");
+
+        Assert.Contains("[switch]$SkipAndroidSigningContinuityCheck", fullRelease, StringComparison.Ordinal);
+        Assert.Contains("[switch]$AcceptAndroidSigningCertificateChange", fullRelease, StringComparison.Ordinal);
+        Assert.Contains("function Resolve-AndroidDeploymentPackage", fullRelease, StringComparison.Ordinal);
+        Assert.Contains("Test-GeoraePlanAndroidSigningContinuity.ps1", fullRelease, StringComparison.Ordinal);
+        Assert.Contains("$continuityArgs += '-AcceptCertificateChange'", fullRelease, StringComparison.Ordinal);
+        Assert.Contains("Android signing certificate continuity check failed", fullRelease, StringComparison.Ordinal);
+        Assert.Contains("$linuxArgs += '-SkipAndroidSigningContinuityCheck'", fullRelease, StringComparison.Ordinal);
+        Assert.Contains("$linuxArgs += '-AcceptAndroidSigningCertificateChange'", fullRelease, StringComparison.Ordinal);
+        AssertInOrder(
+            fullRelease,
+            "& powershell @androidArgs",
+            "Test-GeoraePlanAndroidSigningContinuity.ps1",
+            "$updateAssetsScript = Join-Path");
+
+        Assert.Contains("[switch]$SkipAndroidSigningContinuityCheck", linuxRelease, StringComparison.Ordinal);
+        Assert.Contains("[switch]$AcceptAndroidSigningCertificateChange", linuxRelease, StringComparison.Ordinal);
+        Assert.Contains("function Invoke-AndroidSigningContinuityGate", linuxRelease, StringComparison.Ordinal);
+        Assert.Contains("pre-deploy_android_signing_continuity_start", linuxRelease, StringComparison.Ordinal);
+        Assert.Contains("-AcceptCertificateChange ([bool]$AcceptAndroidSigningCertificateChange)", linuxRelease, StringComparison.Ordinal);
+        AssertInOrder(
+            linuxRelease,
+            "& $updateAssetScript @updateAssetArgs",
+            "if ($MirrorToLive -and -not $SkipAndroidSigningContinuityCheck.IsPresent)",
+            "Invoke-AndroidSigningContinuityGate `",
+            "Update-PublishedAppSettings -PublishRoot $tempPublishRoot");
+
+        Assert.Contains("[switch]$SkipAndroidSigningContinuityCheck", deployAfterTest, StringComparison.Ordinal);
+        Assert.Contains("[switch]$AcceptAndroidSigningCertificateChange", deployAfterTest, StringComparison.Ordinal);
+        Assert.Contains("$linuxArgs += '-SkipAndroidSigningContinuityCheck'", deployAfterTest, StringComparison.Ordinal);
+        Assert.Contains("$linuxArgs += '-AcceptAndroidSigningCertificateChange'", deployAfterTest, StringComparison.Ordinal);
+        Assert.Contains("[switch]$SkipAndroidSigningContinuityCheck", verificationDeploy, StringComparison.Ordinal);
+        Assert.Contains("[switch]$AcceptAndroidSigningCertificateChange", verificationDeploy, StringComparison.Ordinal);
+
+        Assert.Contains("[switch]$AcceptCertificateChange", continuityScript, StringComparison.Ordinal);
+        Assert.Contains("Release APK signing certificate differs from the currently published Android package", continuityScript, StringComparison.Ordinal);
+        Assert.Contains("existing installed APK cannot be updated in place", continuityScript, StringComparison.Ordinal);
+        Assert.Contains("remote_certificate_sha256", continuityScript, StringComparison.Ordinal);
+        Assert.Contains("local_certificate_sha256", continuityScript, StringComparison.Ordinal);
+        Assert.Contains("android_signing_continuity=FAIL", continuityScript, StringComparison.Ordinal);
+        Assert.Contains("android_signing_continuity=ACCEPTED_CERTIFICATE_CHANGE", continuityScript, StringComparison.Ordinal);
+        Assert.Contains("android_signing_continuity=PASS", continuityScript, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -120,6 +120,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\linux
 - Linux PC의 `/srv/georaeplan/ops/apply-release.sh`가 존재하고 `bash -n` 검사를 통과해야 합니다.
 - 새 작업에서는 `tools\\linux` 스크립트만 사용합니다.
 - 유료 납품/엄격 release에서는 operational warning을 배포 차단으로 보기 위해 `-FailOnOperationalWarnings`를 유지합니다.
+- Android APK를 live에 반영할 때는 현재 live APK와 새 APK의 signing certificate SHA-256이 자동 비교됩니다. 값이 바뀌면 기존 설치본은 제자리 업데이트가 불가능하므로, 재설치/전환 계획이 검증된 경우에만 `-AcceptAndroidSigningCertificateChange`를 명시합니다.
 
 ## 인쇄 기본 동작
 - `[완료]` 판매(매출) 창에서 `출력물 편집` 후 데이터 저장
@@ -157,6 +158,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\linux
 - 안드로이드 환경 점검 스크립트: `D:\거래플랜\tools\mobile\Test-GeoraePlanAndroidEnvironment.ps1`
 - 안드로이드 keystore 생성 스크립트: `D:\거래플랜\tools\mobile\New-GeoraePlanAndroidKeystore.ps1`
 - 안드로이드 서명 APK 빌드 스크립트: `D:\거래플랜\tools\mobile\Build-GeoraePlanAndroidApk.ps1`
+- 안드로이드 live 서명 연속성 점검 스크립트: `D:\거래플랜\tools\mobile\Test-GeoraePlanAndroidSigningContinuity.ps1`
 - 안드로이드 실사용 APK: `D:\거래플랜\배포\거래플랜-안드로이드-v0.2.4-signed.apk`
 - 안드로이드 스튜디오 직접 테스트 런처:
   - `D:\거래플랜\배포\안드로이드스튜디오-테스트.cmd`

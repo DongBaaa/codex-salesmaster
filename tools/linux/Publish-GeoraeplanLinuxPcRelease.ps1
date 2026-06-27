@@ -21,6 +21,8 @@ param(
     [switch]$SkipPlatformHealthChecks,
     [switch]$FailOnOperationalWarnings,
     [switch]$AcceptRentalTemplateItemReferenceRisk,
+    [switch]$SkipAndroidSigningContinuityCheck,
+    [switch]$AcceptAndroidSigningCertificateChange,
     [string]$PreDeployBaseUrl = '',
     [string]$PreDeploySecretPath = '',
     [string]$PreDeployOutputDirectory = '',
@@ -562,6 +564,56 @@ function Invoke-RentalTemplateItemReferenceGate {
     Write-Host "$($Phase)_rental_template_item_reference_gate_done output=$OutputDirectory"
 }
 
+function Invoke-AndroidSigningContinuityGate {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$PublishRoot,
+        [Parameter(Mandatory = $true)][string]$BaseUrl,
+        [Parameter(Mandatory = $true)][string]$Channel,
+        [bool]$AcceptCertificateChange = $false
+    )
+
+    $androidSigningContinuityScript = Join-Path $Root 'tools\mobile\Test-GeoraePlanAndroidSigningContinuity.ps1'
+    if (-not (Test-Path -LiteralPath $androidSigningContinuityScript)) {
+        throw "Android signing continuity script not found: $androidSigningContinuityScript"
+    }
+
+    $androidDownloadsRoot = Join-Path $PublishRoot 'updates\downloads\android'
+    $localAndroidPackage = Get-ChildItem -LiteralPath $androidDownloadsRoot -File -Filter '*.apk' -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($null -eq $localAndroidPackage) {
+        Write-Warning "Android signing continuity gate skipped because no Android APK was prepared under $androidDownloadsRoot"
+        Write-Host 'pre-deploy_android_signing_continuity=skipped reason=no-android-apk'
+        return
+    }
+
+    if ([string]::IsNullOrWhiteSpace($BaseUrl)) {
+        throw 'Android signing continuity gate cannot run because BaseUrl is missing.'
+    }
+
+    $continuityArgs = @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $androidSigningContinuityScript,
+        '-ProjectRoot', $Root,
+        '-LocalApkPath', $localAndroidPackage.FullName,
+        '-BaseUrl', $BaseUrl,
+        '-Channel', $Channel
+    )
+    if ($AcceptCertificateChange) {
+        $continuityArgs += '-AcceptCertificateChange'
+    }
+
+    Write-Host "pre-deploy_android_signing_continuity_start apk=$($localAndroidPackage.FullName) base_url=$BaseUrl"
+    & powershell @continuityArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Android signing certificate continuity check failed.'
+    }
+
+    Write-Host 'pre-deploy_android_signing_continuity_done'
+}
+
 function Update-PublishedAppSettings {
     param(
         [Parameter(Mandatory = $true)][string]$PublishRoot,
@@ -720,6 +772,18 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw 'Update asset publish failed.'
         }
+    }
+
+    if ($MirrorToLive -and -not $SkipAndroidSigningContinuityCheck.IsPresent) {
+        Invoke-AndroidSigningContinuityGate `
+            -Root $ProjectRoot `
+            -PublishRoot $tempPublishRoot `
+            -BaseUrl $resolvedPreDeployBaseUrl `
+            -Channel 'stable' `
+            -AcceptCertificateChange ([bool]$AcceptAndroidSigningCertificateChange)
+    }
+    elseif ($MirrorToLive -and $SkipAndroidSigningContinuityCheck.IsPresent) {
+        Write-Warning 'Android signing continuity gate was skipped by request. Use only when there is no Android package change or a separate reinstall/migration plan has already been verified.'
     }
 
     Update-PublishedAppSettings -PublishRoot $tempPublishRoot -RemoteEnv $remoteEnv
