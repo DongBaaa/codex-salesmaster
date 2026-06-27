@@ -8,6 +8,8 @@
     [int]$IntegrityTimeoutSec = 90,
     [int]$IntegrityRetryCount = 2,
     [int]$IntegrityRetryDelaySeconds = 5,
+    [ValidateRange(1, 100)]
+    [int]$IntegrityDetailSampleLimit = 10,
     [int]$MinCustomers = 1,
     [int]$MinItems = 1,
     [int]$MinInvoices = 1,
@@ -81,6 +83,11 @@ function Invoke-ApiJson {
         }) | Out-Null
         throw
     }
+}
+
+function Get-IntegrityIssueDetailPath {
+    param([string]$Code)
+    return '/integrity/report/details?code=' + [Uri]::EscapeDataString($Code)
 }
 
 function Invoke-ApiJsonWithRetry {
@@ -158,6 +165,33 @@ $blockingIntegrityWarnings = @($integrityWarnings | Where-Object {
 $integrityWarningCount = [int]$integrityWarnings.Count
 $blockingIntegrityWarningCount = [int]$blockingIntegrityWarnings.Count
 
+$integrityDetailTargets = @($integrityIssues | Where-Object {
+    $severity = [string]$_.severity
+    $code = ([string]$_.code).Trim()
+    [string]::Equals($severity, 'Error', [System.StringComparison]::OrdinalIgnoreCase) -or
+        ([string]::Equals($severity, 'Warning', [System.StringComparison]::OrdinalIgnoreCase) -and
+            (-not [string]::IsNullOrWhiteSpace($code)) -and
+            (-not $allowedWarningCodeSet.Contains($code)))
+})
+$integrityDetails = New-Object System.Collections.Generic.List[object]
+foreach ($issue in $integrityDetailTargets) {
+    $code = ([string]$issue.code).Trim()
+    if ([string]::IsNullOrWhiteSpace($code)) {
+        continue
+    }
+
+    $detail = Invoke-ApiJson -Method 'Get' -Path (Get-IntegrityIssueDetailPath -Code $code) -Headers $headers -RequestTimeoutSec $IntegrityTimeoutSec
+    $rows = @($detail.rows)
+    $integrityDetails.Add([pscustomobject]@{
+        Code = $code
+        Severity = [string]$issue.severity
+        Count = [int]$issue.count
+        DetailCount = [int]$detail.detailCount
+        Message = [string]$detail.message
+        SampleRows = @($rows | Select-Object -First $IntegrityDetailSampleLimit)
+    }) | Out-Null
+}
+
 $customerDetailOk = $false
 $customerRecentInvoiceCount = 0
 $firstCustomerId = ''
@@ -227,6 +261,7 @@ $result = [pscustomobject]@{
         PaymentListOk = $paymentListOk
     }
     IntegrityIssues = $integrityIssues
+    IntegrityDetails = @($integrityDetails.ToArray())
     BlockingIntegrityWarnings = $blockingIntegrityWarnings
     FailOnIntegrityWarnings = [bool]$FailOnIntegrityWarnings
     AllowedIntegrityWarningCodes = @($AllowedIntegrityWarningCodes)
@@ -258,6 +293,27 @@ $lines.Add('') | Out-Null
 $lines.Add("- 무결성 Warning 실패 처리: $([bool]$FailOnIntegrityWarnings)") | Out-Null
 if ($AllowedIntegrityWarningCodes.Count -gt 0) {
     $lines.Add("- 허용 Warning 코드: $($AllowedIntegrityWarningCodes -join ', ')") | Out-Null
+}
+if ($integrityDetails.Count -gt 0) {
+    $lines.Add('') | Out-Null
+    $lines.Add('## Integrity detail samples') | Out-Null
+    foreach ($detail in $integrityDetails) {
+        $lines.Add("### $($detail.Severity): $($detail.Code) count=$($detail.Count), detailCount=$($detail.DetailCount)") | Out-Null
+        $sampleRows = @($detail.SampleRows)
+        if ($sampleRows.Count -gt 0) {
+            $lines.Add('| Entity | Id | Primary | Reference | Scope | Detail |') | Out-Null
+            $lines.Add('|---|---|---|---|---|---|') | Out-Null
+            foreach ($row in $sampleRows) {
+                $entity = ([string]$row.entityType).Replace('|', '/')
+                $id = ([string]$row.entityIdText).Replace('|', '/')
+                $primary = ([string]$row.primaryText).Replace('|', '/')
+                $reference = ([string]$row.referenceText).Replace('|', '/')
+                $scope = ([string]$row.scopeText).Replace('|', '/')
+                $detailText = ([string]$row.detailText).Replace('|', '/')
+                $lines.Add("| $entity | $id | $primary | $reference | $scope | $detailText |") | Out-Null
+            }
+        }
+    }
 }
 $lines.Add('## 상세 API 확인') | Out-Null
 $lines.Add("- 첫 거래처 상세: $customerDetailOk ($firstCustomerId)") | Out-Null

@@ -1014,6 +1014,23 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public void ApiVisibilitySmokeCapturesIntegrityDetailSamples()
+    {
+        var source = ReadRepositoryFile("tools", "verification", "Invoke-GeoraePlanApiVisibilitySmoke.ps1");
+        var gateSource = ReadRepositoryFile("tools", "verification", "Invoke-GeoraePlanPaidDeliveryGate.ps1");
+
+        Assert.Contains("[int]$IntegrityDetailSampleLimit", source, StringComparison.Ordinal);
+        Assert.Contains("Get-IntegrityIssueDetailPath", source, StringComparison.Ordinal);
+        Assert.Contains("/integrity/report/details?code=", source, StringComparison.Ordinal);
+        Assert.Contains("[Uri]::EscapeDataString($Code)", source, StringComparison.Ordinal);
+        Assert.Contains("IntegrityDetails = @($integrityDetails.ToArray())", source, StringComparison.Ordinal);
+        Assert.Contains("SampleRows", source, StringComparison.Ordinal);
+        Assert.Contains("## Integrity detail samples", source, StringComparison.Ordinal);
+        Assert.Contains("DetailSamples:", gateSource, StringComparison.Ordinal);
+        Assert.Contains("$data.IntegrityDetails", gateSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PaidDeliveryGateAggregatesStrictLocalCachePrintAndAndroidEvidence()
     {
         var source = ReadRepositoryFile("tools", "verification", "Invoke-GeoraePlanPaidDeliveryGate.ps1");

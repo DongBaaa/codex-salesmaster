@@ -219,6 +219,26 @@ function Get-ApiVisibilitySummaryFromEvidence {
             $parts.Add("Issues: $issueText") | Out-Null
         }
 
+        $detailSamples = @($data.IntegrityDetails | Select-Object -First 5 | ForEach-Object {
+            $sampleRows = @($_.SampleRows)
+            $first = $sampleRows | Select-Object -First 1
+            if ($null -eq $first) {
+                '{0} detailCount={1}' -f ([string]$_.Code), ([int]$_.DetailCount)
+            }
+            else {
+                '{0} detailCount={1} first={2}/{3}/{4}/{5}' -f `
+                    ([string]$_.Code),
+                    ([int]$_.DetailCount),
+                    ([string]$first.entityType),
+                    ([string]$first.entityIdText),
+                    ([string]$first.primaryText),
+                    ([string]$first.referenceText)
+            }
+        })
+        if ($detailSamples.Count -gt 0) {
+            $parts.Add(('DetailSamples: {0}' -f ($detailSamples -join ' | '))) | Out-Null
+        }
+
         $failures = @($data.Failures | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         if ($failures.Count -gt 0) {
             $parts.Add(('Failures: {0}' -f ($failures -join '; '))) | Out-Null
