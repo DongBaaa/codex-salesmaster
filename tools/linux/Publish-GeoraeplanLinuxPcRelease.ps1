@@ -19,6 +19,7 @@ param(
     [switch]$SkipPreDeployOperationalGate,
     [switch]$SkipPostDeployOperationalGate,
     [switch]$SkipPlatformHealthChecks,
+    [switch]$FailOnOperationalWarnings,
     [switch]$AcceptRentalTemplateItemReferenceRisk,
     [string]$PreDeployBaseUrl = '',
     [string]$PreDeploySecretPath = '',
@@ -464,7 +465,8 @@ function Invoke-ReleaseOperationalGate {
         [string]$SecretPath = '',
         [string]$OutputDirectory = '',
         [string[]]$AllowedIntegrityWarningCodes = @(),
-        [string]$ReleaseId = ''
+        [string]$ReleaseId = '',
+        [bool]$FailOnOperationalWarnings = $false
     )
 
     $operationalGateScript = Join-Path $Root 'tools\ops\Invoke-GeoraePlanOperationalGate.ps1'
@@ -499,6 +501,9 @@ function Invoke-ReleaseOperationalGate {
     if ($AllowedIntegrityWarningCodes.Count -gt 0) {
         $gateArgs += '-AllowedIntegrityWarningCodes'
         $gateArgs += $AllowedIntegrityWarningCodes
+    }
+    if ($FailOnOperationalWarnings) {
+        $gateArgs += '-FailOnOperationalWarnings'
     }
 
     Write-Host "$($Phase)_operational_gate_start base_url=$BaseUrl output=$OutputDirectory"
@@ -662,7 +667,8 @@ if ($MirrorToLive -and -not $SkipPreDeployOperationalGate.IsPresent) {
         -SecretPath $resolvedPreDeploySecretPath `
         -OutputDirectory $PreDeployOutputDirectory `
         -AllowedIntegrityWarningCodes $PreDeployAllowedIntegrityWarningCodes `
-        -ReleaseId $ReleaseId
+        -ReleaseId $ReleaseId `
+        -FailOnOperationalWarnings ([bool]$FailOnOperationalWarnings)
 }
 elseif ($MirrorToLive -and $SkipPreDeployOperationalGate.IsPresent) {
     Write-Warning 'Pre-deploy operational gate was skipped by request. Use only when a separate strict gate has already passed.'
@@ -762,7 +768,8 @@ try {
                 -SecretPath $PostDeploySecretPath `
                 -OutputDirectory $PostDeployOutputDirectory `
                 -AllowedIntegrityWarningCodes $PostDeployAllowedIntegrityWarningCodes `
-                -ReleaseId $ReleaseId
+                -ReleaseId $ReleaseId `
+                -FailOnOperationalWarnings ([bool]$FailOnOperationalWarnings)
         }
         else {
             Write-Warning 'Post-deploy operational gate was skipped by request. Use only when a separate strict gate has already passed.'

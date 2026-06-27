@@ -21,6 +21,7 @@ param(
     [string]$LinuxRemoteOpsPath = '/srv/georaeplan/ops',
     [switch]$SkipPreDeployOperationalGate,
     [switch]$SkipPostDeployOperationalGate,
+    [switch]$FailOnOperationalWarnings,
     [switch]$AcceptRentalTemplateItemReferenceRisk,
     [string]$PreDeployBaseUrl = "",
     [string]$PreDeploySecretPath = "",
@@ -295,6 +296,9 @@ if ($DeployToLinuxPc) {
     }
     if ($SkipPostDeployOperationalGate) {
         $linuxArgs += '-SkipPostDeployOperationalGate'
+    }
+    if ($FailOnOperationalWarnings) {
+        $linuxArgs += '-FailOnOperationalWarnings'
     }
     if ($AcceptRentalTemplateItemReferenceRisk) {
         $linuxArgs += '-AcceptRentalTemplateItemReferenceRisk'

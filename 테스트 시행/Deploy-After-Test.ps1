@@ -21,6 +21,7 @@ param(
     [string]$PlatformStateRoot = '',
     [switch]$SkipPreDeployOperationalGate,
     [switch]$SkipPostDeployOperationalGate,
+    [switch]$FailOnOperationalWarnings,
     [switch]$AcceptRentalTemplateItemReferenceRisk,
     [string]$PreDeployBaseUrl = '',
     [string]$PreDeploySecretPath = '',
@@ -564,6 +565,9 @@ if (-not $SkipLinuxPc) {
     }
     if ($SkipPostDeployOperationalGate) {
         $linuxArgs += '-SkipPostDeployOperationalGate'
+    }
+    if ($FailOnOperationalWarnings) {
+        $linuxArgs += '-FailOnOperationalWarnings'
     }
     if ($AcceptRentalTemplateItemReferenceRisk) {
         $linuxArgs += '-AcceptRentalTemplateItemReferenceRisk'

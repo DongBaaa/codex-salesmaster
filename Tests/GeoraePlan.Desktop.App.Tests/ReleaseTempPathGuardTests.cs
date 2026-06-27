@@ -910,6 +910,45 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public void ReleaseWrappersCanFailDeploymentOnOperationalWarnings()
+    {
+        var operationalGate = ReadRepositoryFile(
+            "tools",
+            "ops",
+            "Invoke-GeoraePlanOperationalGate.ps1");
+        var linuxRelease = ReadRepositoryFile(
+            "tools",
+            "linux",
+            "Publish-GeoraeplanLinuxPcRelease.ps1");
+        var fullRelease = ReadRepositoryFile(
+            "tools",
+            "release",
+            "Publish-GeoraePlanFullRelease.ps1");
+        var deployAfterTest = ReadRepositoryFile(
+            "테스트 시행",
+            "Deploy-After-Test.ps1");
+        var verificationDeploy = ReadRepositoryFile(
+            "테스트 시행",
+            "검증완료-반영.ps1");
+
+        Assert.Contains("[switch]$FailOnOperationalWarnings", operationalGate, StringComparison.Ordinal);
+        Assert.Contains("$warningChecks = @($checks | Where-Object { $_.Status -eq 'WARN' })", operationalGate, StringComparison.Ordinal);
+        Assert.Contains("$overallStatus = if ($FailOnOperationalWarnings) { 'FAIL' } else { 'WARN' }", operationalGate, StringComparison.Ordinal);
+        Assert.Contains("운영 Warning 실패 처리", operationalGate, StringComparison.Ordinal);
+
+        Assert.Contains("[switch]$FailOnOperationalWarnings", linuxRelease, StringComparison.Ordinal);
+        Assert.Contains("[bool]$FailOnOperationalWarnings = $false", linuxRelease, StringComparison.Ordinal);
+        Assert.Contains("$gateArgs += '-FailOnOperationalWarnings'", linuxRelease, StringComparison.Ordinal);
+        Assert.Contains("-FailOnOperationalWarnings ([bool]$FailOnOperationalWarnings)", linuxRelease, StringComparison.Ordinal);
+
+        Assert.Contains("[switch]$FailOnOperationalWarnings", fullRelease, StringComparison.Ordinal);
+        Assert.Contains("$linuxArgs += '-FailOnOperationalWarnings'", fullRelease, StringComparison.Ordinal);
+        Assert.Contains("[switch]$FailOnOperationalWarnings", deployAfterTest, StringComparison.Ordinal);
+        Assert.Contains("$linuxArgs += '-FailOnOperationalWarnings'", deployAfterTest, StringComparison.Ordinal);
+        Assert.Contains("[switch]$FailOnOperationalWarnings", verificationDeploy, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LocalCacheConsistencyDetectsNonInventoryAndAssetWarehouseStockResidues()
     {
         var source = ReadRepositoryFile(

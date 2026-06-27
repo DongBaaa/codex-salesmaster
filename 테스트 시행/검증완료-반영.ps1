@@ -20,6 +20,7 @@ param(
     [string]$LinuxRemoteOpsPath,
     [switch]$SkipPreDeployOperationalGate,
     [switch]$SkipPostDeployOperationalGate,
+    [switch]$FailOnOperationalWarnings,
     [switch]$AcceptRentalTemplateItemReferenceRisk,
     [string]$PreDeployBaseUrl = '',
     [string]$PreDeploySecretPath = '',

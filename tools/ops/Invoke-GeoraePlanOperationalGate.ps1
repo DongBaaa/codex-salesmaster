@@ -8,6 +8,7 @@ param(
     [string]$PlatformStateRoot = "",
     [string]$OutputDirectory = "",
     [switch]$FailOnIntegrityWarnings,
+    [switch]$FailOnOperationalWarnings,
     [string[]]$AllowedIntegrityWarningCodes = @(),
     [switch]$SkipWriteSafetyChecks,
     [switch]$UseEphemeralOperationalWrites,
@@ -1363,6 +1364,7 @@ else {
     Add-Check -Checks $checks -Name 'operational writes' -Status 'BLOCKED' -Detail 'AllowOperationalWrites not set; no production mutation attempted'
 }
 
+$warningChecks = @($checks | Where-Object { $_.Status -eq 'WARN' })
 $overallStatus = 'PASS'
 if (@($checks | Where-Object { $_.Status -eq 'FAIL' }).Count -gt 0) {
     $overallStatus = 'FAIL'
@@ -1370,8 +1372,8 @@ if (@($checks | Where-Object { $_.Status -eq 'FAIL' }).Count -gt 0) {
 elseif (@($checks | Where-Object { $_.Status -eq 'BLOCKED' }).Count -gt 0) {
     $overallStatus = 'BLOCKED'
 }
-elseif (@($checks | Where-Object { $_.Status -eq 'WARN' }).Count -gt 0) {
-    $overallStatus = 'WARN'
+elseif ($warningChecks.Count -gt 0) {
+    $overallStatus = if ($FailOnOperationalWarnings) { 'FAIL' } else { 'WARN' }
 }
 
 $reportLines = New-Object System.Collections.Generic.List[string]
@@ -1384,6 +1386,7 @@ $reportLines.Add(('- BaseUrl: `{0}`' -f $BaseUrl)) | Out-Null
 $reportLines.Add(('- Channel: `{0}`' -f $Channel)) | Out-Null
 $reportLines.Add(('- OutputDirectory: `{0}`' -f $OutputDirectory)) | Out-Null
 $reportLines.Add(('- 무결성 Warning 실패 처리: `{0}`' -f ([bool]$FailOnIntegrityWarnings))) | Out-Null
+$reportLines.Add(('- 운영 Warning 실패 처리: `{0}`' -f ([bool]$FailOnOperationalWarnings))) | Out-Null
 $reportLines.Add(('- 쓰기 안전성 점검 생략: `{0}`' -f ([bool]$SkipWriteSafetyChecks))) | Out-Null
 if ($normalizedAllowedIntegrityWarningCodes.Count -gt 0) {
     $reportLines.Add(('- 허용 Warning 코드: `{0}`' -f ($normalizedAllowedIntegrityWarningCodes -join ', '))) | Out-Null
