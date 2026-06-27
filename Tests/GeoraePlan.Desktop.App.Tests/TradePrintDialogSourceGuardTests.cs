@@ -265,6 +265,45 @@ public sealed class TradePrintDialogSourceGuardTests
     }
 
     [Fact]
+    public void PrintEnvironmentDiagnosticScript_CapturesPrinterAndFallbackEvidence()
+    {
+        var repoRoot = FindRepositoryRoot();
+        var scriptPath = Path.Combine(
+            repoRoot,
+            "tools",
+            "verification",
+            "Test-GeoraePlanPrintEnvironment.ps1");
+        var scriptBytes = File.ReadAllBytes(scriptPath);
+        var script = File.ReadAllText(scriptPath);
+
+        Assert.True(scriptBytes.Length > 3);
+        Assert.Equal(0xEF, scriptBytes[0]);
+        Assert.Equal(0xBB, scriptBytes[1]);
+        Assert.Equal(0xBF, scriptBytes[2]);
+        Assert.Contains("[switch]$RequirePrinter", script, StringComparison.Ordinal);
+        Assert.Contains("[switch]$RequireOnlinePrinter", script, StringComparison.Ordinal);
+        Assert.Contains("[switch]$FailOnWarnings", script, StringComparison.Ordinal);
+        Assert.Contains("System.Printing.LocalPrintServer", script, StringComparison.Ordinal);
+        Assert.Contains("DefaultPrintQueue", script, StringComparison.Ordinal);
+        Assert.Contains("EnumeratedPrintQueueTypes.DirectPrinting", script, StringComparison.Ordinal);
+        Assert.Contains("PushedMachineConnection", script, StringComparison.Ordinal);
+        Assert.Contains("PushedUserConnection", script, StringComparison.Ordinal);
+        Assert.Contains("WorkOffline", script, StringComparison.Ordinal);
+        Assert.Contains("거래플랜 전용 인쇄", script, StringComparison.Ordinal);
+        Assert.Contains("PDF 저장", script, StringComparison.Ordinal);
+        Assert.Contains("파일 저장(XPS)", script, StringComparison.Ordinal);
+        Assert.Contains("SaveDocumentAsPdf", script, StringComparison.Ordinal);
+        Assert.Contains("SaveDocumentAsXps", script, StringComparison.Ordinal);
+        Assert.Contains("기본 WPF PrintDialog 직접 호출이 감지되었습니다", script, StringComparison.Ordinal);
+        Assert.Contains("Print environment report:", script, StringComparison.Ordinal);
+        Assert.Contains("PrinterCount:", script, StringComparison.Ordinal);
+        Assert.Contains("OnlinePrinterCount:", script, StringComparison.Ordinal);
+        Assert.Contains("## 참고", script, StringComparison.Ordinal);
+        Assert.Contains("실제 종이 출력은 현장 장치 상태에 따라 별도 확인이 필요합니다", script, StringComparison.Ordinal);
+        Assert.Contains("등록된 Windows 프린터가 없습니다", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TradePrintExecutor_SavesPdfFileFromFixedDocument()
     {
         RunOnSta(() =>

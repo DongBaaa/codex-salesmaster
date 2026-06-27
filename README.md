@@ -126,8 +126,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\linux
 ## 인쇄 기본 동작
 - `[완료]` 판매(매출) 창에서 `출력물 편집` 후 데이터 저장
 - `[완료]` `인쇄하기(F9)` 클릭 시 미리보기 창 우선 표시
-- `[완료]` 미리보기에서 인쇄 클릭 시 Windows PrintDialog 표시
+- `[완료]` 미리보기에서 인쇄 클릭 시 거래플랜 전용 인쇄창 표시
+- `[완료]` 전용 인쇄창에서 프린터 선택/새로고침/프린터 관리/PDF 저장/파일 저장(XPS) 제공
 - `[완료]` 외부 PDF 자동 오픈 없이 앱 내부 미리보기 중심 동작
+- 납품 PC의 프린터/복합기 상태 증거가 필요하면 `powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\verification\Test-GeoraePlanPrintEnvironment.ps1" -ProjectRoot "D:\거래플랜" -RequirePrinter -RequireOnlinePrinter -FailOnWarnings`로 기본 프린터, 오프라인 여부, PDF/XPS fallback source guard 리포트를 남깁니다.
 
 ## 자료 기간별 집계(엑셀)
 - `[완료]` 지원 유형: 판매+구매, 판매/매출, 구매/매입, 수금/지불, 연수구 납품내역
