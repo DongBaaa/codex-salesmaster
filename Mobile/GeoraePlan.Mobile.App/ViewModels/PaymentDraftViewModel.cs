@@ -384,6 +384,7 @@ public sealed class PaymentDraftViewModel : ObservableObject
             IsBusy = true;
             StatusMessage = "최신 전표 잔액을 확인하고 있습니다.";
 
+            var selectedInvoiceRevision = SelectedInvoice.Revision;
             InvoiceDto? latestInvoice;
             try
             {
@@ -399,6 +400,14 @@ public sealed class PaymentDraftViewModel : ObservableObject
             {
                 StatusMessage = "선택한 전표가 최신 데이터에서 확인되지 않습니다. 전표 목록을 다시 조회한 뒤 시도하세요.";
                 _refreshCoordinator.MarkInvoicesChanged();
+                return;
+            }
+
+            if (selectedInvoiceRevision > 0 && latestInvoice.Revision != selectedInvoiceRevision)
+            {
+                ReplaceInvoiceSnapshot(latestInvoice);
+                _refreshCoordinator.MarkInvoicesChanged();
+                StatusMessage = $"{PaymentActionText}이 저장되지 않았습니다. 전표 최신값이 변경되었습니다. 전표 내용을 확인한 뒤 다시 시도하세요.";
                 return;
             }
 

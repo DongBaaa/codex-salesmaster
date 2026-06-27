@@ -1618,6 +1618,43 @@ function Stop-StaleInvoiceRevisionRaceJob {
     }
 }
 
+function Wait-StaleInvoiceRevisionRaceUpdated {
+    param(
+        [Parameter(Mandatory = $true)]$Race,
+        [int]$TimeoutSeconds = 8
+    )
+
+    if ($null -eq $Race -or [string]::IsNullOrWhiteSpace([string]$Race.LogPath)) {
+        throw 'Stale invoice revision race update wait requires a race log path.'
+    }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastContent = ''
+    while ((Get-Date) -lt $deadline) {
+        if (Test-Path -LiteralPath $Race.LogPath) {
+            try {
+                $lastContent = Get-Content -LiteralPath $Race.LogPath -Raw -Encoding UTF8
+                if ($lastContent -match '(?m)^updated=') {
+                    return
+                }
+
+                if ($lastContent -match '(?m)^error=') {
+                    throw "Stale invoice revision race update failed before save: $lastContent"
+                }
+            }
+            catch {
+                if ($_.Exception.Message -like 'Stale invoice revision race update failed*') {
+                    throw
+                }
+            }
+        }
+
+        Start-Sleep -Milliseconds 150
+    }
+
+    throw "Stale invoice revision race did not update invoice before save within ${TimeoutSeconds}s. log=$($Race.LogPath) content=$lastContent"
+}
+
 function Get-TestPayments {
     param(
         [string]$BaseUrl,
@@ -2229,7 +2266,8 @@ try {
             -DurationSeconds $StaleInvoiceRevisionRaceSeconds `
             -IntervalMilliseconds $StaleInvoiceRevisionRaceIntervalMilliseconds
         $steps.Add([pscustomobject]@{ Step = 'server-stale-invoice-revision-race-start'; Result = 'PASS'; Detail = "invoice=$($createdInvoice.id), log=$($staleInvoiceRevisionRace.LogPath)" })
-        Start-Sleep -Milliseconds 500
+        Wait-StaleInvoiceRevisionRaceUpdated -Race $staleInvoiceRevisionRace
+        $steps.Add([pscustomobject]@{ Step = 'server-stale-invoice-revision-race-updated-before-save'; Result = 'PASS'; Detail = $staleInvoiceRevisionRace.LogPath })
     }
 
     $saveTappedAt = Get-Date

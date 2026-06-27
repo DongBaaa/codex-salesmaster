@@ -2567,6 +2567,9 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("Start-Job -ScriptBlock", source, StringComparison.Ordinal);
         Assert.Contains("Invoke-RestMethod `\n                    -Method Put `\n                    -Uri $invoiceUri", source.Replace("\r\n", "\n", StringComparison.Ordinal), StringComparison.Ordinal);
         Assert.Contains("server-stale-invoice-revision-race-start", source, StringComparison.Ordinal);
+        Assert.Contains("function Wait-StaleInvoiceRevisionRaceUpdated", source, StringComparison.Ordinal);
+        Assert.Contains("Wait-StaleInvoiceRevisionRaceUpdated -Race $staleInvoiceRevisionRace", source, StringComparison.Ordinal);
+        Assert.Contains("server-stale-invoice-revision-race-updated-before-save", source, StringComparison.Ordinal);
         Assert.Contains("server-stale-invoice-revision-race-stop", source, StringComparison.Ordinal);
         Assert.Contains("mobile-payment-e2e-$voucherSlug-$timestamp-after-payment-save-stale-invoice-revision", source, StringComparison.Ordinal);
         Assert.Contains("server-payment-absent-after-stale-invoice-revision-conflict", source, StringComparison.Ordinal);
@@ -2644,6 +2647,25 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("SavePaymentImmediatelyAsync(payment, Attachments, linkedTransaction)", source, StringComparison.Ordinal);
         Assert.Contains("ExpectedRevision = latestInvoice.Revision", source, StringComparison.Ordinal);
         Assert.Contains("ExpectedRevision = invoice.Revision", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AndroidPaymentDraft_BlocksSaveWhenSelectedInvoiceRevisionChangedAfterRefresh()
+    {
+        var root = FindRepositoryRoot();
+        var source = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "PaymentDraftViewModel.cs"));
+
+        Assert.Contains("var selectedInvoiceRevision = SelectedInvoice.Revision;", source, StringComparison.Ordinal);
+        Assert.Contains("if (selectedInvoiceRevision > 0 && latestInvoice.Revision != selectedInvoiceRevision)", source, StringComparison.Ordinal);
+        Assert.Contains("ReplaceInvoiceSnapshot(latestInvoice);", source, StringComparison.Ordinal);
+        Assert.Contains("전표 최신값이 변경되었습니다", source, StringComparison.Ordinal);
+        Assert.Contains("저장되지 않았습니다", source, StringComparison.Ordinal);
+        Assert.Contains("SavePaymentImmediatelyAsync(payment, Attachments, linkedTransaction)", source, StringComparison.Ordinal);
     }
 
     [Fact]
