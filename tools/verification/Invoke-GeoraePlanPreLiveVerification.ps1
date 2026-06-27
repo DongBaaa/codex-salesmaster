@@ -150,7 +150,8 @@ function Invoke-StepWithReport {
 
     try {
         $result = & $Script
-        Add-StepResult -Name $Name -Passed $true -Detail $result.Detail -ReportPath $result.ReportPath -Output $result.Output
+        $detail = [string]$result.Detail
+        Add-StepResult -Name $Name -Passed (-not [string]::Equals($detail, 'FAIL', [System.StringComparison]::OrdinalIgnoreCase)) -Detail $detail -ReportPath $result.ReportPath -Output $result.Output
     }
     catch {
         Add-StepResult -Name $Name -Passed $false -Detail $_.Exception.Message
@@ -206,8 +207,9 @@ function Invoke-ObservationCheck {
     }
 
     $output = & $scriptPath @arguments 2>&1
+    $status = Resolve-MarkdownResultStatus -ReportPath $reportPath -DefaultStatus 'PASS'
     [pscustomobject]@{
-        Detail = 'PASS'
+        Detail = $status
         ReportPath = $reportPath
         Output = Convert-OutputText $output
     }
@@ -1492,7 +1494,8 @@ else {
 }
 
 $failed = @($Results | Where-Object { -not $_.Passed })
-$overall = if ($failed.Count -eq 0) { 'PASS' } else { 'FAIL' }
+$warnings = @($Results | Where-Object { $_.Passed -and [string]::Equals([string]$_.Detail, 'WARN', [System.StringComparison]::OrdinalIgnoreCase) })
+$overall = if ($failed.Count -gt 0) { 'FAIL' } elseif ($warnings.Count -gt 0) { 'WARN' } else { 'PASS' }
 $jsonPath = Join-Path $EvidenceDirectory "pre-live-verification-$timestamp.json"
 $mdPath = Join-Path $EvidenceDirectory "pre-live-verification-$timestamp.md"
 
@@ -1563,10 +1566,18 @@ $lines.Add('') | Out-Null
 $lines.Add('| 결과 | 단계 | 상세 | 리포트 |') | Out-Null
 $lines.Add('|---|---|---|---|') | Out-Null
 foreach ($row in $Results) {
-    $status = if ($row.Passed) { 'PASS' } else { 'FAIL' }
+    $status = if (-not $row.Passed) { 'FAIL' } elseif ([string]::Equals([string]$row.Detail, 'WARN', [System.StringComparison]::OrdinalIgnoreCase)) { 'WARN' } else { 'PASS' }
     $detail = ([string]$row.Detail).Replace('|', '\|').Replace("`r", ' ').Replace("`n", ' ')
     $reportPath = if ([string]::IsNullOrWhiteSpace([string]$row.ReportPath)) { '-' } else { ([string]$row.ReportPath).Replace('|', '\|') }
     $lines.Add("| $status | $($row.Name) | $detail | $reportPath |") | Out-Null
+}
+
+if ($warnings.Count -gt 0) {
+    $lines.Add('') | Out-Null
+    $lines.Add('## 경고 항목') | Out-Null
+    foreach ($row in $warnings) {
+        $lines.Add("- $($row.Name): $($row.Detail)") | Out-Null
+    }
 }
 
 if ($failed.Count -gt 0) {

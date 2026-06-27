@@ -878,6 +878,38 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public void OperationalAndPreLiveGatesDoNotSwallowLiveObservationWarnAsPass()
+    {
+        var operationalGate = ReadRepositoryFile(
+            "tools",
+            "ops",
+            "Invoke-GeoraePlanOperationalGate.ps1");
+        var preLive = ReadRepositoryFile(
+            "tools",
+            "verification",
+            "Invoke-GeoraePlanPreLiveVerification.ps1");
+
+        Assert.Contains("function Resolve-MarkdownResultStatus", operationalGate, StringComparison.Ordinal);
+        Assert.Contains("$liveObservationStatus = Resolve-MarkdownResultStatus -ReportPath $liveObservationReport", operationalGate, StringComparison.Ordinal);
+        Assert.Contains("Add-Check -Checks $checks -Name 'live observation' -Status $liveObservationStatus", operationalGate, StringComparison.Ordinal);
+        Assert.DoesNotContain("Add-Check -Checks $checks -Name 'live observation' -Status 'PASS' -Detail $liveObservationReport", operationalGate, StringComparison.Ordinal);
+
+        Assert.Contains("$status = Resolve-MarkdownResultStatus -ReportPath $reportPath -DefaultStatus 'PASS'", preLive, StringComparison.Ordinal);
+        Assert.Contains("Detail = $status", preLive, StringComparison.Ordinal);
+        Assert.Contains("$warnings = @($Results | Where-Object { $_.Passed -and [string]::Equals([string]$_.Detail, 'WARN'", preLive, StringComparison.Ordinal);
+        Assert.Contains("$overall = if ($failed.Count -gt 0) { 'FAIL' } elseif ($warnings.Count -gt 0) { 'WARN' } else { 'PASS' }", preLive, StringComparison.Ordinal);
+        Assert.Contains("elseif ([string]::Equals([string]$row.Detail, 'WARN'", preLive, StringComparison.Ordinal);
+        Assert.Contains("## 경고 항목", preLive, StringComparison.Ordinal);
+        AssertInOrder(
+            preLive,
+            "$status = Resolve-MarkdownResultStatus -ReportPath $reportPath -DefaultStatus 'PASS'",
+            "Detail = $status",
+            "$warnings = @($Results | Where-Object",
+            "$overall = if ($failed.Count -gt 0)",
+            "## 경고 항목");
+    }
+
+    [Fact]
     public void LocalCacheConsistencyDetectsNonInventoryAndAssetWarehouseStockResidues()
     {
         var source = ReadRepositoryFile(

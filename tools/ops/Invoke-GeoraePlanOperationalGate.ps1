@@ -90,6 +90,28 @@ function Add-Check {
     }) | Out-Null
 }
 
+function Resolve-MarkdownResultStatus {
+    param(
+        [string]$ReportPath,
+        [string]$DefaultStatus = 'PASS'
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ReportPath) -or -not (Test-Path -LiteralPath $ReportPath)) {
+        return $DefaultStatus
+    }
+
+    $content = Get-Content -LiteralPath $ReportPath -Raw -Encoding UTF8
+    $match = [regex]::Match($content, '-\s*결과:\s*\*\*(?<status>[^*]+)\*\*')
+    if ($match.Success) {
+        $status = $match.Groups['status'].Value.Trim().ToUpperInvariant()
+        if ($status -in @('PASS', 'WARN', 'BLOCKED', 'FAIL')) {
+            return $status
+        }
+    }
+
+    return $DefaultStatus
+}
+
 function Invoke-TextProbe {
     param([string]$Uri)
 
@@ -649,7 +671,8 @@ if (Test-Path -LiteralPath $liveObservationScript) {
         Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "`n## live observation script"
         Add-Content -LiteralPath $logPath -Encoding UTF8 -Value $scriptOutput
         if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $liveObservationReport)) {
-            Add-Check -Checks $checks -Name 'live observation' -Status 'PASS' -Detail $liveObservationReport
+            $liveObservationStatus = Resolve-MarkdownResultStatus -ReportPath $liveObservationReport -DefaultStatus 'PASS'
+            Add-Check -Checks $checks -Name 'live observation' -Status $liveObservationStatus -Detail $liveObservationReport
         }
         else {
             Add-Check -Checks $checks -Name 'live observation' -Status 'FAIL' -Detail ("exit={0}" -f $LASTEXITCODE)
