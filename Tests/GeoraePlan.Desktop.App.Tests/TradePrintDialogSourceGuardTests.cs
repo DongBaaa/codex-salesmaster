@@ -98,6 +98,31 @@ public sealed class TradePrintDialogSourceGuardTests
     }
 
     [Fact]
+    public void DesktopSource_DoesNotBypassDedicatedTradePrintWindowWithNativeWpfPrintDialog()
+    {
+        var repoRoot = FindRepositoryRoot();
+        var appRoot = Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App");
+
+        var sourceFiles = Directory.EnumerateFiles(appRoot, "*.cs", SearchOption.AllDirectories)
+            .Where(path =>
+                !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) &&
+                !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        Assert.NotEmpty(sourceFiles);
+        foreach (var sourceFile in sourceFiles)
+        {
+            var source = File.ReadAllText(sourceFile);
+            Assert.DoesNotContain("new PrintDialog", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("System.Windows.Controls.PrintDialog", source, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void TradePrintWindow_CanOpenWindowsPrinterManagementFromDedicatedDialog()
     {
         var repoRoot = FindRepositoryRoot();
