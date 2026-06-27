@@ -2360,6 +2360,40 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void AndroidSmoke_CanRequireUpdateInPlaceWithoutUninstallFallback()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "mobile",
+            "Invoke-GeoraePlanAndroidSmoke.ps1"));
+
+        Assert.Contains("[switch]$RequireUpdateInPlace", source, StringComparison.Ordinal);
+        Assert.Contains("function Assert-MobilePackageInstalled", source, StringComparison.Ordinal);
+        Assert.Contains("pm', 'path', $PackageName", source, StringComparison.Ordinal);
+        Assert.Contains("-RequireUpdateInPlace와 -SkipInstall을 함께 사용할 수 없습니다.", source, StringComparison.Ordinal);
+        Assert.Contains("Android update-in-place install failed and uninstall fallback is disabled for delivery verification", source, StringComparison.Ordinal);
+        Assert.Contains("Assert-MobilePackageInstalled -AdbPath $resolvedAdb -DeviceId $deviceId -PackageName $PackageName", source, StringComparison.Ordinal);
+        Assert.Contains("Install-MobileApk -AdbPath $resolvedAdb -DeviceId $deviceId -ApkPath $resolvedApk -PackageName $PackageName -RequireUpdateInPlace", source, StringComparison.Ordinal);
+        Assert.Contains("Step = 'update-in-place'", source, StringComparison.Ordinal);
+        Assert.Contains("RequireUpdateInPlace = [bool]$RequireUpdateInPlace", source, StringComparison.Ordinal);
+        Assert.Contains("기존 설치본 덮어쓰기 검증", source, StringComparison.Ordinal);
+        var updateFailureGuardIndex = source.IndexOf("if ($RequireUpdateInPlace)", StringComparison.Ordinal);
+        var updateFailureThrowIndex = source.IndexOf("throw \"Android update-in-place install failed", StringComparison.Ordinal);
+        var uninstallFallbackIndex = source.IndexOf("Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'uninstall', $PackageName)", StringComparison.Ordinal);
+        Assert.True(updateFailureGuardIndex >= 0);
+        Assert.True(updateFailureThrowIndex > updateFailureGuardIndex);
+        Assert.True(uninstallFallbackIndex > updateFailureThrowIndex);
+
+        var packageInstalledAssertIndex = source.IndexOf("Assert-MobilePackageInstalled -AdbPath $resolvedAdb -DeviceId $deviceId -PackageName $PackageName", StringComparison.Ordinal);
+        var updateInstallIndex = source.IndexOf("Install-MobileApk -AdbPath $resolvedAdb -DeviceId $deviceId -ApkPath $resolvedApk -PackageName $PackageName -RequireUpdateInPlace", StringComparison.Ordinal);
+        var updateStepIndex = source.IndexOf("$steps.Add([pscustomobject]@{ Step = 'update-in-place'", StringComparison.Ordinal);
+        Assert.True(packageInstalledAssertIndex >= 0);
+        Assert.True(updateInstallIndex > packageInstalledAssertIndex);
+        Assert.True(updateStepIndex > updateInstallIndex);
+    }
+
+    [Fact]
     public void AndroidSmoke_CoversMasterDataNonRetryableSaveRejection()
     {
         var source = File.ReadAllText(Path.Combine(

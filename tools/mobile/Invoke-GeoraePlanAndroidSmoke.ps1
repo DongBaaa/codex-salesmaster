@@ -7,6 +7,7 @@
     [string]$Password = '1234',
     [string]$EvidenceDirectory,
     [switch]$SkipInstall,
+    [switch]$RequireUpdateInPlace,
     [switch]$IncludeDraftScreens,
     [switch]$ExerciseSyncNow,
     [ValidateSet('', '400', '401', '403', '404', '422')]
@@ -145,7 +146,8 @@ function Install-MobileApk {
         [Parameter(Mandatory = $true)][string]$AdbPath,
         [Parameter(Mandatory = $true)][string]$DeviceId,
         [Parameter(Mandatory = $true)][string]$ApkPath,
-        [Parameter(Mandatory = $true)][string]$PackageName
+        [Parameter(Mandatory = $true)][string]$PackageName,
+        [switch]$RequireUpdateInPlace
     )
 
     $installArgs = @('-s', $DeviceId, 'install', '-r', '-d', $ApkPath)
@@ -157,6 +159,10 @@ function Install-MobileApk {
     }
     catch {
         $message = $_.Exception.Message
+        if ($RequireUpdateInPlace) {
+            throw "Android update-in-place install failed and uninstall fallback is disabled for delivery verification. Package: $PackageName`n$message"
+        }
+
         if ($message -match 'INSTALL_FAILED_INSUFFICIENT_STORAGE') {
             try { Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'pm', 'trim-caches', '1024M') | Out-Null } catch {}
             try { Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'uninstall', $PackageName) | Out-Null } catch {}
@@ -171,6 +177,26 @@ function Install-MobileApk {
         Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'uninstall', $PackageName) | Out-Null
         Invoke-Adb -AdbPath $AdbPath -Arguments $installArgs | Out-Null
     }
+}
+
+function Assert-MobilePackageInstalled {
+    param(
+        [Parameter(Mandatory = $true)][string]$AdbPath,
+        [Parameter(Mandatory = $true)][string]$DeviceId,
+        [Parameter(Mandatory = $true)][string]$PackageName
+    )
+
+    try {
+        $output = Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'pm', 'path', $PackageName)
+        if (($output -join "`n") -match "^package:") {
+            return
+        }
+    }
+    catch {
+        throw "Android update-in-place 검증은 기존 설치본이 있어야 합니다. 패키지를 먼저 설치한 뒤 다시 실행하세요: $PackageName`n$($_.Exception.Message)"
+    }
+
+    throw "Android update-in-place 검증은 기존 설치본이 있어야 합니다. 패키지를 먼저 설치한 뒤 다시 실행하세요: $PackageName"
 }
 
 
@@ -1054,6 +1080,12 @@ New-Item -ItemType Directory -Force -Path $EvidenceDirectory | Out-Null
 if (-not [string]::IsNullOrWhiteSpace($ExerciseMasterDataNonRetryableSaveFaultStatus) -and $SkipInstall) {
     throw '거래처/품목 비재시도성 저장 실패 검증은 dirty 0건 보장을 위해 fresh install/app-data-clear 상태에서만 실행하세요. -SkipInstall을 제거하세요.'
 }
+if ($RequireUpdateInPlace -and $SkipInstall) {
+    throw 'Android update-in-place 검증은 APK 덮어쓰기 설치가 필요합니다. -RequireUpdateInPlace와 -SkipInstall을 함께 사용할 수 없습니다.'
+}
+if (-not [string]::IsNullOrWhiteSpace($ExerciseMasterDataNonRetryableSaveFaultStatus) -and $RequireUpdateInPlace) {
+    throw '거래처/품목 비재시도성 저장 실패 검증은 fresh install/app-data-clear 상태에서만 실행하세요. -RequireUpdateInPlace와 함께 사용할 수 없습니다.'
+}
 
 if ($ExerciseSyncNow -or -not [string]::IsNullOrWhiteSpace($ExerciseMasterDataNonRetryableSaveFaultStatus)) {
     Assert-LocalSyncExerciseTarget -BaseUrl $SyncExerciseBaseUrl
@@ -1069,11 +1101,18 @@ $steps = New-Object System.Collections.Generic.List[object]
 $freshInstall = $false
 
 if (-not $SkipInstall) {
-    Install-MobileApk -AdbPath $resolvedAdb -DeviceId $deviceId -ApkPath $resolvedApk -PackageName $PackageName
-    $steps.Add([pscustomobject]@{ Step = 'install'; Result = 'PASS'; Detail = $resolvedApk })
-    Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'shell', 'pm', 'clear', $PackageName) | Out-Null
-    $steps.Add([pscustomobject]@{ Step = 'app-data-clear'; Result = 'PASS'; Detail = $PackageName })
-    $freshInstall = $true
+    if ($RequireUpdateInPlace) {
+        Assert-MobilePackageInstalled -AdbPath $resolvedAdb -DeviceId $deviceId -PackageName $PackageName
+        Install-MobileApk -AdbPath $resolvedAdb -DeviceId $deviceId -ApkPath $resolvedApk -PackageName $PackageName -RequireUpdateInPlace
+        $steps.Add([pscustomobject]@{ Step = 'update-in-place'; Result = 'PASS'; Detail = $resolvedApk })
+    }
+    else {
+        Install-MobileApk -AdbPath $resolvedAdb -DeviceId $deviceId -ApkPath $resolvedApk -PackageName $PackageName
+        $steps.Add([pscustomobject]@{ Step = 'install'; Result = 'PASS'; Detail = $resolvedApk })
+        Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'shell', 'pm', 'clear', $PackageName) | Out-Null
+        $steps.Add([pscustomobject]@{ Step = 'app-data-clear'; Result = 'PASS'; Detail = $PackageName })
+        $freshInstall = $true
+    }
 }
 
 # Android 런처를 강제로 종료하면 일부 에뮬레이터에서 포커스 윈도우가 사라져
@@ -1274,6 +1313,7 @@ $result = [pscustomobject]@{
     PackageName = $PackageName
     DeviceId = $deviceId
     ApkPath = $resolvedApk
+    RequireUpdateInPlace = [bool]$RequireUpdateInPlace
     ExerciseSyncNow = [bool]$ExerciseSyncNow
     ExerciseMasterDataNonRetryableSaveFaultStatus = $ExerciseMasterDataNonRetryableSaveFaultStatus
     Result = 'PASS'
@@ -1291,6 +1331,7 @@ $mdLines = @(
     "- 기기: $deviceId",
     "- 패키지: $PackageName",
     "- APK: $resolvedApk",
+    "- 기존 설치본 덮어쓰기 검증: $([bool]$RequireUpdateInPlace)",
     "- 수동 동기화 실행: $([bool]$ExerciseSyncNow)",
     "- 거래처/품목 비재시도성 저장 실패 검증: $ExerciseMasterDataNonRetryableSaveFaultStatus",
     "- 결과: PASS",
