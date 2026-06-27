@@ -21,6 +21,7 @@ param(
     [switch]$LocalTest,
     [switch]$DisableAot,
     [switch]$DisableTrimming,
+    [switch]$AllowDebugSigning,
     [switch]$SkipEnvironmentCheck,
     [switch]$SkipArtifactPrune,
     [switch]$SkipDeploymentCopy,
@@ -295,6 +296,13 @@ if ([string]::IsNullOrWhiteSpace($KeyPass)) {
     throw 'KeyPass is required.'
 }
 
+$isReleaseBuild = $Configuration.Equals('Release', [System.StringComparison]::OrdinalIgnoreCase)
+$isDebugKeystorePath = [System.IO.Path]::GetFileName($KeystorePath).Equals('debug.keystore', [System.StringComparison]::OrdinalIgnoreCase)
+$isDebugKeyAlias = $KeyAlias.Equals('androiddebugkey', [System.StringComparison]::OrdinalIgnoreCase)
+if ($isReleaseBuild -and -not $LocalTest.IsPresent -and -not $AllowDebugSigning.IsPresent -and ($isDebugKeystorePath -or $isDebugKeyAlias)) {
+    throw "Release Android package is using a debug signing key. Configure Mobile\GeoraePlan.Mobile.App\android-signing.local.json with a release keystore, or pass -AllowDebugSigning only for local, non-delivery test packages."
+}
+
 $env:JAVA_HOME = $resolvedJavaSdkDirectory
 $env:ANDROID_SDK_ROOT = $resolvedAndroidSdkDirectory
 $env:ANDROID_HOME = $resolvedAndroidSdkDirectory
@@ -328,7 +336,6 @@ $arguments = @(
     '-p:ArchiveOnBuild=true'
 )
 
-$isReleaseBuild = $Configuration.Equals('Release', [System.StringComparison]::OrdinalIgnoreCase)
 $shouldEnableAot = $isReleaseBuild -and -not $DisableAot.IsPresent
 if ($shouldEnableAot) {
     $arguments += '-p:RunAOTCompilation=true'

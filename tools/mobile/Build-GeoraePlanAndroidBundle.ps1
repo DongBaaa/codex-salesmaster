@@ -16,6 +16,7 @@ param(
     [string]$VersionName,
     [int]$VersionCode,
     [int]$KeepArtifactDirectoryCount = 2,
+    [switch]$AllowDebugSigning,
     [switch]$SkipEnvironmentCheck,
     [switch]$SkipArtifactPrune,
     [switch]$NoRestore
@@ -41,6 +42,7 @@ $scriptPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'Build
     -VersionCode $VersionCode `
     -KeepArtifactDirectoryCount $KeepArtifactDirectoryCount `
     -PackageFormat aab `
+    -AllowDebugSigning:$AllowDebugSigning `
     -SkipEnvironmentCheck:$SkipEnvironmentCheck `
     -SkipArtifactPrune:$SkipArtifactPrune `
     -NoRestore:$NoRestore

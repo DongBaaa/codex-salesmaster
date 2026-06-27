@@ -245,6 +245,7 @@ if (-not $SkipBuild) {
     & $buildScriptPath `
         -ProjectRoot $ProjectRoot `
         -SigningConfigPath $SigningConfigPath `
+        -AllowDebugSigning `
         -SkipEnvironmentCheck
 }
 
