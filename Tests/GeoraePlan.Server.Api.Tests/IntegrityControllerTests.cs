@@ -3611,7 +3611,7 @@ public sealed class IntegrityControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task GetReport_FlagsRentalBillingTemplateMissingItemReferences()
+    public async Task GetReport_FlagsRentalBillingTemplateMissingCatalogItemReferencesOnly()
     {
         var currentUser = CreateAdminUser();
         await using var dbContext = CreateDbContext(currentUser);
@@ -3673,15 +3673,25 @@ public sealed class IntegrityControllerTests : IDisposable
                 new
                 {
                     ItemId = deletedItemId,
-                    DisplayItemName = "삭제 품목 청구품목",
+                    DisplayItemName = "표시 행 ItemId는 품목 참조가 아님",
                     Quantity = 1m,
                     UnitPrice = 1_000m,
                     Amount = 1_000m
                 },
                 new
                 {
-                    ItemId = activeItemId,
-                    DisplayItemName = "정상 품목 청구품목",
+                    ItemId = Guid.NewGuid(),
+                    CatalogItemId = deletedItemId,
+                    DisplayItemName = "삭제 품목 CatalogItemId 청구품목",
+                    Quantity = 1m,
+                    UnitPrice = 1_000m,
+                    Amount = 1_000m
+                },
+                new
+                {
+                    ItemId = Guid.NewGuid(),
+                    CatalogItemId = activeItemId,
+                    DisplayItemName = "정상 품목 CatalogItemId 청구품목",
                     Quantity = 1m,
                     UnitPrice = 1_000m,
                     Amount = 1_000m
@@ -3698,14 +3708,14 @@ public sealed class IntegrityControllerTests : IDisposable
         var report = Assert.IsType<IntegrityReportDto>(ok.Value);
         var issue = Assert.Single(report.Issues, current => current.Code == "rental_billing_template_missing_item_refs");
         Assert.Equal("Error", issue.Severity);
-        Assert.Equal(2, issue.Count);
+        Assert.Equal(1, issue.Count);
 
         var detailsResponse = await controller.GetReportDetails("rental_billing_template_missing_item_refs", CancellationToken.None);
         var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
         var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
-        Assert.Equal(2, details.Rows.Count);
-        Assert.Contains(details.Rows, row => row.DetailText.Contains("ItemId 없음", StringComparison.OrdinalIgnoreCase));
-        Assert.Contains(details.Rows, row => row.DetailText.Contains(deletedItemId.ToString("D"), StringComparison.OrdinalIgnoreCase));
+        var row = Assert.Single(details.Rows);
+        Assert.Contains("CatalogItemId", row.DetailText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(deletedItemId.ToString("D"), row.DetailText, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

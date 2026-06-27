@@ -266,7 +266,8 @@ public sealed class DbInitializerRegressionTests : IDisposable
             {
                 new
                 {
-                    ItemId = duplicateItemId,
+                    ItemId = Guid.Parse("93888888-8888-8888-8888-888888888888"),
+                    CatalogItemId = duplicateItemId,
                     DisplayItemName = "Server Duplicate Item",
                     BillingLineMode = "묶음",
                     RepresentativeAssetId = assetId,
@@ -311,7 +312,8 @@ public sealed class DbInitializerRegressionTests : IDisposable
         var storedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == profileId);
         using var document = JsonDocument.Parse(storedProfile.BillingTemplateJson);
         var templateItem = Assert.Single(document.RootElement.EnumerateArray());
-        Assert.Equal(canonicalItemId, templateItem.GetProperty("ItemId").GetGuid());
+        Assert.Equal(Guid.Parse("93888888-8888-8888-8888-888888888888"), templateItem.GetProperty("ItemId").GetGuid());
+        Assert.Equal(canonicalItemId, templateItem.GetProperty("CatalogItemId").GetGuid());
         Assert.Contains(
             assetId,
             templateItem.GetProperty("IncludedAssetIds").EnumerateArray().Select(element => element.GetGuid()));

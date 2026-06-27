@@ -1234,7 +1234,7 @@ public sealed partial class LocalStateService
             .IgnoreQueryFilters()
             .Where(current => current.ItemId == itemId)
             .ToListAsync(ct);
-        var rentalBillingProfiles = await GetBillingProfilesContainingItemIdAsync(itemId, ct);
+        var rentalBillingProfiles = await GetBillingProfilesContainingCatalogItemIdAsync(itemId, ct);
         if (item is null &&
             invoiceLines.Count == 0 &&
             transferLines.Count == 0 &&
@@ -1259,7 +1259,7 @@ public sealed partial class LocalStateService
 
         foreach (var profile in rentalBillingProfiles)
         {
-            var normalizedJson = RemoveItemId(profile.BillingTemplateJson, itemId);
+            var normalizedJson = RemoveCatalogItemId(profile.BillingTemplateJson, itemId);
             if (string.Equals(normalizedJson, profile.BillingTemplateJson, StringComparison.Ordinal))
                 continue;
 
@@ -3431,7 +3431,7 @@ public sealed partial class LocalStateService
         }
     }
 
-    private static string RemoveItemId(string? templateJson, Guid itemId)
+    private static string RemoveCatalogItemId(string? templateJson, Guid itemId)
     {
         if (itemId == Guid.Empty)
             return templateJson ?? "[]";
@@ -3441,8 +3441,8 @@ public sealed partial class LocalStateService
             var items = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(templateJson ?? "[]") ?? new List<RentalBillingTemplateItemModel>();
             foreach (var item in items)
             {
-                if (item.ItemId == itemId)
-                    item.ItemId = Guid.Empty;
+                if (item.CatalogItemId == itemId)
+                    item.CatalogItemId = null;
             }
 
             return JsonSerializer.Serialize(items);
@@ -3469,7 +3469,7 @@ public sealed partial class LocalStateService
             .ToList();
     }
 
-    private async Task<List<LocalRentalBillingProfile>> GetBillingProfilesContainingItemIdAsync(
+    private async Task<List<LocalRentalBillingProfile>> GetBillingProfilesContainingCatalogItemIdAsync(
         Guid itemId,
         CancellationToken ct)
     {
@@ -3481,7 +3481,7 @@ public sealed partial class LocalStateService
             .ToListAsync(ct);
 
         return profiles
-            .Where(profile => BillingTemplateContainsItemId(profile.BillingTemplateJson, itemId))
+            .Where(profile => BillingTemplateContainsCatalogItemId(profile.BillingTemplateJson, itemId))
             .ToList();
     }
 
@@ -3501,7 +3501,7 @@ public sealed partial class LocalStateService
         }
     }
 
-    private static bool BillingTemplateContainsItemId(string? templateJson, Guid itemId)
+    private static bool BillingTemplateContainsCatalogItemId(string? templateJson, Guid itemId)
     {
         if (itemId == Guid.Empty || string.IsNullOrWhiteSpace(templateJson))
             return false;
@@ -3509,7 +3509,7 @@ public sealed partial class LocalStateService
         try
         {
             var items = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(templateJson) ?? [];
-            return items.Any(item => item.ItemId == itemId);
+            return items.Any(item => item.CatalogItemId == itemId);
         }
         catch
         {

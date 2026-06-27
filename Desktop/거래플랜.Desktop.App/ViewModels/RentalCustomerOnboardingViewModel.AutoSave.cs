@@ -281,6 +281,7 @@ public sealed partial class RentalCustomerOnboardingViewModel
             var editorItem = new RentalBillingTemplateEditorItem
             {
                 ItemId = item.ItemId == Guid.Empty ? Guid.NewGuid() : item.ItemId,
+                CatalogItemId = item.CatalogItemId,
                 DisplayItemName = item.DisplayItemName,
                 BillingLineMode = string.Equals((BillingType ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal)
                     ? NormalizeBillingLineModeValue(item.BillingLineMode)

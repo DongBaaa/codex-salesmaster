@@ -420,6 +420,7 @@ public sealed class DataIntegrityDuplicateMergeTests
             var invoiceId = Guid.Parse("91dddddd-dddd-dddd-dddd-dddddddddddd");
             var profileId = Guid.Parse("91eeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
             var assetId = Guid.Parse("91ffffff-ffff-ffff-ffff-ffffffffffff");
+            var templateRowId = Guid.Parse("91000000-0000-0000-0000-000000000091");
 
             db.Customers.Add(customer);
             db.Items.AddRange(canonical, duplicate);
@@ -475,7 +476,8 @@ public sealed class DataIntegrityDuplicateMergeTests
                 {
                     new()
                     {
-                        ItemId = duplicate.Id,
+                        ItemId = templateRowId,
+                        CatalogItemId = duplicate.Id,
                         DisplayItemName = duplicate.NameOriginal,
                         Specification = duplicate.SpecificationOriginal,
                         BillingLineMode = "묶음",
@@ -524,7 +526,8 @@ public sealed class DataIntegrityDuplicateMergeTests
             var storedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == profileId);
             var templateItems = System.Text.Json.JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(storedProfile.BillingTemplateJson) ?? [];
             var templateItem = Assert.Single(templateItems);
-            Assert.Equal(canonical.Id, templateItem.ItemId);
+            Assert.Equal(templateRowId, templateItem.ItemId);
+            Assert.Equal(canonical.Id, templateItem.CatalogItemId);
             Assert.Contains(assetId, templateItem.IncludedAssetIds);
             Assert.Equal(assetId, templateItem.RepresentativeAssetId);
             Assert.False((await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == canonical.Id)).IsDeleted);
@@ -678,6 +681,7 @@ public sealed class DataIntegrityDuplicateMergeTests
             var duplicate = CreateItem("17333333-3333-3333-3333-333333333333", "Initializer Duplicate Item", "A4", currentStock: 0m);
             var profileId = Guid.Parse("17444444-4444-4444-4444-444444444444");
             var assetId = Guid.Parse("17555555-5555-5555-5555-555555555555");
+            var templateRowId = Guid.Parse("17000000-0000-0000-0000-000000000017");
             db.Customers.Add(customer);
             db.Items.AddRange(canonical, duplicate);
             db.Invoices.AddRange(
@@ -722,7 +726,8 @@ public sealed class DataIntegrityDuplicateMergeTests
                 {
                     new()
                     {
-                        ItemId = duplicate.Id,
+                        ItemId = templateRowId,
+                        CatalogItemId = duplicate.Id,
                         DisplayItemName = duplicate.NameOriginal,
                         BillingLineMode = "묶음",
                         RepresentativeAssetId = assetId,
@@ -770,7 +775,8 @@ public sealed class DataIntegrityDuplicateMergeTests
             var storedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == profileId);
             var templateItems = System.Text.Json.JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(storedProfile.BillingTemplateJson) ?? [];
             var templateItem = Assert.Single(templateItems);
-            Assert.Equal(canonical.Id, templateItem.ItemId);
+            Assert.Equal(templateRowId, templateItem.ItemId);
+            Assert.Equal(canonical.Id, templateItem.CatalogItemId);
             Assert.Contains(assetId, templateItem.IncludedAssetIds);
         }
         finally

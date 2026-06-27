@@ -1880,7 +1880,9 @@ public sealed class IntegrityController : ControllerBase
                 referenceText: row.Reason,
                 scopeText: FormatScope(row.Profile.TenantCode, row.Profile.OfficeCode, row.Profile.ResponsibleOfficeCode),
                 detailText: CombineParts(
-                    row.TemplateItem.ItemId == Guid.Empty ? "ItemId 없음" : $"ItemId {FormatGuid(row.TemplateItem.ItemId)}",
+                    row.TemplateItem.CatalogItemId.GetValueOrDefault() == Guid.Empty
+                        ? "CatalogItemId 없음"
+                        : $"CatalogItemId {FormatGuid(row.TemplateItem.CatalogItemId!.Value)}",
                     string.IsNullOrWhiteSpace(row.Profile.ProfileKey) ? null : $"프로필키 {row.Profile.ProfileKey}",
                     "조치: 렌탈 청구 프로필의 표시품목을 활성 품목으로 다시 선택한 뒤 저장하십시오.")))
             .ToList();
@@ -1907,11 +1909,11 @@ public sealed class IntegrityController : ControllerBase
 
             foreach (var item in parsed.Items)
             {
-                if (item.ItemId == Guid.Empty)
-                {
-                    rows.Add(new RentalBillingTemplateMissingItemReferenceRow(profile, item, "청구품목 ItemId가 비어 있습니다."));
-                }
-                else if (!activeItemIds.Contains(item.ItemId))
+                var catalogItemId = item.CatalogItemId.GetValueOrDefault();
+                if (catalogItemId == Guid.Empty)
+                    continue;
+
+                if (!activeItemIds.Contains(catalogItemId))
                 {
                     rows.Add(new RentalBillingTemplateMissingItemReferenceRow(profile, item, "청구품목이 누락 또는 삭제된 품목을 참조합니다."));
                 }
@@ -4031,6 +4033,7 @@ public sealed class IntegrityController : ControllerBase
                     .Select(item => new RentalBillingTemplateItemSnapshot
                     {
                         ItemId = item.ItemId,
+                        CatalogItemId = NormalizeCatalogItemId(item.CatalogItemId),
                         DisplayItemName = item.DisplayItemName ?? string.Empty,
                         BillingLineMode = item.BillingLineMode ?? string.Empty,
                         Specification = item.Specification ?? string.Empty,
@@ -4064,6 +4067,7 @@ public sealed class IntegrityController : ControllerBase
                 .Select(item => new RentalBillingTemplateItemSnapshot
                 {
                     ItemId = item.ItemId == Guid.Empty ? Guid.NewGuid() : item.ItemId,
+                    CatalogItemId = NormalizeCatalogItemId(item.CatalogItemId),
                     DisplayItemName = FirstNonEmpty(item.DisplayItemName, profile.ItemName, "렌탈 임대료"),
                     BillingLineMode = item.BillingLineMode ?? string.Empty,
                     Specification = item.Specification ?? string.Empty,
@@ -4103,6 +4107,9 @@ public sealed class IntegrityController : ControllerBase
 
     private static Guid NormalizeRunId(Guid? runId)
         => runId.HasValue && runId.Value != Guid.Empty ? runId.Value : Guid.Empty;
+
+    private static Guid? NormalizeCatalogItemId(Guid? itemId)
+        => itemId.HasValue && itemId.Value != Guid.Empty ? itemId.Value : null;
 
     private static string NormalizeStatus(string? status)
         => status?.Trim() ?? string.Empty;
@@ -5216,6 +5223,7 @@ public sealed class IntegrityController : ControllerBase
     private sealed class RentalBillingTemplateItemSnapshot
     {
         public Guid ItemId { get; set; }
+        public Guid? CatalogItemId { get; set; }
         public string DisplayItemName { get; set; } = string.Empty;
         public string BillingLineMode { get; set; } = string.Empty;
         public string Specification { get; set; } = string.Empty;

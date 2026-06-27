@@ -114,7 +114,7 @@ with template_items as (
          p."CustomerName",
          elem,
          ord,
-         coalesce(elem->>'ItemId', elem->>'itemId') item_id_text,
+         coalesce(elem->>'CatalogItemId', elem->>'catalogItemId') item_id_text,
          coalesce(elem->>'DisplayItemName', elem->>'displayItemName', elem->>'ItemName', elem->>'itemName', '') display_item_name,
          coalesce(elem->>'Specification', elem->>'specification', '') specification,
          coalesce(elem->>'MaterialNumber', elem->>'materialNumber', '') material_number,
@@ -140,9 +140,9 @@ with template_items as (
 ), invalid_refs as (
   select n.*,
          case
-           when n.item_id_text is null or btrim(n.item_id_text) = '' then 'missing_item_id'
+           when n.item_id_text is null or btrim(n.item_id_text) = '' then 'ok'
            when n.item_id is null then 'invalid_item_id_text'
-           when n.item_id = '00000000-0000-0000-0000-000000000000' then 'zero_item_id'
+           when n.item_id = '00000000-0000-0000-0000-000000000000' then 'ok'
            when it."Id" is null then 'hard_missing_item'
            when it."IsDeleted" then 'deleted_item'
            else 'ok'
@@ -325,7 +325,7 @@ with template_items as (
          p."CustomerName",
          elem,
          ord,
-         coalesce(elem->>'ItemId', elem->>'itemId') item_id_text,
+         coalesce(elem->>'CatalogItemId', elem->>'catalogItemId') item_id_text,
          coalesce(elem->>'DisplayItemName', elem->>'displayItemName', elem->>'ItemName', elem->>'itemName', '') display_item_name,
          coalesce(elem->>'Specification', elem->>'specification', '') specification,
          coalesce(elem->>'MaterialNumber', elem->>'materialNumber', '') material_number,
@@ -351,9 +351,9 @@ with template_items as (
 ), invalid_refs as (
   select n.*,
          case
-           when n.item_id_text is null or btrim(n.item_id_text) = '' then 'missing_item_id'
+           when n.item_id_text is null or btrim(n.item_id_text) = '' then 'ok'
            when n.item_id is null then 'invalid_item_id_text'
-           when n.item_id = '00000000-0000-0000-0000-000000000000' then 'zero_item_id'
+           when n.item_id = '00000000-0000-0000-0000-000000000000' then 'ok'
            when it."Id" is null then 'hard_missing_item'
            when it."IsDeleted" then 'deleted_item'
            else 'ok'

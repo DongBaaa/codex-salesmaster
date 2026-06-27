@@ -666,7 +666,7 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
-    public async Task PurgeItem_RejectsRemainingRentalBillingTemplateReference()
+    public async Task PurgeItem_RejectsRemainingRentalBillingTemplateCatalogItemReference()
     {
         var currentUser = CreateAdminUser();
         await using var dbContext = CreateDbContext(currentUser);
@@ -694,7 +694,8 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
             {
                 new
                 {
-                    ItemId = item.Id,
+                    ItemId = Guid.NewGuid(),
+                    CatalogItemId = item.Id,
                     DisplayItemName = item.NameOriginal,
                     Quantity = 1m,
                     UnitPrice = 100_000m,

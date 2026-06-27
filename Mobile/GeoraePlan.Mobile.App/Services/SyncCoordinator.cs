@@ -1347,8 +1347,8 @@ public sealed class SyncCoordinator
                 ClearInventoryTransferLineItemReferences(state.PendingPush.InventoryTransfers, entityId, purgeRevision);
                 ClearRentalAssetItemReferences(state.SyncedRentalAssets, entityId, purgeRevision);
                 ClearRentalAssetItemReferences(state.PendingPush.RentalAssets, entityId, purgeRevision);
-                RemoveItemIdFromBillingTemplates(state.SyncedRentalBillingProfiles, entityId, purgeRevision);
-                RemoveItemIdFromBillingTemplates(state.PendingPush.RentalBillingProfiles, entityId, purgeRevision);
+                RemoveCatalogItemIdFromBillingTemplates(state.SyncedRentalBillingProfiles, entityId, purgeRevision);
+                RemoveCatalogItemIdFromBillingTemplates(state.PendingPush.RentalBillingProfiles, entityId, purgeRevision);
                 break;
             case "pricegradeoption":
             case "price-grade-option":
@@ -1645,7 +1645,7 @@ public sealed class SyncCoordinator
         }
     }
 
-    private static void RemoveItemIdFromBillingTemplates(
+    private static void RemoveCatalogItemIdFromBillingTemplates(
         List<RentalBillingProfileDto> values,
         Guid itemId,
         long purgeRevision)
@@ -1658,7 +1658,7 @@ public sealed class SyncCoordinator
             if (IsEntityNewerThanPurge(value, purgeRevision))
                 continue;
 
-            var normalizedJson = RemoveItemId(value.BillingTemplateJson, itemId);
+            var normalizedJson = RemoveCatalogItemId(value.BillingTemplateJson, itemId);
             if (string.Equals(normalizedJson, value.BillingTemplateJson, StringComparison.Ordinal))
                 continue;
 
@@ -1689,7 +1689,7 @@ public sealed class SyncCoordinator
         }
     }
 
-    private static string RemoveItemId(string? templateJson, Guid itemId)
+    private static string RemoveCatalogItemId(string? templateJson, Guid itemId)
     {
         if (itemId == Guid.Empty)
             return templateJson ?? "[]";
@@ -1702,8 +1702,10 @@ public sealed class SyncCoordinator
 
             foreach (var item in items.OfType<JsonObject>())
             {
-                if (IsMatchingJsonGuid(item["ItemId"], itemId))
-                    item["ItemId"] = Guid.Empty.ToString("D");
+                if (IsMatchingJsonGuid(item["CatalogItemId"], itemId))
+                    item.Remove("CatalogItemId");
+                if (IsMatchingJsonGuid(item["catalogItemId"], itemId))
+                    item.Remove("catalogItemId");
             }
 
             return items.ToJsonString();

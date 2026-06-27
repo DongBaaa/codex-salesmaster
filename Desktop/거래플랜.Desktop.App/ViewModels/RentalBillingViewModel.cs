@@ -2963,6 +2963,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             var editorItem = new RentalBillingTemplateEditorItem
             {
                 ItemId = item.ItemId,
+                CatalogItemId = item.CatalogItemId,
                 DisplayItemName = item.DisplayItemName,
                 BillingLineMode = ResolveTemplateBillingLineMode(item.BillingLineMode, EditBillingType),
                 Specification = item.Specification,
@@ -4220,6 +4221,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         => TemplateItems.Select(item => new RentalBillingTemplateItemModel
         {
             ItemId = item.ItemId == Guid.Empty ? Guid.NewGuid() : item.ItemId,
+            CatalogItemId = item.CatalogItemId,
             DisplayItemName = (item.DisplayItemName ?? string.Empty).Trim(),
             BillingLineMode = ResolveTemplateBillingLineMode(item.BillingLineMode, EditBillingType),
             Specification = (item.Specification ?? string.Empty).Trim(),

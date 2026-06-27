@@ -6468,6 +6468,7 @@ public sealed class LocalStateServicePartialsTests
                     new()
                     {
                         ItemId = itemId,
+                        CatalogItemId = itemId,
                         DisplayItemName = "A4-MFP",
                         BillingLineMode = "묶음",
                         Quantity = 1m,
@@ -6501,7 +6502,8 @@ public sealed class LocalStateServicePartialsTests
             var profile = await db.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(current => current.Id == profileId);
             var templateItems = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(profile.BillingTemplateJson) ?? [];
             Assert.Single(templateItems);
-            Assert.Equal(Guid.Empty, templateItems[0].ItemId);
+            Assert.Equal(itemId, templateItems[0].ItemId);
+            Assert.Null(templateItems[0].CatalogItemId);
             Assert.False(profile.IsDirty);
         }
         finally

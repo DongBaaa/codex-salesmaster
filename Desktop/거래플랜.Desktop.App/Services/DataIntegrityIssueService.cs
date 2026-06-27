@@ -1867,10 +1867,11 @@ public sealed class DataIntegrityIssueService
                 if (item is null)
                     continue;
 
-                var wasDuplicateItemReference = duplicateIds.Contains(item.ItemId);
+                var catalogItemId = item.CatalogItemId.GetValueOrDefault();
+                var wasDuplicateItemReference = catalogItemId != Guid.Empty && duplicateIds.Contains(catalogItemId);
                 if (wasDuplicateItemReference)
                 {
-                    item.ItemId = canonical.Id;
+                    item.CatalogItemId = canonical.Id;
                     changed = true;
                 }
 
@@ -1917,11 +1918,11 @@ public sealed class DataIntegrityIssueService
             .ToListAsync(ct);
 
         return profiles
-            .Where(profile => BillingTemplateContainsItemId(profile.BillingTemplateJson, itemIdSet))
+            .Where(profile => BillingTemplateContainsCatalogItemId(profile.BillingTemplateJson, itemIdSet))
             .ToList();
     }
 
-    private static bool BillingTemplateContainsItemId(string? templateJson, IReadOnlySet<Guid> itemIds)
+    private static bool BillingTemplateContainsCatalogItemId(string? templateJson, IReadOnlySet<Guid> itemIds)
     {
         if (itemIds.Count == 0 || string.IsNullOrWhiteSpace(templateJson))
             return false;
@@ -1929,7 +1930,7 @@ public sealed class DataIntegrityIssueService
         try
         {
             var items = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(templateJson, JsonOptions) ?? [];
-            return items.Any(item => item is not null && itemIds.Contains(item.ItemId));
+            return items.Any(item => item is not null && item.CatalogItemId.HasValue && itemIds.Contains(item.CatalogItemId.Value));
         }
         catch
         {
@@ -3986,10 +3987,10 @@ public sealed class DataIntegrityIssueService
 
             foreach (var item in templateItems)
             {
-                if (item is null || !itemIdSet.Contains(item.ItemId))
+                if (item?.CatalogItemId is not { } catalogItemId || !itemIdSet.Contains(catalogItemId))
                     continue;
 
-                counts[item.ItemId] = counts.GetValueOrDefault(item.ItemId) + 1;
+                counts[catalogItemId] = counts.GetValueOrDefault(catalogItemId) + 1;
             }
         }
 
@@ -4940,6 +4941,7 @@ public sealed class DataIntegrityIssueService
                 .Select(item => new RentalBillingTemplateItemModel
                 {
                     ItemId = item.ItemId == Guid.Empty ? Guid.NewGuid() : item.ItemId,
+                    CatalogItemId = item.CatalogItemId.HasValue && item.CatalogItemId.Value != Guid.Empty ? item.CatalogItemId.Value : null,
                     DisplayItemName = NormalizeDisplay(item.DisplayItemName, profile.ItemName),
                     BillingLineMode = item.BillingLineMode ?? string.Empty,
                     RepresentativeAssetId = item.RepresentativeAssetId,

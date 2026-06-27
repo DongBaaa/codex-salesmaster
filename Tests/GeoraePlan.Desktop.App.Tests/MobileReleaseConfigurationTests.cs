@@ -3199,7 +3199,7 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("ClearInvoiceLineItemReferences(state.SyncedInvoices, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("ClearInventoryTransferLineItemReferences(state.SyncedInventoryTransfers, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("ClearRentalAssetItemReferences(state.SyncedRentalAssets, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("RemoveItemIdFromBillingTemplates(state.SyncedRentalBillingProfiles, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("RemoveCatalogItemIdFromBillingTemplates(state.SyncedRentalBillingProfiles, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedInvoices, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("var removedPaymentIds = new HashSet<Guid>();", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemovePaymentsForPurgedInvoice(state.SyncedPayments, entityId, purgeRevision, removedPaymentIds);", coordinatorSource, StringComparison.Ordinal);
@@ -3243,8 +3243,9 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("payment.Id == transactionId && !IsEntityNewerThanPurge(payment, purgeRevision)", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("private static void ClearInvoiceLineItemReferences(", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("line.ItemId = null;", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("private static void RemoveItemIdFromBillingTemplates(", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("item[\"ItemId\"] = Guid.Empty.ToString(\"D\");", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("private static void RemoveCatalogItemIdFromBillingTemplates(", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("item.Remove(\"CatalogItemId\");", coordinatorSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("item[\"ItemId\"] = Guid.Empty.ToString(\"D\");", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("private static void RemoveIncludedAssetIdFromBillingTemplates(", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("JsonNode.Parse(templateJson ?? \"[]\")", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("if (IsEntityNewerThanPurge(value, purgeRevision))", coordinatorSource, StringComparison.Ordinal);

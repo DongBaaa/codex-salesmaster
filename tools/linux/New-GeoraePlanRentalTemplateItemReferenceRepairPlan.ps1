@@ -166,9 +166,9 @@ $valuesClause
          coalesce(p."IsDeleted", false) as profile_deleted,
          coalesce(p."IsActive", false) as profile_active,
          x.elem,
-         coalesce(x.elem->>'ItemId', x.elem->>'itemId') as current_item_id_text,
-         case when coalesce(x.elem->>'ItemId', x.elem->>'itemId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-              then coalesce(x.elem->>'ItemId', x.elem->>'itemId')::uuid
+         coalesce(x.elem->>'CatalogItemId', x.elem->>'catalogItemId') as current_item_id_text,
+         case when coalesce(x.elem->>'CatalogItemId', x.elem->>'catalogItemId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+              then coalesce(x.elem->>'CatalogItemId', x.elem->>'catalogItemId')::uuid
               else null
          end as current_item_id,
          current_item."Id" is not null as current_item_exists,
@@ -187,8 +187,8 @@ $valuesClause
          else '[]'::jsonb
     end
   ) with ordinality as x(elem, ord) on x.ord = a.template_ordinal
-  left join "Items" current_item on current_item."Id" = case when coalesce(x.elem->>'ItemId', x.elem->>'itemId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-                                                            then coalesce(x.elem->>'ItemId', x.elem->>'itemId')::uuid
+  left join "Items" current_item on current_item."Id" = case when coalesce(x.elem->>'CatalogItemId', x.elem->>'catalogItemId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                                                            then coalesce(x.elem->>'CatalogItemId', x.elem->>'catalogItemId')::uuid
                                                             else null
                                                        end
   left join "Items" approved_item on approved_item."Id" = a.approved_item_id
@@ -298,9 +298,9 @@ $valuesClause
          jsonb_agg(
            case when a.profile_id is not null then
              case
-               when x.elem ? 'ItemId' then jsonb_set(x.elem, '{ItemId}', to_jsonb(a.approved_item_id::text), true)
-               when x.elem ? 'itemId' then jsonb_set(x.elem, '{itemId}', to_jsonb(a.approved_item_id::text), true)
-               else jsonb_set(x.elem, '{ItemId}', to_jsonb(a.approved_item_id::text), true)
+               when x.elem ? 'CatalogItemId' then jsonb_set(x.elem, '{CatalogItemId}', to_jsonb(a.approved_item_id::text), true)
+               when x.elem ? 'catalogItemId' then jsonb_set(x.elem, '{catalogItemId}', to_jsonb(a.approved_item_id::text), true)
+               else jsonb_set(x.elem, '{CatalogItemId}', to_jsonb(a.approved_item_id::text), true)
              end
            else x.elem
            end

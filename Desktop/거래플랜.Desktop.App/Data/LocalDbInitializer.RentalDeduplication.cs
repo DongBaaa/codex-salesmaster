@@ -792,6 +792,7 @@ public static partial class LocalDbInitializer
             templateItems.Add(new BillingTemplateItemSnapshot
             {
                 ItemId = Guid.Empty,
+                CatalogItemId = null,
                 DisplayItemName = displayItemName,
                 BillingLineMode = NormalizeTemplateBillingLineMode(profile.BillingType),
                 RepresentativeAssetId = representativeAssetId == Guid.Empty ? null : representativeAssetId,
@@ -930,6 +931,8 @@ public static partial class LocalDbInitializer
     private sealed class BillingTemplateItemSnapshot
     {
         public Guid ItemId { get; set; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public Guid? CatalogItemId { get; set; }
         public string DisplayItemName { get; set; } = string.Empty;
         public string BillingLineMode { get; set; } = string.Empty;
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

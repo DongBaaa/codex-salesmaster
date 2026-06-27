@@ -811,6 +811,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         => TemplateItems.Select(item => new RentalBillingTemplateItemModel
         {
             ItemId = item.ItemId == Guid.Empty ? Guid.NewGuid() : item.ItemId,
+            CatalogItemId = item.CatalogItemId,
             DisplayItemName = (item.DisplayItemName ?? string.Empty).Trim(),
             BillingLineMode = ResolveTemplateBillingLineMode(item.BillingLineMode, BillingType),
             Specification = (item.Specification ?? string.Empty).Trim(),

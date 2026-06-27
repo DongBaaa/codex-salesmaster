@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Shared.Contracts;
 
@@ -801,6 +802,7 @@ public static partial class DbInitializer
             templateItems.Add(new BillingTemplateItemSnapshot
             {
                 ItemId = Guid.Empty,
+                CatalogItemId = null,
                 DisplayItemName = displayItemName,
                 BillingLineMode = NormalizeTemplateBillingLineMode(profile.BillingType),
                 Quantity = 1m,
@@ -911,6 +913,8 @@ public static partial class DbInitializer
     private sealed class BillingTemplateItemSnapshot
     {
         public Guid ItemId { get; set; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public Guid? CatalogItemId { get; set; }
         public string DisplayItemName { get; set; } = string.Empty;
         public string BillingLineMode { get; set; } = string.Empty;
         public decimal Quantity { get; set; } = 1m;

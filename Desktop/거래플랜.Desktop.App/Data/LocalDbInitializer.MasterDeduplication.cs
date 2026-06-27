@@ -415,10 +415,11 @@ public static partial class LocalDbInitializer
         {
             foreach (var item in DeserializeBillingTemplateItems(profile.BillingTemplateJson))
             {
-                if (item.ItemId == Guid.Empty)
+                var catalogItemId = item.CatalogItemId.GetValueOrDefault();
+                if (catalogItemId == Guid.Empty)
                     continue;
 
-                counts[item.ItemId] = counts.GetValueOrDefault(item.ItemId) + 1;
+                counts[catalogItemId] = counts.GetValueOrDefault(catalogItemId) + 1;
             }
         }
 
@@ -440,10 +441,10 @@ public static partial class LocalDbInitializer
             var changed = false;
             foreach (var item in templateItems)
             {
-                if (item.ItemId != duplicate.Id)
+                if (item.CatalogItemId.GetValueOrDefault() != duplicate.Id)
                     continue;
 
-                item.ItemId = canonical.Id;
+                item.CatalogItemId = canonical.Id;
                 if (string.IsNullOrWhiteSpace(item.DisplayItemName) ||
                     string.Equals(
                         RentalCatalogValueNormalizer.NormalizeLooseKey(item.DisplayItemName),

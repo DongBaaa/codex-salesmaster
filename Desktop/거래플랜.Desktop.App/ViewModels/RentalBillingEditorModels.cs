@@ -8,6 +8,7 @@ public sealed partial class RentalBillingTemplateEditorItem : ObservableObject
     private bool _suppressCalculatedAmountSync;
 
     [ObservableProperty] private Guid _itemId = Guid.NewGuid();
+    [ObservableProperty] private Guid? _catalogItemId;
     [ObservableProperty] private string _displayItemName = string.Empty;
     [ObservableProperty] private string _billingLineMode = string.Empty;
     [ObservableProperty] private string _specification = string.Empty;

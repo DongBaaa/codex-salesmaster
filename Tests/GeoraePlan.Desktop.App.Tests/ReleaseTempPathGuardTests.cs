@@ -657,6 +657,8 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("'' as \"CustomerName\"", source, StringComparison.Ordinal);
         Assert.Contains("'' as \"DisplayItemName\"", source, StringComparison.Ordinal);
         Assert.Contains("'' as \"OriginalItemId\"", source, StringComparison.Ordinal);
+        Assert.Contains("coalesce(elem->>'CatalogItemId', elem->>'catalogItemId')", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("coalesce(elem->>'ItemId', elem->>'itemId')", source, StringComparison.Ordinal);
         Assert.Contains("single_active_item_from_included_assets", source, StringComparison.Ordinal);
         Assert.Contains("ambiguous_multiple_candidates", source, StringComparison.Ordinal);
         Assert.Contains("proposed_item_id as \"ProposedItemId\"", source, StringComparison.Ordinal);
@@ -1339,6 +1341,8 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("updated_profile_count mismatch", source, StringComparison.Ordinal);
         Assert.Contains("select * from \"RentalBillingTemplateItemReferenceRepairCounts\"", source, StringComparison.Ordinal);
         Assert.Contains("transaction-time assertions for approved, target profile, backup, and updated profile counts", source, StringComparison.Ordinal);
+        Assert.Contains("jsonb_set(x.elem, '{CatalogItemId}', to_jsonb(a.approved_item_id::text), true)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("jsonb_set(x.elem, '{ItemId}', to_jsonb(a.approved_item_id::text), true)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("@('ApprovedItemId', 'ProposedItemId'", source, StringComparison.Ordinal);
         Assert.Contains("repair-<db>-rollback.sql", source, StringComparison.Ordinal);
         Assert.Contains("Run this SQL against a cloned/test database first.", source, StringComparison.Ordinal);

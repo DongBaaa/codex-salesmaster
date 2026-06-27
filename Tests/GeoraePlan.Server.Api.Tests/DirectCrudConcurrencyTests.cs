@@ -803,7 +803,7 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
-    public async Task ItemsController_Delete_RejectsActiveRentalBillingTemplateReference()
+    public async Task ItemsController_Delete_RejectsActiveRentalBillingTemplateCatalogItemReference()
     {
         var currentUser = CreateAdminUser();
         await using var dbContext = CreateDbContext(currentUser);
@@ -832,7 +832,8 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             {
                 new
                 {
-                    ItemId = item.Id,
+                    ItemId = Guid.NewGuid(),
+                    CatalogItemId = item.Id,
                     DisplayItemName = item.NameOriginal,
                     Quantity = 1m,
                     UnitPrice = 100_000m,

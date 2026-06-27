@@ -9857,6 +9857,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             normalized.Add(new RentalBillingTemplateItemModel
             {
                 ItemId = current.ItemId == Guid.Empty ? Guid.NewGuid() : current.ItemId,
+                CatalogItemId = NormalizeCatalogItemId(current.CatalogItemId),
                 DisplayItemName = string.IsNullOrWhiteSpace(displayItemName) ? "렌탈 임대료" : displayItemName,
                 BillingLineMode = billingLineMode,
                 Specification = (current.Specification ?? string.Empty).Trim(),
@@ -10030,6 +10031,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Select(item => new RentalBillingTemplateItemModel
             {
                 ItemId = item.ItemId == Guid.Empty ? Guid.NewGuid() : item.ItemId,
+                CatalogItemId = NormalizeCatalogItemId(item.CatalogItemId),
                 DisplayItemName = item.DisplayItemName,
                 BillingLineMode = item.BillingLineMode,
                 Specification = item.Specification,
@@ -10043,6 +10045,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 IncludedAssetIds = item.IncludedAssetIds?.Distinct().ToList() ?? new List<Guid>()
             })
             .ToList();
+
+    private static Guid? NormalizeCatalogItemId(Guid? value)
+        => value.HasValue && value.Value != Guid.Empty ? value.Value : null;
 
     private static decimal ResolveTemplateMonthlyAmount(RentalBillingTemplateItemModel item)
     {
@@ -11712,6 +11717,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         => new()
         {
             ItemId = item.ItemId == Guid.Empty ? Guid.NewGuid() : item.ItemId,
+            CatalogItemId = NormalizeCatalogItemId(item.CatalogItemId),
             DisplayItemName = item.DisplayItemName ?? string.Empty,
             BillingLineMode = item.BillingLineMode ?? string.Empty,
             Specification = item.Specification ?? string.Empty,
@@ -11740,6 +11746,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return;
 
         target.IncludedAssetIds.AddRange(addedAssetIds);
+        target.CatalogItemId ??= NormalizeCatalogItemId(incoming.CatalogItemId);
         if (!target.RepresentativeAssetId.HasValue &&
             incoming.RepresentativeAssetId.HasValue &&
             target.IncludedAssetIds.Contains(incoming.RepresentativeAssetId.Value))

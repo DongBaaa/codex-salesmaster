@@ -79,8 +79,8 @@ public static class ItemDeletionReferenceGuard
 
             foreach (var element in document.RootElement.EnumerateArray())
             {
-                if (TryGetGuidProperty(element, "ItemId", out var foundItemId) ||
-                    TryGetGuidProperty(element, "itemId", out foundItemId))
+                if (TryGetGuidProperty(element, "CatalogItemId", out var foundItemId) ||
+                    TryGetGuidProperty(element, "catalogItemId", out foundItemId))
                 {
                     if (foundItemId == itemId)
                         return true;
