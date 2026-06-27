@@ -85,6 +85,83 @@ function Get-CsprojPropertyValue {
     return $null
 }
 
+function Resolve-AndroidSigningPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$PathValue,
+        [Parameter(Mandatory = $true)][string]$BaseDirectory
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PathValue)) {
+        return ''
+    }
+
+    if ([System.IO.Path]::IsPathRooted($PathValue)) {
+        return $PathValue
+    }
+
+    return [System.IO.Path]::GetFullPath((Join-Path $BaseDirectory $PathValue))
+}
+
+function Assert-AndroidReleaseSigningReady {
+    param(
+        [Parameter(Mandatory = $true)][string]$SigningConfigPath,
+        [switch]$AllowLegacyAndroidDebugSigning
+    )
+
+    if ([string]::IsNullOrWhiteSpace($SigningConfigPath)) {
+        throw 'Android signing config path is required before release build.'
+    }
+
+    if (-not (Test-Path -LiteralPath $SigningConfigPath)) {
+        throw "Android signing config not found before release build: $SigningConfigPath"
+    }
+
+    $resolvedSigningConfigPath = (Resolve-Path -LiteralPath $SigningConfigPath).Path
+    try {
+        $signingConfig = Get-Content -LiteralPath $resolvedSigningConfigPath -Raw | ConvertFrom-Json
+    }
+    catch {
+        throw "Android signing config could not be parsed before release build: $resolvedSigningConfigPath"
+    }
+
+    $signingConfigDirectory = Split-Path -Parent $resolvedSigningConfigPath
+    $keystorePath = [string]$signingConfig.keystorePath
+    $keyAlias = [string]$signingConfig.keyAlias
+    $storePass = [string]$signingConfig.storePass
+    $keyPass = [string]$signingConfig.keyPass
+
+    if ([string]::IsNullOrWhiteSpace($keystorePath)) {
+        throw 'Android signing config is missing keystorePath before release build.'
+    }
+
+    if ([string]::IsNullOrWhiteSpace($keyAlias)) {
+        throw 'Android signing config is missing keyAlias before release build.'
+    }
+
+    if ([string]::IsNullOrWhiteSpace($storePass)) {
+        throw 'Android signing config is missing storePass before release build.'
+    }
+
+    if ([string]::IsNullOrWhiteSpace($keyPass)) {
+        throw 'Android signing config is missing keyPass before release build.'
+    }
+
+    $resolvedKeystorePath = Resolve-AndroidSigningPath -PathValue $keystorePath -BaseDirectory $signingConfigDirectory
+    if (-not (Test-Path -LiteralPath $resolvedKeystorePath)) {
+        throw "Android keystore not found before release build: $resolvedKeystorePath"
+    }
+
+    if ($AllowLegacyAndroidDebugSigning) {
+        return
+    }
+
+    $isDebugKeystorePath = [System.IO.Path]::GetFileName($resolvedKeystorePath).Equals('debug.keystore', [System.StringComparison]::OrdinalIgnoreCase)
+    $isDebugKeyAlias = $keyAlias.Equals('androiddebugkey', [System.StringComparison]::OrdinalIgnoreCase)
+    if ($isDebugKeystorePath -or $isDebugKeyAlias) {
+        throw "Release Android package is using a debug signing key before release build. Configure Mobile\GeoraePlan.Mobile.App\android-signing.local.json with a release keystore, or pass -AllowLegacyAndroidDebugSigning only for the existing legacy debug-signed update chain."
+    }
+}
+
 function Resolve-ProjectFile {
     param(
         [Parameter(Mandatory = $true)][string]$RootPath,
@@ -128,6 +205,7 @@ Write-Host "release_android_version=$androidVersion"
 if ($AllowLegacyAndroidDebugSigning) {
     Write-Warning "Legacy Android debug signing is explicitly allowed for this full release. Use only to preserve the existing debug-signed update chain; prefer a release keystore for new paid deliveries."
 }
+Assert-AndroidReleaseSigningReady -SigningConfigPath $SigningConfigPath -AllowLegacyAndroidDebugSigning:$AllowLegacyAndroidDebugSigning
 
 $solution = Get-ChildItem -LiteralPath $ProjectRoot -File -Filter '*.sln' | Select-Object -First 1
 if ($null -eq $solution) {

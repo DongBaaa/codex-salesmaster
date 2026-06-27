@@ -970,6 +970,28 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public void FullReleasePreflightsAndroidReleaseSigningBeforeBuildingArtifacts()
+    {
+        var source = ReadRepositoryFile(
+            "tools",
+            "release",
+            "Publish-GeoraePlanFullRelease.ps1");
+
+        Assert.Contains("function Assert-AndroidReleaseSigningReady", source, StringComparison.Ordinal);
+        Assert.Contains("Android signing config not found before release build", source, StringComparison.Ordinal);
+        Assert.Contains("Android keystore not found before release build", source, StringComparison.Ordinal);
+        Assert.Contains("Release Android package is using a debug signing key before release build", source, StringComparison.Ordinal);
+        Assert.Contains("AllowLegacyAndroidDebugSigning:$AllowLegacyAndroidDebugSigning", source, StringComparison.Ordinal);
+        AssertInOrder(
+            source,
+            "if ($AllowLegacyAndroidDebugSigning)",
+            "Assert-AndroidReleaseSigningReady -SigningConfigPath $SigningConfigPath",
+            "$solution = Get-ChildItem",
+            "& $dotnetExe build",
+            "& powershell @androidArgs");
+    }
+
+    [Fact]
     public void RentalTemplateRepairPlanScript_GeneratesRollbackPatchOnlyAfterSelectValidation()
     {
         var source = ReadRepositoryFile(
