@@ -5,7 +5,7 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class DatePickerCalendarStyleTests
 {
     [Fact]
-    public void AppCalendarItemStyle_ResetsDatePickerButtonWidthInsideCalendarPopup()
+    public void AppDatePickerStyle_KeepsCalendarPopupWideAndResetsHeaderButtonWidth()
     {
         var xaml = File.ReadAllText(Path.Combine(
             FindRepositoryRoot(),
@@ -13,7 +13,21 @@ public sealed class DatePickerCalendarStyleTests
             "거래플랜.Desktop.App",
             "App.xaml"));
 
+        var calendarStyle = ExtractStyleBlock(
+            xaml,
+            "<Style x:Key=\"GeoraePlanDatePickerCalendarStyle\" TargetType=\"{x:Type Calendar}\">",
+            "<Style TargetType=\"DatePicker\">",
+            "DatePicker 달력 popup 기본 스타일을 찾을 수 없습니다.");
+        var datePickerStyle = ExtractStyleBlock(
+            xaml,
+            "<Style TargetType=\"DatePicker\">",
+            "<Style TargetType=\"{x:Type DatePickerTextBox}\">",
+            "DatePicker 전역 스타일을 찾을 수 없습니다.");
         var calendarItemStyle = ExtractCalendarItemStyleBlock(xaml);
+
+        Assert.Contains("<Setter Property=\"MinWidth\" Value=\"320\"/>", calendarStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"MinHeight\" Value=\"280\"/>", calendarStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"CalendarStyle\" Value=\"{StaticResource GeoraePlanDatePickerCalendarStyle}\"/>", datePickerStyle, StringComparison.Ordinal);
 
         Assert.Contains("<Setter Property=\"Resources\">", calendarItemStyle, StringComparison.Ordinal);
         Assert.Contains("월/년도 헤더 버튼", calendarItemStyle, StringComparison.Ordinal);
@@ -27,15 +41,25 @@ public sealed class DatePickerCalendarStyleTests
     }
 
     private static string ExtractCalendarItemStyleBlock(string xaml)
-    {
-        const string startMarker = "<Style TargetType=\"{x:Type CalendarItem}\">";
-        const string endMarker = "<Style x:Key=\"UnifiedDatePickerButtonStyle\"";
+        => ExtractStyleBlock(
+            xaml,
+            "<Style TargetType=\"{x:Type CalendarItem}\">",
+            "<Style x:Key=\"UnifiedDatePickerButtonStyle\"",
+            "CalendarItem 전역 스타일을 찾을 수 없습니다.",
+            "CalendarItem 전역 스타일의 끝을 찾을 수 없습니다.");
 
+    private static string ExtractStyleBlock(
+        string xaml,
+        string startMarker,
+        string endMarker,
+        string missingStartMessage,
+        string? missingEndMessage = null)
+    {
         var start = xaml.IndexOf(startMarker, StringComparison.Ordinal);
-        Assert.True(start >= 0, "CalendarItem 전역 스타일을 찾을 수 없습니다.");
+        Assert.True(start >= 0, missingStartMessage);
 
         var end = xaml.IndexOf(endMarker, start, StringComparison.Ordinal);
-        Assert.True(end > start, "CalendarItem 전역 스타일의 끝을 찾을 수 없습니다.");
+        Assert.True(end > start, missingEndMessage ?? $"{startMarker} 스타일의 끝을 찾을 수 없습니다.");
 
         return xaml[start..end];
     }
