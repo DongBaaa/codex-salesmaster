@@ -103,8 +103,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\relea
   -ProjectRoot "D:\거래플랜" `
   -SigningConfigPath "D:\거래플랜\Mobile\GeoraePlan.Mobile.App\android-signing.local.json" `
   -DeployToLinuxPc `
-  -SkipPreDeployOperationalGate `
-  -SkipPostDeployOperationalGate
+  -FailOnOperationalWarnings
 ```
 
 서버 publish/live 반영만 다시 할 때는 아래 Linux PC 전용 래퍼를 사용합니다.
@@ -113,14 +112,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\relea
 powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\linux\Publish-GeoraeplanLinuxPcRelease.ps1" `
   -ProjectRoot "D:\거래플랜" `
   -MirrorToLive `
-  -SkipPreDeployOperationalGate `
-  -SkipPostDeployOperationalGate
+  -FailOnOperationalWarnings
 ```
 
 사전 조건:
 - Windows 배포 PC에 `C:\Users\beene\.ssh\itwserver_codex_ed25519` 키가 있어야 합니다.
 - Linux PC의 `/srv/georaeplan/ops/apply-release.sh`가 존재하고 `bash -n` 검사를 통과해야 합니다.
 - 새 작업에서는 `tools\\linux` 스크립트만 사용합니다.
+- 유료 납품/엄격 release에서는 operational warning을 배포 차단으로 보기 위해 `-FailOnOperationalWarnings`를 유지합니다.
 
 ## 인쇄 기본 동작
 - `[완료]` 판매(매출) 창에서 `출력물 편집` 후 데이터 저장

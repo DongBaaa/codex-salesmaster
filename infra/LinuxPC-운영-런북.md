@@ -26,8 +26,7 @@
 powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\linux\Publish-GeoraeplanLinuxPcRelease.ps1" `
   -ProjectRoot "D:\거래플랜" `
   -MirrorToLive `
-  -SkipPreDeployOperationalGate `
-  -SkipPostDeployOperationalGate
+  -FailOnOperationalWarnings
 ```
 
 전체 릴리스(PC 설치파일, Android APK, 업데이트 자산 생성 포함)는 아래 명령을 사용합니다.
@@ -37,9 +36,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\relea
   -ProjectRoot "D:\거래플랜" `
   -SigningConfigPath "D:\거래플랜\Mobile\GeoraePlan.Mobile.App\android-signing.local.json" `
   -DeployToLinuxPc `
-  -SkipPreDeployOperationalGate `
-  -SkipPostDeployOperationalGate
+  -FailOnOperationalWarnings
 ```
+
+> 유료 납품/엄격 release에서는 live 전/후 operational gate를 생략하지 않고 `-FailOnOperationalWarnings`로 warning도 차단합니다. gate 생략 옵션은 별도 엄격 gate가 이미 통과한 긴급 상황에서만 사용합니다.
 
 ## 4. SSH 설정
 

@@ -949,6 +949,26 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public void ReleaseDocumentationRecommendsOperationalWarningFailForPaidDelivery()
+    {
+        var readme = ReadRepositoryFile("README.md");
+        var linuxRunbook = ReadRepositoryFile("infra", "LinuxPC-운영-런북.md");
+        var updateGuide = ReadRepositoryFile("수정_업데이트_가이드_2026-03-20.md");
+        var testReadme = ReadRepositoryFile("테스트 시행", "README.md");
+
+        foreach (var source in new[] { readme, linuxRunbook, updateGuide, testReadme })
+        {
+            Assert.Contains("-FailOnOperationalWarnings", source, StringComparison.Ordinal);
+            Assert.Contains("유료 납품", source, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("operational warning을 배포 차단", readme, StringComparison.Ordinal);
+        Assert.Contains("live 전/후 operational gate를 생략하지 않고", linuxRunbook, StringComparison.Ordinal);
+        Assert.Contains("live 전/후 operational gate를 생략하지 않고", updateGuide, StringComparison.Ordinal);
+        Assert.Contains("live 관찰/운영 게이트 warning도 배포 차단", testReadme, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LocalCacheConsistencyDetectsNonInventoryAndAssetWarehouseStockResidues()
     {
         var source = ReadRepositoryFile(
