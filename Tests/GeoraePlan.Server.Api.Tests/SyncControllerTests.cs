@@ -9577,7 +9577,9 @@ public sealed class SyncControllerTests : IDisposable
             InvoiceId = invoiceId,
             PaymentDate = new DateOnly(2026, 6, 26),
             Amount = 30_000m,
-            Note = "before payment-only update"
+            Note = "before payment-only update",
+            CreatedAtUtc = new DateTime(2026, 6, 26, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 6, 26, 0, 0, 0, DateTimeKind.Utc)
         });
         _dbContext.Transactions.Add(new TransactionRecord
         {
@@ -9612,9 +9614,10 @@ public sealed class SyncControllerTests : IDisposable
                     PaymentDate = new DateOnly(2026, 6, 27),
                     Amount = 70_000m,
                     Note = "payment-only update should update transaction",
+                    Revision = storedPayment.Revision,
                     ExpectedRevision = storedPayment.Revision,
-                    CreatedAtUtc = new DateTime(2026, 6, 27, 1, 0, 0, DateTimeKind.Utc),
-                    UpdatedAtUtc = new DateTime(2026, 6, 27, 1, 1, 0, DateTimeKind.Utc)
+                    CreatedAtUtc = storedPayment.CreatedAtUtc,
+                    UpdatedAtUtc = storedPayment.UpdatedAtUtc.AddMinutes(1)
                 }
             ]
         }, CancellationToken.None);
@@ -9622,7 +9625,9 @@ public sealed class SyncControllerTests : IDisposable
         var ok = Assert.IsType<OkObjectResult>(response.Result);
         var result = Assert.IsType<SyncPushResult>(ok.Value);
 
-        Assert.Equal(0, result.ConflictCount);
+        Assert.True(
+            result.ConflictCount == 0,
+            string.Join(" / ", result.Conflicts.Select(conflict => conflict.Reason)));
         var updatedPayment = await _dbContext.Payments.IgnoreQueryFilters()
             .AsNoTracking()
             .SingleAsync(payment => payment.Id == paymentId);
