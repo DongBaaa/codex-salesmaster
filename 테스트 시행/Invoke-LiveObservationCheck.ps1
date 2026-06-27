@@ -10,6 +10,8 @@ param(
     [string]$BearerToken = "",
     [switch]$SkipManifestProbe,
     [switch]$SkipPackageProbe,
+    [switch]$SkipAndroidSigningProbe,
+    [switch]$FailOnAndroidDebugSigning,
     [string]$LocalCacheAppDataRoot = "",
     [string]$LocalCacheEvidenceDirectory = "",
     [switch]$SkipLocalCacheConsistencyCheck,
@@ -282,6 +284,226 @@ function Test-PackageProbe {
         Error = $rangeResult.Error
         ProbeMode = 'anonymous-range'
         AuthUsed = $false
+    }
+}
+
+function Resolve-PackageUrl {
+    param(
+        [string]$BaseUrl,
+        [string]$PackageUrl
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PackageUrl)) {
+        return ""
+    }
+
+    $resolvedPackageUrl = $PackageUrl
+    if ($resolvedPackageUrl.StartsWith('/')) {
+        $resolvedPackageUrl = $BaseUrl.TrimEnd('/') + $resolvedPackageUrl
+    }
+
+    return $resolvedPackageUrl
+}
+
+function Resolve-ApkSignerPath {
+    param(
+        [string]$ProjectRoot
+    )
+
+    $sdkCandidates = @(
+        $env:ANDROID_SDK_ROOT,
+        $env:ANDROID_HOME,
+        (Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\android-sdk'),
+        (Join-Path $ProjectRoot '.android-sdk')
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_) }
+
+    foreach ($sdkCandidate in $sdkCandidates) {
+        $buildToolsRoot = Join-Path $sdkCandidate 'build-tools'
+        if (-not (Test-Path -LiteralPath $buildToolsRoot)) {
+            continue
+        }
+
+        $apkSigner = Get-ChildItem -LiteralPath $buildToolsRoot -Recurse -File -Filter 'apksigner.bat' -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+        if ($null -ne $apkSigner) {
+            return $apkSigner.FullName
+        }
+    }
+
+    return ""
+}
+
+function Resolve-JavaHomeForApkSigner {
+    $candidates = [System.Collections.Generic.List[string]]::new()
+
+    if (-not [string]::IsNullOrWhiteSpace($env:JAVA_HOME)) {
+        $candidates.Add($env:JAVA_HOME) | Out-Null
+    }
+
+    foreach ($directCandidate in @(
+        (Join-Path $env:ProgramFiles 'Android\Android Studio\jbr'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Android\Android Studio\jbr'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Android Studio\jbr')
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($directCandidate)) {
+            $candidates.Add($directCandidate) | Out-Null
+        }
+    }
+
+    foreach ($commandName in @('java', 'javac', 'keytool')) {
+        $command = Get-Command $commandName -ErrorAction SilentlyContinue
+        if ($null -ne $command) {
+            $candidates.Add((Split-Path -Parent (Split-Path -Parent $command.Source))) | Out-Null
+        }
+    }
+
+    foreach ($pattern in @(
+        (Join-Path $env:USERPROFILE '.antigravity\extensions\*\jre\*\bin\java.exe'),
+        'C:\Program Files\Microsoft\jdk*\bin\java.exe',
+        'C:\Program Files\Java\*\bin\java.exe'
+    )) {
+        $match = Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -ne $match) {
+            $candidates.Add((Split-Path -Parent (Split-Path -Parent $match.FullName))) | Out-Null
+        }
+    }
+
+    foreach ($candidate in $candidates | Select-Object -Unique) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and
+            (Test-Path -LiteralPath (Join-Path $candidate 'bin\java.exe'))) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    return ""
+}
+
+function Test-AndroidApkSigningProbe {
+    param(
+        [string]$ProjectRoot,
+        [string]$BaseUrl,
+        [string]$AndroidPackageUrl,
+        [hashtable]$AuthHeaders = @{},
+        [bool]$SkipAndroidSigningProbe
+    )
+
+    if ($SkipAndroidSigningProbe) {
+        return [pscustomobject]@{
+            Success = $true
+            Skipped = $true
+            IsDebugSigning = $false
+            CertificateDn = ""
+            CertificateSha256 = ""
+            Message = "사용자 옵션으로 Android APK signing 점검을 건너뜀"
+        }
+    }
+
+    $resolvedPackageUrl = Resolve-PackageUrl -BaseUrl $BaseUrl -PackageUrl $AndroidPackageUrl
+    if ([string]::IsNullOrWhiteSpace($resolvedPackageUrl)) {
+        return [pscustomobject]@{
+            Success = $true
+            Skipped = $true
+            IsDebugSigning = $false
+            CertificateDn = ""
+            CertificateSha256 = ""
+            Message = "manifest에 android packageUrl이 없어 signing 점검을 건너뜀"
+        }
+    }
+
+    $apkSignerPath = Resolve-ApkSignerPath -ProjectRoot $ProjectRoot
+    if ([string]::IsNullOrWhiteSpace($apkSignerPath)) {
+        return [pscustomobject]@{
+            Success = $true
+            Skipped = $true
+            IsDebugSigning = $false
+            CertificateDn = ""
+            CertificateSha256 = ""
+            Message = "apksigner를 찾지 못해 Android APK signing 점검을 건너뜀"
+        }
+    }
+
+    $javaHome = Resolve-JavaHomeForApkSigner
+    if ([string]::IsNullOrWhiteSpace($javaHome)) {
+        return [pscustomobject]@{
+            Success = $true
+            Skipped = $true
+            IsDebugSigning = $false
+            CertificateDn = ""
+            CertificateSha256 = ""
+            Message = "JAVA_HOME/java.exe를 찾지 못해 Android APK signing 점검을 건너뜀"
+        }
+    }
+
+    $probeDirectory = Join-Path $ProjectRoot 'temp\live-observation-android-signing'
+    New-Item -ItemType Directory -Path $probeDirectory -Force | Out-Null
+    $apkPath = Join-Path $probeDirectory ("android-live-{0}.apk" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    $previousJavaHome = $env:JAVA_HOME
+    $previousPath = $env:PATH
+
+    try {
+        $env:JAVA_HOME = $javaHome
+        $env:PATH = (Join-Path $javaHome 'bin') + ';' + $env:PATH
+
+        $downloadArgs = @{
+            Uri = $resolvedPackageUrl
+            OutFile = $apkPath
+            UseBasicParsing = $true
+            TimeoutSec = 120
+        }
+        if ($AuthHeaders.Count -gt 0) {
+            $downloadArgs.Headers = $AuthHeaders
+        }
+
+        Invoke-WebRequest @downloadArgs | Out-Null
+
+        $apkSignerOutput = & $apkSignerPath verify --print-certs $apkPath 2>&1
+        $apkSignerExitCode = $LASTEXITCODE
+        $apkSignerText = ($apkSignerOutput | Out-String -Width 4096)
+        if ($apkSignerExitCode -ne 0) {
+            return [pscustomobject]@{
+                Success = $false
+                Skipped = $false
+                IsDebugSigning = $false
+                CertificateDn = ""
+                CertificateSha256 = ""
+                Message = "apksigner verify 실패(exit=$apkSignerExitCode): $apkSignerText"
+            }
+        }
+
+        $dnMatch = [regex]::Match($apkSignerText, 'Signer\s+#1\s+certificate\s+DN:\s*(?<value>.+)')
+        $shaMatch = [regex]::Match($apkSignerText, 'Signer\s+#1\s+certificate\s+SHA-256\s+digest:\s*(?<value>[0-9a-fA-F]+)')
+        $certificateDn = if ($dnMatch.Success) { $dnMatch.Groups['value'].Value.Trim() } else { "" }
+        $certificateSha256 = if ($shaMatch.Success) { $shaMatch.Groups['value'].Value.Trim() } else { "" }
+        $isDebugSigning =
+            $certificateDn.IndexOf('CN=Android Debug', [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            $certificateDn.IndexOf('O=Android', [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+
+        return [pscustomobject]@{
+            Success = $true
+            Skipped = $false
+            IsDebugSigning = $isDebugSigning
+            CertificateDn = $certificateDn
+            CertificateSha256 = $certificateSha256
+            Message = if ($isDebugSigning) { "DEBUG_SIGNING" } else { "OK" }
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            Success = $false
+            Skipped = $false
+            IsDebugSigning = $false
+            CertificateDn = ""
+            CertificateSha256 = ""
+            Message = $_.Exception.Message
+        }
+    }
+    finally {
+        $env:JAVA_HOME = $previousJavaHome
+        $env:PATH = $previousPath
+        if (Test-Path -LiteralPath $apkPath) {
+            Remove-Item -LiteralPath $apkPath -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -640,10 +862,43 @@ for ($index = 1; $index -le $SampleCount; $index++) {
     }
 }
 
+$latestAndroidPackageUrl = @($samples |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_.AndroidPackageUrl) } |
+        Select-Object -ExpandProperty AndroidPackageUrl -Last 1)
+$androidSigningResult = if ($SkipPackageProbe -or $SkipManifestProbe) {
+    [pscustomobject]@{
+        Success = $true
+        Skipped = $true
+        IsDebugSigning = $false
+        CertificateDn = ""
+        CertificateSha256 = ""
+        Message = "manifest/package 점검이 skip되어 Android APK signing 점검을 건너뜀"
+    }
+}
+else {
+    Test-AndroidApkSigningProbe -ProjectRoot $ProjectRoot -BaseUrl $resolvedBaseUrl -AndroidPackageUrl ([string]$latestAndroidPackageUrl) -AuthHeaders $packageAuthHeaders -SkipAndroidSigningProbe ([bool]$SkipAndroidSigningProbe)
+}
+
 $localCacheResult = Test-LocalCacheConsistencyProbe -ProjectRoot $ProjectRoot -BaseUrl $resolvedBaseUrl -ProbeUsername $ProbeUsername -ProbePassword $ProbePassword -BearerToken $BearerToken -LocalCacheAppDataRoot $LocalCacheAppDataRoot -LocalCacheEvidenceDirectory $LocalCacheEvidenceDirectory -SkipLocalCacheConsistencyCheck ([bool]$SkipLocalCacheConsistencyCheck)
 
 $failedSamples = $samples | Where-Object { -not $_.HealthOk -or -not $_.ManifestOk -or -not $_.DesktopPackageOk -or -not $_.AndroidPackageOk -or -not $_.DataOk }
-$overallStatus = if ($failedSamples.Count -eq 0 -and $localCacheResult.Success) { "PASS" } else { "FAIL" }
+$warningMessages = New-Object System.Collections.Generic.List[string]
+if (-not $androidSigningResult.Skipped -and -not $androidSigningResult.Success) {
+    $warningMessages.Add("Android APK signing 점검 실패: $($androidSigningResult.Message)") | Out-Null
+}
+if (-not $androidSigningResult.Skipped -and $androidSigningResult.IsDebugSigning) {
+    $warningMessages.Add("Android APK가 debug signing 인증서로 서명되어 있습니다: $($androidSigningResult.CertificateDn)") | Out-Null
+}
+$androidSigningFailure = $FailOnAndroidDebugSigning -and -not $androidSigningResult.Skipped -and $androidSigningResult.IsDebugSigning
+$overallStatus = if ($failedSamples.Count -gt 0 -or -not $localCacheResult.Success -or $androidSigningFailure) {
+    "FAIL"
+}
+elseif ($warningMessages.Count -gt 0) {
+    "WARN"
+}
+else {
+    "PASS"
+}
 
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $reportDirectory = Join-Path $ProjectRoot "테스트 시행\기록"
@@ -669,6 +924,21 @@ $lines.Add("- 샘플 간격(초): $IntervalSeconds") | Out-Null
 $lines.Add("- package probe 모드: $packageProbeAuthMode") | Out-Null
 $lines.Add("- manifest probe skip: $([bool]$SkipManifestProbe)") | Out-Null
 $lines.Add("- package probe skip: $([bool]$SkipPackageProbe)") | Out-Null
+$androidSigningSummary = if ($androidSigningResult.Skipped) {
+    "SKIP - $($androidSigningResult.Message)"
+}
+elseif ($androidSigningResult.Success) {
+    if ($androidSigningResult.IsDebugSigning) {
+        "WARN - debug signing, DN=$($androidSigningResult.CertificateDn), SHA256=$($androidSigningResult.CertificateSha256)"
+    }
+    else {
+        "OK - DN=$($androidSigningResult.CertificateDn), SHA256=$($androidSigningResult.CertificateSha256)"
+    }
+}
+else {
+    "WARN - $($androidSigningResult.Message)"
+}
+$lines.Add("- Android APK signing 점검: $androidSigningSummary") | Out-Null
 $localCacheSummary = if ($localCacheResult.Skipped) { "SKIP - $($localCacheResult.Message)" } elseif ($localCacheResult.Success) { "$($localCacheResult.Message) - $($localCacheResult.Report)" } else { "FAIL - $($localCacheResult.Message)" }
 $lines.Add("- 로컬 캐시 점검: $localCacheSummary") | Out-Null
 $lines.Add("") | Out-Null
@@ -717,7 +987,7 @@ else {
 $lines.Add("") | Out-Null
 $lines.Add("## 판정") | Out-Null
 $lines.Add("") | Out-Null
-if ($failedSamples.Count -eq 0 -and $localCacheResult.Success) {
+if ($overallStatus -eq "PASS") {
     if ($SkipPackageProbe -and $SkipManifestProbe) {
         $lines.Add("- healthz와 인증 데이터 조회가 정상 응답했습니다. 테스트 실행환경 기준으로 manifest/package 다운로드 경로 점검은 옵션으로 건너뛰었습니다.") | Out-Null
     }
@@ -736,6 +1006,12 @@ if ($failedSamples.Count -eq 0 -and $localCacheResult.Success) {
         $lines.Add("- live 반영 직후 최소한의 관찰 기준은 충족했습니다.") | Out-Null
     }
 }
+elseif ($overallStatus -eq "WARN") {
+    $lines.Add("- 핵심 응답은 성공했지만 아래 경고가 확인되었습니다.") | Out-Null
+    foreach ($warningMessage in $warningMessages) {
+        $lines.Add("- WARN: $warningMessage") | Out-Null
+    }
+}
 else {
     $lines.Add("- 일부 샘플에서 실패가 확인되었습니다.") | Out-Null
     $lines.Add("- Linux PC live 반영 후 실제 사용자 안내 전에 서버/manifest/desktop package/android package/거래처/거래내역 경로를 다시 점검하세요.") | Out-Null
@@ -749,6 +1025,6 @@ else {
 Write-Host "live 관찰 리포트 저장: $OutputPath"
 Write-Host "결과: $overallStatus"
 
-if ($overallStatus -ne "PASS") {
+if ($overallStatus -eq "FAIL") {
     throw "live 관찰 점검에서 실패가 확인되었습니다. 리포트: $OutputPath"
 }

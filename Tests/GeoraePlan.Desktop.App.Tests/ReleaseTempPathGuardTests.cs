@@ -844,6 +844,40 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public void LiveObservationReportsAndroidApkSigningCertificateAndDebugRisk()
+    {
+        var source = ReadRepositoryFile(
+            "테스트 시행",
+            "Invoke-LiveObservationCheck.ps1");
+
+        Assert.Contains("[switch]$SkipAndroidSigningProbe", source, StringComparison.Ordinal);
+        Assert.Contains("[switch]$FailOnAndroidDebugSigning", source, StringComparison.Ordinal);
+        Assert.Contains("function Resolve-ApkSignerPath", source, StringComparison.Ordinal);
+        Assert.Contains("function Resolve-JavaHomeForApkSigner", source, StringComparison.Ordinal);
+        Assert.Contains("function Test-AndroidApkSigningProbe", source, StringComparison.Ordinal);
+        Assert.Contains("$env:JAVA_HOME = $javaHome", source, StringComparison.Ordinal);
+        Assert.Contains("$env:JAVA_HOME = $previousJavaHome", source, StringComparison.Ordinal);
+        Assert.Contains("verify --print-certs", source, StringComparison.Ordinal);
+        Assert.Contains("Signer\\s+#1\\s+certificate\\s+DN", source, StringComparison.Ordinal);
+        Assert.Contains("Signer\\s+#1\\s+certificate\\s+SHA-256\\s+digest", source, StringComparison.Ordinal);
+        Assert.Contains("CN=Android Debug", source, StringComparison.Ordinal);
+        Assert.Contains("Android APK signing 점검", source, StringComparison.Ordinal);
+        Assert.Contains("Android APK가 debug signing 인증서로 서명되어 있습니다", source, StringComparison.Ordinal);
+        Assert.Contains("$androidSigningFailure = $FailOnAndroidDebugSigning", source, StringComparison.Ordinal);
+        Assert.Contains("elseif ($warningMessages.Count -gt 0)", source, StringComparison.Ordinal);
+        Assert.Contains("if ($overallStatus -eq \"PASS\")", source, StringComparison.Ordinal);
+        Assert.Contains("elseif ($overallStatus -eq \"WARN\")", source, StringComparison.Ordinal);
+        Assert.Contains("if ($overallStatus -eq \"FAIL\")", source, StringComparison.Ordinal);
+        AssertInOrder(
+            source,
+            "$androidSigningResult = if ($SkipPackageProbe -or $SkipManifestProbe)",
+            "Test-AndroidApkSigningProbe -ProjectRoot $ProjectRoot",
+            "$androidSigningFailure = $FailOnAndroidDebugSigning",
+            "$overallStatus = if ($failedSamples.Count -gt 0",
+            "$lines.Add(\"- Android APK signing 점검: $androidSigningSummary\")");
+    }
+
+    [Fact]
     public void LocalCacheConsistencyDetectsNonInventoryAndAssetWarehouseStockResidues()
     {
         var source = ReadRepositoryFile(
