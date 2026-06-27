@@ -901,6 +901,28 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public void FullReleaseForwardsExplicitLegacyAndroidDebugSigningRiskAcceptanceToApkBuild()
+    {
+        var source = ReadRepositoryFile(
+            "tools",
+            "release",
+            "Publish-GeoraePlanFullRelease.ps1");
+
+        Assert.Contains("[switch]$AllowLegacyAndroidDebugSigning", source, StringComparison.Ordinal);
+        Assert.Contains("if ($AllowLegacyAndroidDebugSigning)", source, StringComparison.Ordinal);
+        Assert.Contains("Legacy Android debug signing is explicitly allowed", source, StringComparison.Ordinal);
+        Assert.Contains("$androidArgs += '-AllowDebugSigning'", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("$androidArgs += '-AllowDebugSigning' # default", source, StringComparison.Ordinal);
+        AssertInOrder(
+            source,
+            "[switch]$AllowLegacyAndroidDebugSigning",
+            "Write-Warning \"Legacy Android debug signing is explicitly allowed",
+            "$androidArgs = @(",
+            "$androidArgs += '-AllowDebugSigning'",
+            "& powershell @androidArgs");
+    }
+
+    [Fact]
     public void RentalTemplateRepairPlanScript_GeneratesRollbackPatchOnlyAfterSelectValidation()
     {
         var source = ReadRepositoryFile(

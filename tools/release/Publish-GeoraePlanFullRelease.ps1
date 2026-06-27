@@ -7,6 +7,7 @@ param(
     [switch]$NoRestore,
     [switch]$DisableAndroidAot,
     [switch]$DisableAndroidTrimming,
+    [switch]$AllowLegacyAndroidDebugSigning,
     [string]$DesktopMinimumSupportedVersion,
     [string]$AndroidMinimumSupportedVersion,
     [switch]$MandatoryDesktop,
@@ -124,6 +125,9 @@ $androidVersion = Get-CsprojPropertyValue -ProjectFile $androidProject -Property
 
 Write-Host "release_desktop_version=$desktopVersion"
 Write-Host "release_android_version=$androidVersion"
+if ($AllowLegacyAndroidDebugSigning) {
+    Write-Warning "Legacy Android debug signing is explicitly allowed for this full release. Use only to preserve the existing debug-signed update chain; prefer a release keystore for new paid deliveries."
+}
 
 $solution = Get-ChildItem -LiteralPath $ProjectRoot -File -Filter '*.sln' | Select-Object -First 1
 if ($null -eq $solution) {
@@ -157,6 +161,9 @@ if ($DisableAndroidAot) {
 }
 if ($DisableAndroidTrimming) {
     $androidArgs += '-DisableTrimming'
+}
+if ($AllowLegacyAndroidDebugSigning) {
+    $androidArgs += '-AllowDebugSigning'
 }
 & powershell @androidArgs
 if ($LASTEXITCODE -ne 0) {
