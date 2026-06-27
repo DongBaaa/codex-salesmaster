@@ -285,6 +285,37 @@ function Test-PackageProbe {
     }
 }
 
+function Format-PackageObservationCell {
+    param(
+        [bool]$ProbeSkipped,
+        [bool]$Ok,
+        [int]$StatusCode,
+        [string]$ProbeMode,
+        [bool]$AuthUsed,
+        [string]$Message
+    )
+
+    $packageMode = if ($AuthUsed) {
+        "$ProbeMode, auth"
+    }
+    elseif ([string]::IsNullOrWhiteSpace($ProbeMode)) {
+        '-'
+    }
+    else {
+        $ProbeMode
+    }
+
+    if ($ProbeSkipped) {
+        return "SKIP"
+    }
+
+    if ($Ok) {
+        return "OK ($StatusCode; $packageMode)"
+    }
+
+    return "FAIL ($StatusCode; $packageMode) $Message"
+}
+
 function Get-JsonArrayCount {
     param(
         [string]$JsonContent
@@ -518,14 +549,20 @@ for ($index = 1; $index -le $SampleCount; $index++) {
     }
 
     $desktopVersion = ""
-    $packageUrl = ""
-    $minimumSupportedVersion = ""
+    $desktopPackageUrl = ""
+    $desktopMinimumSupportedVersion = ""
+    $androidVersion = ""
+    $androidPackageUrl = ""
+    $androidMinimumSupportedVersion = ""
     if ($manifestResult.Success -and -not [string]::IsNullOrWhiteSpace($manifestResult.Content)) {
         try {
             $manifest = $manifestResult.Content | ConvertFrom-Json
             $desktopVersion = [string]$manifest.desktop.version
-            $packageUrl = [string]$manifest.desktop.packageUrl
-            $minimumSupportedVersion = [string]$manifest.desktop.minimumSupportedVersion
+            $desktopPackageUrl = [string]$manifest.desktop.packageUrl
+            $desktopMinimumSupportedVersion = [string]$manifest.desktop.minimumSupportedVersion
+            $androidVersion = [string]$manifest.android.version
+            $androidPackageUrl = [string]$manifest.android.packageUrl
+            $androidMinimumSupportedVersion = [string]$manifest.android.minimumSupportedVersion
         }
         catch {
             $manifestResult = [pscustomobject]@{
@@ -537,20 +574,30 @@ for ($index = 1; $index -le $SampleCount; $index++) {
         }
     }
 
-    $packageResult = if ($SkipPackageProbe) {
-        [pscustomobject]@{
-            Success = $true
-            StatusCode = 0
-            Content = ""
-            Error = "패키지 점검 건너뜀"
-            ProbeMode = 'skip'
-            AuthUsed = $false
-            Skipped = $true
-        }
+    $skippedPackageResult = [pscustomobject]@{
+        Success = $true
+        StatusCode = 0
+        Content = ""
+        Error = "패키지 점검 건너뜀"
+        ProbeMode = 'skip'
+        AuthUsed = $false
+        Skipped = $true
+    }
+
+    $desktopPackageResult = if ($SkipPackageProbe) {
+        $skippedPackageResult
     }
     else {
-        Test-PackageProbe -BaseUrl $resolvedBaseUrl -PackageUrl $packageUrl -AuthHeaders $packageAuthHeaders
+        Test-PackageProbe -BaseUrl $resolvedBaseUrl -PackageUrl $desktopPackageUrl -AuthHeaders $packageAuthHeaders
     }
+
+    $androidPackageResult = if ($SkipPackageProbe) {
+        $skippedPackageResult
+    }
+    else {
+        Test-PackageProbe -BaseUrl $resolvedBaseUrl -PackageUrl $androidPackageUrl -AuthHeaders $packageAuthHeaders
+    }
+
     $dataResult = Test-AuthenticatedDataProbe -BaseUrl $resolvedBaseUrl -AuthHeaders $packageAuthHeaders
 
     $samples.Add([pscustomobject]@{
@@ -564,14 +611,23 @@ for ($index = 1; $index -le $SampleCount; $index++) {
         ManifestMessage = if ($manifestResult.Success) { "OK" } else { $manifestResult.Error }
         ManifestProbeSkipped = [bool]$manifestResult.Skipped
         DesktopVersion = $desktopVersion
-        MinimumSupportedVersion = $minimumSupportedVersion
-        PackageUrl = $packageUrl
-        PackageOk = $packageResult.Success
-        PackageStatusCode = $packageResult.StatusCode
-        PackageMessage = if ($packageResult.Success) { "OK" } else { $packageResult.Error }
-        PackageProbeMode = [string]$packageResult.ProbeMode
-        PackageAuthUsed = [bool]$packageResult.AuthUsed
-        PackageProbeSkipped = [bool]$packageResult.Skipped
+        DesktopMinimumSupportedVersion = $desktopMinimumSupportedVersion
+        AndroidVersion = $androidVersion
+        AndroidMinimumSupportedVersion = $androidMinimumSupportedVersion
+        DesktopPackageUrl = $desktopPackageUrl
+        AndroidPackageUrl = $androidPackageUrl
+        DesktopPackageOk = $desktopPackageResult.Success
+        DesktopPackageStatusCode = $desktopPackageResult.StatusCode
+        DesktopPackageMessage = if ($desktopPackageResult.Success) { "OK" } else { $desktopPackageResult.Error }
+        DesktopPackageProbeMode = [string]$desktopPackageResult.ProbeMode
+        DesktopPackageAuthUsed = [bool]$desktopPackageResult.AuthUsed
+        DesktopPackageProbeSkipped = [bool]$desktopPackageResult.Skipped
+        AndroidPackageOk = $androidPackageResult.Success
+        AndroidPackageStatusCode = $androidPackageResult.StatusCode
+        AndroidPackageMessage = if ($androidPackageResult.Success) { "OK" } else { $androidPackageResult.Error }
+        AndroidPackageProbeMode = [string]$androidPackageResult.ProbeMode
+        AndroidPackageAuthUsed = [bool]$androidPackageResult.AuthUsed
+        AndroidPackageProbeSkipped = [bool]$androidPackageResult.Skipped
         DataOk = [bool]$dataResult.Success
         DataProbeSkipped = [bool]$dataResult.Skipped
         CustomerProbeCount = $dataResult.CustomerCount
@@ -586,7 +642,7 @@ for ($index = 1; $index -le $SampleCount; $index++) {
 
 $localCacheResult = Test-LocalCacheConsistencyProbe -ProjectRoot $ProjectRoot -BaseUrl $resolvedBaseUrl -ProbeUsername $ProbeUsername -ProbePassword $ProbePassword -BearerToken $BearerToken -LocalCacheAppDataRoot $LocalCacheAppDataRoot -LocalCacheEvidenceDirectory $LocalCacheEvidenceDirectory -SkipLocalCacheConsistencyCheck ([bool]$SkipLocalCacheConsistencyCheck)
 
-$failedSamples = $samples | Where-Object { -not $_.HealthOk -or -not $_.ManifestOk -or -not $_.PackageOk -or -not $_.DataOk }
+$failedSamples = $samples | Where-Object { -not $_.HealthOk -or -not $_.ManifestOk -or -not $_.DesktopPackageOk -or -not $_.AndroidPackageOk -or -not $_.DataOk }
 $overallStatus = if ($failedSamples.Count -eq 0 -and $localCacheResult.Success) { "PASS" } else { "FAIL" }
 
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
@@ -616,14 +672,14 @@ $lines.Add("- package probe skip: $([bool]$SkipPackageProbe)") | Out-Null
 $localCacheSummary = if ($localCacheResult.Skipped) { "SKIP - $($localCacheResult.Message)" } elseif ($localCacheResult.Success) { "$($localCacheResult.Message) - $($localCacheResult.Report)" } else { "FAIL - $($localCacheResult.Message)" }
 $lines.Add("- 로컬 캐시 점검: $localCacheSummary") | Out-Null
 $lines.Add("") | Out-Null
-$lines.Add("| 회차 | 시각 | healthz | manifest | desktop 버전 | minimumSupportedVersion | package | 거래처/거래내역 | packageUrl |") | Out-Null
-$lines.Add("| ---: | --- | --- | --- | --- | --- | --- | --- | --- |") | Out-Null
+$lines.Add("| 회차 | 시각 | healthz | manifest | desktop 버전 | android 버전 | desktop package | android package | 거래처/거래내역 | desktop packageUrl | android packageUrl |") | Out-Null
+$lines.Add("| ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |") | Out-Null
 
 foreach ($sample in $samples) {
     $healthCell = if ($sample.HealthOk) { "OK ($($sample.HealthStatusCode))" } else { "FAIL ($($sample.HealthStatusCode)) $($sample.HealthMessage)" }
     $manifestCell = if ($sample.ManifestProbeSkipped) { "SKIP" } elseif ($sample.ManifestOk) { "OK ($($sample.ManifestStatusCode))" } else { "FAIL ($($sample.ManifestStatusCode)) $($sample.ManifestMessage)" }
-    $packageMode = if ($sample.PackageAuthUsed) { "$($sample.PackageProbeMode), auth" } elseif ([string]::IsNullOrWhiteSpace($sample.PackageProbeMode)) { '-' } else { $sample.PackageProbeMode }
-    $packageCell = if ($sample.PackageProbeSkipped) { "SKIP" } elseif ($sample.PackageOk) { "OK ($($sample.PackageStatusCode); $packageMode)" } else { "FAIL ($($sample.PackageStatusCode); $packageMode) $($sample.PackageMessage)" }
+    $desktopPackageCell = Format-PackageObservationCell -ProbeSkipped $sample.DesktopPackageProbeSkipped -Ok $sample.DesktopPackageOk -StatusCode $sample.DesktopPackageStatusCode -ProbeMode $sample.DesktopPackageProbeMode -AuthUsed $sample.DesktopPackageAuthUsed -Message $sample.DesktopPackageMessage
+    $androidPackageCell = Format-PackageObservationCell -ProbeSkipped $sample.AndroidPackageProbeSkipped -Ok $sample.AndroidPackageOk -StatusCode $sample.AndroidPackageStatusCode -ProbeMode $sample.AndroidPackageProbeMode -AuthUsed $sample.AndroidPackageAuthUsed -Message $sample.AndroidPackageMessage
     $dataCell = if ($sample.DataProbeSkipped) {
         "SKIP"
     }
@@ -633,8 +689,9 @@ foreach ($sample in $samples) {
     else {
         "FAIL $($sample.DataMessage)"
     }
-    $packageUrlCell = if ([string]::IsNullOrWhiteSpace($sample.PackageUrl)) { "-" } else { $sample.PackageUrl.Replace("|", "\|") }
-    $lines.Add("| $($sample.Index) | $($sample.SampledAt.ToString('yyyy-MM-dd HH:mm:ss')) | $healthCell | $manifestCell | $($sample.DesktopVersion) | $($sample.MinimumSupportedVersion) | $packageCell | $dataCell | $packageUrlCell |") | Out-Null
+    $desktopPackageUrlCell = if ([string]::IsNullOrWhiteSpace($sample.DesktopPackageUrl)) { "-" } else { $sample.DesktopPackageUrl.Replace("|", "\|") }
+    $androidPackageUrlCell = if ([string]::IsNullOrWhiteSpace($sample.AndroidPackageUrl)) { "-" } else { $sample.AndroidPackageUrl.Replace("|", "\|") }
+    $lines.Add("| $($sample.Index) | $($sample.SampledAt.ToString('yyyy-MM-dd HH:mm:ss')) | $healthCell | $manifestCell | $($sample.DesktopVersion) | $($sample.AndroidVersion) | $desktopPackageCell | $androidPackageCell | $dataCell | $desktopPackageUrlCell | $androidPackageUrlCell |") | Out-Null
 }
 
 $lines.Add("") | Out-Null
@@ -665,10 +722,10 @@ if ($failedSamples.Count -eq 0 -and $localCacheResult.Success) {
         $lines.Add("- healthz와 인증 데이터 조회가 정상 응답했습니다. 테스트 실행환경 기준으로 manifest/package 다운로드 경로 점검은 옵션으로 건너뛰었습니다.") | Out-Null
     }
     elseif ($SkipPackageProbe) {
-        $lines.Add("- healthz, manifest가 정상 응답했습니다. package 다운로드 경로 점검은 옵션으로 건너뛰었습니다.") | Out-Null
+        $lines.Add("- healthz, manifest가 정상 응답했습니다. desktop/android package 다운로드 경로 점검은 옵션으로 건너뛰었습니다.") | Out-Null
     }
     else {
-        $lines.Add("- healthz, manifest, package 다운로드 경로가 모두 정상 응답했습니다.") | Out-Null
+        $lines.Add("- healthz, manifest, desktop/android package 다운로드 경로가 모두 정상 응답했습니다.") | Out-Null
     }
     $lines.Add("- 인증 정보를 제공한 경우 거래처/거래내역 조회도 0건이 아닌지 함께 확인했습니다.") | Out-Null
     $lines.Add("- 로컬 캐시 점검을 요청한 경우 서버 데이터와 PC 로컬 캐시 핵심 목록도 함께 확인했습니다.") | Out-Null
@@ -681,7 +738,7 @@ if ($failedSamples.Count -eq 0 -and $localCacheResult.Success) {
 }
 else {
     $lines.Add("- 일부 샘플에서 실패가 확인되었습니다.") | Out-Null
-    $lines.Add("- Linux PC live 반영 후 실제 사용자 안내 전에 서버/manifest/package/거래처/거래내역 경로를 다시 점검하세요.") | Out-Null
+    $lines.Add("- Linux PC live 반영 후 실제 사용자 안내 전에 서버/manifest/desktop package/android package/거래처/거래내역 경로를 다시 점검하세요.") | Out-Null
 }
 
 [System.IO.File]::WriteAllText(

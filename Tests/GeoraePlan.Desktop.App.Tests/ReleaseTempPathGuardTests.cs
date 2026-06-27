@@ -822,6 +822,28 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public void LiveObservationChecksBothDesktopAndAndroidPackagesFromManifest()
+    {
+        var source = ReadRepositoryFile(
+            "테스트 시행",
+            "Invoke-LiveObservationCheck.ps1");
+
+        Assert.Contains("$desktopPackageUrl = [string]$manifest.desktop.packageUrl", source, StringComparison.Ordinal);
+        Assert.Contains("$androidPackageUrl = [string]$manifest.android.packageUrl", source, StringComparison.Ordinal);
+        Assert.Contains("$desktopPackageResult = if ($SkipPackageProbe)", source, StringComparison.Ordinal);
+        Assert.Contains("$androidPackageResult = if ($SkipPackageProbe)", source, StringComparison.Ordinal);
+        Assert.Contains("Test-PackageProbe -BaseUrl $resolvedBaseUrl -PackageUrl $desktopPackageUrl", source, StringComparison.Ordinal);
+        Assert.Contains("Test-PackageProbe -BaseUrl $resolvedBaseUrl -PackageUrl $androidPackageUrl", source, StringComparison.Ordinal);
+        Assert.Contains("DesktopPackageOk", source, StringComparison.Ordinal);
+        Assert.Contains("AndroidPackageOk", source, StringComparison.Ordinal);
+        Assert.Contains("-not $_.DesktopPackageOk -or -not $_.AndroidPackageOk", source, StringComparison.Ordinal);
+        Assert.Contains("desktop package | android package", source, StringComparison.Ordinal);
+        Assert.Contains("desktop/android package 다운로드 경로", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("PackageOk = $packageResult.Success", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("-not $_.PackageOk", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void FullReleaseForwardsExplicitRentalTemplateRiskAcceptanceToLinuxDeploy()
     {
         var source = ReadRepositoryFile(
