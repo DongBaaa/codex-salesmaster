@@ -1031,6 +1031,11 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("[switch]$RequireAndroidUpdateInPlaceSmoke", source, StringComparison.Ordinal);
         Assert.Contains("Resolve-ProjectScriptByName", source, StringComparison.Ordinal);
         Assert.Contains("Get-StepStatusFromOutput", source, StringComparison.Ordinal);
+        Assert.Contains("Get-ApiVisibilitySummaryFromEvidence", source, StringComparison.Ordinal);
+        Assert.Contains("api-visibility-smoke-*.json", source, StringComparison.Ordinal);
+        Assert.Contains("API visibility integrity summary", source, StringComparison.Ordinal);
+        Assert.Contains("integrityErrors", source, StringComparison.Ordinal);
+        Assert.Contains("blockingIntegrityWarnings", source, StringComparison.Ordinal);
         Assert.Contains("$previousErrorActionPreference = $ErrorActionPreference", source, StringComparison.Ordinal);
         Assert.Contains("$ErrorActionPreference = 'Continue'", source, StringComparison.Ordinal);
         Assert.Contains("\\uACB0\\uACFC", source, StringComparison.Ordinal);

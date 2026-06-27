@@ -189,6 +189,52 @@ function Resolve-ProjectScriptByName {
     return $match.FullName
 }
 
+function Get-ApiVisibilitySummaryFromEvidence {
+    param([string]$EvidenceDirectory)
+
+    if ([string]::IsNullOrWhiteSpace($EvidenceDirectory) -or -not (Test-Path -LiteralPath $EvidenceDirectory)) {
+        return ''
+    }
+
+    try {
+        $json = Get-ChildItem -LiteralPath $EvidenceDirectory -Filter 'api-visibility-smoke-*.json' -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+        if ($null -eq $json) {
+            return ''
+        }
+
+        $data = Get-Content -Raw -LiteralPath $json.FullName | ConvertFrom-Json
+        $parts = [System.Collections.Generic.List[string]]::new()
+        if ($null -ne $data.Counts) {
+            $parts.Add(('Counts: customers={0}, items={1}, invoices={2}, integrityErrors={3}, integrityWarnings={4}, blockingIntegrityWarnings={5}' -f $data.Counts.Customers, $data.Counts.Items, $data.Counts.Invoices, $data.Counts.IntegrityErrors, $data.Counts.IntegrityWarnings, $data.Counts.BlockingIntegrityWarnings)) | Out-Null
+        }
+
+        $issues = @($data.IntegrityIssues | Where-Object {
+            [string]::Equals([string]$_.severity, 'Error', [System.StringComparison]::OrdinalIgnoreCase) -or
+            [string]::Equals([string]$_.severity, 'Warning', [System.StringComparison]::OrdinalIgnoreCase)
+        } | Select-Object -First 10)
+        if ($issues.Count -gt 0) {
+            $issueText = (@($issues | ForEach-Object { '{0}:{1}={2}' -f ([string]$_.severity), ([string]$_.code), ([int]$_.count) }) -join ', ')
+            $parts.Add("Issues: $issueText") | Out-Null
+        }
+
+        $failures = @($data.Failures | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($failures.Count -gt 0) {
+            $parts.Add(('Failures: {0}' -f ($failures -join '; '))) | Out-Null
+        }
+
+        if ($parts.Count -eq 0) {
+            return ''
+        }
+
+        return ('API visibility summary: {0}' -f ($parts -join '; '))
+    }
+    catch {
+        return "API visibility summary unavailable: $($_.Exception.Message)"
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = Resolve-DefaultProjectRoot -ScriptPath $MyInvocation.MyCommand.Path
 }
@@ -243,7 +289,9 @@ else {
     Add-ArgumentsIfValues -Arguments $apiArgs -Name '-AllowedIntegrityWarningCodes' -Values $AllowedIntegrityWarningCodes
 
     $apiResult = Invoke-StepProcess -Name 'api-visibility-smoke' -FilePath $apiScript -Arguments ([string[]]$apiArgs) -ExpectedReportPath $apiEvidence
-    Add-StepResult -Results $results -Name $apiResult.Name -Status $apiResult.Status -Detail $apiResult.Detail -Report $apiEvidence
+    $apiSummary = Get-ApiVisibilitySummaryFromEvidence -EvidenceDirectory $apiEvidence
+    $apiDetail = if ([string]::IsNullOrWhiteSpace($apiSummary)) { $apiResult.Detail } else { "$apiSummary`n$($apiResult.Detail)" }
+    Add-StepResult -Results $results -Name $apiResult.Name -Status $apiResult.Status -Detail $apiDetail -Report $apiEvidence
 }
 
 if ($SkipLiveObservation) {
@@ -370,6 +418,16 @@ foreach ($result in $results) {
     }
     $report = ([string]$result.Report).Replace('|', '\|')
     $lines.Add("| $($result.Name) | $($result.Status) | $report | $detail |") | Out-Null
+}
+
+$apiVisibilitySummarySteps = @($results | Where-Object { $_.Name -eq 'api-visibility-smoke' -and ([string]$_.Detail).StartsWith('API visibility summary:', [System.StringComparison]::Ordinal) })
+if ($apiVisibilitySummarySteps.Count -gt 0) {
+    $lines.Add('') | Out-Null
+    $lines.Add('## API visibility integrity summary') | Out-Null
+    foreach ($item in $apiVisibilitySummarySteps) {
+        $summaryLine = (([string]$item.Detail) -split "`r?`n" | Select-Object -First 1)
+        $lines.Add("- $summaryLine") | Out-Null
+    }
 }
 
 if ($Strict -and $skipped.Count -gt 0) {
