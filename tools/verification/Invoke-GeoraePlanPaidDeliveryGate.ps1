@@ -6,6 +6,7 @@ param(
     [string]$OutputPath = "",
     [string]$EvidenceRoot = "",
     [switch]$Strict,
+    [switch]$FailOnWarnings,
     [string]$ProbeUsername = "",
     [string]$ProbePassword = "",
     [string]$BearerToken = "",
@@ -51,6 +52,33 @@ function Add-StepResult {
     }) | Out-Null
 }
 
+function Get-StepStatusFromOutput {
+    param(
+        [int]$ExitCode,
+        [string]$Text
+    )
+
+    if ($ExitCode -ne 0) {
+        return 'FAIL'
+    }
+
+    $statusPatterns = @(
+        '(?im)^\s*result\s*=\s*(FAIL|WARN|PASS)\s*$',
+        '(?im)^\s*Result\s*:\s*(FAIL|WARN|PASS)\s*$',
+        '(?im)^\s*\uACB0\uACFC\s*:\s*(FAIL|WARN|PASS)\s*$',
+        '(?im)^\s*-\s*Result\s*:\s*\*\*(FAIL|WARN|PASS)\*\*\s*$'
+    )
+
+    foreach ($pattern in $statusPatterns) {
+        $match = [regex]::Match([string]$Text, $pattern)
+        if ($match.Success) {
+            return $match.Groups[1].Value.ToUpperInvariant()
+        }
+    }
+
+    return 'PASS'
+}
+
 function Invoke-StepProcess {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -74,7 +102,7 @@ function Invoke-StepProcess {
     $output = & powershell @processArguments 2>&1
     $exitCode = $LASTEXITCODE
     $text = ($output | Out-String -Width 4096).Trim()
-    $status = if ($exitCode -eq 0) { 'PASS' } else { 'FAIL' }
+    $status = Get-StepStatusFromOutput -ExitCode $exitCode -Text $text
 
     return [pscustomobject]@{
         Name = $Name
@@ -153,6 +181,7 @@ else {
     }
 }
 
+$effectiveFailOnWarnings = [bool]($Strict -or $FailOnWarnings)
 $effectiveRequireLocalCache = [bool]($Strict -or $RequireLocalCache)
 $effectiveFailOnLocalCacheWarning = [bool]($Strict -or $FailOnLocalCacheWarning)
 $effectiveRequirePrinter = [bool]($Strict -or $RequirePrinter)
@@ -237,12 +266,19 @@ else {
 }
 
 $failed = @($results | Where-Object { $_.Status -eq 'FAIL' })
+$warnings = @($results | Where-Object { $_.Status -eq 'WARN' })
 $skipped = @($results | Where-Object { $_.Status -eq 'SKIP' })
 $overallStatus = if ($failed.Count -gt 0) {
     'FAIL'
 }
+elseif ($effectiveFailOnWarnings -and $warnings.Count -gt 0) {
+    'FAIL'
+}
 elseif ($Strict -and $skipped.Count -gt 0) {
     'FAIL'
+}
+elseif ($warnings.Count -gt 0) {
+    'WARN'
 }
 else {
     'PASS'
@@ -254,6 +290,7 @@ $lines.Add('') | Out-Null
 $lines.Add("- CreatedAt: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')") | Out-Null
 $lines.Add("- Result: **$overallStatus**") | Out-Null
 $lines.Add("- Strict: $([bool]$Strict)") | Out-Null
+$lines.Add("- FailOnWarnings: $effectiveFailOnWarnings") | Out-Null
 $lines.Add("- ProjectRoot: $ProjectRoot") | Out-Null
 $lines.Add("- BaseUrl: $BaseUrl") | Out-Null
 $lines.Add("- EvidenceRoot: $EvidenceRoot") | Out-Null
@@ -280,6 +317,17 @@ if ($Strict -and $skipped.Count -gt 0) {
     $lines.Add('') | Out-Null
     $lines.Add('## Strict mode skipped steps') | Out-Null
     foreach ($item in $skipped) {
+        $lines.Add("- $($item.Name): $($item.Detail)") | Out-Null
+    }
+}
+
+if ($warnings.Count -gt 0) {
+    $lines.Add('') | Out-Null
+    $lines.Add('## Warning steps') | Out-Null
+    if ($effectiveFailOnWarnings) {
+        $lines.Add('- Warning steps are treated as FAIL because FailOnWarnings or Strict is enabled.') | Out-Null
+    }
+    foreach ($item in $warnings) {
         $lines.Add("- $($item.Name): $($item.Detail)") | Out-Null
     }
 }

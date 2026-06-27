@@ -1021,12 +1021,15 @@ public sealed class ReleaseTempPathGuardTests
         var testReadme = ReadRepositoryFile("테스트 시행", "README.md");
 
         Assert.Contains("[switch]$Strict", source, StringComparison.Ordinal);
+        Assert.Contains("[switch]$FailOnWarnings", source, StringComparison.Ordinal);
         Assert.Contains("[switch]$RequireLocalCache", source, StringComparison.Ordinal);
         Assert.Contains("[switch]$RequirePrinter", source, StringComparison.Ordinal);
         Assert.Contains("[switch]$RequireOnlinePrinter", source, StringComparison.Ordinal);
         Assert.Contains("[switch]$FailOnAndroidDebugSigning", source, StringComparison.Ordinal);
         Assert.Contains("[switch]$RequireAndroidUpdateInPlaceSmoke", source, StringComparison.Ordinal);
         Assert.Contains("Resolve-ProjectScriptByName", source, StringComparison.Ordinal);
+        Assert.Contains("Get-StepStatusFromOutput", source, StringComparison.Ordinal);
+        Assert.Contains("\\uACB0\\uACFC", source, StringComparison.Ordinal);
         Assert.Contains("Invoke-LiveObservationCheck.ps1", source, StringComparison.Ordinal);
         Assert.Contains("Test-GeoraePlanPrintEnvironment.ps1", source, StringComparison.Ordinal);
         Assert.Contains("Invoke-GeoraePlanAndroidSmoke.ps1", source, StringComparison.Ordinal);
@@ -1036,9 +1039,13 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("-RequirePrinter", source, StringComparison.Ordinal);
         Assert.Contains("-RequireOnlinePrinter", source, StringComparison.Ordinal);
         Assert.Contains("-FailOnWarnings", source, StringComparison.Ordinal);
+        Assert.Contains("$effectiveFailOnWarnings = [bool]($Strict -or $FailOnWarnings)", source, StringComparison.Ordinal);
         Assert.Contains("-RequireUpdateInPlace", source, StringComparison.Ordinal);
         Assert.Contains("Strict or RequireAndroidUpdateInPlaceSmoke was specified, but AndroidApkPath is empty.", source, StringComparison.Ordinal);
         Assert.Contains("## Strict mode skipped steps", source, StringComparison.Ordinal);
+        Assert.Contains("## Warning steps", source, StringComparison.Ordinal);
+        Assert.Contains("elseif ($warnings.Count -gt 0)", source, StringComparison.Ordinal);
+        Assert.Contains("Warning steps are treated as FAIL", source, StringComparison.Ordinal);
         Assert.Contains("result=$overallStatus", source, StringComparison.Ordinal);
         Assert.Contains("paid_delivery_gate_report=", source, StringComparison.Ordinal);
 
