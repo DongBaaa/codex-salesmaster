@@ -108,15 +108,22 @@ public sealed class CustomerRentalLinkSyncTests
 
             var profile = await db.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(current => current.Id == profileId);
             Assert.Equal(OfficeCodeCatalog.Yeonsu, profile.ResponsibleOfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, profile.OfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, profile.ManagementCompanyCode);
+            Assert.Equal(TenantScopeCatalog.UsenetGroup, profile.TenantCode);
             Assert.Equal("new@example.com", profile.Email);
             Assert.True(profile.IsDirty);
 
             var asset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(current => current.Id == assetId);
             Assert.Equal(OfficeCodeCatalog.Yeonsu, asset.ResponsibleOfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, asset.OfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, asset.ManagementCompanyCode);
+            Assert.Equal(TenantScopeCatalog.UsenetGroup, asset.TenantCode);
             Assert.True(asset.IsDirty);
 
             var history = await db.RentalAssetAssignmentHistories.IgnoreQueryFilters().SingleAsync(current => current.AssetId == assetId);
             Assert.Equal(OfficeCodeCatalog.Yeonsu, history.ResponsibleOfficeCode);
+            Assert.Equal(TenantScopeCatalog.UsenetGroup, history.TenantCode);
             Assert.True(history.IsDirty);
         }
         finally
