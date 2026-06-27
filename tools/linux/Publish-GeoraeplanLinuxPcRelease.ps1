@@ -229,6 +229,25 @@ function Invoke-SshCommand {
     }
 }
 
+function Resolve-GeoraePlanScriptTempDirectory {
+    foreach ($candidate in @($env:GEORAEPLAN_TEMP_ROOT, $env:TEMP, [System.IO.Path]::GetTempPath())) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+
+        try {
+            $resolved = [System.IO.Path]::GetFullPath($candidate)
+            New-Item -ItemType Directory -Force -Path $resolved | Out-Null
+            return $resolved
+        }
+        catch {
+            continue
+        }
+    }
+
+    throw 'Unable to resolve a writable temp directory for Linux PC release upload.'
+}
+
 function Invoke-SshTarUpload {
     param(
         [Parameter(Mandatory = $true)][string]$SourceDirectory,
@@ -244,7 +263,7 @@ function Invoke-SshTarUpload {
     $sshExe = Resolve-SshExecutable
     $archiveDirectory = Split-Path -Parent $SourceDirectory
     if ([string]::IsNullOrWhiteSpace($archiveDirectory) -or -not (Test-Path -LiteralPath $archiveDirectory)) {
-        $archiveDirectory = [System.IO.Path]::GetTempPath()
+        $archiveDirectory = Resolve-GeoraePlanScriptTempDirectory
     }
     $archivePath = Join-Path $archiveDirectory ("georaeplan-linux-upload-" + [Guid]::NewGuid().ToString('N') + '.tar')
 

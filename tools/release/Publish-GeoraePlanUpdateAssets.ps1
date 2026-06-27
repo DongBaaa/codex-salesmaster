@@ -84,6 +84,25 @@ function Copy-PackageWithMetadata {
     }
 }
 
+function Resolve-GeoraePlanScriptTempDirectory {
+    foreach ($candidate in @($env:GEORAEPLAN_TEMP_ROOT, $env:TEMP, [System.IO.Path]::GetTempPath())) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+
+        try {
+            $resolved = [System.IO.Path]::GetFullPath($candidate)
+            New-Item -ItemType Directory -Force -Path $resolved | Out-Null
+            return $resolved
+        }
+        catch {
+            continue
+        }
+    }
+
+    throw 'Unable to resolve a writable temp directory for update asset publishing.'
+}
+
 function Test-DesktopUpdatePackage {
     param(
         [Parameter(Mandatory = $true)][string]$PackagePath,
@@ -99,7 +118,7 @@ function Test-DesktopUpdatePackage {
     )
 
     $archive = [System.IO.Compression.ZipFile]::OpenRead($PackagePath)
-    $tempDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("georaeplan-desktop-package-version-" + [Guid]::NewGuid().ToString('N'))
+    $tempDirectory = Join-Path (Resolve-GeoraePlanScriptTempDirectory) ("georaeplan-desktop-package-version-" + [Guid]::NewGuid().ToString('N'))
     try {
         New-Item -ItemType Directory -Force -Path $tempDirectory | Out-Null
         $entryNames = $archive.Entries | ForEach-Object {

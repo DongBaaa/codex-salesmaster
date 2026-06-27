@@ -293,6 +293,9 @@ public sealed class ReleaseTempPathGuardTests
 
         Assert.Contains("Initialize-GeoraePlanTemp.ps1", updateAssetsSource, StringComparison.Ordinal);
         Assert.Contains(". $tempInitializer -ProjectRoot $ProjectRoot", updateAssetsSource, StringComparison.Ordinal);
+        Assert.Contains("function Resolve-GeoraePlanScriptTempDirectory", updateAssetsSource, StringComparison.Ordinal);
+        Assert.Contains("@($env:GEORAEPLAN_TEMP_ROOT, $env:TEMP, [System.IO.Path]::GetTempPath())", updateAssetsSource, StringComparison.Ordinal);
+        Assert.Contains("$tempDirectory = Join-Path (Resolve-GeoraePlanScriptTempDirectory)", updateAssetsSource, StringComparison.Ordinal);
 
         var desktopInstallerSource = ReadRepositoryFile(
             "tools",
@@ -350,6 +353,15 @@ public sealed class ReleaseTempPathGuardTests
             "$ProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path",
             "$tempInitializer = Join-Path $ProjectRoot 'tools\\common\\Initialize-GeoraePlanTemp.ps1'",
             "& powershell -NoProfile -ExecutionPolicy Bypass -File $desktopScript -ProjectRoot $ProjectRoot");
+
+        var linuxReleaseSource = ReadRepositoryFile(
+            "tools",
+            "linux",
+            "Publish-GeoraeplanLinuxPcRelease.ps1");
+
+        Assert.Contains("function Resolve-GeoraePlanScriptTempDirectory", linuxReleaseSource, StringComparison.Ordinal);
+        Assert.Contains("@($env:GEORAEPLAN_TEMP_ROOT, $env:TEMP, [System.IO.Path]::GetTempPath())", linuxReleaseSource, StringComparison.Ordinal);
+        Assert.Contains("$archiveDirectory = Resolve-GeoraePlanScriptTempDirectory", linuxReleaseSource, StringComparison.Ordinal);
     }
 
     [Fact]
