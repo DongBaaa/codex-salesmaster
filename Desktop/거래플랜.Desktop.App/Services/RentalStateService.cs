@@ -1392,7 +1392,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             ? LimitBillingRunsForHistoryDisplay(billingRunsByProfile, maxDisplayRows)
             : billingRunsByProfile;
         var allRunIds = CollectBillingRunReferenceIds(displayBillingRunsByProfile);
-        var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(allRunIds, ct);
+        var runProfileScopes = BuildBillingRunProfileScopeMap(profiles, displayBillingRunsByProfile, allRunIds);
+        var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(runProfileScopes, ct);
 
         var rows = new List<RentalBillingHistoryRow>();
         foreach (var profile in profiles)
@@ -1509,9 +1510,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
             preparedProfiles,
             referenceDate,
             includeHistoryRows);
-        var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(referenceRunIds, ct);
+        var runProfileScopes = BuildBillingRunProfileScopeMap(preparedProfiles, referenceRunIds);
+        var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(runProfileScopes, ct);
         ct.ThrowIfCancellationRequested();
-        LogRentalLoadStep("Rental billing run reference query", stepStopwatch, $"runs={referenceRunIds.Count:N0}, settlements={settlementByRun.Count:N0}, invoices={invoiceByRun.Count:N0}, history={includeHistoryRows}");
+        LogRentalLoadStep("Rental billing run reference query", stepStopwatch, $"runs={runProfileScopes.Count:N0}, settlements={settlementByRun.Count:N0}, invoices={invoiceByRun.Count:N0}, history={includeHistoryRows}");
 
         stepStopwatch.Restart();
         var rows = new List<RentalBillingViewRow>(preparedProfiles.Count);
@@ -1890,6 +1892,96 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return ids.ToList();
     }
 
+    private static Dictionary<Guid, LocalRentalBillingProfile> BuildBillingRunProfileScopeMap(
+        IReadOnlyList<LocalRentalBillingProfile> profiles,
+        IReadOnlyDictionary<Guid, List<RentalBillingRunModel>> billingRunsByProfile,
+        IReadOnlyCollection<Guid> runIds)
+    {
+        var result = new Dictionary<Guid, LocalRentalBillingProfile>();
+        if (profiles.Count == 0 || billingRunsByProfile.Count == 0 || runIds.Count == 0)
+            return result;
+
+        var allowedRunIds = runIds
+            .Where(id => id != Guid.Empty)
+            .ToHashSet();
+        if (allowedRunIds.Count == 0)
+            return result;
+
+        var profileById = profiles
+            .Where(profile => profile.Id != Guid.Empty)
+            .GroupBy(profile => profile.Id)
+            .ToDictionary(group => group.Key, group => group.First());
+        foreach (var pair in billingRunsByProfile)
+        {
+            if (!profileById.TryGetValue(pair.Key, out var profile))
+                continue;
+
+            foreach (var run in pair.Value)
+                AddBillingRunProfileScope(result, profile, run, allowedRunIds);
+        }
+
+        return result;
+    }
+
+    private static Dictionary<Guid, LocalRentalBillingProfile> BuildBillingRunProfileScopeMap(
+        IReadOnlyList<RentalBillingPreparedProfile> preparedProfiles,
+        IReadOnlyCollection<Guid> runIds)
+    {
+        var result = new Dictionary<Guid, LocalRentalBillingProfile>();
+        if (preparedProfiles.Count == 0 || runIds.Count == 0)
+            return result;
+
+        var allowedRunIds = runIds
+            .Where(id => id != Guid.Empty)
+            .ToHashSet();
+        if (allowedRunIds.Count == 0)
+            return result;
+
+        foreach (var preparedProfile in preparedProfiles)
+        {
+            foreach (var run in preparedProfile.BillingRuns)
+                AddBillingRunProfileScope(result, preparedProfile.Profile, run, allowedRunIds);
+
+            if (preparedProfile.PreviewRun is not null)
+                AddBillingRunProfileScope(result, preparedProfile.Profile, preparedProfile.PreviewRun, allowedRunIds);
+        }
+
+        return result;
+    }
+
+    private static Dictionary<Guid, LocalRentalBillingProfile> BuildBillingRunProfileScopeMap(
+        LocalRentalBillingProfile profile,
+        IEnumerable<RentalBillingRunModel> runs,
+        IReadOnlyCollection<Guid> runIds)
+    {
+        var result = new Dictionary<Guid, LocalRentalBillingProfile>();
+        if (runIds.Count == 0)
+            return result;
+
+        var allowedRunIds = runIds
+            .Where(id => id != Guid.Empty)
+            .ToHashSet();
+        if (allowedRunIds.Count == 0)
+            return result;
+
+        foreach (var run in runs)
+            AddBillingRunProfileScope(result, profile, run, allowedRunIds);
+
+        return result;
+    }
+
+    private static void AddBillingRunProfileScope(
+        Dictionary<Guid, LocalRentalBillingProfile> result,
+        LocalRentalBillingProfile profile,
+        RentalBillingRunModel run,
+        IReadOnlySet<Guid> allowedRunIds)
+    {
+        if (run.RunId == Guid.Empty || !allowedRunIds.Contains(run.RunId) || result.ContainsKey(run.RunId))
+            return;
+
+        result.Add(run.RunId, profile);
+    }
+
     private static bool IsPastBillingRun(RentalBillingRunModel run, DateOnly referenceMonth)
     {
         var runMonth = new DateOnly(run.ScheduledDate.Year, run.ScheduledDate.Month, 1);
@@ -2052,10 +2144,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
     }
 
     private async Task<(Dictionary<Guid, RentalBillingRunSettlementInfo> SettlementByRun, Dictionary<Guid, RentalBillingRunInvoiceInfo> InvoiceByRun)> LoadBillingRunReferencesAsync(
-        IReadOnlyCollection<Guid> runIds,
+        IReadOnlyDictionary<Guid, LocalRentalBillingProfile> profileByRunId,
         CancellationToken ct)
     {
-        var ids = runIds
+        var ids = profileByRunId.Keys
             .Where(id => id != Guid.Empty)
             .Distinct()
             .ToList();
@@ -2064,6 +2156,29 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var settlementByRun = new Dictionary<Guid, RentalBillingRunSettlementInfo>();
         var invoiceCandidatesByRun = new Dictionary<Guid, RentalBillingRunInvoiceLookup>();
+        var scopedTransactionIds = new HashSet<Guid>();
+        static void AddSettlement(
+            Dictionary<Guid, RentalBillingRunSettlementInfo> settlementByRun,
+            RentalBillingRunSettlementLookup row)
+        {
+            if (settlementByRun.TryGetValue(row.RunId, out var existing))
+            {
+                var lastSettledDate = existing.LastSettledDate.HasValue &&
+                                      existing.LastSettledDate.Value >= row.TransactionDate
+                    ? existing.LastSettledDate.Value
+                    : row.TransactionDate;
+                settlementByRun[row.RunId] = new RentalBillingRunSettlementInfo(
+                    existing.SettledAmount + row.SettlementAmount,
+                    lastSettledDate);
+            }
+            else
+            {
+                settlementByRun[row.RunId] = new RentalBillingRunSettlementInfo(
+                    row.SettlementAmount,
+                    row.TransactionDate);
+            }
+        }
+
         foreach (var batchIds in ids.Chunk(BillingRunReferenceBatchSize))
         {
             ct.ThrowIfCancellationRequested();
@@ -2075,27 +2190,21 @@ WHERE ""AssignedUsername"" <> '';", ct);
                                        scopedBatchIds.Contains(transaction.LinkedRentalBillingRunId.Value))
                 .Select(transaction => new RentalBillingRunSettlementLookup(
                     transaction.LinkedRentalBillingRunId!.Value,
+                    transaction.Id,
                     transaction.SettlementAmount,
-                    transaction.TransactionDate))
+                    transaction.TransactionDate,
+                    transaction.TenantCode,
+                    transaction.ResponsibleOfficeCode,
+                    transaction.OfficeCode))
                 .ToListAsync(ct);
             foreach (var row in settlementRows)
             {
-                if (settlementByRun.TryGetValue(row.RunId, out var existing))
-                {
-                    var lastSettledDate = existing.LastSettledDate.HasValue &&
-                                          existing.LastSettledDate.Value >= row.TransactionDate
-                        ? existing.LastSettledDate.Value
-                        : row.TransactionDate;
-                    settlementByRun[row.RunId] = new RentalBillingRunSettlementInfo(
-                        existing.SettledAmount + row.SettlementAmount,
-                        lastSettledDate);
-                }
-                else
-                {
-                    settlementByRun[row.RunId] = new RentalBillingRunSettlementInfo(
-                        row.SettlementAmount,
-                        row.TransactionDate);
-                }
+                if (!profileByRunId.TryGetValue(row.RunId, out var profile) ||
+                    !IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
+                    continue;
+
+                scopedTransactionIds.Add(row.SourceId);
+                AddSettlement(settlementByRun, row);
             }
 
             var directPaymentRows = await (
@@ -2107,34 +2216,24 @@ WHERE ""AssignedUsername"" <> '';", ct);
                           !invoice.IsDeleted &&
                           invoice.IsLatestVersion &&
                           invoice.LinkedRentalBillingRunId.HasValue &&
-                          scopedBatchIds.Contains(invoice.LinkedRentalBillingRunId.Value) &&
-                          !_db.Transactions.AsNoTracking().Any(transaction =>
-                              !transaction.IsDeleted &&
-                              transaction.Id == payment.Id &&
-                              transaction.LinkedRentalBillingProfileId == invoice.LinkedRentalBillingProfileId)
+                          scopedBatchIds.Contains(invoice.LinkedRentalBillingRunId.Value)
                     select new RentalBillingRunSettlementLookup(
                         invoice.LinkedRentalBillingRunId!.Value,
+                        payment.Id,
                         payment.Amount,
-                        payment.PaymentDate))
+                        payment.PaymentDate,
+                        invoice.TenantCode,
+                        invoice.ResponsibleOfficeCode,
+                        invoice.OfficeCode))
                 .ToListAsync(ct);
             foreach (var row in directPaymentRows)
             {
-                if (settlementByRun.TryGetValue(row.RunId, out var existing))
-                {
-                    var lastSettledDate = existing.LastSettledDate.HasValue &&
-                                          existing.LastSettledDate.Value >= row.TransactionDate
-                        ? existing.LastSettledDate.Value
-                        : row.TransactionDate;
-                    settlementByRun[row.RunId] = new RentalBillingRunSettlementInfo(
-                        existing.SettledAmount + row.SettlementAmount,
-                        lastSettledDate);
-                }
-                else
-                {
-                    settlementByRun[row.RunId] = new RentalBillingRunSettlementInfo(
-                        row.SettlementAmount,
-                        row.TransactionDate);
-                }
+                if (scopedTransactionIds.Contains(row.SourceId) ||
+                    !profileByRunId.TryGetValue(row.RunId, out var profile) ||
+                    !IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
+                    continue;
+
+                AddSettlement(settlementByRun, row);
             }
 
             var invoiceRows = await _db.Invoices.AsNoTracking()
@@ -2147,12 +2246,20 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     invoice.Id,
                     invoice.Revision,
                     invoice.TotalAmount,
-                    invoice.UpdatedAtUtc))
+                    invoice.LastSavedAtUtc,
+                    invoice.UpdatedAtUtc,
+                    invoice.TenantCode,
+                    invoice.ResponsibleOfficeCode,
+                    invoice.OfficeCode))
                 .ToListAsync(ct);
             foreach (var row in invoiceRows)
             {
+                if (!profileByRunId.TryGetValue(row.RunId, out var profile) ||
+                    !IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
+                    continue;
+
                 if (!invoiceCandidatesByRun.TryGetValue(row.RunId, out var existing) ||
-                    row.UpdatedAtUtc > existing.UpdatedAtUtc)
+                    IsNewerBillingRunInvoice(row, existing))
                 {
                     invoiceCandidatesByRun[row.RunId] = row;
                 }
@@ -2171,8 +2278,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
     private readonly record struct RentalBillingRunSettlementLookup(
         Guid RunId,
+        Guid SourceId,
         decimal SettlementAmount,
-        DateOnly TransactionDate);
+        DateOnly TransactionDate,
+        string TenantCode,
+        string ResponsibleOfficeCode,
+        string OfficeCode);
 
     private readonly record struct RentalBillingRunSettlementInfo(decimal SettledAmount, DateOnly? LastSettledDate);
 
@@ -2183,7 +2294,22 @@ WHERE ""AssignedUsername"" <> '';", ct);
         Guid InvoiceId,
         long InvoiceRevision,
         decimal TotalAmount,
-        DateTime UpdatedAtUtc);
+        DateTime LastSavedAtUtc,
+        DateTime UpdatedAtUtc,
+        string TenantCode,
+        string ResponsibleOfficeCode,
+        string OfficeCode);
+
+    private static bool IsNewerBillingRunInvoice(
+        RentalBillingRunInvoiceLookup candidate,
+        RentalBillingRunInvoiceLookup existing)
+    {
+        if (candidate.LastSavedAtUtc != existing.LastSavedAtUtc)
+            return candidate.LastSavedAtUtc > existing.LastSavedAtUtc;
+        if (candidate.UpdatedAtUtc != existing.UpdatedAtUtc)
+            return candidate.UpdatedAtUtc > existing.UpdatedAtUtc;
+        return candidate.InvoiceRevision > existing.InvoiceRevision;
+    }
 
     private sealed class SupplementalBillingRunAccumulator
     {
@@ -2199,13 +2325,20 @@ WHERE ""AssignedUsername"" <> '';", ct);
         Guid ProfileId,
         Guid RunId,
         DateOnly InvoiceDate,
-        decimal TotalAmount);
+        decimal TotalAmount,
+        string TenantCode,
+        string ResponsibleOfficeCode,
+        string OfficeCode);
 
     private readonly record struct SupplementalBillingRunSettlementLookup(
         Guid ProfileId,
         Guid RunId,
+        Guid SourceId,
         DateOnly SettlementDate,
-        decimal Amount);
+        decimal Amount,
+        string TenantCode,
+        string ResponsibleOfficeCode,
+        string OfficeCode);
 
     private readonly record struct RentalBillingHistorySummary(
         int PastUnresolvedCount,
@@ -2544,6 +2677,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .Select(run => run.RunId)
                 .ToHashSet());
         var accumulators = new Dictionary<(Guid ProfileId, Guid RunId), SupplementalBillingRunAccumulator>();
+        var scopedTransactionIds = new HashSet<Guid>();
 
         SupplementalBillingRunAccumulator GetAccumulator(Guid profileId, Guid runId)
         {
@@ -2578,10 +2712,17 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     invoice.LinkedRentalBillingProfileId!.Value,
                     invoice.LinkedRentalBillingRunId!.Value,
                     invoice.InvoiceDate,
-                    invoice.TotalAmount))
+                    invoice.TotalAmount,
+                    invoice.TenantCode,
+                    invoice.ResponsibleOfficeCode,
+                    invoice.OfficeCode))
                 .ToListAsync(ct);
             foreach (var row in invoiceRows)
             {
+                if (!profileById.TryGetValue(row.ProfileId, out var rowProfile) ||
+                    !IsSameRentalSettlementScope(rowProfile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
+                    continue;
+
                 if (existingRunIdsByProfile.TryGetValue(row.ProfileId, out var existingRunIds) &&
                     existingRunIds.Contains(row.RunId))
                 {
@@ -2604,11 +2745,20 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .Select(transaction => new SupplementalBillingRunSettlementLookup(
                     transaction.LinkedRentalBillingProfileId!.Value,
                     transaction.LinkedRentalBillingRunId!.Value,
+                    transaction.Id,
                     transaction.TransactionDate,
-                    transaction.SettlementAmount))
+                    transaction.SettlementAmount,
+                    transaction.TenantCode,
+                    transaction.ResponsibleOfficeCode,
+                    transaction.OfficeCode))
                 .ToListAsync(ct);
             foreach (var row in transactionRows)
             {
+                if (!profileById.TryGetValue(row.ProfileId, out var rowProfile) ||
+                    !IsSameRentalSettlementScope(rowProfile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
+                    continue;
+
+                scopedTransactionIds.Add(row.SourceId);
                 if (existingRunIdsByProfile.TryGetValue(row.ProfileId, out var existingRunIds) &&
                     existingRunIds.Contains(row.RunId))
                 {
@@ -2631,19 +2781,24 @@ WHERE ""AssignedUsername"" <> '';", ct);
                           invoice.IsLatestVersion &&
                           invoice.LinkedRentalBillingProfileId.HasValue &&
                           invoice.LinkedRentalBillingRunId.HasValue &&
-                          scopedBatchIds.Contains(invoice.LinkedRentalBillingProfileId.Value) &&
-                          !_db.Transactions.AsNoTracking().Any(transaction =>
-                              !transaction.IsDeleted &&
-                              transaction.Id == payment.Id &&
-                              transaction.LinkedRentalBillingProfileId == invoice.LinkedRentalBillingProfileId)
+                          scopedBatchIds.Contains(invoice.LinkedRentalBillingProfileId.Value)
                     select new SupplementalBillingRunSettlementLookup(
                         invoice.LinkedRentalBillingProfileId!.Value,
                         invoice.LinkedRentalBillingRunId!.Value,
+                        payment.Id,
                         payment.PaymentDate,
-                        payment.Amount))
+                        payment.Amount,
+                        invoice.TenantCode,
+                        invoice.ResponsibleOfficeCode,
+                        invoice.OfficeCode))
                 .ToListAsync(ct);
             foreach (var row in directPaymentRows)
             {
+                if (scopedTransactionIds.Contains(row.SourceId) ||
+                    !profileById.TryGetValue(row.ProfileId, out var rowProfile) ||
+                    !IsSameRentalSettlementScope(rowProfile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
+                    continue;
+
                 if (existingRunIdsByProfile.TryGetValue(row.ProfileId, out var existingRunIds) &&
                     existingRunIds.Contains(row.RunId))
                 {
@@ -3420,7 +3575,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (pastRunIds.Count == 0)
             return new List<LocalRentalBillingProfile>();
 
-        var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(pastRunIds, ct);
+        var runProfileScopes = BuildBillingRunProfileScopeMap(profiles, pastRunsByProfile, pastRunIds);
+        var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(runProfileScopes, ct);
         ct.ThrowIfCancellationRequested();
 
         var pastDueProfileIds = new HashSet<Guid>();
@@ -5990,7 +6146,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         var runIds = activeRuns.Select(run => run.RunId).Distinct().ToList();
-        var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(runIds, ct);
+        var runProfileScopes = BuildBillingRunProfileScopeMap(profile, activeRuns, runIds);
+        var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(runProfileScopes, ct);
         var invoiceTotalsByRun = invoiceByRun.ToDictionary(
             pair => pair.Key,
             pair => Math.Max(0m, pair.Value.TotalAmount));

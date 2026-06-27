@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
@@ -327,6 +328,210 @@ public sealed class LocalOperationalTenantScopeTests
             Assert.Equal(1_000m, storedAmountSummary.BilledAmount);
             Assert.Equal(130m, storedAmountSummary.SettledAmount);
             Assert.Equal(870m, storedAmountSummary.OutstandingAmount);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalBillingRows_ExcludeOutOfScopeRunReferencesForSameProfileAndRunId()
+    {
+        PrepareAppRoot("georaeplan-rental-billing-row-reference-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var billingRunId = Guid.NewGuid();
+            var profile = CreateRentalBillingProfile(
+                tenantCode: TenantScopeCatalog.UsenetGroup,
+                officeCode: OfficeCodeCatalog.Usenet,
+                customerName: "Scoped rental billing row customer",
+                monthlyAmount: 1_000m);
+            profile.BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new RentalBillingRunModel
+                {
+                    RunId = billingRunId,
+                    RunKey = "20260601-20260630",
+                    ScheduledDate = new DateOnly(2026, 6, 25),
+                    PeriodStartDate = new DateOnly(2026, 6, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    CycleMonths = 1,
+                    PeriodLabel = "2026-06",
+                    Status = PaymentFlowConstants.BillingStatusInProgress,
+                    BilledAmount = 1_000m,
+                    SettlementStatus = PaymentFlowConstants.SettlementStatusPartial
+                }
+            });
+
+            var inScopeTransaction = CreateTransaction(
+                tenantCode: TenantScopeCatalog.UsenetGroup,
+                officeCode: OfficeCodeCatalog.Usenet,
+                customerId: Guid.NewGuid(),
+                note: "USENET billing row settlement");
+            inScopeTransaction.LinkedRentalBillingProfileId = profile.Id;
+            inScopeTransaction.LinkedRentalBillingRunId = billingRunId;
+            inScopeTransaction.SettlementAmount = 100m;
+
+            var outOfScopeTransaction = CreateTransaction(
+                tenantCode: TenantScopeCatalog.Itworld,
+                officeCode: OfficeCodeCatalog.Itworld,
+                customerId: Guid.NewGuid(),
+                note: "ITWORLD billing row settlement");
+            outOfScopeTransaction.LinkedRentalBillingProfileId = profile.Id;
+            outOfScopeTransaction.LinkedRentalBillingRunId = billingRunId;
+            outOfScopeTransaction.SettlementAmount = 900m;
+
+            var inScopeInvoice = CreateInvoice(
+                tenantCode: TenantScopeCatalog.UsenetGroup,
+                officeCode: OfficeCodeCatalog.Usenet,
+                customerId: Guid.NewGuid(),
+                invoiceNumber: "USENET-ROW-INV");
+            inScopeInvoice.LinkedRentalBillingProfileId = profile.Id;
+            inScopeInvoice.LinkedRentalBillingRunId = billingRunId;
+            inScopeInvoice.TotalAmount = 1_000m;
+            inScopeInvoice.LastSavedAtUtc = new DateTime(2026, 6, 22, 9, 0, 0, DateTimeKind.Utc);
+
+            var outOfScopeInvoice = CreateInvoice(
+                tenantCode: TenantScopeCatalog.Itworld,
+                officeCode: OfficeCodeCatalog.Itworld,
+                customerId: Guid.NewGuid(),
+                invoiceNumber: "ITWORLD-ROW-INV");
+            outOfScopeInvoice.LinkedRentalBillingProfileId = profile.Id;
+            outOfScopeInvoice.LinkedRentalBillingRunId = billingRunId;
+            outOfScopeInvoice.TotalAmount = 9_000m;
+            outOfScopeInvoice.LastSavedAtUtc = new DateTime(2026, 6, 22, 10, 0, 0, DateTimeKind.Utc);
+
+            var inScopePayment = new LocalPayment
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = inScopeInvoice.Id,
+                PaymentDate = new DateOnly(2026, 6, 22),
+                Amount = 30m
+            };
+            var outOfScopePayment = new LocalPayment
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = outOfScopeInvoice.Id,
+                PaymentDate = new DateOnly(2026, 6, 23),
+                Amount = 700m
+            };
+
+            db.RentalBillingProfiles.Add(profile);
+            db.Transactions.AddRange(inScopeTransaction, outOfScopeTransaction);
+            db.Invoices.AddRange(inScopeInvoice, outOfScopeInvoice);
+            db.Payments.AddRange(inScopePayment, outOfScopePayment);
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                AppPermissionNames.RentalViewAll);
+            var service = new RentalStateService(db);
+
+            var rows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    ExpandCustomerSummaryRows = true,
+                    IncludeHistoryRows = true,
+                    ReferenceDate = new DateOnly(2026, 6, 25)
+                },
+                session);
+
+            var row = Assert.Single(rows, current => current.SelectionId == profile.Id);
+            Assert.Equal(130m, row.SettledAmount);
+            Assert.Equal(870m, row.OutstandingAmount);
+
+            var history = Assert.Single(row.BillingHistoryRows, current => current.BillingRunId == billingRunId);
+            Assert.Equal(1_000m, history.BilledAmount);
+            Assert.Equal(130m, history.SettledAmount);
+            Assert.Equal(870m, history.OutstandingAmount);
+            Assert.Equal(inScopeInvoice.Id, history.InvoiceId);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalBillingRows_DoNotRestoreSupplementalHistoryFromOutOfScopeFinancialReferences()
+    {
+        PrepareAppRoot("georaeplan-rental-supplemental-run-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var outOfScopeRunId = Guid.NewGuid();
+            var profile = CreateRentalBillingProfile(
+                tenantCode: TenantScopeCatalog.UsenetGroup,
+                officeCode: OfficeCodeCatalog.Usenet,
+                customerName: "Scoped supplemental rental customer",
+                monthlyAmount: 1_000m);
+
+            var outOfScopeTransaction = CreateTransaction(
+                tenantCode: TenantScopeCatalog.Itworld,
+                officeCode: OfficeCodeCatalog.Itworld,
+                customerId: Guid.NewGuid(),
+                note: "ITWORLD supplemental rental settlement");
+            outOfScopeTransaction.LinkedRentalBillingProfileId = profile.Id;
+            outOfScopeTransaction.LinkedRentalBillingRunId = outOfScopeRunId;
+            outOfScopeTransaction.TransactionDate = new DateOnly(2026, 5, 26);
+            outOfScopeTransaction.SettlementAmount = 900m;
+
+            var outOfScopeInvoice = CreateInvoice(
+                tenantCode: TenantScopeCatalog.Itworld,
+                officeCode: OfficeCodeCatalog.Itworld,
+                customerId: Guid.NewGuid(),
+                invoiceNumber: "ITWORLD-SUPPLEMENTAL-INV");
+            outOfScopeInvoice.LinkedRentalBillingProfileId = profile.Id;
+            outOfScopeInvoice.LinkedRentalBillingRunId = outOfScopeRunId;
+            outOfScopeInvoice.InvoiceDate = new DateOnly(2026, 5, 25);
+            outOfScopeInvoice.TotalAmount = 9_000m;
+            outOfScopeInvoice.LastSavedAtUtc = new DateTime(2026, 5, 25, 10, 0, 0, DateTimeKind.Utc);
+
+            var outOfScopePayment = new LocalPayment
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = outOfScopeInvoice.Id,
+                PaymentDate = new DateOnly(2026, 5, 27),
+                Amount = 700m
+            };
+
+            db.RentalBillingProfiles.Add(profile);
+            db.Transactions.Add(outOfScopeTransaction);
+            db.Invoices.Add(outOfScopeInvoice);
+            db.Payments.Add(outOfScopePayment);
+            await db.SaveChangesAsync();
+
+            var session = CreateOfficeSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                AppPermissionNames.RentalViewAll);
+            var service = new RentalStateService(db);
+
+            var rows = await service.GetBillingRowsAsync(
+                new RentalBillingFilter
+                {
+                    ExpandCustomerSummaryRows = true,
+                    IncludeHistoryRows = true,
+                    ReferenceDate = new DateOnly(2026, 6, 25)
+                },
+                session);
+
+            var row = Assert.Single(rows, current => current.SelectionId == profile.Id);
+            Assert.DoesNotContain(row.BillingHistoryRows, current => current.BillingRunId == outOfScopeRunId);
+            Assert.DoesNotContain(row.BillingHistoryRows, current => current.BilledAmount == 9_000m || current.SettledAmount == 1_600m);
         }
         finally
         {
