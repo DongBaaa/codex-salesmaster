@@ -844,6 +844,31 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public void LocalCacheConsistencyDetectsNonInventoryAndAssetWarehouseStockResidues()
+    {
+        var source = ReadRepositoryFile(
+            "tools",
+            "verification",
+            "Invoke-GeoraePlanLocalCacheConsistency.ps1");
+
+        Assert.Contains("itemWarehouseStocks = 'ItemWarehouseStocks'", source, StringComparison.Ordinal);
+        Assert.Contains("result[\"inventoryResidues\"]", source, StringComparison.Ordinal);
+        Assert.Contains("normalize_tracking", source, StringComparison.Ordinal);
+        Assert.Contains("STOCK = \"\\uc7ac\\uace0\"", source, StringComparison.Ordinal);
+        Assert.Contains("ASSET = \"\\uc790\\uc0b0\"", source, StringComparison.Ordinal);
+        Assert.Contains("checkedNonInventoryItemCount", source, StringComparison.Ordinal);
+        Assert.Contains("currentStockResidueCount", source, StringComparison.Ordinal);
+        Assert.Contains("warehouseStockResidueCount", source, StringComparison.Ordinal);
+        Assert.Contains("warehouseStockQuantityResidueCount", source, StringComparison.Ordinal);
+        Assert.Contains("${currentStockResidueCount}건", source, StringComparison.Ordinal);
+        Assert.Contains("${warehouseStockResidueCount}건", source, StringComparison.Ordinal);
+        Assert.Contains("비재고/자산/렌탈료 품목의 CurrentStock 잔여값", source, StringComparison.Ordinal);
+        Assert.Contains("비재고/자산/렌탈료 품목에 연결된 로컬 ItemWarehouseStocks 잔여 row", source, StringComparison.Ordinal);
+        Assert.Contains("## 비재고/자산 품목 재고 잔여 row 점검", source, StringComparison.Ordinal);
+        Assert.Contains("WarehouseStockQuantityRows", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void FullReleaseForwardsExplicitRentalTemplateRiskAcceptanceToLinuxDeploy()
     {
         var source = ReadRepositoryFile(

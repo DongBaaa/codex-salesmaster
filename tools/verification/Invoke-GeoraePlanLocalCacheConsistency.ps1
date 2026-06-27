@@ -288,15 +288,21 @@ for key, table in tables.items():
                     "OfficeCode",
                     "NameOriginal",
                     "SpecificationOriginal",
+                    "CategoryName",
+                    "ItemKind",
                     "TradeType",
                     "ResponsibleOfficeCode",
                     "TrackingType",
+                    "IsRental",
                     "VoucherType",
                     "CustomerName",
                     "InvoiceNumber",
                     "InvoiceDate",
                     "TotalAmount",
                     "CurrentStock",
+                    "ItemId",
+                    "WarehouseCode",
+                    "Quantity",
                     "Revision",
                     "UpdatedAtUtc",
                 )
@@ -320,6 +326,129 @@ for key, table in tables.items():
                     for row in sample_rows
                 ]
     result["tables"][key] = info
+
+result["inventoryResidues"] = {
+    "checkedNonInventoryItemCount": 0,
+    "currentStockResidueCount": 0,
+    "warehouseStockResidueCount": 0,
+    "warehouseStockQuantityResidueCount": 0,
+    "sampleRows": [],
+}
+
+def normalize_tracking(value, item_kind="", category_name="", is_rental=False):
+    STOCK = "\uc7ac\uace0"
+    ASSET = "\uc790\uc0b0"
+    NONSTOCK = "\ube44\uc7ac\uace0"
+    KIND_ASSET = "\uc7a5\ube44"
+    KIND_BILLING = "\uccad\uad6c\ud56d\ubaa9"
+    RENTAL_FEE = "\ub80c\ud0c8\ub8cc"
+    text = ("" if value is None else str(value)).strip()
+    kind = ("" if item_kind is None else str(item_kind)).strip()
+    category = ("" if category_name is None else str(category_name)).strip()
+    if text == STOCK:
+        normalized = STOCK
+    elif text == ASSET or text.lower() in ("asset", "equipment"):
+        normalized = ASSET
+    elif text == NONSTOCK or text.lower() in ("nonstock", "non-stock", "non stock", "billing", "service"):
+        normalized = NONSTOCK
+    elif text.lower() in ("stock", "inventory"):
+        normalized = STOCK
+    else:
+        normalized = text or STOCK
+    if normalized == STOCK and (kind == KIND_ASSET or kind.lower() in ("asset", "equipment") or is_rental):
+        return ASSET
+    if normalized == STOCK and (kind == KIND_BILLING or kind.lower() in ("billing", "service") or category.lower() == RENTAL_FEE.lower()):
+        return NONSTOCK
+    return normalized
+
+if "Items" in existing and "ItemWarehouseStocks" in existing:
+    item_cols = {row["name"] for row in con.execute('pragma table_info("Items")')}
+    stock_cols = {row["name"] for row in con.execute('pragma table_info("ItemWarehouseStocks")')}
+    item_conditions = []
+    item_params = []
+    if "IsDeleted" in item_cols:
+        item_conditions.append('"IsDeleted" = 0')
+    if scope_tenant and "TenantCode" in item_cols:
+        item_conditions.append('"TenantCode" = ?')
+        item_params.append(scope_tenant)
+    if scope_office and "OfficeCode" in item_cols:
+        item_conditions.append('("OfficeCode" = ? or "OfficeCode" = ? or "OfficeCode" = "" or "OfficeCode" is null)')
+        item_params.append(scope_office)
+        item_params.append("ALL")
+    item_where = build_where(item_conditions)
+    item_projection = [
+        col for col in (
+            "Id",
+            "NameOriginal",
+            "CategoryName",
+            "ItemKind",
+            "TrackingType",
+            "IsRental",
+            "CurrentStock",
+            "TenantCode",
+            "OfficeCode",
+        )
+        if col in item_cols
+    ]
+    stock_projection = [
+        col for col in ("ItemId", "WarehouseCode", "Quantity", "Revision", "UpdatedAtUtc")
+        if col in stock_cols
+    ]
+    item_rows = con.execute(
+        f'select {", ".join(f"""\"{col}\"""" for col in item_projection)} from "Items" {item_where}',
+        tuple(item_params)
+    ).fetchall()
+    stock_rows_by_item = {}
+    if "ItemId" in stock_cols:
+        stock_rows = con.execute(
+            f'select {", ".join(f"""\"{col}\"""" for col in stock_projection)} from "ItemWarehouseStocks"'
+        ).fetchall()
+        for stock_row in stock_rows:
+            item_id = str(stock_row["ItemId"] or "").lower()
+            if not item_id:
+                continue
+            stock_rows_by_item.setdefault(item_id, []).append(stock_row)
+    for item_row in item_rows:
+        item_id = str(item_row["Id"] or "")
+        is_rental_value = item_row["IsRental"] if "IsRental" in item_projection else False
+        is_rental = str(is_rental_value).strip().lower() in ("1", "true", "yes")
+        tracking = normalize_tracking(
+            item_row["TrackingType"] if "TrackingType" in item_projection else "",
+            item_row["ItemKind"] if "ItemKind" in item_projection else "",
+            item_row["CategoryName"] if "CategoryName" in item_projection else "",
+            is_rental
+        )
+        if tracking == "\uc7ac\uace0":
+            continue
+        current_stock = 0
+        try:
+            current_stock = float(item_row["CurrentStock"] or 0) if "CurrentStock" in item_projection else 0
+        except Exception:
+            current_stock = 0
+        item_stocks = stock_rows_by_item.get(item_id.lower(), [])
+        quantity_residue = 0
+        for stock_row in item_stocks:
+            try:
+                if float(stock_row["Quantity"] or 0) != 0:
+                    quantity_residue += 1
+            except Exception:
+                pass
+        result["inventoryResidues"]["checkedNonInventoryItemCount"] += 1
+        if current_stock != 0:
+            result["inventoryResidues"]["currentStockResidueCount"] += 1
+        if item_stocks:
+            result["inventoryResidues"]["warehouseStockResidueCount"] += len(item_stocks)
+        if quantity_residue:
+            result["inventoryResidues"]["warehouseStockQuantityResidueCount"] += quantity_residue
+        if (current_stock != 0 or item_stocks) and len(result["inventoryResidues"]["sampleRows"]) < 20:
+            result["inventoryResidues"]["sampleRows"].append({
+                "Id": item_id,
+                "NameOriginal": item_row["NameOriginal"] if "NameOriginal" in item_projection else "",
+                "TrackingType": tracking,
+                "CurrentStock": current_stock,
+                "WarehouseStockRows": len(item_stocks),
+                "WarehouseStockQuantityRows": quantity_residue,
+            })
 
 if "Settings" in existing:
     wanted = ("LastSyncRevision", "Sync.LastSuccessAt", "Sync.LastError", "Sync.PendingFullMirrorRefresh")
@@ -390,6 +519,7 @@ $tableMap = [ordered]@{
     rentalBillingProfiles = 'RentalBillingProfiles'
     rentalAssets = 'RentalAssets'
     rentalBillingLogs = 'RentalBillingLogs'
+    itemWarehouseStocks = 'ItemWarehouseStocks'
 }
 
 $env:GEORAEPLAN_SCOPE_TENANT = $ScopeTenantCode
@@ -538,6 +668,23 @@ foreach ($key in $tableMap.Keys) {
     })
 }
 
+$inventoryResidues = $local.inventoryResidues
+if ($null -ne $inventoryResidues) {
+    $currentStockResidueCount = if ($null -eq $inventoryResidues.currentStockResidueCount) { 0 } else { [int]$inventoryResidues.currentStockResidueCount }
+    $warehouseStockResidueCount = if ($null -eq $inventoryResidues.warehouseStockResidueCount) { 0 } else { [int]$inventoryResidues.warehouseStockResidueCount }
+    $warehouseStockQuantityResidueCount = if ($null -eq $inventoryResidues.warehouseStockQuantityResidueCount) { 0 } else { [int]$inventoryResidues.warehouseStockQuantityResidueCount }
+
+    if ($currentStockResidueCount -gt 0) {
+        $failures.Add("비재고/자산/렌탈료 품목의 CurrentStock 잔여값이 ${currentStockResidueCount}건 확인되었습니다.")
+    }
+    if ($warehouseStockResidueCount -gt 0) {
+        $failures.Add("비재고/자산/렌탈료 품목에 연결된 로컬 ItemWarehouseStocks 잔여 row가 ${warehouseStockResidueCount}건 확인되었습니다.")
+    }
+    if ($warehouseStockQuantityResidueCount -gt 0) {
+        $failures.Add("비재고/자산/렌탈료 품목의 0이 아닌 로컬 창고재고 row가 ${warehouseStockQuantityResidueCount}건 확인되었습니다.")
+    }
+}
+
 $overall = if ($failures.Count -gt 0) { 'FAIL' } elseif ($warnings.Count -gt 0) { 'WARN' } else { 'PASS' }
 $rowsArray = @($rows.ToArray())
 $warningsArray = @($warnings.ToArray())
@@ -552,6 +699,7 @@ $result = [pscustomobject]@{
     Overall = $overall
     Rows = $rowsArray
     LocalSettings = $local.settings
+    InventoryResidues = $inventoryResidues
     Warnings = $warningsArray
     Failures = $failuresArray
 }
@@ -582,6 +730,24 @@ $md.Add("")
 foreach ($setting in $local.settings.PSObject.Properties) {
     $value = if ([string]::IsNullOrWhiteSpace([string]$setting.Value)) { '(비어 있음)' } else { [string]$setting.Value }
     $md.Add("- $($setting.Name): $value")
+}
+if ($null -ne $inventoryResidues) {
+    $md.Add("")
+    $md.Add("## 비재고/자산 품목 재고 잔여 row 점검")
+    $md.Add("")
+    $md.Add("- 점검한 비재고/자산/렌탈료 품목 수: $($inventoryResidues.checkedNonInventoryItemCount)")
+    $md.Add("- CurrentStock 잔여값 건수: $($inventoryResidues.currentStockResidueCount)")
+    $md.Add("- ItemWarehouseStocks 잔여 row 건수: $($inventoryResidues.warehouseStockResidueCount)")
+    $md.Add("- 0이 아닌 창고재고 row 건수: $($inventoryResidues.warehouseStockQuantityResidueCount)")
+    $sampleResidues = @(Convert-ToArray $inventoryResidues.sampleRows)
+    if ($sampleResidues.Count -gt 0) {
+        $md.Add("")
+        $md.Add("| Id | 품목명 | 추적유형 | CurrentStock | 창고재고 row | 0이 아닌 row |")
+        $md.Add("|---|---|---|---:|---:|---:|")
+        foreach ($sample in $sampleResidues) {
+            $md.Add("| $($sample.Id) | $($sample.NameOriginal) | $($sample.TrackingType) | $($sample.CurrentStock) | $($sample.WarehouseStockRows) | $($sample.WarehouseStockQuantityRows) |")
+        }
+    }
 }
 if ($warnings.Count -gt 0) {
     $md.Add("")
