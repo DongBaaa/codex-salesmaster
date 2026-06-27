@@ -1022,6 +1022,8 @@ public sealed class ReleaseTempPathGuardTests
 
         Assert.Contains("[switch]$Strict", source, StringComparison.Ordinal);
         Assert.Contains("[switch]$FailOnWarnings", source, StringComparison.Ordinal);
+        Assert.Contains("[switch]$FailOnIntegrityWarnings", source, StringComparison.Ordinal);
+        Assert.Contains("[switch]$SkipApiVisibilitySmoke", source, StringComparison.Ordinal);
         Assert.Contains("[switch]$RequireLocalCache", source, StringComparison.Ordinal);
         Assert.Contains("[switch]$RequirePrinter", source, StringComparison.Ordinal);
         Assert.Contains("[switch]$RequireOnlinePrinter", source, StringComparison.Ordinal);
@@ -1029,10 +1031,18 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("[switch]$RequireAndroidUpdateInPlaceSmoke", source, StringComparison.Ordinal);
         Assert.Contains("Resolve-ProjectScriptByName", source, StringComparison.Ordinal);
         Assert.Contains("Get-StepStatusFromOutput", source, StringComparison.Ordinal);
+        Assert.Contains("$previousErrorActionPreference = $ErrorActionPreference", source, StringComparison.Ordinal);
+        Assert.Contains("$ErrorActionPreference = 'Continue'", source, StringComparison.Ordinal);
         Assert.Contains("\\uACB0\\uACFC", source, StringComparison.Ordinal);
+        Assert.Contains("Invoke-GeoraePlanApiVisibilitySmoke.ps1", source, StringComparison.Ordinal);
         Assert.Contains("Invoke-LiveObservationCheck.ps1", source, StringComparison.Ordinal);
         Assert.Contains("Test-GeoraePlanPrintEnvironment.ps1", source, StringComparison.Ordinal);
         Assert.Contains("Invoke-GeoraePlanAndroidSmoke.ps1", source, StringComparison.Ordinal);
+        Assert.Contains("-MinCustomers", source, StringComparison.Ordinal);
+        Assert.Contains("-MinItems", source, StringComparison.Ordinal);
+        Assert.Contains("-MinInvoices", source, StringComparison.Ordinal);
+        Assert.Contains("-FailOnIntegrityWarnings", source, StringComparison.Ordinal);
+        Assert.Contains("-AllowedIntegrityWarningCodes", source, StringComparison.Ordinal);
         Assert.Contains("-RequireLocalCacheConsistencyCheck", source, StringComparison.Ordinal);
         Assert.Contains("-FailOnLocalCacheWarning", source, StringComparison.Ordinal);
         Assert.Contains("-FailOnAndroidDebugSigning", source, StringComparison.Ordinal);
@@ -1040,8 +1050,10 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("-RequireOnlinePrinter", source, StringComparison.Ordinal);
         Assert.Contains("-FailOnWarnings", source, StringComparison.Ordinal);
         Assert.Contains("$effectiveFailOnWarnings = [bool]($Strict -or $FailOnWarnings)", source, StringComparison.Ordinal);
+        Assert.Contains("$effectiveFailOnIntegrityWarnings = [bool]($Strict -or $FailOnIntegrityWarnings)", source, StringComparison.Ordinal);
         Assert.Contains("-RequireUpdateInPlace", source, StringComparison.Ordinal);
         Assert.Contains("Strict or RequireAndroidUpdateInPlaceSmoke was specified, but AndroidApkPath is empty.", source, StringComparison.Ordinal);
+        Assert.Contains("api-visibility-smoke", source, StringComparison.Ordinal);
         Assert.Contains("## Strict mode skipped steps", source, StringComparison.Ordinal);
         Assert.Contains("## Warning steps", source, StringComparison.Ordinal);
         Assert.Contains("elseif ($warnings.Count -gt 0)", source, StringComparison.Ordinal);

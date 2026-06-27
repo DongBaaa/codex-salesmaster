@@ -7,9 +7,14 @@ param(
     [string]$EvidenceRoot = "",
     [switch]$Strict,
     [switch]$FailOnWarnings,
+    [switch]$FailOnIntegrityWarnings,
     [string]$ProbeUsername = "",
     [string]$ProbePassword = "",
     [string]$BearerToken = "",
+    [int]$MinVisibleCustomers = 1,
+    [int]$MinVisibleItems = 1,
+    [int]$MinVisibleInvoices = 1,
+    [string[]]$AllowedIntegrityWarningCodes = @(),
     [string]$LocalCacheAppDataRoot = "",
     [switch]$RequireLocalCache,
     [switch]$FailOnLocalCacheWarning,
@@ -23,6 +28,7 @@ param(
     [string]$AndroidPackageName = "kr.georaeplan.mobile",
     [string]$AndroidUsername = "usenet",
     [string]$AndroidPassword = "1234",
+    [switch]$SkipApiVisibilitySmoke,
     [switch]$SkipLiveObservation,
     [switch]$SkipPrintEnvironment,
     [switch]$SkipAndroidSmoke
@@ -99,8 +105,16 @@ function Invoke-StepProcess {
     }
 
     $processArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $FilePath) + $Arguments
-    $output = & powershell @processArguments 2>&1
-    $exitCode = $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $global:LASTEXITCODE = 0
+    try {
+        $output = & powershell @processArguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     $text = ($output | Out-String -Width 4096).Trim()
     $status = Get-StepStatusFromOutput -ExitCode $exitCode -Text $text
 
@@ -136,6 +150,21 @@ function Add-ArgumentSwitch {
 
     if ($Enabled) {
         $Arguments.Add($Name) | Out-Null
+    }
+}
+
+function Add-ArgumentsIfValues {
+    param(
+        [System.Collections.Generic.List[string]]$Arguments,
+        [string]$Name,
+        [string[]]$Values
+    )
+
+    foreach ($value in @($Values)) {
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            $Arguments.Add($Name) | Out-Null
+            $Arguments.Add($value) | Out-Null
+        }
     }
 }
 
@@ -182,6 +211,7 @@ else {
 }
 
 $effectiveFailOnWarnings = [bool]($Strict -or $FailOnWarnings)
+$effectiveFailOnIntegrityWarnings = [bool]($Strict -or $FailOnIntegrityWarnings)
 $effectiveRequireLocalCache = [bool]($Strict -or $RequireLocalCache)
 $effectiveFailOnLocalCacheWarning = [bool]($Strict -or $FailOnLocalCacheWarning)
 $effectiveRequirePrinter = [bool]($Strict -or $RequirePrinter)
@@ -191,6 +221,30 @@ $effectiveFailOnAndroidDebugSigning = [bool]($Strict -or $FailOnAndroidDebugSign
 $effectiveRequireAndroidUpdateInPlaceSmoke = [bool]($Strict -or $RequireAndroidUpdateInPlaceSmoke)
 
 $results = [System.Collections.Generic.List[object]]::new()
+
+if ($SkipApiVisibilitySmoke) {
+    Add-StepResult -Results $results -Name 'api-visibility-smoke' -Status 'SKIP' -Detail 'Skipped by option.'
+}
+else {
+    $apiEvidence = Join-Path $EvidenceRoot 'api-visibility-smoke'
+    $apiScript = Join-Path $ProjectRoot 'tools\verification\Invoke-GeoraePlanApiVisibilitySmoke.ps1'
+    $apiArgs = [System.Collections.Generic.List[string]]::new()
+    Add-ArgumentsIfValue -Arguments $apiArgs -Name '-BaseUrl' -Value $BaseUrl
+    Add-ArgumentsIfValue -Arguments $apiArgs -Name '-Username' -Value $ProbeUsername
+    Add-ArgumentsIfValue -Arguments $apiArgs -Name '-Password' -Value $ProbePassword
+    Add-ArgumentsIfValue -Arguments $apiArgs -Name '-EvidenceDirectory' -Value $apiEvidence
+    $apiArgs.Add('-MinCustomers') | Out-Null
+    $apiArgs.Add([string]$MinVisibleCustomers) | Out-Null
+    $apiArgs.Add('-MinItems') | Out-Null
+    $apiArgs.Add([string]$MinVisibleItems) | Out-Null
+    $apiArgs.Add('-MinInvoices') | Out-Null
+    $apiArgs.Add([string]$MinVisibleInvoices) | Out-Null
+    Add-ArgumentSwitch -Arguments $apiArgs -Name '-FailOnIntegrityWarnings' -Enabled $effectiveFailOnIntegrityWarnings
+    Add-ArgumentsIfValues -Arguments $apiArgs -Name '-AllowedIntegrityWarningCodes' -Values $AllowedIntegrityWarningCodes
+
+    $apiResult = Invoke-StepProcess -Name 'api-visibility-smoke' -FilePath $apiScript -Arguments ([string[]]$apiArgs) -ExpectedReportPath $apiEvidence
+    Add-StepResult -Results $results -Name $apiResult.Name -Status $apiResult.Status -Detail $apiResult.Detail -Report $apiEvidence
+}
 
 if ($SkipLiveObservation) {
     Add-StepResult -Results $results -Name 'live-observation' -Status 'SKIP' -Detail 'Skipped by option.'
@@ -291,9 +345,14 @@ $lines.Add("- CreatedAt: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')") | Out-Null
 $lines.Add("- Result: **$overallStatus**") | Out-Null
 $lines.Add("- Strict: $([bool]$Strict)") | Out-Null
 $lines.Add("- FailOnWarnings: $effectiveFailOnWarnings") | Out-Null
+$lines.Add("- FailOnIntegrityWarnings: $effectiveFailOnIntegrityWarnings") | Out-Null
 $lines.Add("- ProjectRoot: $ProjectRoot") | Out-Null
 $lines.Add("- BaseUrl: $BaseUrl") | Out-Null
 $lines.Add("- EvidenceRoot: $EvidenceRoot") | Out-Null
+$lines.Add("- RequireApiVisibilitySmoke: $(-not [bool]$SkipApiVisibilitySmoke)") | Out-Null
+$lines.Add("- MinVisibleCustomers: $MinVisibleCustomers") | Out-Null
+$lines.Add("- MinVisibleItems: $MinVisibleItems") | Out-Null
+$lines.Add("- MinVisibleInvoices: $MinVisibleInvoices") | Out-Null
 $lines.Add("- RequireLocalCache: $effectiveRequireLocalCache") | Out-Null
 $lines.Add("- RequirePrinter: $effectiveRequirePrinter") | Out-Null
 $lines.Add("- RequireOnlinePrinter: $effectiveRequireOnlinePrinter") | Out-Null
