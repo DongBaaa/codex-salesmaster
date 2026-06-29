@@ -5,8 +5,8 @@
         Width="780"
         Height="560"
         MinWidth="780"
-        MinHeight="560"
-        ResizeMode="NoResize"
+        MinHeight="520"
+        ResizeMode="CanResizeWithGrip"
         WindowStartupLocation="CenterOwner"
         Background="#151F2E"
         FontFamily="맑은 고딕">
@@ -54,13 +54,21 @@
 
     <Grid Margin="16">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
+
+        <ScrollViewer Grid.Row="0"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      CanContentScroll="False"
+                      Padding="0,0,8,0">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
 
         <Border Grid.Row="0"
                 Background="#0B2036"
@@ -234,12 +242,15 @@
                 </Grid>
             </Border>
         </Grid>
+            </Grid>
+        </ScrollViewer>
 
-        <Border Grid.Row="5"
+        <Border Grid.Row="1"
                 Background="#122038"
                 BorderBrush="#2E4060"
                 BorderThickness="1"
                 CornerRadius="6"
+                Margin="0,12,0,0"
                 Padding="12">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -249,7 +260,7 @@
 
                 <TextBlock x:Name="StatusTextBlock"
                            Grid.Column="0"
-                           Text="프린터와 인쇄 옵션을 확인한 뒤 확인을 누르세요."
+                           Text="프린터와 인쇄 옵션을 확인한 뒤 인쇄를 누르세요."
                            Foreground="#90CAF9"
                            FontSize="13"
                            TextWrapping="Wrap"
@@ -267,7 +278,7 @@
                             Background="#526985"
                             Click="OnSaveFileClick"/>
                     <Button x:Name="PrintButton"
-                            Content="확인"
+                            Content="인쇄"
                             Style="{StaticResource DialogButtonStyle}"
                             Background="#1F7ACC"
                             IsDefault="True"

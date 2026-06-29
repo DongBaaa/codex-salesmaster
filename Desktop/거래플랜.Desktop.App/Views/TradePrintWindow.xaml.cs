@@ -101,7 +101,7 @@ public partial class TradePrintWindow : Window
         PrinterStatusTextBlock.Text = item.StatusText;
         StatusTextBlock.Text = item.IsOffline
             ? "선택한 프린터가 오프라인입니다. 프린터 상태를 확인하거나 PDF 저장으로 대체 출력하세요."
-            : "프린터와 인쇄 옵션을 확인한 뒤 확인을 누르세요.";
+            : "프린터와 인쇄 옵션을 확인한 뒤 인쇄를 누르세요.";
         UpdatePrinterActionState();
     }
 

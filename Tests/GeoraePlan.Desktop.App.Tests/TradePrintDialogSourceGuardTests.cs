@@ -37,6 +37,31 @@ public sealed class TradePrintDialogSourceGuardTests
     }
 
     [Fact]
+    public void TradePrintWindow_KeepsPrintActionFooterVisibleWhenOptionsOverflow()
+    {
+        var repoRoot = FindRepositoryRoot();
+        var xaml = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "TradePrintWindow.xaml"));
+
+        var scrollViewerIndex = xaml.IndexOf("<ScrollViewer Grid.Row=\"0\"", StringComparison.Ordinal);
+        var scrollViewerEndIndex = xaml.IndexOf("</ScrollViewer>", StringComparison.Ordinal);
+        var footerIndex = xaml.IndexOf("<Border Grid.Row=\"1\"", scrollViewerEndIndex, StringComparison.Ordinal);
+        var printButtonIndex = xaml.IndexOf("x:Name=\"PrintButton\"", StringComparison.Ordinal);
+
+        Assert.True(scrollViewerIndex >= 0, "인쇄 옵션 본문은 스크롤 영역 안에 있어야 합니다.");
+        Assert.True(scrollViewerEndIndex > scrollViewerIndex, "스크롤 영역 닫힘 태그를 찾을 수 없습니다.");
+        Assert.True(footerIndex > scrollViewerEndIndex, "PDF 저장/파일 저장/인쇄/취소 버튼 푸터는 스크롤 영역 밖 하단 고정 행에 있어야 합니다.");
+        Assert.True(printButtonIndex > footerIndex, "인쇄 버튼은 하단 고정 푸터 안에 있어야 합니다.");
+        Assert.Contains("ResizeMode=\"CanResizeWithGrip\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Content=\"인쇄\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Content=\"확인\"", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TradePrintWindow_DisablesDirectPrintWhenPrinterIsUnavailableAndGuidesFileFallback()
     {
         var repoRoot = FindRepositoryRoot();
