@@ -232,7 +232,7 @@ public sealed class RentalIncludedBillingAssetsTests
     }
 
     [Fact]
-    public async Task SaveBillingProfileAsync_DoesNotTreatAssetLinkEditAsSelection()
+    public async Task SaveBillingProfileAsync_LinksAssetLinkEditWithoutAddingItToDisplayItems()
     {
         PrepareAppRoot("georaeplan-rental-included-assets-edit-not-selection");
 
@@ -244,7 +244,7 @@ public sealed class RentalIncludedBillingAssetsTests
 
             var profileId = Guid.Parse("f2311000-1111-4444-8888-000000000001");
             var selectedAssetId = Guid.Parse("f2311000-1111-4444-8888-0000000000a1");
-            var editedButUnselectedAssetId = Guid.Parse("f2311000-1111-4444-8888-0000000000b1");
+            var internalOnlyAssetId = Guid.Parse("f2311000-1111-4444-8888-0000000000b1");
 
             db.RentalAssets.AddRange(
                 CreateRentalAsset(
@@ -255,9 +255,9 @@ public sealed class RentalIncludedBillingAssetsTests
                     monthlyFee: 80_000m),
                 CreateRentalAsset(
                     "Edit Is Not Selection Customer",
-                    "EDIT-UNSEL-001",
+                    "EDIT-INTERNAL-001",
                     billingProfileId: null,
-                    editedButUnselectedAssetId,
+                    internalOnlyAssetId,
                     monthlyFee: 90_000m));
             await db.SaveChangesAsync();
 
@@ -294,23 +294,23 @@ public sealed class RentalIncludedBillingAssetsTests
                 [
                     new RentalBillingAssetLinkEdit
                     {
-                        AssetId = editedButUnselectedAssetId,
+                        AssetId = internalOnlyAssetId,
                         CustomerName = "Edit Is Not Selection Customer",
-                        InstallLocation = "Should Not Link",
+                        InstallLocation = "Internal Pool",
                         MonthlyFee = 123_456m,
-                        Notes = "edit only"
+                        Notes = "internal only"
                     }
                 ]);
 
             Assert.True(result.Success, result.Message);
 
             var selectedAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == selectedAssetId);
-            var editedButUnselectedAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == editedButUnselectedAssetId);
+            var internalOnlyAsset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == internalOnlyAssetId);
 
             Assert.Equal(profileId, selectedAsset.BillingProfileId);
-            Assert.Null(editedButUnselectedAsset.BillingProfileId);
-            Assert.Equal("HQ", editedButUnselectedAsset.InstallLocation);
-            Assert.Equal(90_000m, editedButUnselectedAsset.MonthlyFee);
+            Assert.Equal(profileId, internalOnlyAsset.BillingProfileId);
+            Assert.Equal("Internal Pool", internalOnlyAsset.InstallLocation);
+            Assert.Equal(123_456m, internalOnlyAsset.MonthlyFee);
 
             var persistedProfile = await db.RentalBillingProfiles
                 .IgnoreQueryFilters()

@@ -10679,7 +10679,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var lineDrafts = new List<RentalBillingInvoiceLineDraft>();
         var profileBillingType = NormalizeBillingType(profile.BillingType);
-        IReadOnlyList<LocalRentalAsset>? includedBillingAssets = null;
         IReadOnlyList<LocalRentalAsset>? billingAssetCandidates = null;
 
         foreach (var templateItem in templateItems)
@@ -10697,35 +10696,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .Where(id => id != Guid.Empty)
                 .Distinct()
                 .ToList();
-
-            if (templateAssetIds.Count == 0)
-            {
-                includedBillingAssets ??= await GetIncludedBillingAssetsAsync(
-                    profile.Id,
-                    Array.Empty<Guid>(),
-                    profile.CustomerId,
-                    profile.ResponsibleOfficeCode,
-                    session,
-                    ct);
-
-                if (includedBillingAssets.Count > 0)
-                {
-                    templateItem.IncludedAssetIds ??= new List<Guid>();
-                    foreach (var linkedAsset in includedBillingAssets)
-                    {
-                        if (!templateItem.IncludedAssetIds.Contains(linkedAsset.Id))
-                            templateItem.IncludedAssetIds.Add(linkedAsset.Id);
-
-                        if (!assetsById.ContainsKey(linkedAsset.Id))
-                            assetsById[linkedAsset.Id] = linkedAsset;
-                    }
-
-                    templateAssetIds = templateItem.IncludedAssetIds
-                        .Where(id => id != Guid.Empty)
-                        .Distinct()
-                        .ToList();
-                }
-            }
 
             if (templateAssetIds.Count == 0)
             {
@@ -10797,7 +10767,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                         new List<LocalInvoiceLine>());
                 }
 
-                var monthlyAmount = ResolveTemplateMonthlyAmount(templateItem);
+                var monthlyAmount = Math.Round(ResolveTemplateMonthlyAmount(templateItem), 0, MidpointRounding.AwayFromZero);
                 if (monthlyAmount <= 0m)
                 {
                     return (false,
@@ -10858,7 +10828,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 foreach (var asset in billableTemplateAssets)
                 {
                     var quantity = 1m;
-                    var unitPrice = asset.MonthlyFee;
+                    var unitPrice = Math.Round(asset.MonthlyFee, 0, MidpointRounding.AwayFromZero);
                     var line = new LocalInvoiceLine
                     {
                         Id = Guid.NewGuid(),
@@ -10958,7 +10928,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
             : (draft.Line.Quantity <= 0m ? 1m : draft.Line.Quantity) * Math.Max(0m, draft.Line.UnitPrice));
         firstLine.SpecificationOriginal = BuildAggregatedRentalBillingInvoiceSpecification(group);
         firstLine.Quantity = quantity;
-        firstLine.UnitPrice = quantity <= 0m ? 0m : totalAmount / quantity;
+        firstLine.UnitPrice = quantity <= 0m
+            ? 0m
+            : Math.Round(totalAmount / quantity, 0, MidpointRounding.AwayFromZero);
         firstLine.LineAmount = totalAmount;
         firstLine.MaterialNumber = BuildAggregatedRentalBillingInvoiceField(group.Select(draft => draft.Line.MaterialNumber));
         firstLine.SerialNumber = BuildAggregatedRentalBillingInvoiceField(group.Select(draft => draft.Line.SerialNumber));
@@ -12321,10 +12293,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Where(edit => edit is not null && edit.AssetId != Guid.Empty)
             .GroupBy(edit => edit.AssetId)
             .ToDictionary(group => group.Key, group => group.Last());
+        var instructedAssetIds = includedAssetIds
+            .Concat(assetLinkEditMap.Keys)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToHashSet();
 
         var hasAssetLinkInstruction = replaceProfileLinkedAssets ||
-                                      includedAssetIds.Count > 0 ||
-                                      assetLinkEditMap.Count > 0;
+                                      instructedAssetIds.Count > 0;
         if (!hasAssetLinkInstruction)
             return;
 
@@ -12350,7 +12326,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             linkedAssetsById[asset.Id] = asset;
 
         var includedAssets = await LoadRentalAssetsByIdsAsync(
-            includedAssetIds,
+            instructedAssetIds,
             ignoreQueryFilters: true,
             asNoTracking: false,
             excludeDeleted: false,
@@ -12371,6 +12347,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         {
             var previousBillingProfileId = asset.BillingProfileId;
             var shouldInclude = includedAssetIds.Contains(asset.Id) ||
+                                assetLinkEditMap.ContainsKey(asset.Id) ||
                                 (!replaceProfileLinkedAssets && asset.BillingProfileId == profile.Id);
             assetLinkEditMap.TryGetValue(asset.Id, out var edit);
             var matchesProfileTenant = RentalAssetCanTransferToBillingProfileScope(asset, normalizedTenantCode);
@@ -12485,7 +12462,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 var hasTemplateChange = false;
                 foreach (var templateItem in relinkedTemplateItems)
                 {
-                    var removedCount = templateItem.IncludedAssetIds.RemoveAll(id => includedAssetIds.Contains(id));
+                    var removedCount = templateItem.IncludedAssetIds.RemoveAll(id => instructedAssetIds.Contains(id));
                     hasTemplateChange |= removedCount > 0;
                 }
 

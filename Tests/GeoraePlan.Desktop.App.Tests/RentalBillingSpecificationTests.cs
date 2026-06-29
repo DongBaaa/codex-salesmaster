@@ -117,7 +117,7 @@ public sealed class RentalBillingSpecificationTests
     }
 
     [Fact]
-    public void RentalBillingViewModel_SyncIndividualTemplateItems_GroupsSameModelWithDifferentFeesWithoutOverwritingAssetFees()
+    public void RentalBillingViewModel_SyncIndividualTemplateItems_PreservesDisplayUnitPriceWhenAssetFeesDiffer()
     {
         var assetAId = Guid.Parse("33333333-3333-3333-3333-3333333335a1");
         var assetBId = Guid.Parse("33333333-3333-3333-3333-3333333335b2");
@@ -156,8 +156,8 @@ public sealed class RentalBillingSpecificationTests
         var mergedItem = Assert.Single(vm.TemplateItems);
         Assert.Equal("IMC2010", mergedItem.DisplayItemName);
         Assert.Equal(2m, mergedItem.Quantity);
-        Assert.Equal(60_000m, mergedItem.UnitPrice);
-        Assert.Equal(120_000m, mergedItem.Amount);
+        Assert.Equal(50_000m, mergedItem.UnitPrice);
+        Assert.Equal(100_000m, mergedItem.Amount);
         Assert.Equal(2, mergedItem.IncludedAssetIds.Distinct().Count());
         Assert.Equal(50_000m, includedPool.Single(asset => asset.AssetId == assetAId).MonthlyFee);
         Assert.Equal(70_000m, includedPool.Single(asset => asset.AssetId == assetBId).MonthlyFee);
@@ -505,6 +505,56 @@ public sealed class RentalBillingSpecificationTests
         Assert.True(allowed.RemoveIncludedAssetCommand.CanExecute(null));
         Assert.True(allowed.CanSetRepresentativeAsset);
         Assert.True(allowed.SetRepresentativeAssetCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public void RentalBillingViewModel_InternalCandidateAssetAddsToDisplayItemWithoutOverwritingEditedLine()
+    {
+        var assetId = Guid.Parse("14141414-1414-1414-1414-141414141414");
+        var vm = new RentalBillingViewModel(null!, null!, CreateUserSession(AppPermissionNames.RentalProfileEdit))
+        {
+            EditBillingType = "\uAC1C\uBCC4",
+            EditCustomerName = "\uBBF8\uCD94\uD640\uAD6C \uC2DC\uC124\uAD00\uB9AC\uACF5\uB2E8"
+        };
+        var item = new RentalBillingTemplateEditorItem
+        {
+            DisplayItemName = "\uC0AC\uC6A9\uC790 \uD3B8\uC9D1 \uD488\uBA85",
+            BillingLineMode = "\uAC1C\uBCC4",
+            Quantity = 1m,
+            UnitPrice = 12_345m,
+            Amount = 12_345m
+        };
+        vm.TemplateItems.Add(item);
+        vm.SelectedTemplateItem = item;
+        var candidatePool = GetPrivateField<List<RentalBillingAssetOption>>(vm, "_candidateAssetPool");
+        candidatePool.Add(new RentalBillingAssetOption
+        {
+            AssetId = assetId,
+            ItemName = "IMC2010",
+            MonthlyFee = 50_000m,
+            TargetCustomerName = vm.EditCustomerName
+        });
+
+        InvokePrivateInstance(vm, "RefreshBillingAssetCollections", (object?)null);
+        var candidateRow = Assert.Single(vm.IncludedAssets, asset => asset.AssetId == assetId);
+        Assert.False(candidateRow.IsSelected);
+        vm.SelectedIncludedAsset = candidateRow;
+        Assert.True(vm.CanAddSelectedIncludedAssetToTemplateItem);
+        Assert.False(vm.CanRemoveIncludedAsset);
+
+        InvokePrivateInstance(vm, "AddSelectedIncludedAssetToTemplateItem");
+
+        Assert.Contains(assetId, item.IncludedAssetIds);
+        Assert.Equal("\uC0AC\uC6A9\uC790 \uD3B8\uC9D1 \uD488\uBA85", item.DisplayItemName);
+        Assert.Equal(1m, item.Quantity);
+        Assert.Equal(12_345m, item.UnitPrice);
+        Assert.Equal(12_345m, item.Amount);
+        Assert.Contains(GetPrivateField<List<RentalBillingAssetOption>>(vm, "_includedAssetPool"), asset => asset.AssetId == assetId);
+        Assert.DoesNotContain(candidatePool, asset => asset.AssetId == assetId);
+        Assert.True(vm.CanRemoveIncludedAsset);
+
+        var edits = InvokePrivateInstance<IReadOnlyList<RentalBillingAssetLinkEdit>>(vm, "BuildPendingAssetLinkEdits");
+        Assert.Contains(edits, edit => edit.AssetId == assetId);
     }
 
     [Fact]

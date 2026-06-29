@@ -121,8 +121,9 @@ public sealed class MasterUiWiringGuardTests
             "선택 표시 라인 삭제",
             "내부 포함 장비 연결",
             "내부장비수",
-            "내부 포함 장비 (실제 청구/전표 대상 자산)",
-            "청구서 표시 품목명을 바꿔도 자산이 추가/삭제되지 않습니다.",
+            "내부 포함 장비 (거래처 설치/연결 자산)",
+            "선택 장비 표시품목 추가",
+            "전표에 넣을 장비를 선택한 뒤 표시품목에 추가하세요.",
             "BillingAssetCoverageWarning",
             "HasBillingAssetCoverageWarning");
 
@@ -138,7 +139,7 @@ public sealed class MasterUiWiringGuardTests
         AssertContainsAll(
             viewModel,
             "표시 품목명만 저장해도 자산은 자동 추가되지 않습니다.",
-            "현재 표시 라인에 실제 청구될 내부 포함 장비",
+            "내부 포함 장비에서 전표에 넣을 장비를 선택한 뒤 '선택 장비 표시품목 추가'를 누르세요.",
             "청구서 표시 품목에 내부 포함 장비가 없습니다.",
             "청구 프로필 연결 자산",
             "표시품목 포함 자산",
