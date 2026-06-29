@@ -516,6 +516,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     {
         StatusMessage = "렌탈 청구관리 준비 중입니다. 기존 연결 정보와 필터 기준을 확인합니다.";
         await _rental.CleanupLegacyAssignedUsernamesAsync();
+        var repairResult = await _rental.RepairBillingInvoicePeriodLinksAsync(_session, ReferenceDate);
 
         StatusMessage = "렌탈 청구 필터 기준을 불러오는 중입니다.";
         await ReloadFiltersAsync();
@@ -531,6 +532,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             StatusMessage = restoredDraft
                 ? "이전 작성 중인 청구 설정을 복원했습니다. 청구 목록은 백그라운드에서 조회 중입니다."
                 : "렌탈 청구관리 화면을 먼저 표시했습니다. 청구 목록은 백그라운드에서 조회 중입니다.";
+            if (repairResult.HasChanges)
+                StatusMessage = $"{repairResult.SummaryMessage} 청구 목록은 백그라운드에서 다시 조회 중입니다.";
         }
         finally
         {
@@ -577,6 +580,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     {
         CancelPendingFilterReload();
         StatusMessage = "운영 점검 항목의 청구 프로필을 여는 중입니다.";
+        await _rental.RepairBillingInvoicePeriodLinksAsync(_session, ReferenceDate);
         await ReloadFiltersAsync();
         var row = await _rental.GetBillingRowAsync(profileId, _session, ReferenceDate);
         Rows.ReplaceWith(row is null ? Array.Empty<RentalBillingViewRow>() : new[] { row });

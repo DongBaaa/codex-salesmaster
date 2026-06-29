@@ -8,5 +8,5 @@ public sealed class InvoiceSaveContext
     public bool ForceOverride { get; init; }
     public string? ExpectedConcurrencyStamp { get; init; }
     public bool AutoRebaseWhenLatestSavedBySameUser { get; init; }
+    public bool ResetDocumentNumbers { get; init; }
 }
-

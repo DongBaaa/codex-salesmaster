@@ -5258,6 +5258,462 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return LocalMutationResult.Ok(assetId, "청구설정 필요 장비를 청구 목록에서 제외했습니다. 자산 정보는 삭제되지 않습니다.");
     }
 
+    public async Task<RentalBillingReferenceRepairResult> RepairBillingInvoicePeriodLinksAsync(
+        SessionState session,
+        DateOnly referenceDate,
+        CancellationToken ct = default)
+    {
+        var result = new RentalBillingReferenceRepairResult();
+        if (_local is null)
+            return result;
+
+        if (!CanStartRentalBillingInvoice(session) || !CanDeleteRentalBillingTransactions(session))
+        {
+            result.PermissionSkipped = true;
+            return result;
+        }
+
+        var changedProfileIds = new HashSet<Guid>();
+        var invoiceIds = await _db.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(invoice =>
+                !invoice.IsDeleted &&
+                invoice.IsLatestVersion &&
+                invoice.VoucherType == VoucherType.Sales &&
+                invoice.LinkedRentalBillingProfileId.HasValue &&
+                invoice.LinkedRentalBillingProfileId.Value != Guid.Empty &&
+                invoice.LinkedRentalBillingRunId.HasValue &&
+                invoice.LinkedRentalBillingRunId.Value != Guid.Empty)
+            .OrderBy(invoice => invoice.InvoiceDate)
+            .ThenBy(invoice => invoice.UpdatedAtUtc)
+            .Select(invoice => invoice.Id)
+            .ToListAsync(ct);
+
+        result.ScannedInvoiceCount = invoiceIds.Count;
+        foreach (var invoiceId in invoiceIds)
+        {
+            ct.ThrowIfCancellationRequested();
+            var repairedProfileId = await RepairBillingInvoicePeriodLinkAsync(invoiceId, session, result, ct);
+            if (repairedProfileId.HasValue)
+                changedProfileIds.Add(repairedProfileId.Value);
+        }
+
+        foreach (var profileId in changedProfileIds.ToList())
+        {
+            ct.ThrowIfCancellationRequested();
+            var shifted = await RepairShiftedFutureBillingInvoiceAsync(profileId, session, referenceDate, result, ct);
+            if (shifted)
+                changedProfileIds.Add(profileId);
+        }
+
+        result.UpdatedProfileCount = changedProfileIds.Count;
+        return result;
+    }
+
+    private async Task<Guid?> RepairBillingInvoicePeriodLinkAsync(
+        Guid invoiceId,
+        SessionState session,
+        RentalBillingReferenceRepairResult result,
+        CancellationToken ct)
+    {
+        var invoice = await _local!.GetInvoiceAsync(invoiceId, ct);
+        if (invoice is null ||
+            invoice.LinkedRentalBillingProfileId is not Guid profileId ||
+            profileId == Guid.Empty ||
+            invoice.LinkedRentalBillingRunId is not Guid currentRunId ||
+            currentRunId == Guid.Empty)
+        {
+            result.SkippedCount++;
+            return null;
+        }
+
+        if (!TryInferSingleBillingMonthFromInvoice(invoice, out var billingMonth))
+            return null;
+
+        var profile = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(current => current.Id == profileId, ct);
+        if (profile is null || !CanEditRentalProfileEntityScope(profile, session))
+        {
+            result.SkippedCount++;
+            return null;
+        }
+
+        var targetScheduledDate = BuildBillingDate(
+            ResolveBillingMonthYear(invoice.InvoiceDate, billingMonth),
+            billingMonth,
+            profile.BillingDay);
+        var targetRun = BuildReferenceRepairRun(profile, targetScheduledDate, invoice.TotalAmount);
+        if (targetRun.RunId == Guid.Empty || targetRun.RunId == currentRunId)
+            return null;
+
+        if (await HasActiveBillingInvoiceForRunAsync(profileId, targetRun.RunId, invoice.Id, ct))
+        {
+            result.SkippedCount++;
+            result.Notes.Add($"{profile.CustomerName} {targetRun.PeriodLabel} 청구 전표가 이미 있어 연결 보정을 건너뛰었습니다.");
+            return null;
+        }
+
+        invoice.LinkedRentalBillingRunId = targetRun.RunId;
+        var savedInvoiceResult = await SaveRentalBillingInvoiceAsync(invoice, session, ct);
+        if (!savedInvoiceResult.Success || savedInvoiceResult.Invoice is null)
+        {
+            result.SkippedCount++;
+            result.Notes.Add($"{profile.CustomerName} {invoice.InvoiceDate:yyyy-MM-dd} 전표 연결 보정 실패: {savedInvoiceResult.Message}");
+            return null;
+        }
+
+        var updatedTransactions = await RelinkRentalBillingTransactionsAsync(
+            profileId,
+            currentRunId,
+            targetRun.RunId,
+            new[] { invoice.Id, savedInvoiceResult.Invoice.Id },
+            ct);
+        result.UpdatedTransactionCount += updatedTransactions;
+
+        await RefreshBillingProfileAfterReferenceRepairAsync(
+            profileId,
+            currentRunId,
+            targetRun,
+            removePreviousRunWhenUnreferenced: true,
+            ct);
+
+        result.RepairedInvoiceCount++;
+        return profileId;
+    }
+
+    private async Task<bool> RepairShiftedFutureBillingInvoiceAsync(
+        Guid profileId,
+        SessionState session,
+        DateOnly referenceDate,
+        RentalBillingReferenceRepairResult result,
+        CancellationToken ct)
+    {
+        var profile = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(current => current.Id == profileId, ct);
+        if (profile is null || !CanEditRentalProfileEntityScope(profile, session))
+            return false;
+
+        var runs = GetBillingRuns(profile);
+        var lastCompletedDate = runs
+            .Where(run =>
+                run.RunId != Guid.Empty &&
+                run.ScheduledDate <= referenceDate &&
+                Math.Max(0m, run.BilledAmount) > 0m &&
+                Math.Max(0m, run.SettledAmount) >= Math.Max(0m, run.BilledAmount))
+            .Select(run => (DateOnly?)run.ScheduledDate)
+            .OrderByDescending(date => date)
+            .FirstOrDefault();
+        if (!lastCompletedDate.HasValue)
+            return false;
+
+        var scheduleProfile = CloneBillingScheduleProfile(profile);
+        scheduleProfile.LastBilledDate = lastCompletedDate.Value;
+        var expectedScheduledDate = GetNextBillingDate(scheduleProfile, referenceDate);
+        if (!expectedScheduledDate.HasValue || expectedScheduledDate.Value > referenceDate)
+            return false;
+
+        var expectedRun = BuildReferenceRepairRun(profile, expectedScheduledDate.Value, Math.Max(0m, profile.MonthlyAmount));
+        if (expectedRun.RunId == Guid.Empty)
+            return false;
+
+        if (await HasActiveBillingInvoiceForRunAsync(profileId, expectedRun.RunId, null, ct))
+            return false;
+
+        var futureInvoiceIds = await _db.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(invoice =>
+                !invoice.IsDeleted &&
+                invoice.IsLatestVersion &&
+                invoice.VoucherType == VoucherType.Sales &&
+                invoice.LinkedRentalBillingProfileId == profileId &&
+                invoice.LinkedRentalBillingRunId.HasValue &&
+                invoice.LinkedRentalBillingRunId.Value != Guid.Empty &&
+                invoice.InvoiceDate > expectedScheduledDate.Value &&
+                !invoice.TaxInvoiceIssued)
+            .OrderBy(invoice => invoice.InvoiceDate)
+            .ThenBy(invoice => invoice.UpdatedAtUtc)
+            .Select(invoice => invoice.Id)
+            .ToListAsync(ct);
+
+        foreach (var futureInvoiceId in futureInvoiceIds)
+        {
+            var invoice = await _local!.GetInvoiceAsync(futureInvoiceId, ct);
+            if (invoice is null ||
+                invoice.LinkedRentalBillingRunId is not Guid previousRunId ||
+                previousRunId == Guid.Empty ||
+                HasRentalInvoiceSettlement(invoice) ||
+                await HasLinkedTransactionForInvoiceAsync(invoice.Id, ct) ||
+                !TryInferSingleBillingMonthFromInvoice(invoice, out var invoiceMonth) ||
+                invoiceMonth != invoice.InvoiceDate.Month)
+            {
+                continue;
+            }
+
+            invoice.InvoiceDate = expectedScheduledDate.Value;
+            invoice.LocalTempNumber = string.Empty;
+            invoice.LinkedRentalBillingRunId = expectedRun.RunId;
+            foreach (var line in invoice.Lines.Where(line => !line.IsDeleted))
+                line.ItemNameOriginal = ReplaceRentalBillingMonthLabel(line.ItemNameOriginal, invoiceMonth, expectedScheduledDate.Value.Month);
+
+            var savedInvoiceResult = await SaveRentalBillingInvoiceAsync(
+                invoice,
+                session,
+                ct,
+                resetDocumentNumbers: true);
+            if (!savedInvoiceResult.Success || savedInvoiceResult.Invoice is null)
+            {
+                result.SkippedCount++;
+                result.Notes.Add($"{profile.CustomerName} 미래 청구 전표 월 보정 실패: {savedInvoiceResult.Message}");
+                return false;
+            }
+
+            await RefreshBillingProfileAfterReferenceRepairAsync(
+                profileId,
+                previousRunId,
+                BuildReferenceRepairRun(profile, expectedScheduledDate.Value, savedInvoiceResult.Invoice.TotalAmount),
+                removePreviousRunWhenUnreferenced: true,
+                ct);
+
+            result.ShiftedFutureInvoiceCount++;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static LocalRentalBillingProfile CloneBillingScheduleProfile(LocalRentalBillingProfile source)
+        => new()
+        {
+            Id = source.Id,
+            IsActive = source.IsActive,
+            BillingDay = source.BillingDay,
+            BillingDayMode = source.BillingDayMode,
+            BillingCycleMonths = source.BillingCycleMonths,
+            BillingAnchorMonth = source.BillingAnchorMonth,
+            BillingAnchorDate = source.BillingAnchorDate,
+            BillingStartDate = source.BillingStartDate,
+            ContractStartDate = source.ContractStartDate,
+            ContractDate = source.ContractDate,
+            LastBilledDate = source.LastBilledDate,
+            BillingAdvanceMode = source.BillingAdvanceMode
+        };
+
+    private async Task RefreshBillingProfileAfterReferenceRepairAsync(
+        Guid profileId,
+        Guid previousRunId,
+        RentalBillingRunModel targetRun,
+        bool removePreviousRunWhenUnreferenced,
+        CancellationToken ct)
+    {
+        var profile = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == profileId, ct);
+        if (profile is null)
+            return;
+
+        var runs = GetBillingRuns(profile);
+        if (removePreviousRunWhenUnreferenced &&
+            previousRunId != Guid.Empty &&
+            previousRunId != targetRun.RunId &&
+            !await HasActiveBillingRunReferencesAsync(profileId, previousRunId, ct))
+        {
+            runs.RemoveAll(run => run.RunId == previousRunId);
+        }
+
+        var existingIndex = runs.FindIndex(run => run.RunId == targetRun.RunId);
+        if (existingIndex >= 0)
+        {
+            var existing = runs[existingIndex];
+            existing.RunKey = targetRun.RunKey;
+            existing.ScheduledDate = targetRun.ScheduledDate;
+            existing.PeriodStartDate = targetRun.PeriodStartDate;
+            existing.PeriodEndDate = targetRun.PeriodEndDate;
+            existing.CycleMonths = targetRun.CycleMonths;
+            existing.PeriodLabel = targetRun.PeriodLabel;
+            if (existing.Items.Count == 0)
+                existing.Items = targetRun.Items;
+            if (existing.BilledAmount <= 0m)
+                existing.BilledAmount = targetRun.BilledAmount;
+        }
+        else
+        {
+            runs.Add(targetRun);
+        }
+
+        await RefreshBillingProfileAfterHistoryDeleteAsync(profile, runs, ct);
+        profile.IsDirty = true;
+        profile.UpdatedAtUtc = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private RentalBillingRunModel BuildReferenceRepairRun(
+        LocalRentalBillingProfile profile,
+        DateOnly scheduledDate,
+        decimal billedAmount)
+    {
+        var cycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths);
+        var period = ResolveBillingPeriod(profile, scheduledDate, cycleMonths);
+        var runKey = $"{period.StartDate:yyyyMMdd}-{period.EndDate:yyyyMMdd}";
+        var runId = SyncIdentityGenerator.CreateRentalBillingRunId(profile.Id, runKey);
+        var templateItems = GetBillingTemplateItems(profile);
+        return new RentalBillingRunModel
+        {
+            RunId = runId == Guid.Empty ? Guid.NewGuid() : runId,
+            RunKey = runKey,
+            ScheduledDate = scheduledDate,
+            PeriodStartDate = period.StartDate,
+            PeriodEndDate = period.EndDate,
+            CycleMonths = cycleMonths,
+            PeriodLabel = BuildBillingPeriodLabel(period.StartDate, period.EndDate),
+            Status = PaymentFlowConstants.BillingStatusInProgress,
+            BilledAmount = Math.Max(0m, billedAmount),
+            SettlementStatus = PaymentFlowConstants.SettlementStatusPending,
+            Items = CloneTemplateItemsForRun(templateItems, cycleMonths)
+        };
+    }
+
+    private async Task<int> RelinkRentalBillingTransactionsAsync(
+        Guid profileId,
+        Guid previousRunId,
+        Guid targetRunId,
+        IEnumerable<Guid> invoiceIds,
+        CancellationToken ct)
+    {
+        var linkedInvoiceIds = invoiceIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (linkedInvoiceIds.Count == 0)
+            return 0;
+
+        var now = DateTime.UtcNow;
+        var transactions = await _db.Transactions
+            .IgnoreQueryFilters()
+            .Where(transaction =>
+                !transaction.IsDeleted &&
+                transaction.LinkedRentalBillingProfileId == profileId &&
+                transaction.LinkedRentalBillingRunId == previousRunId &&
+                transaction.LinkedInvoiceId.HasValue &&
+                linkedInvoiceIds.Contains(transaction.LinkedInvoiceId.Value))
+            .ToListAsync(ct);
+        foreach (var transaction in transactions)
+        {
+            transaction.LinkedRentalBillingRunId = targetRunId;
+            transaction.IsDirty = true;
+            transaction.UpdatedAtUtc = now;
+        }
+
+        if (transactions.Count > 0)
+            await _db.SaveChangesAsync(ct);
+        return transactions.Count;
+    }
+
+    private async Task<bool> HasActiveBillingInvoiceForRunAsync(
+        Guid profileId,
+        Guid runId,
+        Guid? excludedInvoiceId,
+        CancellationToken ct)
+        => await _db.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .AnyAsync(invoice =>
+                !invoice.IsDeleted &&
+                invoice.IsLatestVersion &&
+                invoice.LinkedRentalBillingProfileId == profileId &&
+                invoice.LinkedRentalBillingRunId == runId &&
+                (!excludedInvoiceId.HasValue || invoice.Id != excludedInvoiceId.Value), ct);
+
+    private async Task<bool> HasActiveBillingRunReferencesAsync(
+        Guid profileId,
+        Guid runId,
+        CancellationToken ct)
+        => await _db.Invoices
+               .IgnoreQueryFilters()
+               .AsNoTracking()
+               .AnyAsync(invoice =>
+                   !invoice.IsDeleted &&
+                   invoice.IsLatestVersion &&
+                   invoice.LinkedRentalBillingProfileId == profileId &&
+                   invoice.LinkedRentalBillingRunId == runId, ct) ||
+           await _db.Transactions
+               .IgnoreQueryFilters()
+               .AsNoTracking()
+               .AnyAsync(transaction =>
+                   !transaction.IsDeleted &&
+                   transaction.LinkedRentalBillingProfileId == profileId &&
+                   transaction.LinkedRentalBillingRunId == runId, ct);
+
+    private async Task<bool> HasLinkedTransactionForInvoiceAsync(Guid invoiceId, CancellationToken ct)
+        => await _db.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .AnyAsync(transaction =>
+                !transaction.IsDeleted &&
+                transaction.LinkedInvoiceId == invoiceId &&
+                transaction.SettlementAmount > 0m, ct);
+
+    private static bool TryInferSingleBillingMonthFromInvoice(LocalInvoice invoice, out int billingMonth)
+    {
+        var months = invoice.Lines
+            .Where(line => !line.IsDeleted)
+            .Select(line => TryExtractBracketedBillingMonth(line.ItemNameOriginal, out var month) ? month : 0)
+            .Where(month => month is >= 1 and <= 12)
+            .Distinct()
+            .ToList();
+        billingMonth = months.Count == 1 ? months[0] : 0;
+        return billingMonth > 0;
+    }
+
+    private static bool TryExtractBracketedBillingMonth(string? text, out int month)
+    {
+        month = 0;
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var searchStart = 0;
+        while (searchStart < text.Length)
+        {
+            var openIndex = text.IndexOf('[', searchStart);
+            if (openIndex < 0)
+                return false;
+
+            var suffixIndex = text.IndexOf("월]", openIndex, StringComparison.Ordinal);
+            if (suffixIndex < 0)
+                return false;
+
+            var rawMonth = text.Substring(openIndex + 1, suffixIndex - openIndex - 1).Trim();
+            if (int.TryParse(rawMonth, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) &&
+                parsed is >= 1 and <= 12)
+            {
+                month = parsed;
+                return true;
+            }
+
+            searchStart = suffixIndex + 2;
+        }
+
+        return false;
+    }
+
+    private static int ResolveBillingMonthYear(DateOnly invoiceDate, int billingMonth)
+        => billingMonth > invoiceDate.Month ? invoiceDate.Year - 1 : invoiceDate.Year;
+
+    private static string ReplaceRentalBillingMonthLabel(string? value, int sourceMonth, int targetMonth)
+    {
+        var text = value ?? string.Empty;
+        var source = $"[{sourceMonth}월]";
+        var target = $"[{targetMonth}월]";
+        return text.Contains(source, StringComparison.Ordinal)
+            ? text.Replace(source, target, StringComparison.Ordinal)
+            : text;
+    }
+
     public async Task<LocalMutationResult> StartBillingAsync(
         Guid billingProfileId,
         DateOnly referenceDate,
@@ -5427,7 +5883,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private async Task<(bool Success, string Message, LocalInvoice? Invoice)> SaveRentalBillingInvoiceAsync(
         LocalInvoice invoice,
         SessionState session,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool resetDocumentNumbers = false)
     {
         if (_local is null)
             return (false, "렌탈 청구 전표 저장 서비스를 사용할 수 없습니다.", null);
@@ -5437,7 +5894,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             Username = session.User?.Username ?? "rental-billing",
             Role = session.User?.Role ?? DomainConstants.RoleUser,
             OfficeCode = NormalizeOfficeCode(session.OfficeCode, DomainConstants.OfficeUsenet),
-            ForceOverride = true
+            ForceOverride = true,
+            ResetDocumentNumbers = resetDocumentNumbers
         };
         var saveResult = await _local.SaveInvoiceAsync(invoice, saveContext, session, ct);
         if (!saveResult.Success)

@@ -1080,6 +1080,164 @@ public sealed class RentalBillingRunStateTests
         }
     }
 
+    [Fact]
+    public async Task RepairBillingInvoicePeriodLinks_MovesPaidPreviousMonthAndShiftedFutureInvoiceBack()
+    {
+        PrepareAppRoot("georaeplan-rental-repair-shifted-month-invoices");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("8aa5b55b-d327-9ad4-e9aa-6135f3d3817a");
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "미추홀구 경제지원과";
+            var mayRunId = SyncIdentityGenerator.CreateRentalBillingRunId(profileId, "20260501-20260531");
+            var juneRunId = SyncIdentityGenerator.CreateRentalBillingRunId(profileId, "20260601-20260630");
+            var julyRunId = SyncIdentityGenerator.CreateRentalBillingRunId(profileId, "20260701-20260731");
+            var wrongMayInvoiceId = Guid.NewGuid();
+            var shiftedJulyInvoiceId = Guid.NewGuid();
+            var paymentId = Guid.NewGuid();
+
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
+
+            var profile = CreateBillingProfile(profileId, assetId, customerName, customerId);
+            profile.MonthlyAmount = 330_000m;
+            profile.BillingAnchorMonth = 6;
+            profile.LastBilledDate = new DateOnly(2026, 6, 4);
+            profile.LastSettledDate = new DateOnly(2026, 6, 4);
+            profile.BillingRunsJson = JsonSerializer.Serialize(new List<RentalBillingRunModel>
+            {
+                new()
+                {
+                    RunId = juneRunId,
+                    RunKey = "20260601-20260630",
+                    ScheduledDate = new DateOnly(2026, 6, 4),
+                    PeriodStartDate = new DateOnly(2026, 6, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    PeriodLabel = "2026-06",
+                    Status = PaymentFlowConstants.BillingStatusCompleted,
+                    BilledAmount = 363_000m,
+                    SettledAmount = 363_000m,
+                    SettlementStatus = PaymentFlowConstants.SettlementStatusConfirmed
+                },
+                new()
+                {
+                    RunId = julyRunId,
+                    RunKey = "20260701-20260731",
+                    ScheduledDate = new DateOnly(2026, 7, 25),
+                    PeriodStartDate = new DateOnly(2026, 7, 1),
+                    PeriodEndDate = new DateOnly(2026, 7, 31),
+                    PeriodLabel = "2026-07",
+                    Status = PaymentFlowConstants.BillingStatusInProgress,
+                    BilledAmount = 330_000m,
+                    SettlementStatus = PaymentFlowConstants.SettlementStatusPending
+                }
+            });
+            db.RentalBillingProfiles.Add(profile);
+
+            db.Invoices.Add(CreateRentalInvoice(
+                wrongMayInvoiceId,
+                customerId,
+                profileId,
+                juneRunId,
+                new DateOnly(2026, 6, 4),
+                "사무기기 렌탈대금[5월]",
+                363_000m));
+            db.Payments.Add(new LocalPayment
+            {
+                Id = paymentId,
+                InvoiceId = wrongMayInvoiceId,
+                PaymentDate = new DateOnly(2026, 6, 4),
+                Amount = 363_000m,
+                Note = "렌탈수금",
+                IsDirty = false,
+                IsDeleted = false
+            });
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = paymentId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 4),
+                TransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt,
+                LinkedInvoiceId = wrongMayInvoiceId,
+                LinkedRentalBillingProfileId = profileId,
+                LinkedRentalBillingRunId = juneRunId,
+                BankReceipt = 363_000m,
+                ReceiptTotal = 363_000m,
+                SettlementAmount = 363_000m,
+                Note = "렌탈수금",
+                IsDirty = false,
+                IsDeleted = false
+            });
+
+            var shiftedJulyInvoice = CreateRentalInvoice(
+                shiftedJulyInvoiceId,
+                customerId,
+                profileId,
+                julyRunId,
+                new DateOnly(2026, 7, 25),
+                "사무기기 렌탈대금[7월]",
+                330_000m);
+            shiftedJulyInvoice.InvoiceNumber = "202607-0001";
+            shiftedJulyInvoice.LocalTempNumber = "L202607-0001";
+            db.Invoices.Add(shiftedJulyInvoice);
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+
+            var repair = await service.RepairBillingInvoicePeriodLinksAsync(session, new DateOnly(2026, 6, 29));
+
+            Assert.True(repair.HasChanges, repair.SummaryMessage);
+            Assert.Equal(1, repair.RepairedInvoiceCount);
+            Assert.Equal(1, repair.ShiftedFutureInvoiceCount);
+            Assert.Equal(1, repair.UpdatedTransactionCount);
+
+            var latestMayInvoice = await db.Invoices
+                .Include(invoice => invoice.Lines)
+                .AsNoTracking()
+                .SingleAsync(invoice => invoice.IsLatestVersion && invoice.Lines.Any(line => line.ItemNameOriginal.Contains("[5월]")));
+            Assert.Equal(mayRunId, latestMayInvoice.LinkedRentalBillingRunId);
+            Assert.Equal(new DateOnly(2026, 6, 4), latestMayInvoice.InvoiceDate);
+
+            var latestJuneInvoice = await db.Invoices
+                .Include(invoice => invoice.Lines)
+                .AsNoTracking()
+                .SingleAsync(invoice => invoice.IsLatestVersion && invoice.Lines.Any(line => line.ItemNameOriginal.Contains("[6월]")));
+            Assert.Equal(juneRunId, latestJuneInvoice.LinkedRentalBillingRunId);
+            Assert.Equal(new DateOnly(2026, 6, 25), latestJuneInvoice.InvoiceDate);
+            Assert.Empty(latestJuneInvoice.InvoiceNumber);
+            Assert.StartsWith("L202606-", latestJuneInvoice.LocalTempNumber, StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                await db.Invoices.Include(invoice => invoice.Lines).AsNoTracking().Where(invoice => invoice.IsLatestVersion).ToListAsync(),
+                invoice => invoice.Lines.Any(line => line.ItemNameOriginal.Contains("[7월]")));
+
+            var transaction = await db.Transactions.AsNoTracking().SingleAsync(transaction => transaction.Id == paymentId);
+            Assert.Equal(latestMayInvoice.Id, transaction.LinkedInvoiceId);
+            Assert.Equal(mayRunId, transaction.LinkedRentalBillingRunId);
+
+            var storedProfile = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(current => current.Id == profileId);
+            var storedRuns = DeserializeRuns(storedProfile.BillingRunsJson);
+            Assert.Contains(storedRuns, run => run.RunId == mayRunId && run.PeriodLabel == "2026-05" && run.SettledAmount == 363_000m);
+            Assert.Contains(storedRuns, run => run.RunId == juneRunId && run.PeriodLabel == "2026-06" && run.BilledAmount == 330_000m);
+            Assert.DoesNotContain(storedRuns, run => run.RunId == julyRunId);
+            Assert.Equal(new DateOnly(2026, 6, 25), storedProfile.LastBilledDate);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -1170,6 +1328,56 @@ public sealed class RentalBillingRunStateTests
             UpdatedAtUtc = DateTime.UtcNow
         };
     }
+
+    private static LocalInvoice CreateRentalInvoice(
+        Guid invoiceId,
+        Guid customerId,
+        Guid profileId,
+        Guid runId,
+        DateOnly invoiceDate,
+        string lineName,
+        decimal amount)
+        => new()
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            SourceWarehouseCode = OfficeCodeCatalog.Usenet,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = invoiceDate,
+            TotalAmount = amount,
+            SupplyAmount = amount,
+            VatAmount = 0m,
+            VatMode = InvoiceVatModes.Included,
+            IsLatestVersion = true,
+            IsConfirmed = true,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId,
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            CreatedByUsername = "test",
+            LastSavedByUsername = "test",
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow,
+            LastSavedAtUtc = DateTime.UtcNow,
+            IsDirty = false,
+            IsDeleted = false,
+            Lines =
+            [
+                new LocalInvoiceLine
+                {
+                    Id = Guid.NewGuid(),
+                    InvoiceId = invoiceId,
+                    ItemNameOriginal = lineName,
+                    Quantity = 1m,
+                    UnitPrice = amount,
+                    LineAmount = amount,
+                    OrderIndex = 1
+                }
+            ]
+        };
 
     private static List<RentalBillingRunModel> DeserializeRuns(string? json)
         => string.IsNullOrWhiteSpace(json)

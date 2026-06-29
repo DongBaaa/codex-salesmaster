@@ -432,6 +432,27 @@ public sealed class RentalBillingHistoryRow
         : "완료";
 }
 
+public sealed class RentalBillingReferenceRepairResult
+{
+    public int ScannedInvoiceCount { get; set; }
+    public int RepairedInvoiceCount { get; set; }
+    public int ShiftedFutureInvoiceCount { get; set; }
+    public int UpdatedTransactionCount { get; set; }
+    public int UpdatedProfileCount { get; set; }
+    public int SkippedCount { get; set; }
+    public bool PermissionSkipped { get; set; }
+    public List<string> Notes { get; } = new();
+    public bool HasChanges => RepairedInvoiceCount > 0 ||
+                              ShiftedFutureInvoiceCount > 0 ||
+                              UpdatedTransactionCount > 0 ||
+                              UpdatedProfileCount > 0;
+    public string SummaryMessage => HasChanges
+        ? $"렌탈 청구 연결 보정 {RepairedInvoiceCount:N0}건, 밀린 미수 전표 월 보정 {ShiftedFutureInvoiceCount:N0}건, 연결 수금 {UpdatedTransactionCount:N0}건을 정리했습니다."
+        : PermissionSkipped
+            ? "렌탈 청구 연결 보정은 권한이 없어 건너뛰었습니다."
+            : "렌탈 청구 연결 보정 대상이 없습니다.";
+}
+
 public sealed class RentalBillingViewRow : INotifyPropertyChanged
 {
     private bool _isSelected;

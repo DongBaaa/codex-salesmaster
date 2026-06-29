@@ -2831,8 +2831,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			CustomerId = invoice.CustomerId,
 			TenantCode = tenantCode,
 			OfficeCode = ownerOfficeCode,
-			InvoiceNumber = ((!string.IsNullOrWhiteSpace(invoice.InvoiceNumber)) ? invoice.InvoiceNumber : (latest?.InvoiceNumber ?? string.Empty)),
-			LocalTempNumber = ((!string.IsNullOrWhiteSpace(invoice.LocalTempNumber)) ? invoice.LocalTempNumber : (latest?.LocalTempNumber ?? string.Empty)),
+			InvoiceNumber = context.ResetDocumentNumbers
+				? string.Empty
+				: ((!string.IsNullOrWhiteSpace(invoice.InvoiceNumber)) ? invoice.InvoiceNumber : (latest?.InvoiceNumber ?? string.Empty)),
+			LocalTempNumber = context.ResetDocumentNumbers
+				? string.Empty
+				: ((!string.IsNullOrWhiteSpace(invoice.LocalTempNumber)) ? invoice.LocalTempNumber : (latest?.LocalTempNumber ?? string.Empty)),
 			TaxInvoiceNumber = invoice.TaxInvoiceIssued
 				? ((!string.IsNullOrWhiteSpace(invoice.TaxInvoiceNumber)) ? invoice.TaxInvoiceNumber : (latest?.TaxInvoiceNumber ?? string.Empty))
 				: string.Empty,
@@ -6920,6 +6924,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			OfficeCode = NormalizeOfficeCode(context?.OfficeCode, DomainConstants.OfficeUsenet),
 			ForceOverride = (context?.ForceOverride ?? false),
 			AutoRebaseWhenLatestSavedBySameUser = context?.AutoRebaseWhenLatestSavedBySameUser ?? false,
+			ResetDocumentNumbers = context?.ResetDocumentNumbers ?? false,
 			ExpectedConcurrencyStamp = context?.ExpectedConcurrencyStamp
 		};
 	}
