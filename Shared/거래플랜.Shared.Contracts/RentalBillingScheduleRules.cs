@@ -89,7 +89,7 @@ public static class RentalBillingScheduleRules
             return true;
 
         var lag = GetBillingLagMonths(referenceDate.Month, anchorMonth, cycleMonths);
-        return lag == 0;
+        return lag == cycleMonths - 1;
     }
 
     public static DateOnly ResolveApplicableBillingDate(
@@ -120,24 +120,24 @@ public static class RentalBillingScheduleRules
         cycleMonths = NormalizeCycleMonths(cycleMonths);
         anchorMonth = Math.Clamp(anchorMonth, 1, 12);
         var lag = cycleMonths == 1 ? 0 : GetBillingLagMonths(referenceDate.Month, anchorMonth, cycleMonths);
-        var applicableMonth = new DateOnly(referenceDate.Year, referenceDate.Month, 1).AddMonths(-lag);
-        var candidate = BuildBillingDate(applicableMonth.Year, applicableMonth.Month, billingDay, billingDayMode);
+        var periodStartMonth = new DateOnly(referenceDate.Year, referenceDate.Month, 1).AddMonths(-lag);
+        var candidate = BuildBillingDateForPeriodEnd(periodStartMonth, cycleMonths, billingDay, billingDayMode);
 
         if (firstBillingDate.HasValue)
         {
             while (candidate < firstBillingDate.Value)
             {
-                applicableMonth = applicableMonth.AddMonths(cycleMonths);
-                candidate = BuildBillingDate(applicableMonth.Year, applicableMonth.Month, billingDay, billingDayMode);
+                periodStartMonth = periodStartMonth.AddMonths(cycleMonths);
+                candidate = BuildBillingDateForPeriodEnd(periodStartMonth, cycleMonths, billingDay, billingDayMode);
             }
         }
 
         if (lastBilledDate.HasValue)
         {
-            while (candidate <= lastBilledDate.Value)
+            while (IsAlreadyBilledPeriod(periodStartMonth, candidate, lastBilledDate.Value))
             {
-                applicableMonth = applicableMonth.AddMonths(cycleMonths);
-                candidate = BuildBillingDate(applicableMonth.Year, applicableMonth.Month, billingDay, billingDayMode);
+                periodStartMonth = periodStartMonth.AddMonths(cycleMonths);
+                candidate = BuildBillingDateForPeriodEnd(periodStartMonth, cycleMonths, billingDay, billingDayMode);
             }
         }
 
@@ -150,11 +150,35 @@ public static class RentalBillingScheduleRules
         DateOnly scheduledDate)
     {
         cycleMonths = NormalizeCycleMonths(cycleMonths);
-        var monthStart = new DateOnly(scheduledDate.Year, scheduledDate.Month, 1);
-        var endMonth = monthStart.AddMonths(cycleMonths - 1);
-        var end = new DateOnly(endMonth.Year, endMonth.Month, DateTime.DaysInMonth(endMonth.Year, endMonth.Month));
+        var scheduledMonth = new DateOnly(scheduledDate.Year, scheduledDate.Month, 1);
+        var monthStart = scheduledMonth.AddMonths(-(cycleMonths - 1));
+        var end = new DateOnly(
+            scheduledMonth.Year,
+            scheduledMonth.Month,
+            DateTime.DaysInMonth(scheduledMonth.Year, scheduledMonth.Month));
 
         return (monthStart, end);
+    }
+
+    private static DateOnly BuildBillingDateForPeriodEnd(
+        DateOnly periodStartMonth,
+        int cycleMonths,
+        int billingDay,
+        string? billingDayMode)
+    {
+        var periodEndMonth = periodStartMonth.AddMonths(NormalizeCycleMonths(cycleMonths) - 1);
+        return BuildBillingDate(periodEndMonth.Year, periodEndMonth.Month, billingDay, billingDayMode);
+    }
+
+    private static bool IsAlreadyBilledPeriod(DateOnly periodStartMonth, DateOnly scheduledDate, DateOnly lastBilledDate)
+    {
+        var periodStart = new DateOnly(periodStartMonth.Year, periodStartMonth.Month, 1);
+        var periodEnd = new DateOnly(
+            scheduledDate.Year,
+            scheduledDate.Month,
+            DateTime.DaysInMonth(scheduledDate.Year, scheduledDate.Month));
+
+        return lastBilledDate >= periodStart && lastBilledDate <= periodEnd;
     }
 
     public static DateOnly? CalculateDocumentIssueDate(

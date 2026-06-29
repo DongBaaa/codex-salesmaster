@@ -8,12 +8,12 @@ public sealed class RentalBillingScheduleRulesTests
     [Theory]
     [InlineData("후불")]
     [InlineData("선불")]
-    public void ResolveBillingPeriod_UsesScheduledMonthAsStartMonth_ForSixMonthCycle(string billingAdvanceMode)
+    public void ResolveBillingPeriod_UsesScheduledMonthAsEndMonth_ForSixMonthCycle(string billingAdvanceMode)
     {
         var period = RentalBillingScheduleRules.ResolveBillingPeriod(
             cycleMonths: 6,
             billingAdvanceMode,
-            scheduledDate: new DateOnly(2026, 7, 25));
+            scheduledDate: new DateOnly(2026, 12, 25));
 
         Assert.Equal(new DateOnly(2026, 7, 1), period.StartDate);
         Assert.Equal(new DateOnly(2026, 12, 31), period.EndDate);
@@ -25,7 +25,7 @@ public sealed class RentalBillingScheduleRulesTests
         var period = RentalBillingScheduleRules.ResolveBillingPeriod(
             cycleMonths: 12,
             billingAdvanceMode: "후불",
-            scheduledDate: new DateOnly(2026, 7, 25));
+            scheduledDate: new DateOnly(2027, 6, 25));
 
         Assert.Equal(new DateOnly(2026, 7, 1), period.StartDate);
         Assert.Equal(new DateOnly(2027, 6, 30), period.EndDate);
@@ -46,7 +46,7 @@ public sealed class RentalBillingScheduleRulesTests
             billingAdvanceMode: "후불",
             scheduledDate);
 
-        Assert.Equal(new DateOnly(2026, 7, 25), scheduledDate);
+        Assert.Equal(new DateOnly(2026, 12, 25), scheduledDate);
         Assert.Equal(new DateOnly(2026, 7, 1), period.StartDate);
         Assert.Equal(new DateOnly(2026, 12, 31), period.EndDate);
     }
@@ -63,6 +63,26 @@ public sealed class RentalBillingScheduleRulesTests
             lastBilledDate: null,
             firstBillingDate: new DateOnly(2026, 7, 25));
 
-        Assert.Equal(new DateOnly(2026, 7, 25), scheduledDate);
+        Assert.Equal(new DateOnly(2026, 12, 25), scheduledDate);
+    }
+
+    [Fact]
+    public void ResolveApplicableBillingDate_UsesCycleEndMonthForQuarterlyStartMonth()
+    {
+        var scheduledDate = RentalBillingScheduleRules.ResolveApplicableBillingDate(
+            billingDay: 25,
+            billingDayMode: RentalBillingScheduleRules.BillingDayModeFixedDay,
+            cycleMonths: 3,
+            anchorMonth: 4,
+            referenceDate: new DateOnly(2026, 6, 29),
+            lastBilledDate: null);
+        var period = RentalBillingScheduleRules.ResolveBillingPeriod(
+            cycleMonths: 3,
+            billingAdvanceMode: "후불",
+            scheduledDate);
+
+        Assert.Equal(new DateOnly(2026, 6, 25), scheduledDate);
+        Assert.Equal(new DateOnly(2026, 4, 1), period.StartDate);
+        Assert.Equal(new DateOnly(2026, 6, 30), period.EndDate);
     }
 }

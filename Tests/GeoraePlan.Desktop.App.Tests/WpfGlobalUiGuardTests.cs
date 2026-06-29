@@ -140,14 +140,11 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("DashboardCustomerCount", xaml, StringComparison.Ordinal);
         Assert.Contains("DashboardSafetyStockAlerts", xaml, StringComparison.Ordinal);
         Assert.Contains("DashboardSalesTrendPercent", xaml, StringComparison.Ordinal);
-        Assert.Contains("DashboardMonthlySalesChartPoints", xaml, StringComparison.Ordinal);
-        Assert.Contains("SalesAmountText", xaml, StringComparison.Ordinal);
-        Assert.Contains("BarHeight", xaml, StringComparison.Ordinal);
-        Assert.Contains("IsCurrentMonth", xaml, StringComparison.Ordinal);
-        Assert.Contains("UpdateDashboardMonthlySalesChart", viewModel, StringComparison.Ordinal);
-        Assert.Contains("const int monthCount = 6", viewModel, StringComparison.Ordinal);
+        Assert.DoesNotContain("DashboardMonthlySalesChartPoints", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("UpdateDashboardMonthlySalesChart", viewModel, StringComparison.Ordinal);
+        Assert.DoesNotContain("const int monthCount = 6", viewModel, StringComparison.Ordinal);
         Assert.Contains("invoice.VoucherType == VoucherType.Sales", viewModel, StringComparison.Ordinal);
-        Assert.Contains("DashboardMonthlySalesChartPoint", viewModel, StringComparison.Ordinal);
+        Assert.DoesNotContain("DashboardMonthlySalesChartPoint", viewModel, StringComparison.Ordinal);
         Assert.Contains("안전재고 알림", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("<Border Background=\"Transparent\" Margin=\"0,0,8,0\" CornerRadius=\"6\" Padding=\"10\"/>", xaml, StringComparison.Ordinal);
     }
@@ -168,15 +165,31 @@ public sealed class WpfGlobalUiGuardTests
             "거래플랜.Desktop.App",
             "ViewModels",
             "PeriodLedgerViewModel.cs"));
+        var service = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Services",
+            "PeriodLedgerAggregationService.cs"));
 
         Assert.Contains("Text=\"요약\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Text=\"미수잔액\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Text=\"수금율\"", xaml, StringComparison.Ordinal);
         Assert.Contains("SummaryReceivableBalanceText", xaml, StringComparison.Ordinal);
         Assert.Contains("SummaryCollectionRateText", xaml, StringComparison.Ordinal);
+        Assert.Contains("TabControl", xaml, StringComparison.Ordinal);
+        Assert.Contains("Header=\"월별 매출 차트\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("MonthlySalesChartPoints", xaml, StringComparison.Ordinal);
+        Assert.Contains("SalesAmountText", xaml, StringComparison.Ordinal);
+        Assert.Contains("BarHeight", xaml, StringComparison.Ordinal);
+        Assert.Contains("조회 월 수 제한 없이", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Visibility=\"Collapsed\"", ExtractPeriodLedgerSummaryBlock(xaml), StringComparison.Ordinal);
         Assert.Contains("FormatCollectionRate", viewModel, StringComparison.Ordinal);
+        Assert.Contains("MonthlySalesChartSummaryText", viewModel, StringComparison.Ordinal);
+        Assert.Contains("ObservableCollection<PeriodLedgerMonthlySalesChartPoint>", viewModel, StringComparison.Ordinal);
         Assert.Contains("totals.ReceiptAmount + Math.Max(0m, totals.ReceivableBalance)", viewModel, StringComparison.Ordinal);
+        Assert.Contains("BuildMonthlySalesChartPoints", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("Take(", service, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -322,13 +335,14 @@ public sealed class WpfGlobalUiGuardTests
 
     private static string ExtractBlock(string source, string startMarker, string endMarker)
     {
-        var start = source.IndexOf(startMarker, StringComparison.Ordinal);
+        var normalizedSource = source.Replace("\r\n", "\n", StringComparison.Ordinal);
+        var start = normalizedSource.IndexOf(startMarker, StringComparison.Ordinal);
         Assert.True(start >= 0, $"시작 마커를 찾을 수 없습니다: {startMarker}");
 
-        var end = source.IndexOf(endMarker, start, StringComparison.Ordinal);
+        var end = normalizedSource.IndexOf(endMarker, start, StringComparison.Ordinal);
         Assert.True(end > start, $"끝 마커를 찾을 수 없습니다: {endMarker}");
 
-        return source[start..end];
+        return normalizedSource[start..end];
     }
 
     private static string ExtractPeriodLedgerSummaryBlock(string source)

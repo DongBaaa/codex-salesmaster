@@ -1045,7 +1045,7 @@ public sealed class RentalBillingDeletionFlowTests
 
             Assert.True(result.Success, result.Message);
             var invoice = await db.Invoices.SingleAsync(current => current.Id == result.RelatedEntityId);
-            Assert.Equal(new DateOnly(2026, 8, 25), invoice.InvoiceDate);
+            Assert.Equal(new DateOnly(2026, 10, 25), invoice.InvoiceDate);
             Assert.Equal(profileId, invoice.LinkedRentalBillingProfileId);
             Assert.NotNull(invoice.LinkedRentalBillingRunId);
         }
@@ -1190,13 +1190,13 @@ public sealed class RentalBillingDeletionFlowTests
 
             Assert.True(completed.Success, completed.Message);
             var completedProfile = await db.RentalBillingProfiles.SingleAsync(current => current.Id == profileId);
-            Assert.Equal(new DateOnly(2026, 8, 25), completedProfile.LastBilledDate);
+            Assert.Equal(new DateOnly(2026, 10, 25), completedProfile.LastBilledDate);
 
             var rows = await service.GetBillingRowsAsync(
                 new RentalBillingFilter { ReferenceDate = new DateOnly(2026, 6, 10), ExpandCustomerSummaryRows = true },
                 session);
             var row = Assert.Single(rows, current => current.Source.Id == profileId);
-            Assert.Equal(new DateOnly(2026, 11, 25), row.NextBillingDate);
+            Assert.Equal(new DateOnly(2026, 7, 25), row.NextBillingDate);
             Assert.Equal(0m, row.SettledAmount);
             Assert.Equal(300_000m, row.CurrentBilledAmount);
             Assert.Equal(0m, row.OutstandingAmount);

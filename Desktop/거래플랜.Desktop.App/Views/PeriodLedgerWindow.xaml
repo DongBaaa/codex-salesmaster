@@ -495,113 +495,220 @@
                 </Grid>
             </Border>
 
-            <Border Grid.Column="2" Style="{StaticResource CardBorderStyle}">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="2*"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
+            <TabControl Grid.Column="2"
+                        Background="#151F2E"
+                        BorderBrush="#2E4060"
+                        Foreground="#EAF2FF">
+                <TabItem Header="거래원장">
+                    <Border Style="{StaticResource CardBorderStyle}">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="2*"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
 
-                    <Grid Grid.Row="0" Margin="0,0,0,8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="260"/>
-                        </Grid.ColumnDefinitions>
-                        <StackPanel Grid.Column="0">
-                            <TextBlock Text="거래원장 기본 목록"
-                                       Foreground="#90CAF9"
-                                       FontWeight="Bold"
-                                       FontSize="16"/>
-                            <TextBlock Text="전표메모는 기본 목록의 비고 칸을 더블클릭해서 수정할 수 있습니다."
-                                       Foreground="#9FB3C8"
-                                       FontSize="12"
-                                       Margin="0,3,0,0"/>
-                        </StackPanel>
-                        <TextBlock Grid.Column="1"
-                                   Text="전표/품목 검색"
-                                   VerticalAlignment="Center"
-                                   Foreground="#EAF2FF"
-                                   Margin="0,0,8,0"/>
-                        <TextBox Grid.Column="2"
-                                 MinWidth="220"
-                                 Text="{Binding LedgerSearchText, UpdateSourceTrigger=PropertyChanged}"/>
-                    </Grid>
+                            <Grid Grid.Row="0" Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="260"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="거래원장 기본 목록"
+                                               Foreground="#90CAF9"
+                                               FontWeight="Bold"
+                                               FontSize="16"/>
+                                    <TextBlock Text="전표메모는 기본 목록의 비고 칸을 더블클릭해서 수정할 수 있습니다."
+                                               Foreground="#9FB3C8"
+                                               FontSize="12"
+                                               Margin="0,3,0,0"/>
+                                </StackPanel>
+                                <TextBlock Grid.Column="1"
+                                           Text="전표/품목 검색"
+                                           VerticalAlignment="Center"
+                                           Foreground="#EAF2FF"
+                                           Margin="0,0,8,0"/>
+                                <TextBox Grid.Column="2"
+                                         MinWidth="220"
+                                         Text="{Binding LedgerSearchText, UpdateSourceTrigger=PropertyChanged}"/>
+                            </Grid>
 
-                    <DataGrid x:Name="LedgerRowsDataGrid"
-                              Grid.Row="1"
-                              Style="{StaticResource LedgerDataGridStyle}"
-                              ItemsSource="{Binding LedgerRows}"
-                              SelectedItem="{Binding SelectedLedgerRow, Mode=TwoWay}"
-                              IsReadOnly="True"
-                              MouseDoubleClick="LedgerRowsDataGrid_MouseDoubleClick">
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="거래날짜" Binding="{Binding DateText}" Width="105" ElementStyle="{StaticResource LedgerGridCenterTextStyle}"/>
-                            <DataGridTextColumn Header="거래처" Binding="{Binding CustomerName}" Width="1.4*" MinWidth="140" ElementStyle="{StaticResource LedgerGridTextStyle}"/>
-                            <DataGridTemplateColumn Header="구분" Width="110">
-                                <DataGridTemplateColumn.CellTemplate>
-                                    <DataTemplate>
-                                        <Border Background="{Binding DivisionBackground}"
-                                                CornerRadius="9"
-                                                Padding="8,2"
-                                                HorizontalAlignment="Center"
-                                                VerticalAlignment="Center">
-                                            <TextBlock Text="{Binding Division}"
-                                                       Foreground="{Binding DivisionForeground}"
-                                                       FontWeight="SemiBold"
-                                                       FontSize="11"/>
-                                        </Border>
-                                    </DataTemplate>
-                                </DataGridTemplateColumn.CellTemplate>
-                            </DataGridTemplateColumn>
-                            <DataGridTextColumn Header="품목요약" Binding="{Binding Summary}" Width="1.6*" MinWidth="160" ElementStyle="{StaticResource LedgerGridTextStyle}"/>
-                            <DataGridTextColumn Header="거래금액" Binding="{Binding TradeAmount, StringFormat={}{0:N0}}" Width="110" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
-                            <DataGridTextColumn Header="수금액" Binding="{Binding ReceiptAmount, StringFormat={}{0:N0}}" Width="100" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
-                            <DataGridTextColumn Header="지급액" Binding="{Binding PaymentAmount, StringFormat={}{0:N0}}" Width="100" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
-                            <DataGridTextColumn Header="누적잔액" Binding="{Binding RunningBalance, StringFormat={}{0:N0}}" Width="110" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
-                            <DataGridTextColumn Header="전표메모" Binding="{Binding NotePreview}" Width="1.2*" MinWidth="140" ElementStyle="{StaticResource LedgerGridNoteTextStyle}"/>
-                        </DataGrid.Columns>
-                    </DataGrid>
+                            <DataGrid x:Name="LedgerRowsDataGrid"
+                                      Grid.Row="1"
+                                      Style="{StaticResource LedgerDataGridStyle}"
+                                      ItemsSource="{Binding LedgerRows}"
+                                      SelectedItem="{Binding SelectedLedgerRow, Mode=TwoWay}"
+                                      IsReadOnly="True"
+                                      MouseDoubleClick="LedgerRowsDataGrid_MouseDoubleClick">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="거래날짜" Binding="{Binding DateText}" Width="105" ElementStyle="{StaticResource LedgerGridCenterTextStyle}"/>
+                                    <DataGridTextColumn Header="거래처" Binding="{Binding CustomerName}" Width="1.4*" MinWidth="140" ElementStyle="{StaticResource LedgerGridTextStyle}"/>
+                                    <DataGridTemplateColumn Header="구분" Width="110">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Border Background="{Binding DivisionBackground}"
+                                                        CornerRadius="9"
+                                                        Padding="8,2"
+                                                        HorizontalAlignment="Center"
+                                                        VerticalAlignment="Center">
+                                                    <TextBlock Text="{Binding Division}"
+                                                               Foreground="{Binding DivisionForeground}"
+                                                               FontWeight="SemiBold"
+                                                               FontSize="11"/>
+                                                </Border>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="품목요약" Binding="{Binding Summary}" Width="1.6*" MinWidth="160" ElementStyle="{StaticResource LedgerGridTextStyle}"/>
+                                    <DataGridTextColumn Header="거래금액" Binding="{Binding TradeAmount, StringFormat={}{0:N0}}" Width="110" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
+                                    <DataGridTextColumn Header="수금액" Binding="{Binding ReceiptAmount, StringFormat={}{0:N0}}" Width="100" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
+                                    <DataGridTextColumn Header="지급액" Binding="{Binding PaymentAmount, StringFormat={}{0:N0}}" Width="100" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
+                                    <DataGridTextColumn Header="누적잔액" Binding="{Binding RunningBalance, StringFormat={}{0:N0}}" Width="110" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
+                                    <DataGridTextColumn Header="전표메모" Binding="{Binding NotePreview}" Width="1.2*" MinWidth="140" ElementStyle="{StaticResource LedgerGridNoteTextStyle}"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
 
-                    <Grid Grid.Row="2" Margin="0,10,0,6">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="선택 거래 품목 상세"
-                                   Foreground="#90CAF9"
-                                   FontWeight="Bold"
-                                   FontSize="15"/>
-                        <TextBlock Grid.Column="1"
-                                   Text="{Binding DetailHintText}"
-                                   Foreground="#9FB3C8"
-                                   TextAlignment="Right"
-                                   TextWrapping="Wrap"
-                                   Margin="12,0,0,0"/>
-                    </Grid>
+                            <Grid Grid.Row="2" Margin="0,10,0,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="선택 거래 품목 상세"
+                                           Foreground="#90CAF9"
+                                           FontWeight="Bold"
+                                           FontSize="15"/>
+                                <TextBlock Grid.Column="1"
+                                           Text="{Binding DetailHintText}"
+                                           Foreground="#9FB3C8"
+                                           TextAlignment="Right"
+                                           TextWrapping="Wrap"
+                                           Margin="12,0,0,0"/>
+                            </Grid>
 
-                    <DataGrid x:Name="DetailItemsDataGrid"
-                              Grid.Row="3"
-                              Style="{StaticResource LedgerDataGridStyle}"
-                              ItemsSource="{Binding SelectedLedgerItems}"
-                              SelectedItem="{Binding SelectedLedgerItem, Mode=TwoWay}"
-                              IsReadOnly="True"
-                              MouseDoubleClick="DetailItemsDataGrid_MouseDoubleClick">
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="품명" Binding="{Binding ItemName}" Width="1.5*" MinWidth="160" ElementStyle="{StaticResource LedgerGridTextStyle}"/>
-                            <DataGridTextColumn Header="규격" Binding="{Binding Specification}" Width="1.3*" MinWidth="140" ElementStyle="{StaticResource LedgerGridTextStyle}"/>
-                            <DataGridTextColumn Header="수량" Binding="{Binding Quantity, StringFormat={}{0:N0}}" Width="80" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
-                            <DataGridTextColumn Header="단가" Binding="{Binding UnitPrice, StringFormat={}{0:N0}}" Width="100" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
-                            <DataGridTextColumn Header="공급가" Binding="{Binding SupplyAmount, StringFormat={}{0:N0}}" Width="100" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
-                            <DataGridTextColumn Header="부가세" Binding="{Binding VatAmount, StringFormat={}{0:N0}}" Width="90" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
-                            <DataGridTextColumn Header="합계" Binding="{Binding LineAmount, StringFormat={}{0:N0}}" Width="100" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
-                            <DataGridTextColumn Header="품목비고" Binding="{Binding ItemNotePreview}" Width="1.1*" MinWidth="130" ElementStyle="{StaticResource LedgerGridItemNoteTextStyle}"/>
-                        </DataGrid.Columns>
-                    </DataGrid>
-                </Grid>
-            </Border>
+                            <DataGrid x:Name="DetailItemsDataGrid"
+                                      Grid.Row="3"
+                                      Style="{StaticResource LedgerDataGridStyle}"
+                                      ItemsSource="{Binding SelectedLedgerItems}"
+                                      SelectedItem="{Binding SelectedLedgerItem, Mode=TwoWay}"
+                                      IsReadOnly="True"
+                                      MouseDoubleClick="DetailItemsDataGrid_MouseDoubleClick">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="품목" Binding="{Binding ItemName}" Width="1.5*" MinWidth="160" ElementStyle="{StaticResource LedgerGridTextStyle}"/>
+                                    <DataGridTextColumn Header="규격" Binding="{Binding Specification}" Width="1.3*" MinWidth="140" ElementStyle="{StaticResource LedgerGridTextStyle}"/>
+                                    <DataGridTextColumn Header="수량" Binding="{Binding Quantity, StringFormat={}{0:N0}}" Width="80" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
+                                    <DataGridTextColumn Header="단가" Binding="{Binding UnitPrice, StringFormat={}{0:N0}}" Width="100" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
+                                    <DataGridTextColumn Header="공급가" Binding="{Binding SupplyAmount, StringFormat={}{0:N0}}" Width="100" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
+                                    <DataGridTextColumn Header="부가세" Binding="{Binding VatAmount, StringFormat={}{0:N0}}" Width="90" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
+                                    <DataGridTextColumn Header="금액" Binding="{Binding LineAmount, StringFormat={}{0:N0}}" Width="100" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
+                                    <DataGridTextColumn Header="품목비고" Binding="{Binding ItemNotePreview}" Width="1.1*" MinWidth="130" ElementStyle="{StaticResource LedgerGridItemNoteTextStyle}"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Grid>
+                    </Border>
+                </TabItem>
+                <TabItem Header="월별 매출 차트">
+                    <Border Style="{StaticResource CardBorderStyle}">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="2*"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <StackPanel Grid.Row="0">
+                                <TextBlock Text="월별 매출 차트"
+                                           Foreground="#90CAF9"
+                                           FontWeight="Bold"
+                                           FontSize="16"/>
+                                <TextBlock Text="상단 조회기간과 거래처 범위를 그대로 사용하며, 조회 월 수 제한 없이 표시합니다."
+                                           Foreground="#9FB3C8"
+                                           FontSize="12"
+                                           Margin="0,3,0,0"/>
+                            </StackPanel>
+                            <TextBlock Grid.Row="1"
+                                       Text="{Binding MonthlySalesChartSummaryText}"
+                                       Foreground="#A5D6A7"
+                                       Margin="0,8,0,8"/>
+                            <ScrollViewer Grid.Row="2"
+                                          HorizontalScrollBarVisibility="Auto"
+                                          VerticalScrollBarVisibility="Disabled">
+                                <ItemsControl ItemsSource="{Binding MonthlySalesChartPoints}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <StackPanel Orientation="Horizontal"/>
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="#1A2B4A"
+                                                    BorderThickness="1"
+                                                    CornerRadius="6"
+                                                    Padding="8,6"
+                                                    Margin="0,0,8,0"
+                                                    MinWidth="108"
+                                                    ToolTip="{Binding SalesAmountText}">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="BorderBrush" Value="#2E4060"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsCurrentMonth}" Value="True">
+                                                                <Setter Property="BorderBrush" Value="#A5D6A7"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <Grid Height="174">
+                                                    <Grid.RowDefinitions>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="*"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                    </Grid.RowDefinitions>
+                                                    <TextBlock Grid.Row="0"
+                                                               Text="{Binding SalesAmountText}"
+                                                               Foreground="#EAF2FF"
+                                                               FontWeight="Bold"
+                                                               FontSize="11"
+                                                               TextAlignment="Center"
+                                                               TextTrimming="CharacterEllipsis"/>
+                                                    <Grid Grid.Row="1"
+                                                          Height="140"
+                                                          VerticalAlignment="Bottom"
+                                                          Margin="0,4,0,4">
+                                                        <Rectangle Width="32"
+                                                                   Height="{Binding BarHeight}"
+                                                                   Fill="#4FC3F7"
+                                                                   RadiusX="3"
+                                                                   RadiusY="3"
+                                                                   VerticalAlignment="Bottom"
+                                                                   HorizontalAlignment="Center"/>
+                                                    </Grid>
+                                                    <TextBlock Grid.Row="2"
+                                                               Text="{Binding MonthLabel}"
+                                                               Foreground="#9FB3C8"
+                                                               FontSize="11"
+                                                               TextAlignment="Center"/>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                            <DataGrid Grid.Row="3"
+                                      Margin="0,10,0,0"
+                                      Style="{StaticResource LedgerDataGridStyle}"
+                                      ItemsSource="{Binding MonthlySalesChartPoints}"
+                                      IsReadOnly="True">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="월" Binding="{Binding MonthLabel}" Width="140" ElementStyle="{StaticResource LedgerGridCenterTextStyle}"/>
+                                    <DataGridTextColumn Header="매출금액" Binding="{Binding SalesAmount, StringFormat={}{0:N0}}" Width="160" ElementStyle="{StaticResource LedgerGridRightTextStyle}"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Grid>
+                    </Border>
+                </TabItem>
+            </TabControl>
         </Grid>
         <Border Grid.Row="4"
                 Margin="0,8,0,0"

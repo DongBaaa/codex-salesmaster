@@ -65,7 +65,6 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] private int _dashboardRentalUpcomingCount;
     [ObservableProperty] private int _dashboardRentalOverdueCount;
     [ObservableProperty] private string _rentalAlertPopupMessage = string.Empty;
-    public ObservableCollection<DashboardMonthlySalesChartPoint> DashboardMonthlySalesChartPoints { get; } = new();
 
     // 전표 목록 - Left panel (거래처 필터)
     private List<LocalCustomer> _allCustomers = new();
@@ -1133,8 +1132,6 @@ public sealed partial class MainViewModel : ObservableObject
         DashboardSalesTrendPercent = previousMonthlySales == 0
             ? (monthlySales > 0 ? 100m : 0m)
             : Math.Round(((monthlySales - previousMonthlySales) / previousMonthlySales) * 100m, 1, MidpointRounding.AwayFromZero);
-        UpdateDashboardMonthlySalesChart(sourceInvoices, now);
-
         DashboardReceivable = sourceInvoices
             .Where(invoice => invoice.VoucherType == VoucherType.Sales)
             .Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.SettledAmount));
@@ -1155,43 +1152,6 @@ public sealed partial class MainViewModel : ObservableObject
 
         await RefreshContractDashboardAsync();
         await RefreshRecycleBinDashboardAsync();
-    }
-
-    private void UpdateDashboardMonthlySalesChart(IReadOnlyCollection<LocalInvoiceListSummary> invoices, DateOnly currentMonth)
-    {
-        const int monthCount = 6;
-        const double maximumBarHeight = 72d;
-        const double minimumVisibleBarHeight = 4d;
-
-        var months = Enumerable.Range(0, monthCount)
-            .Select(offset => currentMonth.AddMonths(-(monthCount - 1 - offset)))
-            .Select(month => new
-            {
-                Month = new DateOnly(month.Year, month.Month, 1),
-                SalesAmount = invoices
-                    .Where(invoice => invoice.VoucherType == VoucherType.Sales
-                                   && invoice.InvoiceDate.Year == month.Year
-                                   && invoice.InvoiceDate.Month == month.Month)
-                    .Sum(invoice => invoice.TotalAmount)
-            })
-            .ToList();
-
-        var maxSales = months.Max(static month => month.SalesAmount);
-        DashboardMonthlySalesChartPoints.Clear();
-
-        foreach (var month in months)
-        {
-            var barHeight = maxSales <= 0m
-                ? minimumVisibleBarHeight
-                : Math.Max(minimumVisibleBarHeight, (double)(month.SalesAmount / maxSales) * maximumBarHeight);
-
-            DashboardMonthlySalesChartPoints.Add(new DashboardMonthlySalesChartPoint(
-                $"{month.Month.Month:N0}월",
-                month.SalesAmount,
-                $"{month.SalesAmount:N0}원",
-                barHeight,
-                month.Month.Year == currentMonth.Year && month.Month.Month == currentMonth.Month));
-        }
     }
 
     private void HandleInvoiceFilterChanged()
@@ -2198,10 +2158,3 @@ public sealed partial class MainViewModel : ObservableObject
             "백업", System.Windows.MessageBoxButton.OK);
     }
 }
-
-public sealed record DashboardMonthlySalesChartPoint(
-    string MonthLabel,
-    decimal SalesAmount,
-    string SalesAmountText,
-    double BarHeight,
-    bool IsCurrentMonth);

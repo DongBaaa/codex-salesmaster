@@ -49,10 +49,13 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
     [ObservableProperty] private string _summaryCollectionRateText = "-";
     [ObservableProperty] private string _summaryCountText = "0건";
     [ObservableProperty] private string _summaryProfitText = "-";
+    [ObservableProperty] private bool _hasMonthlySalesChartPoints;
+    [ObservableProperty] private string _monthlySalesChartSummaryText = "집계 실행 후 조회 기간의 월별 매출이 표시됩니다.";
 
     public ObservableCollection<LocalCustomer> Customers { get; } = [];
     public ObservableCollection<PeriodLedgerDisplayRow> LedgerRows { get; } = [];
     public ObservableCollection<PeriodLedgerDetailDisplayRow> SelectedLedgerItems { get; } = [];
+    public ObservableCollection<PeriodLedgerMonthlySalesChartPoint> MonthlySalesChartPoints { get; } = [];
     public IReadOnlyList<string> ScopeOptions { get; } = ["개별업체집계", "전체업체집계"];
 
     public bool CanSelectCustomer => !IsAllCustomers;
@@ -286,6 +289,7 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
         _currentResult = result;
         LedgerRows.Clear();
         SelectedLedgerItems.Clear();
+        MonthlySalesChartPoints.Clear();
         SelectedLedgerRow = null;
         SelectedLedgerItem = null;
 
@@ -314,6 +318,9 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
         HasLedgerRows = LedgerRows.Count > 0;
         SelectedLedgerRow = LedgerRows.FirstOrDefault();
         RefreshSelectedLedgerItems(SelectedLedgerRow);
+        foreach (var point in result.MonthlySalesChartPoints)
+            MonthlySalesChartPoints.Add(point);
+        HasMonthlySalesChartPoints = MonthlySalesChartPoints.Count > 0;
         UpdateSummaryTexts(result, LedgerRows.Count);
     }
 
@@ -351,6 +358,9 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
         SummaryCollectionRateText = FormatCollectionRate(result.Totals);
         SummaryProfitText = result.Totals.ProfitAmount.HasValue ? FormatAmount(result.Totals.ProfitAmount.Value) : "-";
         SummaryCountText = $"{rowCount:N0}건";
+        var chartTotal = result.MonthlySalesChartPoints.Sum(point => point.SalesAmount);
+        MonthlySalesChartSummaryText =
+            $"{result.Query.From:yyyy-MM-dd} ~ {result.Query.To:yyyy-MM-dd} / 월 {result.MonthlySalesChartPoints.Count:N0}개 / 매출합계 {chartTotal:N0}원";
     }
 
     private void RefreshCustomerList(IEnumerable<LocalCustomer> customers)

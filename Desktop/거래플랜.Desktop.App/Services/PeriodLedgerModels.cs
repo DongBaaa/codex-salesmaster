@@ -45,8 +45,19 @@ public sealed class PeriodLedgerBuildResult
     public required IReadOnlyList<PeriodLedgerCustomerBlock> Blocks { get; init; }
     public required IReadOnlyList<PeriodLedgerPaymentRow> PaymentRows { get; init; }
     public required IReadOnlyList<PeriodLedgerYeonsuDeliveryRow> YeonsuDeliveryRows { get; init; }
+    public required IReadOnlyList<PeriodLedgerMonthlySalesChartPoint> MonthlySalesChartPoints { get; init; }
     public required PeriodLedgerTotals Totals { get; init; }
     public string? ProfitWarningMessage { get; init; }
+}
+
+public sealed class PeriodLedgerMonthlySalesChartPoint
+{
+    public required DateOnly Month { get; init; }
+    public required string MonthLabel { get; init; }
+    public decimal SalesAmount { get; init; }
+    public required string SalesAmountText { get; init; }
+    public double BarHeight { get; init; }
+    public bool IsCurrentMonth { get; init; }
 }
 
 public sealed class PeriodLedgerYeonsuDeliveryRow

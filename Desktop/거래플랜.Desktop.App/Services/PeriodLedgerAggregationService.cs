@@ -29,6 +29,7 @@ public sealed class PeriodLedgerAggregationService
 
         var invoices = await _local.GetInvoicesAsync(query.From, query.To, effectiveCustomerId, session, ct);
         var transactions = await _local.GetTransactionsAsync(query.From, query.To, effectiveCustomerId, session, ct);
+        var monthlySalesChartPoints = BuildMonthlySalesChartPoints(query, invoices);
         var customerIds = invoices.Select(invoice => invoice.CustomerId)
             .Concat(transactions.Select(transaction => transaction.CustomerId))
             .Concat(query.CustomerId.HasValue ? [query.CustomerId.Value] : Array.Empty<Guid>())
@@ -38,10 +39,54 @@ public sealed class PeriodLedgerAggregationService
 
         return query.LedgerType switch
         {
-            PeriodLedgerType.ReceiptPayment => BuildPaymentLedgerResult(query, invoices, transactions, customerNameMap),
-            PeriodLedgerType.YeonsuDelivery => await BuildYeonsuDeliveryResultAsync(query, session, ct),
-            _ => BuildBlockLedgerResult(query, invoices, transactions, customerNameMap)
+            PeriodLedgerType.ReceiptPayment => BuildPaymentLedgerResult(query, invoices, transactions, customerNameMap, monthlySalesChartPoints),
+            PeriodLedgerType.YeonsuDelivery => await BuildYeonsuDeliveryResultAsync(query, session, monthlySalesChartPoints, ct),
+            _ => BuildBlockLedgerResult(query, invoices, transactions, customerNameMap, monthlySalesChartPoints)
         };
+    }
+
+    private static List<PeriodLedgerMonthlySalesChartPoint> BuildMonthlySalesChartPoints(
+        PeriodLedgerQuery query,
+        IReadOnlyList<LocalInvoice> invoices)
+    {
+        const double maximumBarHeight = 132d;
+        const double minimumVisibleBarHeight = 4d;
+
+        var fromMonth = new DateOnly(query.From.Year, query.From.Month, 1);
+        var toMonth = new DateOnly(query.To.Year, query.To.Month, 1);
+        var monthlySales = invoices
+            .Where(invoice => invoice.VoucherType == VoucherType.Sales)
+            .GroupBy(invoice => new DateOnly(invoice.InvoiceDate.Year, invoice.InvoiceDate.Month, 1))
+            .ToDictionary(group => group.Key, group => group.Sum(invoice => invoice.TotalAmount));
+        var months = new List<(DateOnly Month, decimal SalesAmount)>();
+        for (var month = fromMonth; month <= toMonth; month = month.AddMonths(1))
+        {
+            monthlySales.TryGetValue(month, out var salesAmount);
+            months.Add((month, salesAmount));
+        }
+
+        var maxSales = months.Count == 0 ? 0m : months.Max(month => month.SalesAmount);
+        var currentMonth = DateOnly.FromDateTime(DateTime.Today);
+        currentMonth = new DateOnly(currentMonth.Year, currentMonth.Month, 1);
+
+        return months
+            .Select(month =>
+            {
+                var barHeight = month.SalesAmount <= 0m || maxSales <= 0m
+                    ? minimumVisibleBarHeight
+                    : Math.Max(minimumVisibleBarHeight, (double)(month.SalesAmount / maxSales) * maximumBarHeight);
+
+                return new PeriodLedgerMonthlySalesChartPoint
+                {
+                    Month = month.Month,
+                    MonthLabel = month.Month.ToString("yyyy-MM"),
+                    SalesAmount = month.SalesAmount,
+                    SalesAmountText = $"{month.SalesAmount:N0}원",
+                    BarHeight = barHeight,
+                    IsCurrentMonth = month.Month == currentMonth
+                };
+            })
+            .ToList();
     }
 
     private static bool IsSalesOrPurchase(VoucherType voucherType)
@@ -67,7 +112,8 @@ public sealed class PeriodLedgerAggregationService
         PeriodLedgerQuery query,
         IReadOnlyList<LocalInvoice> invoices,
         IReadOnlyList<LocalTransaction> transactions,
-        IReadOnlyDictionary<Guid, string> customerNameMap)
+        IReadOnlyDictionary<Guid, string> customerNameMap,
+        IReadOnlyList<PeriodLedgerMonthlySalesChartPoint> monthlySalesChartPoints)
     {
         var searchText = NormalizeSearchText(query.SearchText);
         var transactionById = transactions
@@ -185,6 +231,7 @@ public sealed class PeriodLedgerAggregationService
             Blocks = blocks,
             PaymentRows = [],
             YeonsuDeliveryRows = [],
+            MonthlySalesChartPoints = monthlySalesChartPoints,
             Totals = totals,
             ProfitWarningMessage = query.IncludeProfit && profitContext?.MissingCostDataFound == true
                 ? "일부 품목은 매입 데이터가 없어 순이익이 비어있습니다."
@@ -517,7 +564,8 @@ public sealed class PeriodLedgerAggregationService
         PeriodLedgerQuery query,
         IReadOnlyList<LocalInvoice> invoices,
         IReadOnlyList<LocalTransaction> transactions,
-        IReadOnlyDictionary<Guid, string> customerNameMap)
+        IReadOnlyDictionary<Guid, string> customerNameMap,
+        IReadOnlyList<PeriodLedgerMonthlySalesChartPoint> monthlySalesChartPoints)
     {
         var allEvents = new List<PeriodPaymentEvent>();
         var dedup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -733,6 +781,7 @@ public sealed class PeriodLedgerAggregationService
             Blocks = [],
             PaymentRows = rows,
             YeonsuDeliveryRows = [],
+            MonthlySalesChartPoints = monthlySalesChartPoints,
             Totals = totals,
             ProfitWarningMessage = null
         };
@@ -752,6 +801,7 @@ public sealed class PeriodLedgerAggregationService
     private async Task<PeriodLedgerBuildResult> BuildYeonsuDeliveryResultAsync(
         PeriodLedgerQuery query,
         SessionState session,
+        IReadOnlyList<PeriodLedgerMonthlySalesChartPoint> monthlySalesChartPoints,
         CancellationToken ct)
     {
         var customerId = query.Scope == PeriodLedgerScope.AllCustomers
@@ -827,6 +877,7 @@ public sealed class PeriodLedgerAggregationService
             Blocks = [],
             PaymentRows = [],
             YeonsuDeliveryRows = rows,
+            MonthlySalesChartPoints = monthlySalesChartPoints,
             Totals = new PeriodLedgerTotals
             {
                 TradeAmount = rows.Sum(row => row.TotalAmount),
@@ -902,5 +953,4 @@ public sealed class PeriodLedgerAggregationService
         return "수금/지급 전표";
     }
 }
-
 
