@@ -176,6 +176,35 @@ public sealed partial class RentalStateService
         CancellationToken ct)
         => await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, profile, ct);
 
+    private async Task<(bool Success, string ConflictMessage)> TryEnsureRentalBillingProfileOperationAllowedAsync(
+        LocalRentalBillingProfile profile,
+        long? expectedRevision,
+        CancellationToken ct)
+    {
+        const string entityDisplayName = "렌탈 청구";
+        if (LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, expectedRevision, entityDisplayName, out var conflictMessage))
+            return (true, string.Empty);
+
+        var staleRevision = expectedRevision.GetValueOrDefault();
+        if (staleRevision <= 0)
+            return (false, conflictMessage);
+
+        var rebaseProbe = new LocalRentalBillingProfile
+        {
+            Id = profile.Id,
+            Revision = staleRevision
+        };
+        await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(
+            _db,
+            rebaseProbe,
+            profile,
+            ct);
+
+        return LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, rebaseProbe.Revision, entityDisplayName, out conflictMessage)
+            ? (true, string.Empty)
+            : (false, conflictMessage);
+    }
+
     public async Task<IReadOnlyList<LocalRentalManagementCompany>> GetManagementCompaniesAsync(CancellationToken ct = default)
         => await _db.RentalManagementCompanies
             .AsNoTracking()
@@ -5245,8 +5274,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구를 시작할 수 없습니다.");
         if (!CanStartRentalBillingInvoice(session))
             return LocalMutationResult.Denied("권한이 없어 렌탈 청구 전표를 만들 수 없습니다. 전표 편집 권한이 필요합니다.");
-        if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
-            return LocalMutationResult.Conflict(conflictMessage);
+        var operationAllowed = await TryEnsureRentalBillingProfileOperationAllowedAsync(profile, expectedRevision, ct);
+        if (!operationAllowed.Success)
+            return LocalMutationResult.Conflict(operationAllowed.ConflictMessage);
         if (_local is null)
             return LocalMutationResult.Denied("렌탈 청구 전표 저장 서비스를 사용할 수 없습니다.");
         NormalizeBillingSchedule(profile, referenceDate);

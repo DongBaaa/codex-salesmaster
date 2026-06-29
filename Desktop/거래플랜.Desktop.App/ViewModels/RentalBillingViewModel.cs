@@ -865,8 +865,19 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         if (HasUnsavedSelectedRowChanges())
         {
-            StatusMessage = "현재 청구 설정 편집 내용이 저장되지 않았습니다. 먼저 저장한 뒤 청구를 시작하세요.";
-            return;
+            StatusMessage = "현재 청구 설정 변경 내용을 저장한 뒤 청구서를 만듭니다.";
+            await SaveAsync();
+
+            if (SelectedRow is null ||
+                SelectedRow.IsAggregateRow ||
+                !SelectedRow.HasPersistedProfile ||
+                HasUnsavedSelectedRowChanges())
+            {
+                if (string.IsNullOrWhiteSpace(StatusMessage))
+                    StatusMessage = "청구 설정 저장이 완료되지 않아 청구서를 만들지 않았습니다.";
+
+                return;
+            }
         }
 
         InvoiceToOpenAfterClose = null;
