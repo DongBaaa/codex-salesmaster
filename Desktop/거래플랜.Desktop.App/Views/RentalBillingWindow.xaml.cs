@@ -17,15 +17,19 @@ namespace 거래플랜.Desktop.App.Views;
 public partial class RentalBillingWindow : Window
 {
     private readonly EntityEditSessionMonitor? _editSessionMonitor;
+    private readonly Func<Guid, Window?, Task>? _openInvoiceWindowAsync;
     private bool _allowClose;
     private bool _closeInProgress;
     private bool _customerEditorOpenInProgress;
     private readonly HashSet<CustomerEditWindow> _trackedCustomerEditorWindows = new();
 
-    public RentalBillingWindow(RentalBillingViewModel viewModel)
+    public RentalBillingWindow(
+        RentalBillingViewModel viewModel,
+        Func<Guid, Window?, Task>? openInvoiceWindowAsync = null)
     {
         InitializeComponent();
         DataContext = viewModel;
+        _openInvoiceWindowAsync = openInvoiceWindowAsync;
         Closing += HandleClosing;
         Loaded += (_, _) => _editSessionMonitor?.Start();
         Closed += (_, _) =>
@@ -185,6 +189,63 @@ public partial class RentalBillingWindow : Window
 
         dataGridRow.IsSelected = true;
         dataGrid.SelectedItem = historyRow;
+    }
+
+    private void BillingHistoryDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is not DependencyObject source)
+            return;
+
+        if (FindAncestor<DataGridColumnHeader>(source) is not null ||
+            FindAncestor<ScrollBar>(source) is not null ||
+            FindAncestor<CheckBox>(source) is not null ||
+            FindAncestor<Button>(source) is not null ||
+            FindAncestor<ComboBox>(source) is not null)
+        {
+            return;
+        }
+
+        if (FindAncestor<DataGridRow>(source) is not DataGridRow dataGridRow ||
+            dataGridRow.Item is not RentalBillingHistoryRow history ||
+            DataContext is not RentalBillingViewModel viewModel)
+        {
+            return;
+        }
+
+        viewModel.SelectedBillingHistory = history;
+        UiTaskHelper.Run(
+            this,
+            () => OpenBillingHistoryInvoiceAsync(history),
+            "UI",
+            "렌탈 청구 연결 전표 열기",
+            "렌탈 청구/입금 내역의 연결 전표를 여는 중 오류가 발생했습니다.");
+    }
+
+    private async Task OpenBillingHistoryInvoiceAsync(RentalBillingHistoryRow history)
+    {
+        if (history.InvoiceId is not Guid invoiceId || invoiceId == Guid.Empty)
+        {
+            MessageBox.Show(
+                this,
+                "선택한 청구/입금 내역에 연결된 전표가 없습니다.",
+                "렌탈 청구 연결 전표",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        if (_openInvoiceWindowAsync is null)
+        {
+            MessageBox.Show(
+                this,
+                "전표 창 열기 경로가 연결되지 않아 전표를 열 수 없습니다.",
+                "렌탈 청구 연결 전표",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        await _openInvoiceWindowAsync(invoiceId, this);
     }
 
     private async Task OpenRentalSettlementWindowAsync(RentalBillingViewModel viewModel, RentalBillingHistoryRow? history)

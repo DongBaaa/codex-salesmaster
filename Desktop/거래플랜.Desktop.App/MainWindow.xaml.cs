@@ -1758,7 +1758,7 @@ public partial class MainWindow : Window
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new RentalBillingViewModel(_rental, _local, _session, _api);
-        var win = new RentalBillingWindow(vm)
+        var win = new RentalBillingWindow(vm, OpenInvoiceWindowAsync)
         {
             Owner = ownerOverride ?? this
         };

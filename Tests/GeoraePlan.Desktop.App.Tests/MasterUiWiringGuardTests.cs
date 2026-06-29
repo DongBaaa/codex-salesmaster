@@ -146,6 +146,39 @@ public sealed class MasterUiWiringGuardTests
     }
 
     [Fact]
+    public void RentalBillingWindow_BillingHistoryDoubleClickOpensLinkedInvoice()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var xaml = ReadAppFile(appRoot, "Views", "RentalBillingWindow.xaml");
+        var code = ReadAppFile(appRoot, "Views", "RentalBillingWindow.xaml.cs");
+        var mainWindow = ReadAppFile(appRoot, "MainWindow.xaml.cs");
+        var models = ReadAppFile(appRoot, "Services", "RentalModels.cs");
+
+        AssertContainsAll(
+            xaml,
+            "청구/입금 내역",
+            "MouseDoubleClick=\"BillingHistoryDataGrid_MouseDoubleClick\"",
+            "행을 더블클릭하면 입력된 연결 전표 창을 엽니다.");
+
+        AssertContainsAll(
+            code,
+            "Func<Guid, Window?, Task>? openInvoiceWindowAsync",
+            "private void BillingHistoryDataGrid_MouseDoubleClick",
+            "OpenBillingHistoryInvoiceAsync(history)",
+            "history.InvoiceId is not Guid invoiceId || invoiceId == Guid.Empty",
+            "await _openInvoiceWindowAsync(invoiceId, this);");
+
+        Assert.Contains(
+            "new RentalBillingWindow(vm, OpenInvoiceWindowAsync)",
+            mainWindow,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "public Guid? InvoiceId { get; init; }",
+            models,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void RentalCustomerOnboardingWindow_UsesSameDisplayItemAndIncludedAssetTerminology()
     {
         var appRoot = FindDesktopAppRoot();

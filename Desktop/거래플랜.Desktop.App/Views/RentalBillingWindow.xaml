@@ -538,6 +538,8 @@
                         <DataGrid ItemsSource="{Binding BillingHistoryRows}"
                                   SelectedItem="{Binding SelectedBillingHistory}"
                                   PreviewMouseRightButtonDown="BillingHistoryDataGrid_PreviewMouseRightButtonDown"
+                                  MouseDoubleClick="BillingHistoryDataGrid_MouseDoubleClick"
+                                  ToolTip="행을 더블클릭하면 입력된 연결 전표 창을 엽니다."
                                   Height="155"
                                   Margin="0,0,0,10"
                                   IsReadOnly="True">
