@@ -895,8 +895,67 @@ public static class SupplementDocumentBuilder
 
     private static string BuildAmountLabel(decimal amount)
     {
-        return $"일금 {amount:N0} 원정   ( ₩{amount:N0} )";
+        var roundedAmount = decimal.Round(amount, 0, MidpointRounding.AwayFromZero);
+        return $"일금 {FormatKoreanWonAmount(roundedAmount)} 원정   ( ₩{roundedAmount:N0} )";
     }
+
+    private static string FormatKoreanWonAmount(decimal amount)
+    {
+        var roundedAmount = decimal.Round(amount, 0, MidpointRounding.AwayFromZero);
+        if (roundedAmount == 0m)
+            return "영";
+
+        var prefix = roundedAmount < 0m ? "마이너스 " : string.Empty;
+        var absoluteAmount = decimal.ToInt64(decimal.Abs(roundedAmount));
+        var parts = new List<string>();
+        var largeUnitIndex = 0;
+
+        while (absoluteAmount > 0)
+        {
+            var groupValue = (int)(absoluteAmount % 10_000);
+            if (groupValue > 0)
+            {
+                var largeUnit = largeUnitIndex < KoreanLargeUnits.Length
+                    ? KoreanLargeUnits[largeUnitIndex]
+                    : string.Empty;
+                parts.Add(FormatKoreanFourDigitGroup(groupValue) + largeUnit);
+            }
+
+            absoluteAmount /= 10_000;
+            largeUnitIndex++;
+        }
+
+        parts.Reverse();
+        return prefix + string.Concat(parts);
+    }
+
+    private static string FormatKoreanFourDigitGroup(int value)
+    {
+        var result = string.Empty;
+        for (var divisor = 1000; divisor > 0; divisor /= 10)
+        {
+            var digit = value / divisor;
+            value %= divisor;
+            if (digit == 0)
+                continue;
+
+            var unitIndex = divisor switch
+            {
+                1000 => 3,
+                100 => 2,
+                10 => 1,
+                _ => 0
+            };
+
+            result += KoreanDigits[digit] + KoreanSmallUnits[unitIndex];
+        }
+
+        return result;
+    }
+
+    private static readonly string[] KoreanDigits = ["", "일", "이", "삼", "사", "오", "육", "칠", "팔", "구"];
+    private static readonly string[] KoreanSmallUnits = ["", "십", "백", "천"];
+    private static readonly string[] KoreanLargeUnits = ["", "만", "억", "조", "경"];
 
     private static string ResolveReceiver(LocalCustomer customer, InvoicePrintModel? printModel = null)
     {
