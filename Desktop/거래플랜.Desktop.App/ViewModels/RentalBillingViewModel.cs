@@ -930,7 +930,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         if (targetIds.Count == 0)
         {
-            StatusMessage = "거래처 그룹에 청구 가능한 개별 프로필이 없습니다. 개별 청구건 보기로 프로필을 생성/저장한 뒤 다시 시도하세요.";
+            StatusMessage = "거래처별 요약에 청구 가능한 개별 프로필이 없습니다. '개별 청구건 직접 보기'에서 프로필을 생성/저장한 뒤 다시 시도하세요.";
             return;
         }
 
@@ -975,14 +975,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         if (failureMessages.Count == 0)
         {
-            StatusMessage = $"거래처 그룹의 개별 청구 프로필 {successCount:N0}건을 청구 시작했습니다.{skippedUnlinkedText}";
+            StatusMessage = $"거래처별 요약에 포함된 개별 청구 프로필 {successCount:N0}건을 청구 시작했습니다.{skippedUnlinkedText}";
             return;
         }
 
         var failureSummary = string.Join(" | ", failureMessages.Distinct().Take(3));
         StatusMessage = successCount > 0
-            ? $"거래처 그룹 청구 일부 완료: 성공 {successCount:N0}건 / 실패 {failureMessages.Count:N0}건{skippedUnlinkedText} - {failureSummary}"
-            : $"거래처 그룹 청구 시작 실패 {failureMessages.Count:N0}건{skippedUnlinkedText} - {failureSummary}";
+            ? $"거래처별 요약 청구 일부 완료: 성공 {successCount:N0}건 / 실패 {failureMessages.Count:N0}건{skippedUnlinkedText} - {failureSummary}"
+            : $"거래처별 요약 청구 시작 실패 {failureMessages.Count:N0}건{skippedUnlinkedText} - {failureSummary}";
     }
 
     [RelayCommand]
@@ -1092,7 +1092,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         var history = SelectedBillingHistory;
         if (history.BillingProfileId != targetId)
         {
-            StatusMessage = "거래처 그룹에 포함된 다른 청구건입니다. 개별 청구건 보기에서 해당 거래처를 선택한 뒤 삭제하세요.";
+            StatusMessage = "거래처별 요약에 포함된 다른 청구건입니다. '수정할 청구건 선택'으로 실제 청구건을 선택한 뒤 삭제하세요.";
             return;
         }
 
@@ -1228,14 +1228,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (persistedTargets.Count == 0 && unlinkedTargets.Count == 0)
         {
             StatusMessage = skippedAggregateCount > 0
-                ? "거래처 그룹은 선택삭제할 수 없습니다. 개별 청구건 보기에서 정리 후 다시 시도하세요."
+                ? "거래처별 요약행은 선택삭제할 수 없습니다. '수정할 청구건 선택'으로 실제 청구건을 선택해 정리한 뒤 다시 시도하세요."
                 : "삭제할 수 있는 청구 프로필 또는 청구설정 필요 장비가 없습니다.";
             return;
         }
 
         var confirmation = MessageBox.Show(
             skippedAggregateCount > 0
-                ? $"청구 프로필 {persistedTargets.Count:N0}건은 삭제하고, 청구설정 필요 장비 {unlinkedTargets.Count:N0}대는 청구 목록에서 제외하시겠습니까?\n거래처 그룹 {skippedAggregateCount:N0}건은 제외됩니다."
+                ? $"청구 프로필 {persistedTargets.Count:N0}건은 삭제하고, 청구설정 필요 장비 {unlinkedTargets.Count:N0}대는 청구 목록에서 제외하시겠습니까?\n거래처별 요약행 {skippedAggregateCount:N0}건은 제외됩니다."
                 : unlinkedTargets.Count > 0 && persistedTargets.Count > 0
                     ? $"청구 프로필 {persistedTargets.Count:N0}건은 삭제하고, 청구설정 필요 장비 {unlinkedTargets.Count:N0}대는 청구 목록에서 제외하시겠습니까?"
                     : unlinkedTargets.Count > 0
@@ -1290,7 +1290,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         StatusMessage = failureMessages.Count == 0
             ? BuildDeleteCheckedSuccessMessage(successCount, excludedUnlinkedCount, skippedAggregateCount, skippedPermissionCount)
             : skippedAggregateCount > 0
-                ? $"삭제/제외 성공 {successCount + excludedUnlinkedCount:N0}건 / 실패 {failureMessages.Count:N0}건 / 거래처 그룹 제외 {skippedAggregateCount:N0}건{skippedPermissionMessage} - {string.Join(" | ", failureMessages.Take(3))}"
+                ? $"삭제/제외 성공 {successCount + excludedUnlinkedCount:N0}건 / 실패 {failureMessages.Count:N0}건 / 거래처별 요약행 제외 {skippedAggregateCount:N0}건{skippedPermissionMessage} - {string.Join(" | ", failureMessages.Take(3))}"
                 : $"삭제/제외 성공 {successCount + excludedUnlinkedCount:N0}건 / 실패 {failureMessages.Count:N0}건{skippedPermissionMessage} - {string.Join(" | ", failureMessages.Take(3))}";
 
         if (conflictCount > 0)
@@ -1319,7 +1319,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         var message = string.Join(", ", parts) + " 완료.";
         if (skippedAggregateCount > 0)
-            message += $" 거래처 그룹 {skippedAggregateCount:N0}건은 제외했습니다.";
+            message += $" 거래처별 요약행 {skippedAggregateCount:N0}건은 제외했습니다.";
         if (skippedPermissionCount > 0)
             message += $" 권한/담당지점 범위 밖 {skippedPermissionCount:N0}건은 제외했습니다.";
         return message;
@@ -1454,7 +1454,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     {
         if (SelectedRow is null || !SelectedRow.IsAggregateRow)
         {
-            StatusMessage = "거래처 그룹을 먼저 선택하세요.";
+            StatusMessage = "거래처별 요약행을 먼저 선택하세요.";
             return;
         }
 
@@ -1480,8 +1480,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             SelectRow(targetId);
 
         StatusMessage = SelectedRow is null
-            ? "거래처 그룹을 개별 청구건 보기로 전환했습니다. 목록에서 정리할 프로필을 선택하세요."
-            : "거래처 그룹을 개별 청구건으로 전환했습니다. 필요한 프로필을 선택해 삭제/수정하세요.";
+            ? "개별 청구건 직접 보기로 전환했습니다. 목록에서 수정할 청구건을 선택하세요."
+            : "개별 청구건 직접 보기로 전환했습니다. 선택된 청구건에서 저장/삭제/장비연결을 진행하세요.";
     }
 
     [RelayCommand]
@@ -1495,7 +1495,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         if (!CanEditBillingProfileDetails)
         {
-            StatusMessage = "거래처 그룹에서는 표시 품목을 직접 편집할 수 없습니다. '개별 청구건 보기'로 전환한 뒤 진행하세요.";
+            StatusMessage = "거래처별 요약행에서는 표시 품목을 직접 편집할 수 없습니다. '수정할 청구건 선택'으로 실제 청구건을 선택한 뒤 진행하세요.";
             return;
         }
 
@@ -1950,7 +1950,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     {
         if (!CanEditBillingProfileDetails)
         {
-            StatusMessage = "거래처 그룹에서는 장비 연결을 직접 편집할 수 없습니다. '개별 청구건 보기'로 전환한 뒤 진행하세요.";
+            StatusMessage = "거래처별 요약행에서는 장비 연결을 직접 편집할 수 없습니다. '수정할 청구건 선택'으로 실제 청구건을 선택한 뒤 진행하세요.";
             return;
         }
 
@@ -4463,9 +4463,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return false;
 
         var aggregateSummary = string.IsNullOrWhiteSpace(SelectedRow.AggregateSummary)
-            ? "여러 청구 프로필/자산이 묶인 거래처 그룹입니다."
-            : $"{SelectedRow.AggregateSummary} 거래처 그룹입니다.";
-        StatusMessage = $"{aggregateSummary} {actionName}은 '개별 청구건 보기'로 개별 프로필을 표시한 뒤 진행하세요.";
+            ? "여러 청구 프로필/자산이 묶인 거래처별 요약행입니다."
+            : $"{SelectedRow.AggregateSummary} 기준 거래처별 요약행입니다.";
+        StatusMessage = $"{aggregateSummary} {actionName}은 '수정할 청구건 선택'으로 실제 청구건을 선택한 뒤 진행하세요.";
         return true;
     }
 
@@ -4480,16 +4480,16 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         IncludedAssets.ReplaceWith(Array.Empty<RentalBillingAssetOption>());
         CandidateAssets.ReplaceWith(Array.Empty<RentalBillingAssetOption>());
         TemplateSummary = string.IsNullOrWhiteSpace(value.AggregateSummary)
-            ? "거래처별 묶음 보기입니다."
+            ? "거래처별 요약 보기입니다."
             : value.AggregateSummary;
-        AssetCandidateSummary = "거래처 그룹에서는 장비 연결 편집을 지원하지 않습니다. 개별 청구건 보기로 전환한 뒤 청구 프로필을 선택하세요.";
+        AssetCandidateSummary = "거래처별 요약행에서는 장비 연결 편집을 지원하지 않습니다. '수정할 청구건 선택'으로 실제 청구건을 선택하세요.";
         ApplySelectedAssetsHint = value.GroupedPersistedProfileIds.Any(id => id != Guid.Empty)
-            ? "거래처별 묶음 보기입니다. 청구 시작은 연결된 개별 프로필을 한 번에 처리하고, 저장/삭제는 개별 청구건 보기에서 진행하세요."
-            : "거래처별 묶음 보기입니다. 청구 가능한 프로필이 없습니다. 개별 청구건 보기에서 프로필을 생성/저장하세요.";
+            ? "거래처별 요약 보기입니다. 청구서 만들기는 연결된 개별 프로필을 한 번에 처리하고, 저장/삭제/장비연결은 '수정할 청구건 선택' 후 진행하세요."
+            : "거래처별 요약 보기입니다. 청구 가능한 프로필이 없습니다. '개별 청구건 직접 보기'에서 프로필을 생성/저장하세요.";
         _selectedRowBaselineSignature = BuildCurrentEditorSignature();
         StatusMessage = string.IsNullOrWhiteSpace(value.AggregateSummary)
-            ? "거래처별 묶음 보기입니다. 청구 시작은 연결된 개별 프로필을 한 번에 처리하고, 편집은 개별 청구건 보기로 진행하세요."
-            : $"{value.AggregateSummary} 기준 거래처 그룹입니다. 청구 시작은 연결된 개별 프로필을 한 번에 처리하고, 편집은 개별 청구건 보기로 진행하세요.";
+            ? "거래처별 요약 보기입니다. 청구서 만들기는 한 번에 가능하지만 편집은 '수정할 청구건 선택' 후 진행하세요."
+            : $"{value.AggregateSummary} 기준 거래처별 요약행입니다. 청구서 만들기는 한 번에 가능하지만 편집은 '수정할 청구건 선택' 후 진행하세요.";
     }
 
     private bool CanOperateScope(string? officeCode)

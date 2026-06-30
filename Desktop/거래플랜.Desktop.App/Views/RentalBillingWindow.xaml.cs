@@ -119,8 +119,8 @@ public partial class RentalBillingWindow : Window
                     : string.Empty;
                 var confirm = MessageBox.Show(
                     this,
-                    $"{row.CustomerDisplayName} 거래처 그룹의 개별 청구 프로필 {profileCount:N0}건을 조회/작성 기준일로 청구 시작하시겠습니까?{excludedUnlinkedText}{Environment.NewLine}{Environment.NewLine}일부 프로필에서 실패하면 성공/실패 건수가 나뉘어 표시됩니다.",
-                    "거래처 그룹 청구 확인",
+                    $"{row.CustomerDisplayName} 거래처별 요약에 포함된 개별 청구 프로필 {profileCount:N0}건을 조회/작성 기준일로 청구 시작하시겠습니까?{excludedUnlinkedText}{Environment.NewLine}{Environment.NewLine}일부 프로필에서 실패하면 성공/실패 건수가 나뉘어 표시됩니다.",
+                    "거래처별 요약 청구 확인",
                     MessageBoxButton.YesNo,
                     MessageBoxImage.Warning);
                 if (confirm != MessageBoxResult.Yes)
@@ -150,7 +150,7 @@ public partial class RentalBillingWindow : Window
             if (!viewModel.CanRegisterSettlementSelected)
             {
                 MessageBox.Show(
-                    "거래처 그룹은 바로 수금등록할 수 없습니다. 개별 청구건 보기로 전환한 뒤 다시 시도하세요.",
+                    "거래처별 요약행에서는 바로 수금등록할 수 없습니다. '수정할 청구건 선택'으로 실제 청구건을 선택한 뒤 다시 시도하세요.",
                     "알림",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
@@ -259,7 +259,7 @@ public partial class RentalBillingWindow : Window
         if (!viewModel.CanRegisterSettlementSelected)
         {
             MessageBox.Show(
-                "거래처 그룹은 바로 입금등록할 수 없습니다. 개별 청구건 보기로 전환한 뒤 다시 시도하세요.",
+                "거래처별 요약행에서는 바로 입금등록할 수 없습니다. '수정할 청구건 선택'으로 실제 청구건을 선택한 뒤 다시 시도하세요.",
                 "알림",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
@@ -277,7 +277,7 @@ public partial class RentalBillingWindow : Window
             if (history.BillingProfileId != viewModel.SelectedRow.Source.Id)
             {
                 MessageBox.Show(
-                    "거래처 그룹에 포함된 다른 청구건입니다. '개별 청구건 보기'로 전환한 뒤 해당 거래처를 선택해 입금 등록하세요.",
+                    "거래처별 요약에 포함된 다른 청구건입니다. '수정할 청구건 선택'으로 실제 청구건을 선택한 뒤 입금 등록하세요.",
                     "알림",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
@@ -460,7 +460,7 @@ public partial class RentalBillingWindow : Window
         if (!viewModel.CanEditBillingProfileDetails)
         {
             MessageBox.Show(
-                "거래처 그룹에서는 장비 연결을 직접 편집할 수 없습니다. 개별 청구건 보기로 전환한 뒤 다시 시도하세요.",
+                "거래처별 요약행에서는 장비 연결을 직접 편집할 수 없습니다. '수정할 청구건 선택'으로 실제 청구건을 선택한 뒤 다시 시도하세요.",
                 "렌탈 자산 연결",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);

@@ -253,7 +253,7 @@
                     <Button Content="입금 등록" Background="#00897B" BorderBrush="#00897B" Margin="0,0,6,6" Click="RegisterSettlementButton_Click" IsEnabled="{Binding CanRegisterSettlementSelected}"/>
                     <Button Content="완납 처리" Background="#00695C" BorderBrush="#00695C" Margin="0,0,6,6" Command="{Binding MarkCompletedCommand}" IsEnabled="{Binding CanMarkCompletedSelected}"/>
                     <Button Content="선택 청구 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,6,6" Command="{Binding DeleteCommand}" IsEnabled="{Binding CanDeleteSelected}"/>
-                    <Button Content="그룹을 개별 청구건으로 보기" Background="#455A64" BorderBrush="#455A64" Margin="0,0,6,6" Command="{Binding ExpandSelectedSummaryCommand}" IsEnabled="{Binding CanExpandSelectedSummary}" ToolTip="거래처 그룹을 개별 청구 프로필로 전환합니다."/>
+                    <Button Content="수정할 청구건 선택" Background="#455A64" BorderBrush="#455A64" Margin="0,0,6,6" Command="{Binding ExpandSelectedSummaryCommand}" IsEnabled="{Binding CanExpandSelectedSummary}" ToolTip="거래처별 요약행을 실제 수정 가능한 개별 청구건 목록으로 전환합니다."/>
                     <Button Content="체크 청구 일괄삭제" Background="#8E24AA" BorderBrush="#8E24AA" Margin="0,0,6,6" Command="{Binding DeleteCheckedCommand}" IsEnabled="{Binding CanDeleteChecked}"/>
                     <Button Content="닫기 (F12)" Click="CloseButton_Click" Margin="0,0,0,6"/>
                 </WrapPanel>
@@ -345,7 +345,7 @@
                 <ComboBox Width="140" ItemsSource="{Binding StatusOptions}" SelectedItem="{Binding SelectedStatusFilter}" Margin="0,0,12,0"/>
                 <CheckBox Content="알림대상만" IsChecked="{Binding DueOnly}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0"/>
                 <CheckBox Content="과거 미처리만 보기" IsChecked="{Binding PastDueOnly}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0"/>
-                <CheckBox Content="개별 청구건 보기" IsChecked="{Binding ShowIndividualProfiles}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0" ToolTip="거래처별 묶음 대신 개별 청구 프로필을 모두 표시합니다."/>
+                <CheckBox Content="개별 청구건 직접 보기" IsChecked="{Binding ShowIndividualProfiles}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0" ToolTip="거래처별 요약 대신 저장/삭제/장비연결이 가능한 개별 청구 프로필을 모두 표시합니다."/>
                 <TextBlock Text="조회/작성 기준일" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <DatePicker Width="180" SelectedDate="{Binding ReferenceDate, Converter={StaticResource DateOnlyConverter}}" SelectedDateFormat="Short">
                     <DatePicker.Resources>
@@ -454,9 +454,24 @@
                                 Padding="10"
                                 Margin="0,0,0,10"
                                 Visibility="{Binding IsCustomerGroupSelection, Converter={StaticResource BoolToVisibility}}">
-                            <TextBlock Text="거래처 그룹 보기입니다. 중복 거래처처럼 보이지 않도록 청구 프로필/청구설정 필요 장비를 묶어 보여줍니다. 저장/삭제/장비연결 편집은 '개별 청구건 보기'에서 진행합니다."
-                                       Foreground="#B3E5FC"
-                                       TextWrapping="Wrap"/>
+                            <StackPanel>
+                                <TextBlock Text="이 행은 거래처별 요약입니다. 중복 거래처처럼 보이지 않도록 여러 청구 프로필과 청구설정 필요 장비를 한 줄로 묶어 보여줍니다."
+                                           Foreground="#B3E5FC"
+                                           TextWrapping="Wrap"/>
+                                <TextBlock Text="저장, 삭제, 장비연결, 입금등록처럼 실제 데이터를 바꾸는 작업은 수정할 청구건을 먼저 선택한 뒤 진행하세요."
+                                           Foreground="#EAF2FF"
+                                           Margin="0,6,0,0"
+                                           TextWrapping="Wrap"/>
+                                <Button Content="수정할 청구건 선택"
+                                        HorizontalAlignment="Left"
+                                        MinWidth="150"
+                                        Margin="0,10,0,0"
+                                        Background="#455A64"
+                                        BorderBrush="#455A64"
+                                        Command="{Binding ExpandSelectedSummaryCommand}"
+                                        IsEnabled="{Binding CanExpandSelectedSummary}"
+                                        ToolTip="이 거래처의 개별 청구건 목록으로 전환합니다."/>
+                            </StackPanel>
                         </Border>
 
                         <Border Background="#4A341F"
