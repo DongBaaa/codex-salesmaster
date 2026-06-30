@@ -510,7 +510,7 @@ public sealed class RentalBillingSpecificationTests
         var blocked = InvokeValidateTemplateConfiguration(vm);
 
         Assert.False(blocked.IsValid);
-        Assert.Contains("내부 포함 장비", blocked.Message, StringComparison.Ordinal);
+        Assert.Contains("거래처 임대 자산", blocked.Message, StringComparison.Ordinal);
 
         vm.LinkAssetsLater = true;
         var allowed = InvokeValidateTemplateConfiguration(vm);

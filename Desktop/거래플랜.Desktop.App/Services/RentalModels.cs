@@ -358,8 +358,27 @@ public sealed class RentalBillingAssetLinkEdit
     public string CustomerName { get; set; } = string.Empty;
     public string InstallLocation { get; set; } = string.Empty;
     public string InstallSiteName { get; set; } = string.Empty;
+    public string ItemCategoryName { get; set; } = string.Empty;
+    public string Manufacturer { get; set; } = string.Empty;
+    public string ItemName { get; set; } = string.Empty;
+    public string MachineNumber { get; set; } = string.Empty;
+    public string PurchaseVendor { get; set; } = string.Empty;
+    public decimal? PurchasePrice { get; set; }
+    public decimal? SalePrice { get; set; }
+    public string AssetStatus { get; set; } = string.Empty;
+    public string BillingEligibilityStatus { get; set; } = string.Empty;
+    public string BillingExclusionReason { get; set; } = string.Empty;
+    public string DepositText { get; set; } = string.Empty;
     public decimal? MonthlyFee { get; set; }
+    public int? ContractMonths { get; set; }
+    public DateOnly? ContractDate { get; set; }
     public DateOnly? ContractStartDate { get; set; }
+    public DateOnly? RentalEndDate { get; set; }
+    public DateOnly? PurchaseDate { get; set; }
+    public DateOnly? DisposalDate { get; set; }
+    public DateOnly? InstallDate { get; set; }
+    public string FreeSupplyItems { get; set; } = string.Empty;
+    public string PaidSupplyItems { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
 }
 

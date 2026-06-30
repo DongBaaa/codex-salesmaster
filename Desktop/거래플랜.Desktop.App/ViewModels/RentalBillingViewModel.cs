@@ -112,7 +112,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [ObservableProperty] private bool _editIsActive = true;
     [ObservableProperty] private string _billingSchedulePreviewText = "청구일 규칙을 설정하면 다음 청구일이 표시됩니다.";
     [ObservableProperty] private string _documentIssuePreviewText = "서류 발송 규칙을 설정하면 예상 발송일이 표시됩니다.";
-    [ObservableProperty] private string _applySelectedAssetsHint = "내부 포함 장비에서 전표에 넣을 장비를 선택한 뒤 표시품목에 추가할 수 있습니다.";
+    [ObservableProperty] private string _applySelectedAssetsHint = "거래처 임대 자산에서 전표에 넣을 장비를 선택한 뒤 표시품목에 추가할 수 있습니다.";
     [ObservableProperty] private int _totalCount;
     [ObservableProperty] private int _dueCount;
     [ObservableProperty] private int _issueCount;
@@ -207,11 +207,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                                                              SelectedIncludedAsset.AssetId != Guid.Empty;
     public bool CanSetRepresentativeAsset => CanEditBillingProfileDetails &&
                                              CanEditCurrentSelection &&
-                                             SelectedTemplateItem is not null &&
                                              SelectedIncludedAsset is not null &&
                                              SelectedIncludedAsset.AssetId != Guid.Empty &&
-                                             IsTemplateItemBundleMode(SelectedTemplateItem) &&
-                                             SelectedTemplateItem.IncludedAssetIds.Contains(SelectedIncludedAsset.AssetId);
+                                             TemplateItems.Count > 0;
     public bool CanAddIncludedAssetAssignmentHistory => CanEditBillingProfileDetails &&
                                                         SelectedIncludedAsset is not null &&
                                                         SelectedIncludedAsset.AssetId != Guid.Empty &&
@@ -418,9 +416,11 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     partial void OnEditBillingTypeChanged(string value)
     {
         ApplyBillingTypeToTemplateLineModes(value);
+        EnsureAllIncludedAssetsAssignedForBillingType();
         SyncIndividualTemplateItemsFromIncludedAssets();
         NormalizeTemplateRepresentativeAssets();
         RefreshTemplateAmountsFromIncludedAssets(applyZeroFees: true);
+        RefreshBillingAssetCollections();
         UpdateTemplateDerivedValues();
         OnPropertyChanged(nameof(CanEditTemplateLineMode));
     }
@@ -1733,10 +1733,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private void SetRepresentativeAssetFromIncludedOption(RentalBillingAssetOption asset)
     {
-        if (SelectedTemplateItem is null ||
-            asset.AssetId == Guid.Empty ||
-            !IsTemplateItemBundleMode(SelectedTemplateItem) ||
-            !SelectedTemplateItem.IncludedAssetIds.Contains(asset.AssetId))
+        if (asset.AssetId == Guid.Empty)
+        {
+            RefreshBillingAssetCollections();
+            return;
+        }
+
+        var targetItem = ResolveRepresentativeTargetTemplateItem(asset.AssetId);
+        if (targetItem is null)
         {
             RefreshBillingAssetCollections();
             return;
@@ -1745,12 +1749,50 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         var includedAsset = IncludedAssets.FirstOrDefault(current => current.AssetId == asset.AssetId) ?? asset;
         SelectedIncludedAsset = includedAsset;
         var representativeLabel = BuildAssetShortLabel(includedAsset);
-        SelectedTemplateItem.RepresentativeAssetId = asset.AssetId;
+        if (IsTemplateItemBundleMode(targetItem))
+        {
+            if (!targetItem.IncludedAssetIds.Contains(asset.AssetId))
+                targetItem.IncludedAssetIds.Add(asset.AssetId);
+
+            targetItem.RepresentativeAssetId = asset.AssetId;
+            SelectedTemplateItem = targetItem;
+        }
+
+        _suppressIncludedAssetRepresentativeChanges = true;
+        try
+        {
+            foreach (var current in _includedAssetPool.Concat(IncludedAssets))
+                current.IsRepresentativeAsset = current.AssetId == asset.AssetId;
+        }
+        finally
+        {
+            _suppressIncludedAssetRepresentativeChanges = false;
+        }
+
         NormalizeTemplateRepresentativeAssets();
         RefreshBillingAssetCollections();
         UpdateTemplateDerivedValues();
         SetRepresentativeAssetCommand.NotifyCanExecuteChanged();
-        StatusMessage = $"대표자산을 '{representativeLabel}'로 지정했습니다. 저장하면 묶음 청구 대표 장비로 반영됩니다.";
+        StatusMessage = IsTemplateItemBundleMode(targetItem)
+            ? $"대표자산을 '{representativeLabel}'로 지정했습니다. 저장하면 묶음 청구 규격에 반영됩니다."
+            : $"'{representativeLabel}'을 대표 표시로 선택했습니다. 개별 청구는 대표자산과 무관하게 자산별로 전표에 반영됩니다.";
+    }
+
+    private RentalBillingTemplateEditorItem? ResolveRepresentativeTargetTemplateItem(Guid assetId)
+    {
+        if (assetId == Guid.Empty)
+            return null;
+
+        if (SelectedTemplateItem is not null &&
+            (SelectedTemplateItem.IncludedAssetIds.Contains(assetId) || TemplateItems.Count == 1))
+        {
+            return SelectedTemplateItem;
+        }
+
+        return TemplateItems.FirstOrDefault(item => IsTemplateItemBundleMode(item) && item.IncludedAssetIds.Contains(assetId))
+               ?? TemplateItems.FirstOrDefault(item => item.IncludedAssetIds.Contains(assetId))
+               ?? TemplateItems.FirstOrDefault(item => IsTemplateItemBundleMode(item))
+               ?? TemplateItems.FirstOrDefault();
     }
 
 
@@ -1759,7 +1801,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     {
         if (SelectedIncludedAsset is null || SelectedIncludedAsset.AssetId == Guid.Empty)
         {
-            StatusMessage = "임대이력을 추가할 내부 포함 장비를 먼저 선택하세요.";
+            StatusMessage = "임대이력을 추가할 거래처 임대 자산을 먼저 선택하세요.";
             return;
         }
 
@@ -1781,7 +1823,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     {
         if (SelectedIncludedAsset is null || SelectedIncludedAssetAssignmentHistory is null)
         {
-            StatusMessage = "수정할 내부 포함 장비의 임대이력을 먼저 선택하세요.";
+            StatusMessage = "수정할 거래처 임대 자산의 임대이력을 먼저 선택하세요.";
             return;
         }
 
@@ -1806,7 +1848,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     {
         if (SelectedIncludedAssetAssignmentHistory is null)
         {
-            StatusMessage = "삭제할 내부 포함 장비의 임대이력을 먼저 선택하세요.";
+            StatusMessage = "삭제할 거래처 임대 자산의 임대이력을 먼저 선택하세요.";
             return;
         }
 
@@ -2152,8 +2194,27 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 CustomerName = pair.Value.CustomerName,
                 InstallLocation = pair.Value.InstallLocation,
                 InstallSiteName = pair.Value.InstallSiteName,
+                ItemCategoryName = pair.Value.ItemCategoryName,
+                Manufacturer = pair.Value.Manufacturer,
+                ItemName = pair.Value.ItemName,
+                MachineNumber = pair.Value.MachineNumber,
+                PurchaseVendor = pair.Value.PurchaseVendor,
+                PurchasePrice = pair.Value.PurchasePrice,
+                SalePrice = pair.Value.SalePrice,
+                AssetStatus = pair.Value.AssetStatus,
+                BillingEligibilityStatus = pair.Value.BillingEligibilityStatus,
+                BillingExclusionReason = pair.Value.BillingExclusionReason,
+                DepositText = pair.Value.DepositText,
                 MonthlyFee = pair.Value.MonthlyFee,
+                ContractMonths = pair.Value.ContractMonths,
+                ContractDate = pair.Value.ContractDate,
                 ContractStartDate = pair.Value.ContractStartDate,
+                RentalEndDate = pair.Value.RentalEndDate,
+                PurchaseDate = pair.Value.PurchaseDate,
+                DisposalDate = pair.Value.DisposalDate,
+                InstallDate = pair.Value.InstallDate,
+                FreeSupplyItems = pair.Value.FreeSupplyItems,
+                PaidSupplyItems = pair.Value.PaidSupplyItems,
                 Notes = pair.Value.Notes
             })
             .ToList();
@@ -2167,8 +2228,27 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             CustomerName = string.IsNullOrWhiteSpace(EditCustomerName) ? asset.TargetCustomerName : EditCustomerName,
             InstallLocation = asset.InstallLocation,
             InstallSiteName = asset.InstallLocation,
+            ItemCategoryName = asset.ItemCategoryName,
+            Manufacturer = asset.Manufacturer,
+            ItemName = asset.ItemName,
+            MachineNumber = asset.MachineNumber,
+            PurchaseVendor = asset.PurchaseVendor,
+            PurchasePrice = asset.PurchasePrice,
+            SalePrice = asset.SalePrice,
+            AssetStatus = asset.AssetStatus,
+            BillingEligibilityStatus = asset.BillingEligibilityStatus,
+            BillingExclusionReason = asset.BillingExclusionReason,
+            DepositText = asset.DepositText,
             MonthlyFee = asset.MonthlyFee,
+            ContractMonths = asset.ContractMonths,
+            ContractDate = ToDateOnly(asset.ContractDate),
             ContractStartDate = ToDateOnly(asset.ContractStartDate),
+            RentalEndDate = ToDateOnly(asset.RentalEndDate),
+            PurchaseDate = ToDateOnly(asset.PurchaseDate),
+            DisposalDate = ToDateOnly(asset.DisposalDate),
+            InstallDate = ToDateOnly(asset.InstallDate),
+            FreeSupplyItems = asset.FreeSupplyItems,
+            PaidSupplyItems = asset.PaidSupplyItems,
             Notes = asset.Notes
         };
 
@@ -3088,6 +3168,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                     ApplyPendingAssetLinkEdit(option);
                     return option;
                 }));
+
+            if (autoIncludeAllCandidates && !LinkAssetsLater)
+                AutoIncludeCustomerRentalAssets();
+
             RefreshBillingAssetCollections(previousSelections);
             SyncIndividualTemplateItemsFromIncludedAssets();
             NormalizeTemplateRepresentativeAssets();
@@ -3258,6 +3342,78 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         };
     }
 
+    private void AutoIncludeCustomerRentalAssets()
+    {
+        var autoTargets = _candidateAssetPool
+            .Where(asset => asset.AssetId != Guid.Empty && !asset.IsLinkedToAnotherProfile)
+            .GroupBy(asset => asset.AssetId)
+            .Select(group => group.First())
+            .ToList();
+        if (autoTargets.Count == 0)
+            return;
+
+        foreach (var asset in autoTargets)
+        {
+            var linkedOption = CloneBillingAssetOption(asset, isSelected: true);
+            linkedOption.CustomerId = EditCustomerId;
+            linkedOption.TargetCustomerName = string.IsNullOrWhiteSpace(EditCustomerName)
+                ? linkedOption.TargetCustomerName
+                : EditCustomerName;
+            linkedOption.CurrentCustomerName = string.IsNullOrWhiteSpace(linkedOption.TargetCustomerName)
+                ? linkedOption.CurrentCustomerName
+                : linkedOption.TargetCustomerName;
+            linkedOption.BillingProfileId = EditId == Guid.Empty ? null : EditId;
+            linkedOption.IsLinkedToCurrentProfile = true;
+            linkedOption.IsLinkedToAnotherProfile = false;
+            EnsureIncludedAssetPoolContains(linkedOption);
+        }
+
+        _candidateAssetPool.RemoveAll(asset => autoTargets.Any(target => target.AssetId == asset.AssetId));
+        EnsureAllIncludedAssetsAssignedForBillingType();
+    }
+
+    private void EnsureAllIncludedAssetsAssignedForBillingType()
+    {
+        var includedAssetIds = _includedAssetPool
+            .Select(asset => asset.AssetId)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (includedAssetIds.Count == 0)
+            return;
+
+        if (TemplateItems.Count == 0)
+            TemplateItems.Add(CreateDefaultTemplateItem());
+
+        if (string.Equals(ResolveDefaultTemplateBillingLineMode(EditBillingType), "묶음", StringComparison.Ordinal))
+        {
+            var target = TemplateItems.FirstOrDefault(item => IsTemplateItemBundleMode(item)) ?? TemplateItems.First();
+            foreach (var assetId in includedAssetIds)
+            {
+                if (!target.IncludedAssetIds.Contains(assetId))
+                    target.IncludedAssetIds.Add(assetId);
+            }
+
+            ApplyIncludedAssetMonthlyFeesToTemplateItem(target, applyZeroFees: true);
+            ApplyTemplateSalesFieldDefaults(target);
+            return;
+        }
+
+        var lookup = BuildBillingAssetOptionLookup();
+        foreach (var assetId in includedAssetIds)
+        {
+            if (TemplateItems.Any(item => item.IncludedAssetIds.Contains(assetId)))
+                continue;
+
+            lookup.TryGetValue(assetId, out var asset);
+            if (asset is null)
+                continue;
+
+            var item = CreateTemplateItemFromIncludedAsset(asset);
+            TemplateItems.Add(item);
+        }
+    }
+
     private void SyncAssetSelectionFromTemplate()
         => RefreshBillingAssetCollections();
 
@@ -3305,8 +3461,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             if (assetLookup.TryGetValue(assetId, out var option))
             {
                 var clone = CloneBillingAssetOption(option, isSelected: selectedTemplateAssetIds.Contains(assetId));
-                clone.IsRepresentativeAsset = selectedTemplateAssetIds.Contains(clone.AssetId) &&
-                                              SelectedTemplateItem.RepresentativeAssetId == clone.AssetId;
+                clone.IsRepresentativeAsset = IsTemplateItemBundleMode(SelectedTemplateItem)
+                    ? selectedTemplateAssetIds.Contains(clone.AssetId) &&
+                      SelectedTemplateItem.RepresentativeAssetId == clone.AssetId
+                    : option.IsRepresentativeAsset;
                 clone.PropertyChanged += HandleIncludedAssetOptionPropertyChanged;
                 includedAssetRows.Add(clone);
             }
@@ -3379,6 +3537,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return;
         }
 
+        if (IsIncludedAssetDetailEditProperty(e.PropertyName))
+        {
+            HandleIncludedAssetDetailChanged(asset);
+            return;
+        }
+
         if (_suppressIncludedAssetRepresentativeChanges ||
             !string.Equals(e.PropertyName, nameof(RentalBillingAssetOption.IsRepresentativeAsset), StringComparison.Ordinal))
         {
@@ -3386,24 +3550,63 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         }
 
         if (!asset.IsRepresentativeAsset)
-        {
-            if (SelectedTemplateItem?.RepresentativeAssetId == asset.AssetId)
-            {
-                _suppressIncludedAssetRepresentativeChanges = true;
-                try
-                {
-                    asset.IsRepresentativeAsset = true;
-                }
-                finally
-                {
-                    _suppressIncludedAssetRepresentativeChanges = false;
-                }
-            }
-
             return;
-        }
 
         SetRepresentativeAssetFromIncludedOption(asset);
+    }
+
+    private static bool IsIncludedAssetDetailEditProperty(string? propertyName)
+        => propertyName is nameof(RentalBillingAssetOption.ItemCategoryName)
+            or nameof(RentalBillingAssetOption.Manufacturer)
+            or nameof(RentalBillingAssetOption.ItemName)
+            or nameof(RentalBillingAssetOption.MachineNumber)
+            or nameof(RentalBillingAssetOption.PurchaseVendor)
+            or nameof(RentalBillingAssetOption.PurchasePrice)
+            or nameof(RentalBillingAssetOption.SalePrice)
+            or nameof(RentalBillingAssetOption.CurrentCustomerName)
+            or nameof(RentalBillingAssetOption.InstallLocation)
+            or nameof(RentalBillingAssetOption.AssetStatus)
+            or nameof(RentalBillingAssetOption.BillingEligibilityStatus)
+            or nameof(RentalBillingAssetOption.BillingExclusionReason)
+            or nameof(RentalBillingAssetOption.DepositText)
+            or nameof(RentalBillingAssetOption.ContractMonths)
+            or nameof(RentalBillingAssetOption.ContractDate)
+            or nameof(RentalBillingAssetOption.ContractStartDate)
+            or nameof(RentalBillingAssetOption.RentalEndDate)
+            or nameof(RentalBillingAssetOption.PurchaseDate)
+            or nameof(RentalBillingAssetOption.DisposalDate)
+            or nameof(RentalBillingAssetOption.InstallDate)
+            or nameof(RentalBillingAssetOption.FreeSupplyItems)
+            or nameof(RentalBillingAssetOption.PaidSupplyItems)
+            or nameof(RentalBillingAssetOption.Notes);
+
+    private void HandleIncludedAssetDetailChanged(RentalBillingAssetOption asset)
+    {
+        if (asset.AssetId == Guid.Empty)
+            return;
+
+        UpdateBillingAssetOptionPool(asset);
+        _pendingAssetLinkEdits[asset.AssetId] = BuildAssetLinkEdit(asset);
+        foreach (var item in TemplateItems.Where(item => item.IncludedAssetIds.Contains(asset.AssetId)))
+        {
+            ApplyTemplateSalesFieldDefaults(item);
+            item.IncludedAssetSummary = BuildIncludedAssetSummary(item.IncludedAssetIds);
+            item.RepresentativeAssetSummary = BuildRepresentativeAssetSummary(item);
+        }
+
+        UpdateTemplateDerivedValues();
+        StatusMessage = $"'{BuildAssetShortLabel(asset)}' 거래처 임대 자산 정보를 저장 대기 중입니다. 저장하면 렌탈 자산/설치현황에 반영됩니다.";
+    }
+
+    private void UpdateBillingAssetOptionPool(RentalBillingAssetOption asset)
+    {
+        var includedIndex = _includedAssetPool.FindIndex(current => current.AssetId == asset.AssetId);
+        if (includedIndex >= 0)
+            _includedAssetPool[includedIndex] = CloneBillingAssetOption(asset, isSelected: true);
+
+        var candidateIndex = _candidateAssetPool.FindIndex(current => current.AssetId == asset.AssetId);
+        if (candidateIndex >= 0)
+            _candidateAssetPool[candidateIndex] = CloneBillingAssetOption(asset, isSelected: false);
     }
 
     private void HandleIncludedAssetMonthlyFeeChanged(RentalBillingAssetOption asset)
@@ -3456,18 +3659,29 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             ItemCategoryName = asset.ItemCategoryName,
             Manufacturer = asset.Manufacturer,
             MachineNumber = asset.MachineNumber,
+            PurchaseVendor = asset.PurchaseVendor,
+            PurchasePrice = asset.PurchasePrice,
+            SalePrice = asset.SalePrice,
             CurrentCustomerName = string.IsNullOrWhiteSpace(asset.CurrentCustomerName) ? asset.CustomerName : asset.CurrentCustomerName,
             InstallLocation = string.IsNullOrWhiteSpace(asset.InstallLocation) ? asset.InstallSiteName : asset.InstallLocation,
             AssetStatus = asset.AssetStatus,
             BillingEligibilityStatus = string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus) ? "미확인" : asset.BillingEligibilityStatus,
+            BillingExclusionReason = asset.BillingExclusionReason,
             ResponsibleOfficeName = responsibleOfficeName,
             ManagementCompanyName = managementCompanyName,
             AssetScopeDisplay = BuildAssetScopeDisplay(responsibleOfficeName, managementCompanyName),
             Notes = asset.Notes ?? string.Empty,
+            DepositText = asset.DepositText,
             MonthlyFee = asset.MonthlyFee,
+            ContractMonths = asset.ContractMonths,
+            ContractDate = ToDateTime(asset.ContractDate),
             ContractStartDate = ToDateTime(asset.ContractStartDate),
+            RentalEndDate = ToDateTime(asset.RentalEndDate),
             PurchaseDate = ToDateTime(asset.PurchaseDate),
+            DisposalDate = ToDateTime(asset.DisposalDate),
             InstallDate = ToDateTime(asset.InstallDate),
+            FreeSupplyItems = asset.FreeSupplyItems,
+            PaidSupplyItems = asset.PaidSupplyItems,
             IsSelected = isSelected
         };
     }
@@ -3483,21 +3697,32 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             ItemCategoryName = asset.ItemCategoryName,
             Manufacturer = asset.Manufacturer,
             MachineNumber = asset.MachineNumber,
+            PurchaseVendor = asset.PurchaseVendor,
+            PurchasePrice = asset.PurchasePrice,
+            SalePrice = asset.SalePrice,
             CurrentCustomerName = asset.CurrentCustomerName,
             TargetCustomerName = asset.TargetCustomerName,
             InstallLocation = asset.InstallLocation,
             AssetStatus = asset.AssetStatus,
             BillingEligibilityStatus = asset.BillingEligibilityStatus,
+            BillingExclusionReason = asset.BillingExclusionReason,
             CurrentBillingProfileDisplay = asset.CurrentBillingProfileDisplay,
             ResponsibleOfficeName = asset.ResponsibleOfficeName,
             ManagementCompanyName = asset.ManagementCompanyName,
             AssetScopeDisplay = asset.AssetScopeDisplay,
             IsOutsideCurrentOffice = asset.IsOutsideCurrentOffice,
             Notes = asset.Notes,
+            DepositText = asset.DepositText,
             MonthlyFee = asset.MonthlyFee,
+            ContractMonths = asset.ContractMonths,
+            ContractDate = asset.ContractDate,
             ContractStartDate = asset.ContractStartDate,
+            RentalEndDate = asset.RentalEndDate,
             PurchaseDate = asset.PurchaseDate,
+            DisposalDate = asset.DisposalDate,
             InstallDate = asset.InstallDate,
+            FreeSupplyItems = asset.FreeSupplyItems,
+            PaidSupplyItems = asset.PaidSupplyItems,
             IsLinkedToCurrentProfile = asset.IsLinkedToCurrentProfile,
             IsLinkedToAnotherProfile = asset.IsLinkedToAnotherProfile,
             IsRepresentativeAsset = asset.IsRepresentativeAsset,
@@ -3526,10 +3751,45 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             : asset.TargetCustomerName;
         if (!string.IsNullOrWhiteSpace(edit.InstallLocation))
             asset.InstallLocation = edit.InstallLocation;
+        if (!string.IsNullOrWhiteSpace(edit.ItemCategoryName))
+            asset.ItemCategoryName = edit.ItemCategoryName;
+        if (!string.IsNullOrWhiteSpace(edit.Manufacturer))
+            asset.Manufacturer = edit.Manufacturer;
+        if (!string.IsNullOrWhiteSpace(edit.ItemName))
+            asset.ItemName = edit.ItemName;
+        if (!string.IsNullOrWhiteSpace(edit.MachineNumber))
+            asset.MachineNumber = edit.MachineNumber;
+        if (!string.IsNullOrWhiteSpace(edit.PurchaseVendor))
+            asset.PurchaseVendor = edit.PurchaseVendor;
+        if (edit.PurchasePrice.HasValue)
+            asset.PurchasePrice = edit.PurchasePrice.Value;
+        if (edit.SalePrice.HasValue)
+            asset.SalePrice = edit.SalePrice.Value;
+        if (!string.IsNullOrWhiteSpace(edit.AssetStatus))
+            asset.AssetStatus = edit.AssetStatus;
+        if (!string.IsNullOrWhiteSpace(edit.BillingEligibilityStatus))
+            asset.BillingEligibilityStatus = edit.BillingEligibilityStatus;
+        asset.BillingExclusionReason = edit.BillingExclusionReason ?? asset.BillingExclusionReason;
+        if (!string.IsNullOrWhiteSpace(edit.DepositText))
+            asset.DepositText = edit.DepositText;
         if (edit.MonthlyFee.HasValue)
             asset.MonthlyFee = edit.MonthlyFee.Value;
+        if (edit.ContractMonths.HasValue)
+            asset.ContractMonths = edit.ContractMonths.Value;
+        if (edit.ContractDate.HasValue)
+            asset.ContractDate = ToDateTime(edit.ContractDate);
         if (edit.ContractStartDate.HasValue)
             asset.ContractStartDate = ToDateTime(edit.ContractStartDate);
+        if (edit.RentalEndDate.HasValue)
+            asset.RentalEndDate = ToDateTime(edit.RentalEndDate);
+        if (edit.PurchaseDate.HasValue)
+            asset.PurchaseDate = ToDateTime(edit.PurchaseDate);
+        if (edit.DisposalDate.HasValue)
+            asset.DisposalDate = ToDateTime(edit.DisposalDate);
+        if (edit.InstallDate.HasValue)
+            asset.InstallDate = ToDateTime(edit.InstallDate);
+        asset.FreeSupplyItems = edit.FreeSupplyItems ?? asset.FreeSupplyItems;
+        asset.PaidSupplyItems = edit.PaidSupplyItems ?? asset.PaidSupplyItems;
         asset.Notes = edit.Notes ?? string.Empty;
     }
 
@@ -4570,14 +4830,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         if (includedAssetCount == 0 && !linkAssetsLater)
         {
-            return "청구서 표시 품목에 내부 포함 장비가 없습니다. 실제 청구/전표 대상 자산이 빠질 수 있으니 새 장비연결로 자산을 추가하거나 '장비 나중 연결'을 선택하세요.";
+            return "청구서 표시 품목에 거래처 임대 자산이 없습니다. 실제 청구/전표 대상 자산이 빠질 수 있으니 새 장비연결로 자산을 추가하거나 '장비 나중 연결'을 선택하세요.";
         }
 
         if (profileAssetCount > 0 &&
             includedAssetCount > 0 &&
             profileAssetCount != includedAssetCount)
         {
-            return $"청구 프로필 연결 자산 {profileAssetCount:N0}대 중 표시품목 포함 자산 {includedAssetCount:N0}대만 실제 청구/전표 대상입니다. 일부 장비만 청구하려는 것이 아니라면 내부 포함 장비를 확인하세요.";
+            return $"청구 프로필 연결 자산 {profileAssetCount:N0}대 중 표시품목 포함 자산 {includedAssetCount:N0}대만 실제 청구/전표 대상입니다. 일부 장비만 청구하려는 것이 아니라면 거래처 임대 자산을 확인하세요.";
         }
 
         return string.Empty;
@@ -4661,7 +4921,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         var includedAssetCount = CountDistinctEditorIncludedAssets();
         if (includedAssetCount == 0 && !LinkAssetsLater)
         {
-            message = "청구서 표시 품목에 내부 포함 장비가 없습니다. 실제 청구 대상 자산을 연결하거나 '장비 나중 연결'을 선택하세요.";
+            message = "청구서 표시 품목에 거래처 임대 자산이 없습니다. 실제 청구 대상 자산을 연결하거나 '장비 나중 연결'을 선택하세요.";
             return false;
         }
 
@@ -4911,12 +5171,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private string BuildApplySelectedAssetsHint(int linkedAssetCount)
     {
         if (SelectedTemplateItem is null)
-            return "청구서 표시 품목(거래명세서 출력 라인)을 선택하면, 그 라인에 실제로 청구할 내부 포함 장비를 연결할 수 있습니다.";
+            return "청구서 표시 품목(거래명세서 출력 라인)을 선택하면, 그 라인에 실제로 청구할 거래처 임대 자산을 연결할 수 있습니다.";
 
         if (linkedAssetCount == 0)
-            return "내부 포함 장비에서 전표에 넣을 장비를 선택한 뒤 '선택 장비 표시품목 추가'를 누르세요. 청구명만 저장해도 자산은 자동 추가되지 않습니다.";
+            return "거래처 임대 자산에서 전표에 넣을 장비를 선택한 뒤 '선택 장비 표시품목 추가'를 누르세요. 청구명만 저장해도 자산은 자동 추가되지 않습니다.";
 
-        return $"표시품목 포함 자산 {linkedAssetCount:N0}대를 확인했습니다. 내부 포함 장비에서 추가 청구할 장비를 선택해 표시품목에 추가한 뒤 저장하세요.";
+        return $"표시품목 포함 자산 {linkedAssetCount:N0}대를 확인했습니다. 거래처 임대 자산에서 추가 청구할 장비를 선택해 표시품목에 추가한 뒤 저장하세요.";
     }
 
     private static string BuildTemplateSignature(IEnumerable<RentalBillingTemplateItemModel> items, string billingType)
@@ -4933,8 +5193,27 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                     NormalizeText(edit.CustomerName),
                     NormalizeText(edit.InstallLocation),
                     NormalizeText(edit.InstallSiteName),
+                    NormalizeText(edit.ItemCategoryName),
+                    NormalizeText(edit.Manufacturer),
+                    NormalizeText(edit.ItemName),
+                    NormalizeText(edit.MachineNumber),
+                    NormalizeText(edit.PurchaseVendor),
+                    edit.PurchasePrice?.ToString("0.####", CultureInfo.InvariantCulture) ?? string.Empty,
+                    edit.SalePrice?.ToString("0.####", CultureInfo.InvariantCulture) ?? string.Empty,
+                    NormalizeText(edit.AssetStatus),
+                    NormalizeText(edit.BillingEligibilityStatus),
+                    NormalizeText(edit.BillingExclusionReason),
+                    NormalizeText(edit.DepositText),
                     edit.MonthlyFee?.ToString("0.####", CultureInfo.InvariantCulture) ?? string.Empty,
+                    edit.ContractMonths?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                    edit.ContractDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty,
                     edit.ContractStartDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty,
+                    edit.RentalEndDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty,
+                    edit.PurchaseDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty,
+                    edit.DisposalDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty,
+                    edit.InstallDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty,
+                    NormalizeText(edit.FreeSupplyItems),
+                    NormalizeText(edit.PaidSupplyItems),
                     NormalizeText(edit.Notes))));
 
     private static string BuildTemplateItemSignature(RentalBillingTemplateItemModel item, string billingType)

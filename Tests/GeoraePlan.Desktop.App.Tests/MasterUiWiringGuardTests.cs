@@ -113,16 +113,16 @@ public sealed class MasterUiWiringGuardTests
 
         AssertContainsAll(
             xaml,
-            "청구서 표시 품목(거래명세서 출력 라인)과 내부 포함 장비(실제 청구/전표 대상 자산)를 분리 관리합니다.",
+            "청구서 표시 품목(거래명세서 출력 라인)과 거래처 임대 자산(실제 청구/전표 대상 자산)을 분리 관리합니다.",
             "청구서 표시 품목 (전표/거래명세서 출력 라인)",
-            "실제 청구/전표 대상 자산은 아래 '내부 포함 장비' 목록에서만 결정됩니다.",
+            "실제 청구/전표 대상 자산은 아래 '거래처 임대 자산' 목록에서만 결정됩니다.",
             "개별 라인은 같은 모델명끼리 청구서 만들기 시 수량 합산됩니다.",
             "개별 청구건 직접 보기",
             "표시품목 요약",
             "선택 표시 라인 삭제",
             "렌탈 자산연결",
-            "내부장비수",
-            "내부 포함 장비 (렌탈 자산연결과 연동)",
+            "임대자산수",
+            "거래처 임대 자산 (렌탈 자산연결과 연동)",
             "청구명",
             "전표 품명",
             "선택 장비 표시품목 추가",
@@ -153,8 +153,8 @@ public sealed class MasterUiWiringGuardTests
         AssertContainsAll(
             viewModel,
             "청구명만 저장해도 자산은 자동 추가되지 않습니다.",
-            "내부 포함 장비에서 전표에 넣을 장비를 선택한 뒤 '선택 장비 표시품목 추가'를 누르세요.",
-            "청구서 표시 품목에 내부 포함 장비가 없습니다.",
+            "거래처 임대 자산에서 전표에 넣을 장비를 선택한 뒤 '선택 장비 표시품목 추가'를 누르세요.",
+            "청구서 표시 품목에 거래처 임대 자산이 없습니다.",
             "청구 프로필 연결 자산",
             "표시품목 포함 자산",
             "거래처별 요약 보기입니다.",
@@ -204,28 +204,28 @@ public sealed class MasterUiWiringGuardTests
 
         AssertContainsAll(
             xaml,
-            "거래처 등록 → 렌탈 설정 → 청구 설정 → 내부 장비 연결 → 표시품목 구성 순서로 진행합니다.",
-            "5. 표시품목/내부 장비 구성",
+            "거래처 등록 → 렌탈 설정 → 청구 설정 → 거래처 임대 자산 연결 → 표시품목 구성 순서로 진행합니다.",
+            "5. 표시품목/거래처 임대 자산 구성",
             "표시품목/장비 연결",
             "표시 라인 추가",
             "선택 표시 라인 삭제",
-            "선택 장비를 내부 포함 장비로 연결",
+            "선택 장비를 거래처 임대 자산으로 연결",
             "청구서 표시 품목은 거래명세서/청구서에 인쇄될 출력 라인입니다.",
-            "실제 청구/전표 대상 자산은 표시 라인에 연결한 내부 포함 장비만 적용됩니다.",
+            "실제 청구/전표 대상 자산은 표시 라인에 연결한 거래처 임대 자산만 적용됩니다.",
             "표시 품목명",
-            "내부 포함 장비",
-            "표시품목/내부 포함 장비 요약",
-            "실제 청구 대상 내부 포함 장비",
+            "거래처 임대 자산",
+            "표시품목/거래처 임대 자산 요약",
+            "실제 청구 대상 거래처 임대 자산",
             "실제 청구/전표 대상이 됩니다.");
 
         Assert.DoesNotContain("청구항목 구성", xaml, StringComparison.Ordinal);
 
         AssertContainsAll(
             viewModel,
-            "청구서 표시 품목(거래명세서 출력 라인)을 선택하면 실제 청구할 내부 포함 장비를 연결할 수 있습니다.",
-            "현재 표시 라인의 내부 포함 장비로 연결하세요.",
+            "청구서 표시 품목(거래명세서 출력 라인)을 선택하면 실제 청구할 거래처 임대 자산을 연결할 수 있습니다.",
+            "현재 표시 라인의 거래처 임대 자산으로 연결하세요.",
             "표시 품목명만 저장해도 자산은 자동 추가되지 않습니다.",
-            "현재 표시 라인의 내부 포함 장비로 연결할 수 있습니다.");
+            "현재 표시 라인의 거래처 임대 자산으로 연결할 수 있습니다.");
     }
 
     [Fact]
@@ -536,6 +536,82 @@ public sealed class MasterUiWiringGuardTests
             "var invoices = await _local.GetSalesPurchaseLedgerInvoicesAsync(",
             "responsibleOfficeCode: accountOfficeCode,",
             "session: _session);");
+    }
+
+    [Fact]
+    public void RentalAssetWindow_DetailEditsAutoSaveAndKeepSingleSelectionVisual()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var xaml = ReadAppFile(appRoot, "Views", "RentalAssetWindow.xaml");
+        var viewModel = ReadAppFile(appRoot, "ViewModels", "RentalAssetViewModel.cs");
+
+        AssertContainsAll(
+            xaml,
+            "SelectionMode=\"Single\" SelectionUnit=\"FullRow\"",
+            "RentalAssetSingleSelectionRowStyle",
+            "RentalAssetSingleSelectionCellStyle");
+
+        AssertContainsAll(
+            viewModel,
+            "private readonly UiDebouncer _editAutoSaveDebouncer = new();",
+            "partial void OnEditMonthlyFeeChanged(decimal value) => NotifyEditFieldChanged(nameof(EditMonthlyFee));",
+            "partial void OnEditInstallLocationChanged(string value) => NotifyEditFieldChanged(nameof(EditInstallLocation));",
+            "private void NotifyEditFieldChanged(string fieldName)",
+            "RefreshSavedAssetRowInPlaceAsync(savedAssetId, preserveSelectionRowId)",
+            "await _rental.GetAssetRowAsync(assetId, _session)");
+    }
+
+    [Fact]
+    public void RentalBillingWindow_UsesCustomerRentalAssetsAndPersistsEditedAssetDetails()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var xaml = ReadAppFile(appRoot, "Views", "RentalBillingWindow.xaml");
+        var viewModel = ReadAppFile(appRoot, "ViewModels", "RentalBillingViewModel.cs");
+        var linkDialogViewModel = ReadAppFile(appRoot, "ViewModels", "RentalAssetLinkDialogViewModel.cs");
+        var service = ReadAppFile(appRoot, "Services", "RentalStateService.cs");
+
+        AssertContainsAll(
+            xaml,
+            "거래처 임대 자산 (렌탈 자산연결과 연동)",
+            "Binding=\"{Binding ItemCategoryName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}\"",
+            "Binding=\"{Binding ItemName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}\"",
+            "Binding=\"{Binding InstallLocation, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}\"",
+            "Binding=\"{Binding BillingEligibilityStatus, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}\"");
+
+        AssertContainsAll(
+            viewModel,
+            "if (autoIncludeAllCandidates && !LinkAssetsLater)",
+            "AutoIncludeCustomerRentalAssets();",
+            "EnsureAllIncludedAssetsAssignedForBillingType();",
+            "IsIncludedAssetDetailEditProperty",
+            "_pendingAssetLinkEdits[asset.AssetId] = BuildAssetLinkEdit(asset);",
+            "ItemCategoryName = asset.ItemCategoryName",
+            "PurchaseDate = ToDateOnly(asset.PurchaseDate)");
+
+        AssertContainsAll(
+            linkDialogViewModel,
+            "PurchaseVendor = source.PurchaseVendor",
+            "BillingExclusionReason = source.BillingExclusionReason",
+            "RentalEndDate = ToDateTime(source.RentalEndDate)");
+
+        AssertContainsAll(
+            service,
+            "if (!string.IsNullOrWhiteSpace(edit.ItemCategoryName))",
+            "asset.ItemCategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(edit.ItemCategoryName);",
+            "if (edit.ContractMonths.HasValue)",
+            "asset.ContractMonths = Math.Max(0, edit.ContractMonths.Value);");
+    }
+
+    [Fact]
+    public void MainWindow_PassiveIntegrityScanDoesNotPopAlertAfterRuntimeSync()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var mainWindow = ReadAppFile(appRoot, "MainWindow.xaml.cs");
+
+        Assert.Contains(
+            "await RunDataIntegrityScanAndPromptAsync($\"{reason} 후 동기화\", showPrompt: false);",
+            mainWindow,
+            StringComparison.Ordinal);
     }
 
     private static void AssertContainsAll(string source, params string[] expectedMarkers)

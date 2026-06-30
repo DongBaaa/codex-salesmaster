@@ -82,7 +82,7 @@
             <DockPanel>
                 <StackPanel DockPanel.Dock="Left">
                     <TextBlock Text="신규 렌탈 거래처 등록" FontSize="22" FontWeight="Bold" Foreground="#4FC3F7"/>
-                    <TextBlock Text="거래처 등록 → 렌탈 설정 → 청구 설정 → 내부 장비 연결 → 표시품목 구성 순서로 진행합니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
+                    <TextBlock Text="거래처 등록 → 렌탈 설정 → 청구 설정 → 거래처 임대 자산 연결 → 표시품목 구성 순서로 진행합니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
                 </StackPanel>
                 <StackPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
                     <TextBlock Text="{Binding CurrentStepTitle}" FontSize="16" FontWeight="SemiBold" HorizontalAlignment="Right"/>
@@ -114,7 +114,7 @@
                         <TextBlock Text="4. 장비 연결"/>
                     </Border>
                     <Border Background="#223754" CornerRadius="4" Padding="10" Margin="0,0,0,8">
-                        <TextBlock Text="5. 표시품목/내부 장비 구성"/>
+                        <TextBlock Text="5. 표시품목/거래처 임대 자산 구성"/>
                     </Border>
                     <Border Background="#223754" CornerRadius="4" Padding="10">
                         <TextBlock Text="6. 최종 확인"/>
@@ -362,13 +362,13 @@
                                 <WrapPanel>
                                     <Button Content="표시 라인 추가" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,8,0" Command="{Binding AddTemplateItemCommand}"/>
                                     <Button Content="선택 표시 라인 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,8,0" Command="{Binding RemoveTemplateItemCommand}"/>
-                                    <Button Content="선택 장비를 내부 포함 장비로 연결"
+                                    <Button Content="선택 장비를 거래처 임대 자산으로 연결"
                                             Background="#00897B"
                                             BorderBrush="#00897B"
                                             Command="{Binding ApplySelectedAssetsToTemplateCommand}"
                                             IsEnabled="{Binding CanApplySelectedAssets}"/>
                                 </WrapPanel>
-                                <TextBlock Text="청구서 표시 품목은 거래명세서/청구서에 인쇄될 출력 라인입니다. 실제 청구/전표 대상 자산은 표시 라인에 연결한 내부 포함 장비만 적용됩니다."
+                                <TextBlock Text="청구서 표시 품목은 거래명세서/청구서에 인쇄될 출력 라인입니다. 실제 청구/전표 대상 자산은 표시 라인에 연결한 거래처 임대 자산만 적용됩니다."
                                            Foreground="#90CAF9"
                                            Margin="0,6,0,0"
                                            TextWrapping="Wrap"/>
@@ -391,13 +391,13 @@
                                     <DataGridTextColumn Header="단가" Binding="{Binding UnitPrice, UpdateSourceTrigger=PropertyChanged}" Width="110"/>
                                     <DataGridTextColumn Header="금액" Binding="{Binding Amount, UpdateSourceTrigger=PropertyChanged}" Width="110"/>
                                     <DataGridTextColumn Header="자재번호" Binding="{Binding MaterialNumber, UpdateSourceTrigger=PropertyChanged}" Width="110"/>
-                                    <DataGridTextColumn Header="내부 포함 장비" Binding="{Binding IncludedAssetSummary}" Width="250" IsReadOnly="True"/>
+                                    <DataGridTextColumn Header="거래처 임대 자산" Binding="{Binding IncludedAssetSummary}" Width="250" IsReadOnly="True"/>
                                     <DataGridTextColumn Header="비고" Binding="{Binding Note, UpdateSourceTrigger=PropertyChanged}" Width="*"/>
                                 </DataGrid.Columns>
                             </DataGrid>
                             <Border Grid.Row="3" Background="#223754" CornerRadius="6" Padding="12">
                                 <StackPanel>
-                                    <TextBlock Text="표시품목/내부 포함 장비 요약" Foreground="#4FC3F7" FontWeight="Bold"/>
+                                    <TextBlock Text="표시품목/거래처 임대 자산 요약" Foreground="#4FC3F7" FontWeight="Bold"/>
                                     <TextBlock Text="{Binding BillingPreviewPeriod, StringFormat=청구 대상 기간: {0}}" Margin="0,6,0,0"/>
                                     <TextBlock Text="{Binding ExpectedBillingAmountText, StringFormat=이번 회차 예상 청구액: {0}}" Margin="0,4,0,0"/>
                                     <TextBlock Text="{Binding ApplySelectedAssetsHint}" Margin="0,4,0,0" Foreground="#90CAF9" TextWrapping="Wrap"/>
@@ -437,13 +437,13 @@
                             </Border>
                             <Border Grid.Row="2" Background="#223754" CornerRadius="6" Padding="12" Margin="0,0,0,8">
                                 <StackPanel>
-                                    <TextBlock Text="표시품목 / 내부 포함 장비" Foreground="#4FC3F7" FontWeight="Bold"/>
+                                    <TextBlock Text="표시품목 / 거래처 임대 자산" Foreground="#4FC3F7" FontWeight="Bold"/>
                                     <ItemsControl ItemsSource="{Binding TemplateItems}" Margin="0,6,0,0">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
                                                 <StackPanel Margin="0,0,0,6">
                                                     <TextBlock Text="{Binding DisplayItemName, StringFormat=• {0}}"/>
-                                                    <TextBlock Text="{Binding IncludedAssetSummary, StringFormat=  실제 청구 대상 내부 포함 장비: {0}}" Foreground="#9FB3C8"/>
+                                                    <TextBlock Text="{Binding IncludedAssetSummary, StringFormat=  실제 청구 대상 거래처 임대 자산: {0}}" Foreground="#9FB3C8"/>
                                                 </StackPanel>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
@@ -452,7 +452,7 @@
                             </Border>
                             <Border Grid.Row="3" Background="#122038" CornerRadius="6" Padding="12">
                                 <StackPanel>
-                                    <TextBlock Text="저장 완료 후 거래처와 렌탈 청구설정이 생성되고, 선택한 장비가 있으면 해당 표시 라인의 내부 포함 장비로 연결되어 실제 청구/전표 대상이 됩니다." Foreground="#90CAF9" TextWrapping="Wrap"/>
+                                    <TextBlock Text="저장 완료 후 거래처와 렌탈 청구설정이 생성되고, 선택한 장비가 있으면 해당 표시 라인의 거래처 임대 자산으로 연결되어 실제 청구/전표 대상이 됩니다." Foreground="#90CAF9" TextWrapping="Wrap"/>
                                     <TextBlock Text="{Binding ApplySelectedAssetsHint}" Foreground="#90CAF9" Margin="0,4,0,0" TextWrapping="Wrap"/>
                                 </StackPanel>
                             </Border>

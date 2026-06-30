@@ -261,10 +261,9 @@ public sealed class WpfGlobalUiGuardTests
             StringComparison.Ordinal);
         Assert.DoesNotContain("SelectionMode=\"Extended\"", xaml, StringComparison.Ordinal);
         Assert.Contains("private async Task<bool> HandleSelectionAutoSaveAsync", viewModel, StringComparison.Ordinal);
-        Assert.Contains(
-            "preserveSelectionRowId: requestedSelection?.Source.Id,\n            refreshAfterSave: false",
-            viewModel,
-            StringComparison.Ordinal);
+        Assert.Contains("preserveSelectionRowId: requestedSelection?.Source.Id,", viewModel, StringComparison.Ordinal);
+        Assert.Contains("refreshAfterSave: false,", viewModel, StringComparison.Ordinal);
+        Assert.Contains("RefreshSavedAssetRowInPlaceAsync(savedAssetId, preserveSelectionRowId)", viewModel, StringComparison.Ordinal);
         Assert.Contains(
             "fullRow.IsSelected = current?.IsSelected ?? fullRow.IsSelected;",
             viewModel,

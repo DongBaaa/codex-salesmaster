@@ -16,7 +16,7 @@ public sealed class TestExecutionChecklistTemplateTests
         Assert.Contains("dirty 상태, 서버 반영, 재조회 결과", template, StringComparison.Ordinal);
         Assert.Contains("재고이동 화면에서 출고창고/입고창고", template, StringComparison.Ordinal);
         Assert.Contains("렌탈 청구관리와 렌탈 자산/설치현황", template, StringComparison.Ordinal);
-        Assert.Contains("내부 포함 장비, 청구서 표시 품목", template, StringComparison.Ordinal);
+        Assert.Contains("거래처 임대 자산, 청구서 표시 품목", template, StringComparison.Ordinal);
 
         Assert.Contains("## 8. Android 모바일 수동 QA", template, StringComparison.Ordinal);
         Assert.Contains("Android 실기기 또는 에뮬레이터", template, StringComparison.Ordinal);

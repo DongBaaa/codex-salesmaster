@@ -24,13 +24,17 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private readonly RentalDocumentService _documents;
     private readonly IPrintService _printService;
     private readonly SessionState _session;
+    private const int EditAutoSaveDebounceMilliseconds = 800;
+
     private readonly UiDebouncer _searchDebouncer = new();
+    private readonly UiDebouncer _editAutoSaveDebouncer = new();
     private readonly SemaphoreSlim _autoSaveGate = new(1, 1);
     private CancellationTokenSource? _filterReloadCts;
     private CancellationTokenSource? _assignmentHistoryLoadCts;
     private CancellationTokenSource? _selectedAssetDetailLoadCts;
     private bool _suppressFilterReload;
     private bool _suppressSelectionAutoSave;
+    private bool _suppressEditAutoSave;
     private bool _pendingFilterReload;
     private bool _hasInitializedOfficeFilters;
     private bool _isDisposed;
@@ -229,6 +233,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         CancelAssignmentHistoryLoad();
         CancelSelectedAssetDetailLoad();
         _searchDebouncer.Dispose();
+        _editAutoSaveDebouncer.Dispose();
     }
 
     private void StartInitialRowsLoad()
@@ -348,7 +353,33 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     partial void OnSearchTextChanged(string value) => RequestFilterReload();
 
-    partial void OnEditOfficeCodeChanged(string value) => RefreshRentalAssetMutationCommandStates();
+    partial void OnEditOfficeCodeChanged(string value) => NotifyEditFieldChanged(nameof(EditOfficeCode));
+    partial void OnEditManagementIdChanged(string value) => NotifyEditFieldChanged(nameof(EditManagementId));
+    partial void OnEditManagementNumberChanged(string value) => NotifyEditFieldChanged(nameof(EditManagementNumber));
+    partial void OnEditCurrentLocationChanged(string value) => NotifyEditFieldChanged(nameof(EditCurrentLocation));
+    partial void OnEditItemCategoryNameChanged(string value) => NotifyEditFieldChanged(nameof(EditItemCategoryName));
+    partial void OnEditManufacturerChanged(string value) => NotifyEditFieldChanged(nameof(EditManufacturer));
+    partial void OnEditItemNameChanged(string value) => NotifyEditFieldChanged(nameof(EditItemName));
+    partial void OnEditMachineNumberChanged(string value) => NotifyEditFieldChanged(nameof(EditMachineNumber));
+    partial void OnEditPurchaseVendorChanged(string value) => NotifyEditFieldChanged(nameof(EditPurchaseVendor));
+    partial void OnEditPurchasePriceChanged(decimal value) => NotifyEditFieldChanged(nameof(EditPurchasePrice));
+    partial void OnEditSalePriceChanged(decimal value) => NotifyEditFieldChanged(nameof(EditSalePrice));
+    partial void OnEditCurrentCustomerNameChanged(string value) => NotifyEditFieldChanged(nameof(EditCurrentCustomerName));
+    partial void OnEditInstallLocationChanged(string value) => NotifyEditFieldChanged(nameof(EditInstallLocation));
+    partial void OnEditDepositTextChanged(string value) => NotifyEditFieldChanged(nameof(EditDepositText));
+    partial void OnEditMonthlyFeeChanged(decimal value) => NotifyEditFieldChanged(nameof(EditMonthlyFee));
+    partial void OnEditContractMonthsChanged(int value) => NotifyEditFieldChanged(nameof(EditContractMonths));
+    partial void OnEditFreeSupplyItemsChanged(string value) => NotifyEditFieldChanged(nameof(EditFreeSupplyItems));
+    partial void OnEditPaidSupplyItemsChanged(string value) => NotifyEditFieldChanged(nameof(EditPaidSupplyItems));
+    partial void OnEditBillingEligibilityStatusChanged(string value) => NotifyEditFieldChanged(nameof(EditBillingEligibilityStatus));
+    partial void OnEditBillingExclusionReasonChanged(string value) => NotifyEditFieldChanged(nameof(EditBillingExclusionReason));
+    partial void OnEditNotesChanged(string value) => NotifyEditFieldChanged(nameof(EditNotes));
+    partial void OnEditPurchaseDateChanged(DateTime? value) => NotifyEditFieldChanged(nameof(EditPurchaseDate));
+    partial void OnEditDisposalDateChanged(DateTime? value) => NotifyEditFieldChanged(nameof(EditDisposalDate));
+    partial void OnEditContractDateChanged(DateTime? value) => NotifyEditFieldChanged(nameof(EditContractDate));
+    partial void OnEditInstallDateChanged(DateTime? value) => NotifyEditFieldChanged(nameof(EditInstallDate));
+    partial void OnEditContractStartDateChanged(DateTime? value) => NotifyEditFieldChanged(nameof(EditContractStartDate));
+    partial void OnEditRentalEndDateChanged(DateTime? value) => NotifyEditFieldChanged(nameof(EditRentalEndDate));
 
     partial void OnSelectedRowChanging(RentalAssetViewRow? oldValue, RentalAssetViewRow? newValue)
     {
@@ -369,6 +400,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     {
         if (string.IsNullOrWhiteSpace(EditCurrentCustomerName))
             EditCurrentCustomerName = value;
+
+        NotifyEditFieldChanged(nameof(EditCustomerName));
     }
 
     partial void OnEditAssetStatusChanged(string value)
@@ -378,6 +411,39 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         OnPropertyChanged(nameof(ShowLastAssignmentHistory));
         OnPropertyChanged(nameof(AssignmentFieldsNotice));
         ApplyAssetStatusUiRules();
+        NotifyEditFieldChanged(nameof(EditAssetStatus));
+    }
+
+    private void NotifyEditFieldChanged(string fieldName)
+    {
+        if (_suppressEditAutoSave || _isDisposed)
+            return;
+
+        RefreshRentalAssetMutationCommandStates();
+        OnPropertyChanged(nameof(HasPendingChanges));
+
+        if (SelectedRow is not { HasFullDetail: true } || IsNewAsset || !CanSave)
+            return;
+
+        _editAutoSaveDebouncer.DebounceAsync(
+            TimeSpan.FromMilliseconds(EditAutoSaveDebounceMilliseconds),
+            async () =>
+            {
+                if (_isDisposed || _suppressEditAutoSave)
+                    return;
+
+                if (!TryCaptureAutoSaveSnapshot(out var snapshot))
+                    return;
+
+                await SaveSnapshotAsync(
+                    snapshot,
+                    preserveSelectionRowId: snapshot.EditId,
+                    refreshAfterSave: false,
+                    successMessage: "렌탈 자산 상세 변경 내용을 자동 저장했습니다.",
+                    permissionDeniedMessage: "현재 선택한 렌탈 자산을 자동 저장할 권한이 없습니다.",
+                    showConflictDialog: false);
+            },
+            ex => StatusMessage = $"렌탈 자산 상세 자동저장 중 오류가 발생했습니다. {ex.Message}");
     }
 
     [RelayCommand]
@@ -943,69 +1009,87 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
         if (value is null)
         {
-            CancelAssignmentHistoryLoad();
-            SelectedAssignmentHistory = null;
-            AssignmentHistories.ReplaceWith(Array.Empty<RentalAssetAssignmentHistoryViewItem>());
-            EditLastCustomerName = string.Empty;
-            EditLastInstallLocation = string.Empty;
-            EditLastBillingProfileDisplay = string.Empty;
-            EditLastAssignmentClearedAtText = string.Empty;
-            OnPropertyChanged(nameof(HasLastAssignmentHistory));
-            OnPropertyChanged(nameof(ShowLastAssignmentHistory));
-            OnPropertyChanged(nameof(IsNewAsset));
-            RefreshRentalAssetMutationCommandStates();
+            _suppressEditAutoSave = true;
+            try
+            {
+                CancelAssignmentHistoryLoad();
+                SelectedAssignmentHistory = null;
+                AssignmentHistories.ReplaceWith(Array.Empty<RentalAssetAssignmentHistoryViewItem>());
+                EditLastCustomerName = string.Empty;
+                EditLastInstallLocation = string.Empty;
+                EditLastBillingProfileDisplay = string.Empty;
+                EditLastAssignmentClearedAtText = string.Empty;
+                OnPropertyChanged(nameof(HasLastAssignmentHistory));
+                OnPropertyChanged(nameof(ShowLastAssignmentHistory));
+                OnPropertyChanged(nameof(IsNewAsset));
+                RefreshRentalAssetMutationCommandStates();
+            }
+            finally
+            {
+                _suppressEditAutoSave = false;
+            }
+
             return;
         }
 
         var source = value.Source;
-        _editRevision = source.Revision;
-        EditId = source.Id;
-        EditCustomerId = source.CustomerId;
-        EditItemId = source.ItemId;
-        EditManagementId = source.ManagementId;
-        EditManagementNumber = source.ManagementNumber;
-        EditOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
-            string.IsNullOrWhiteSpace(source.ResponsibleOfficeCode)
-                ? source.ManagementCompanyCode
-                : source.ResponsibleOfficeCode,
-            _session.OfficeCode);
-        EnsureEditOfficeOption(EditOfficeCode);
-        EditCurrentLocation = source.CurrentLocation;
-        EditItemCategoryName = source.ItemCategoryName;
-        EditManufacturer = source.Manufacturer;
-        EditItemName = source.ItemName;
-        EditMachineNumber = source.MachineNumber;
-        EditPurchaseVendor = source.PurchaseVendor;
-        EditPurchasePrice = source.PurchasePrice;
-        EditSalePrice = source.SalePrice;
-        EditCustomerName = source.CustomerName;
-        EditCurrentCustomerName = string.IsNullOrWhiteSpace(source.CurrentCustomerName) ? source.CustomerName : source.CurrentCustomerName;
-        EditInstallLocation = string.IsNullOrWhiteSpace(source.InstallLocation) ? source.InstallSiteName : source.InstallLocation;
-        EditLastCustomerName = source.LastCustomerName;
-        EditLastInstallLocation = source.LastInstallLocation;
-        EditLastBillingProfileDisplay = source.LastBillingProfileDisplay;
-        EditLastAssignmentClearedAtText = source.LastAssignmentClearedAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? string.Empty;
-        EditDepositText = source.DepositText;
-        EditMonthlyFee = source.MonthlyFee;
-        EditContractMonths = source.ContractMonths;
-        EditFreeSupplyItems = source.FreeSupplyItems;
-        EditPaidSupplyItems = source.PaidSupplyItems;
-        EditAssetStatus = source.AssetStatus;
-        EditBillingEligibilityStatus = string.IsNullOrWhiteSpace(source.BillingEligibilityStatus) ? "미확인" : source.BillingEligibilityStatus;
-        EditBillingExclusionReason = source.BillingExclusionReason;
-        EditNotes = source.Notes;
-        EditPurchaseDate = ToDateTime(source.PurchaseDate);
-        EditDisposalDate = ToDateTime(source.DisposalDate);
-        EditContractDate = ToDateTime(source.ContractDate);
-        EditInstallDate = ToDateTime(source.InstallDate);
-        EditContractStartDate = ToDateTime(source.ContractStartDate);
-        EditRentalEndDate = ToDateTime(source.RentalEndDate);
-        ApplyAssetStatusUiRules();
-        OnPropertyChanged(nameof(HasLastAssignmentHistory));
-        OnPropertyChanged(nameof(ShowLastAssignmentHistory));
-        OnPropertyChanged(nameof(IsNewAsset));
-        RefreshRentalAssetMutationCommandStates();
-        ResetEditBaseline();
+        _suppressEditAutoSave = true;
+        try
+        {
+            _editRevision = source.Revision;
+            EditId = source.Id;
+            EditCustomerId = source.CustomerId;
+            EditItemId = source.ItemId;
+            EditManagementId = source.ManagementId;
+            EditManagementNumber = source.ManagementNumber;
+            EditOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+                string.IsNullOrWhiteSpace(source.ResponsibleOfficeCode)
+                    ? source.ManagementCompanyCode
+                    : source.ResponsibleOfficeCode,
+                _session.OfficeCode);
+            EnsureEditOfficeOption(EditOfficeCode);
+            EditCurrentLocation = source.CurrentLocation;
+            EditItemCategoryName = source.ItemCategoryName;
+            EditManufacturer = source.Manufacturer;
+            EditItemName = source.ItemName;
+            EditMachineNumber = source.MachineNumber;
+            EditPurchaseVendor = source.PurchaseVendor;
+            EditPurchasePrice = source.PurchasePrice;
+            EditSalePrice = source.SalePrice;
+            EditCustomerName = source.CustomerName;
+            EditCurrentCustomerName = string.IsNullOrWhiteSpace(source.CurrentCustomerName) ? source.CustomerName : source.CurrentCustomerName;
+            EditInstallLocation = string.IsNullOrWhiteSpace(source.InstallLocation) ? source.InstallSiteName : source.InstallLocation;
+            EditLastCustomerName = source.LastCustomerName;
+            EditLastInstallLocation = source.LastInstallLocation;
+            EditLastBillingProfileDisplay = source.LastBillingProfileDisplay;
+            EditLastAssignmentClearedAtText = source.LastAssignmentClearedAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? string.Empty;
+            EditDepositText = source.DepositText;
+            EditMonthlyFee = source.MonthlyFee;
+            EditContractMonths = source.ContractMonths;
+            EditFreeSupplyItems = source.FreeSupplyItems;
+            EditPaidSupplyItems = source.PaidSupplyItems;
+            EditAssetStatus = source.AssetStatus;
+            EditBillingEligibilityStatus = string.IsNullOrWhiteSpace(source.BillingEligibilityStatus) ? "미확인" : source.BillingEligibilityStatus;
+            EditBillingExclusionReason = source.BillingExclusionReason;
+            EditNotes = source.Notes;
+            EditPurchaseDate = ToDateTime(source.PurchaseDate);
+            EditDisposalDate = ToDateTime(source.DisposalDate);
+            EditContractDate = ToDateTime(source.ContractDate);
+            EditInstallDate = ToDateTime(source.InstallDate);
+            EditContractStartDate = ToDateTime(source.ContractStartDate);
+            EditRentalEndDate = ToDateTime(source.RentalEndDate);
+            ApplyAssetStatusUiRules();
+            OnPropertyChanged(nameof(HasLastAssignmentHistory));
+            OnPropertyChanged(nameof(ShowLastAssignmentHistory));
+            OnPropertyChanged(nameof(IsNewAsset));
+            RefreshRentalAssetMutationCommandStates();
+            ResetEditBaseline();
+        }
+        finally
+        {
+            _suppressEditAutoSave = false;
+        }
+
         if (!value.HasFullDetail)
         {
             CancelAssignmentHistoryLoad();
@@ -2124,6 +2208,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 return false;
             }
 
+            var savedAssetId = result.EntityId == Guid.Empty ? snapshot.EditId : result.EntityId;
             if (refreshAfterSave)
             {
                 var selectionIdBeforeRefresh = preserveSelectionRowId ?? SelectedRow?.Source.Id;
@@ -2139,6 +2224,14 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                     _suppressSelectionAutoSave = false;
                 }
             }
+            else if (savedAssetId != Guid.Empty)
+            {
+                await RefreshSavedAssetRowInPlaceAsync(savedAssetId, preserveSelectionRowId);
+            }
+            else
+            {
+                ResetEditBaseline();
+            }
 
             StatusMessage = successMessage;
             return true;
@@ -2146,6 +2239,46 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         finally
         {
             _autoSaveGate.Release();
+        }
+    }
+
+    private async Task RefreshSavedAssetRowInPlaceAsync(Guid assetId, Guid? preserveSelectionRowId)
+    {
+        var refreshedRow = await _rental.GetAssetRowAsync(assetId, _session);
+        if (refreshedRow is null)
+        {
+            ResetEditBaseline();
+            return;
+        }
+
+        var currentRow = Rows.FirstOrDefault(row => row.Source.Id == assetId);
+        var index = currentRow is null ? -1 : Rows.IndexOf(currentRow);
+        if (index >= 0)
+        {
+            refreshedRow.IsSelected = currentRow!.IsSelected;
+            currentRow.PropertyChanged -= HandleRentalAssetRowPropertyChanged;
+            refreshedRow.PropertyChanged += HandleRentalAssetRowPropertyChanged;
+            Rows[index] = refreshedRow;
+        }
+
+        var shouldKeepEditorOnSavedRow = !preserveSelectionRowId.HasValue ||
+                                         preserveSelectionRowId.Value == assetId ||
+                                         SelectedRow?.Source.Id == assetId;
+        if (shouldKeepEditorOnSavedRow)
+        {
+            _suppressSelectionAutoSave = true;
+            try
+            {
+                SelectedRow = refreshedRow;
+            }
+            finally
+            {
+                _suppressSelectionAutoSave = false;
+            }
+        }
+        else
+        {
+            ResetEditBaseline();
         }
     }
 
@@ -2221,56 +2354,64 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     private void ApplySnapshot(RentalAssetEditSnapshot snapshot, bool resetBaseline)
     {
-        _editRevision = snapshot.EditRevision;
-        EditId = snapshot.EditId;
-        EditCustomerId = snapshot.EditCustomerId;
-        EditItemId = snapshot.EditItemId;
-        EditManagementId = snapshot.EditManagementId;
-        EditManagementNumber = snapshot.EditManagementNumber;
-        EditOfficeCode = snapshot.EditOfficeCode;
-        EnsureEditOfficeOption(EditOfficeCode);
-        EditCurrentLocation = snapshot.EditCurrentLocation;
-        EditItemCategoryName = snapshot.EditItemCategoryName;
-        EditManufacturer = snapshot.EditManufacturer;
-        EditItemName = snapshot.EditItemName;
-        EditMachineNumber = snapshot.EditMachineNumber;
-        EditPurchaseVendor = snapshot.EditPurchaseVendor;
-        EditPurchasePrice = snapshot.EditPurchasePrice;
-        EditSalePrice = snapshot.EditSalePrice;
-        EditCustomerName = snapshot.EditCustomerName;
-        EditCurrentCustomerName = snapshot.EditCurrentCustomerName;
-        EditInstallLocation = snapshot.EditInstallLocation;
-        EditLastCustomerName = snapshot.EditLastCustomerName;
-        EditLastInstallLocation = snapshot.EditLastInstallLocation;
-        EditLastBillingProfileDisplay = snapshot.EditLastBillingProfileDisplay;
-        EditLastAssignmentClearedAtText = snapshot.EditLastAssignmentClearedAtText;
-        EditDepositText = snapshot.EditDepositText;
-        EditMonthlyFee = snapshot.EditMonthlyFee;
-        EditContractMonths = snapshot.EditContractMonths;
-        EditFreeSupplyItems = snapshot.EditFreeSupplyItems;
-        EditPaidSupplyItems = snapshot.EditPaidSupplyItems;
-        EditAssetStatus = snapshot.EditAssetStatus;
-        EditBillingEligibilityStatus = snapshot.EditBillingEligibilityStatus;
-        EditBillingExclusionReason = snapshot.EditBillingExclusionReason;
-        EditNotes = snapshot.EditNotes;
-        EditPurchaseDate = snapshot.EditPurchaseDate;
-        EditDisposalDate = snapshot.EditDisposalDate;
-        EditContractDate = snapshot.EditContractDate;
-        EditInstallDate = snapshot.EditInstallDate;
-        EditContractStartDate = snapshot.EditContractStartDate;
-        EditRentalEndDate = snapshot.EditRentalEndDate;
+        _suppressEditAutoSave = true;
+        try
+        {
+            _editRevision = snapshot.EditRevision;
+            EditId = snapshot.EditId;
+            EditCustomerId = snapshot.EditCustomerId;
+            EditItemId = snapshot.EditItemId;
+            EditManagementId = snapshot.EditManagementId;
+            EditManagementNumber = snapshot.EditManagementNumber;
+            EditOfficeCode = snapshot.EditOfficeCode;
+            EnsureEditOfficeOption(EditOfficeCode);
+            EditCurrentLocation = snapshot.EditCurrentLocation;
+            EditItemCategoryName = snapshot.EditItemCategoryName;
+            EditManufacturer = snapshot.EditManufacturer;
+            EditItemName = snapshot.EditItemName;
+            EditMachineNumber = snapshot.EditMachineNumber;
+            EditPurchaseVendor = snapshot.EditPurchaseVendor;
+            EditPurchasePrice = snapshot.EditPurchasePrice;
+            EditSalePrice = snapshot.EditSalePrice;
+            EditCustomerName = snapshot.EditCustomerName;
+            EditCurrentCustomerName = snapshot.EditCurrentCustomerName;
+            EditInstallLocation = snapshot.EditInstallLocation;
+            EditLastCustomerName = snapshot.EditLastCustomerName;
+            EditLastInstallLocation = snapshot.EditLastInstallLocation;
+            EditLastBillingProfileDisplay = snapshot.EditLastBillingProfileDisplay;
+            EditLastAssignmentClearedAtText = snapshot.EditLastAssignmentClearedAtText;
+            EditDepositText = snapshot.EditDepositText;
+            EditMonthlyFee = snapshot.EditMonthlyFee;
+            EditContractMonths = snapshot.EditContractMonths;
+            EditFreeSupplyItems = snapshot.EditFreeSupplyItems;
+            EditPaidSupplyItems = snapshot.EditPaidSupplyItems;
+            EditAssetStatus = snapshot.EditAssetStatus;
+            EditBillingEligibilityStatus = snapshot.EditBillingEligibilityStatus;
+            EditBillingExclusionReason = snapshot.EditBillingExclusionReason;
+            EditNotes = snapshot.EditNotes;
+            EditPurchaseDate = snapshot.EditPurchaseDate;
+            EditDisposalDate = snapshot.EditDisposalDate;
+            EditContractDate = snapshot.EditContractDate;
+            EditInstallDate = snapshot.EditInstallDate;
+            EditContractStartDate = snapshot.EditContractStartDate;
+            EditRentalEndDate = snapshot.EditRentalEndDate;
 
-        ApplyAssetStatusUiRules();
-        OnPropertyChanged(nameof(IsNewAsset));
-        RefreshRentalAssetMutationCommandStates();
-        OnPropertyChanged(nameof(HasLastAssignmentHistory));
-        OnPropertyChanged(nameof(ShowLastAssignmentHistory));
-        OnPropertyChanged(nameof(IsNonOperatingAssetStatus));
-        OnPropertyChanged(nameof(CanEditAssignmentFields));
-        OnPropertyChanged(nameof(AssignmentFieldsNotice));
+            ApplyAssetStatusUiRules();
+            OnPropertyChanged(nameof(IsNewAsset));
+            RefreshRentalAssetMutationCommandStates();
+            OnPropertyChanged(nameof(HasLastAssignmentHistory));
+            OnPropertyChanged(nameof(ShowLastAssignmentHistory));
+            OnPropertyChanged(nameof(IsNonOperatingAssetStatus));
+            OnPropertyChanged(nameof(CanEditAssignmentFields));
+            OnPropertyChanged(nameof(AssignmentFieldsNotice));
 
-        if (resetBaseline)
-            ResetEditBaseline();
+            if (resetBaseline)
+                ResetEditBaseline();
+        }
+        finally
+        {
+            _suppressEditAutoSave = false;
+        }
     }
 
     private RentalAssetEditSnapshot CreateEmptySnapshot()

@@ -5248,7 +5248,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 청구 목록에서 제외할 수 없습니다.");
 
         if (asset.BillingProfileId.HasValue && asset.BillingProfileId.Value != Guid.Empty)
-            return LocalMutationResult.Denied("이미 청구 프로필에 연결된 장비입니다. 청구 프로필 삭제 또는 내부 포함 장비 삭제로 정리하세요.");
+            return LocalMutationResult.Denied("이미 청구 프로필에 연결된 장비입니다. 청구 프로필 삭제 또는 거래처 임대 자산 삭제로 정리하세요.");
 
         asset.BillingEligibilityStatus = BillingEligibilityExcluded;
         asset.BillingExclusionReason = BillingListCleanupExclusionReason;
@@ -12425,16 +12425,54 @@ WHERE ""AssignedUsername"" <> '';", ct);
                         normalizedAssetInstallLocation))
                     : normalizedProfileCustomerName;
 
+                if (edit is not null)
+                {
+                    if (!string.IsNullOrWhiteSpace(edit.ItemCategoryName))
+                        asset.ItemCategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(edit.ItemCategoryName);
+                    if (!string.IsNullOrWhiteSpace(edit.Manufacturer))
+                        asset.Manufacturer = RentalCatalogValueNormalizer.NormalizeDisplayText(edit.Manufacturer);
+                    if (!string.IsNullOrWhiteSpace(edit.ItemName))
+                        asset.ItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(edit.ItemName);
+                    if (!string.IsNullOrWhiteSpace(edit.MachineNumber))
+                        asset.MachineNumber = edit.MachineNumber.Trim();
+                    if (!string.IsNullOrWhiteSpace(edit.PurchaseVendor))
+                        asset.PurchaseVendor = RentalCatalogValueNormalizer.NormalizeDisplayText(edit.PurchaseVendor);
+                    if (edit.PurchasePrice.HasValue)
+                        asset.PurchasePrice = Math.Max(0m, edit.PurchasePrice.Value);
+                    if (edit.SalePrice.HasValue)
+                        asset.SalePrice = Math.Max(0m, edit.SalePrice.Value);
+                    if (!string.IsNullOrWhiteSpace(edit.AssetStatus))
+                        asset.AssetStatus = ResolveAssetStatus(edit.AssetStatus, asset.CurrentLocation, edit.DisposalDate ?? asset.DisposalDate);
+                    if (!string.IsNullOrWhiteSpace(edit.BillingEligibilityStatus))
+                        asset.BillingEligibilityStatus = edit.BillingEligibilityStatus.Trim();
+                    asset.BillingExclusionReason = (edit.BillingExclusionReason ?? string.Empty).Trim();
+                    if (!string.IsNullOrWhiteSpace(edit.DepositText))
+                        asset.DepositText = edit.DepositText.Trim();
+                    if (edit.ContractMonths.HasValue)
+                        asset.ContractMonths = Math.Max(0, edit.ContractMonths.Value);
+                    if (edit.ContractDate.HasValue)
+                        asset.ContractDate = edit.ContractDate;
+                    if (edit.RentalEndDate.HasValue)
+                        asset.RentalEndDate = edit.RentalEndDate;
+                    if (edit.PurchaseDate.HasValue)
+                        asset.PurchaseDate = edit.PurchaseDate;
+                    if (edit.DisposalDate.HasValue)
+                        asset.DisposalDate = edit.DisposalDate;
+                    if (edit.InstallDate.HasValue)
+                        asset.InstallDate = edit.InstallDate;
+                    asset.FreeSupplyItems = (edit.FreeSupplyItems ?? asset.FreeSupplyItems ?? string.Empty).Trim();
+                    asset.PaidSupplyItems = (edit.PaidSupplyItems ?? asset.PaidSupplyItems ?? string.Empty).Trim();
+                    asset.Notes = (edit.Notes ?? string.Empty).Trim();
+                }
+
                 if (edit?.MonthlyFee is decimal monthlyFee)
                     asset.MonthlyFee = Math.Max(0m, monthlyFee);
                 else if (templateMonthlyFeeByAssetId.TryGetValue(asset.Id, out var templateMonthlyFee))
                     asset.MonthlyFee = Math.Max(0m, templateMonthlyFee);
-                if (profile.ContractDate.HasValue)
+                if (profile.ContractDate.HasValue && edit?.ContractDate.HasValue != true)
                     asset.ContractDate = profile.ContractDate;
                 if (edit?.ContractStartDate.HasValue == true)
                     asset.ContractStartDate = edit.ContractStartDate;
-                if (edit is not null)
-                    asset.Notes = (edit.Notes ?? string.Empty).Trim();
 
                 var linkedAssetOwnerOfficeCode = ResolveLinkedAssetManagementCompanyCode(asset, normalizedOfficeCode);
                 asset.ResponsibleOfficeCode = normalizedOfficeCode;
@@ -12447,7 +12485,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     normalizedOfficeCode);
                 asset.BillingEligibilityStatus = RentalAssetStatusRules.IsNonOperating(asset.AssetStatus)
                     ? BillingEligibilityExcluded
-                    : BillingEligibilityTarget;
+                    : !string.IsNullOrWhiteSpace(edit?.BillingEligibilityStatus)
+                        ? edit!.BillingEligibilityStatus.Trim()
+                        : BillingEligibilityTarget;
                 if (string.Equals(asset.BillingEligibilityStatus, BillingEligibilityTarget, StringComparison.Ordinal) &&
                     !string.IsNullOrWhiteSpace(asset.BillingExclusionReason))
                 {

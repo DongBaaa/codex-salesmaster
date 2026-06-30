@@ -995,16 +995,16 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
     private string BuildApplySelectedAssetsHint()
     {
         if (SelectedTemplateItem is null)
-            return "청구서 표시 품목(거래명세서 출력 라인)을 선택하면 실제 청구할 내부 포함 장비를 연결할 수 있습니다.";
+            return "청구서 표시 품목(거래명세서 출력 라인)을 선택하면 실제 청구할 거래처 임대 자산을 연결할 수 있습니다.";
 
         var selectedCandidateCount = CandidateAssets.Count(asset => asset.IsSelected);
         if (SelectedTemplateItem.IncludedAssetIds.Count == 0 && CandidateAssets.Count > 0 && selectedCandidateCount == 0)
-            return $"후보 장비 {CandidateAssets.Count:N0}대가 있습니다. 아래 후보 장비를 체크한 뒤 현재 표시 라인의 내부 포함 장비로 연결하세요.";
+            return $"후보 장비 {CandidateAssets.Count:N0}대가 있습니다. 아래 후보 장비를 체크한 뒤 현재 표시 라인의 거래처 임대 자산으로 연결하세요.";
 
         if (selectedCandidateCount == 0)
-            return "후보 장비를 체크한 뒤 현재 표시 라인의 내부 포함 장비로 연결하세요. 표시 품목명만 저장해도 자산은 자동 추가되지 않습니다.";
+            return "후보 장비를 체크한 뒤 현재 표시 라인의 거래처 임대 자산으로 연결하세요. 표시 품목명만 저장해도 자산은 자동 추가되지 않습니다.";
 
-        return $"선택한 장비 {selectedCandidateCount:N0}대를 현재 표시 라인의 내부 포함 장비로 연결할 수 있습니다.";
+        return $"선택한 장비 {selectedCandidateCount:N0}대를 현재 표시 라인의 거래처 임대 자산으로 연결할 수 있습니다.";
     }
 
     private static DateOnly? ToDateOnly(DateTime? value)

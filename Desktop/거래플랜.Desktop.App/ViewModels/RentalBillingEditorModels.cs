@@ -75,21 +75,32 @@ public sealed partial class RentalBillingAssetOption : ObservableObject
     [ObservableProperty] private string _itemCategoryName = string.Empty;
     [ObservableProperty] private string _manufacturer = string.Empty;
     [ObservableProperty] private string _machineNumber = string.Empty;
+    [ObservableProperty] private string _purchaseVendor = string.Empty;
+    [ObservableProperty] private decimal _purchasePrice;
+    [ObservableProperty] private decimal _salePrice;
     [ObservableProperty] private string _currentCustomerName = string.Empty;
     [ObservableProperty] private string _targetCustomerName = string.Empty;
     [ObservableProperty] private string _installLocation = string.Empty;
     [ObservableProperty] private string _assetStatus = string.Empty;
     [ObservableProperty] private string _billingEligibilityStatus = string.Empty;
+    [ObservableProperty] private string _billingExclusionReason = string.Empty;
     [ObservableProperty] private string _currentBillingProfileDisplay = string.Empty;
     [ObservableProperty] private string _responsibleOfficeName = string.Empty;
     [ObservableProperty] private string _managementCompanyName = string.Empty;
     [ObservableProperty] private string _assetScopeDisplay = string.Empty;
     [ObservableProperty] private bool _isOutsideCurrentOffice;
     [ObservableProperty] private string _notes = string.Empty;
+    [ObservableProperty] private string _depositText = string.Empty;
     [ObservableProperty] private decimal _monthlyFee;
+    [ObservableProperty] private int _contractMonths;
+    [ObservableProperty] private DateTime? _contractDate;
     [ObservableProperty] private DateTime? _contractStartDate;
+    [ObservableProperty] private DateTime? _rentalEndDate;
     [ObservableProperty] private DateTime? _purchaseDate;
+    [ObservableProperty] private DateTime? _disposalDate;
     [ObservableProperty] private DateTime? _installDate;
+    [ObservableProperty] private string _freeSupplyItems = string.Empty;
+    [ObservableProperty] private string _paidSupplyItems = string.Empty;
     [ObservableProperty] private bool _isLinkedToCurrentProfile;
     [ObservableProperty] private bool _isLinkedToAnotherProfile;
     [ObservableProperty] private bool _isRepresentativeAsset;
@@ -97,10 +108,18 @@ public sealed partial class RentalBillingAssetOption : ObservableObject
 
     public string PurchaseDateDisplay => PurchaseDate?.ToString("yyyy-MM-dd") ?? string.Empty;
     public string InstallDateDisplay => InstallDate?.ToString("yyyy-MM-dd") ?? string.Empty;
+    public string ContractDateDisplay => ContractDate?.ToString("yyyy-MM-dd") ?? string.Empty;
+    public string RentalEndDateDisplay => RentalEndDate?.ToString("yyyy-MM-dd") ?? string.Empty;
 
     partial void OnPurchaseDateChanged(DateTime? value)
         => OnPropertyChanged(nameof(PurchaseDateDisplay));
 
     partial void OnInstallDateChanged(DateTime? value)
         => OnPropertyChanged(nameof(InstallDateDisplay));
+
+    partial void OnContractDateChanged(DateTime? value)
+        => OnPropertyChanged(nameof(ContractDateDisplay));
+
+    partial void OnRentalEndDateChanged(DateTime? value)
+        => OnPropertyChanged(nameof(RentalEndDateDisplay));
 }

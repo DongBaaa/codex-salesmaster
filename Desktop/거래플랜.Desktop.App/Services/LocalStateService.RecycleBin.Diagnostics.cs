@@ -579,7 +579,7 @@ public sealed partial class LocalStateService
 
         var dependencies = new List<RecycleBinDependencyItem>();
         AppendDependency(dependencies, "현재 연결 프로필", directProfileCount, "현재 연결된 렌탈 청구 프로필이 있으면 영구삭제 시 자동으로 연결이 해제됩니다.");
-        AppendDependency(dependencies, "청구항목 포함 프로필", templateProfileCount, "청구항목 내부 포함 장비에서 이 자산을 참조하는 프로필은 자동으로 정리됩니다.");
+        AppendDependency(dependencies, "청구항목 포함 프로필", templateProfileCount, "청구항목 거래처 임대 자산에서 이 자산을 참조하는 프로필은 자동으로 정리됩니다.");
 
         return new RecycleBinDependencyInfo
         {

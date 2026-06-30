@@ -116,6 +116,31 @@
             <Setter Property="FontWeight" Value="Bold"/>
             <Setter Property="HorizontalContentAlignment" Value="Left"/>
         </Style>
+        <Style x:Key="RentalAssetSingleSelectionRowStyle" TargetType="{x:Type DataGridRow}">
+            <Setter Property="Background" Value="#1E2D40"/>
+            <Setter Property="Foreground" Value="#EAF2FF"/>
+            <Style.Triggers>
+                <Trigger Property="AlternationIndex" Value="1">
+                    <Setter Property="Background" Value="#223754"/>
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#0D47A1"/>
+                    <Setter Property="Foreground" Value="White"/>
+                    <Setter Property="BorderBrush" Value="#90CAF9"/>
+                    <Setter Property="BorderThickness" Value="1"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="RentalAssetSingleSelectionCellStyle" TargetType="{x:Type DataGridCell}">
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="Transparent"/>
+                    <Setter Property="Foreground" Value="White"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="14">
@@ -232,7 +257,9 @@
 
             <Border Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
                 <DataGrid ItemsSource="{Binding Rows}" SelectedItem="{Binding SelectedRow}" BorderThickness="0" IsReadOnly="False"
-                          SelectionMode="Single" SelectionUnit="FullRow">
+                          SelectionMode="Single" SelectionUnit="FullRow"
+                          RowStyle="{StaticResource RentalAssetSingleSelectionRowStyle}"
+                          CellStyle="{StaticResource RentalAssetSingleSelectionCellStyle}">
                     <DataGrid.Columns>
                         <DataGridTemplateColumn Width="46">
                             <DataGridTemplateColumn.HeaderTemplate>

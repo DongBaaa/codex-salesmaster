@@ -757,7 +757,7 @@ public partial class MainWindow : Window
 
             await _vm.ReloadAfterPassiveSyncAsync();
             AppLogger.Info("SYNC", $"{reason} 후 경량 재동기화 완료");
-            await RunDataIntegrityScanAndPromptAsync($"{reason} 후 동기화");
+            await RunDataIntegrityScanAndPromptAsync($"{reason} 후 동기화", showPrompt: false);
         }
         catch (Exception ex)
         {
@@ -918,11 +918,11 @@ public partial class MainWindow : Window
             UiTaskHelper.Forget(
                 OpenDataIntegrityFixTargetAsync(args.Issue, win),
                 "INTEGRITY",
-                "?댁쁺 ?먭? ?곸꽭 諛붾줈?섏젙",
+                "운영 점검 상세 바로수정",
                 ex => MessageBox.Show(
                     win,
-                    $"?댁쁺 ?먭? 諛붾줈媛湲곕? ?댁? 紐삵뻽?듬땲??{Environment.NewLine}{ex.Message}",
-                    "?댁쁺 ?먭?",
+                    $"운영 점검 바로가기를 열지 못했습니다.{Environment.NewLine}{ex.Message}",
+                    "운영 점검",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning));
         };

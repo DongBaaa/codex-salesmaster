@@ -240,7 +240,7 @@
             <DockPanel>
                 <StackPanel DockPanel.Dock="Left">
                     <TextBlock Text="렌탈 청구관리" FontSize="22" FontWeight="Bold" Foreground="#4FC3F7"/>
-                    <TextBlock Text="청구서 표시 품목(거래명세서 출력 라인)과 내부 포함 장비(실제 청구/전표 대상 자산)를 분리 관리합니다. 저장 시 내부 포함 장비의 설치 거래처/청구 연결만 함께 반영됩니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
+                    <TextBlock Text="청구서 표시 품목(거래명세서 출력 라인)과 거래처 임대 자산(실제 청구/전표 대상 자산)을 분리 관리합니다. 저장 시 거래처 임대 자산의 설치 거래처/청구 연결만 함께 반영됩니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
                 </StackPanel>
                 <WrapPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
                     <Button Content="새로고침" Margin="0,0,6,6" Command="{Binding ReloadCommand}"/>
@@ -417,7 +417,7 @@
                         </DataGridTemplateColumn>
                         <DataGridTextColumn Header="유형" Binding="{Binding BillingType}" Width="72" IsReadOnly="True"/>
                         <DataGridTextColumn Header="표시품목수" Binding="{Binding TemplateItemCount}" Width="90" IsReadOnly="True"/>
-                        <DataGridTextColumn Header="내부장비수" Binding="{Binding IncludedAssetCount}" Width="92" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="임대자산수" Binding="{Binding IncludedAssetCount}" Width="92" IsReadOnly="True"/>
                         <DataGridTextColumn Header="청구금액" Binding="{Binding CurrentBilledAmount, StringFormat=N0}" Width="110" IsReadOnly="True"/>
                         <DataGridTextColumn Header="누적수금" Binding="{Binding SettledAmount, StringFormat=N0}" Width="110" IsReadOnly="True"/>
                         <DataGridTemplateColumn Header="미수금" Width="100" IsReadOnly="True">
@@ -716,7 +716,7 @@
                                    Foreground="#90CAF9" Margin="0,0,0,8" TextWrapping="Wrap"/>
 
                         <TextBlock Text="청구서 표시 품목 (전표/거래명세서 출력 라인)" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,6"/>
-                        <TextBlock Text="거래명세서/청구서에 인쇄될 표시 라인입니다. 청구명은 청구 내역 구분명이고, 전표 품명은 청구주기와 기준일에 따라 자동 미리보기됩니다. 실제 청구/전표 대상 자산은 아래 '내부 포함 장비' 목록에서만 결정됩니다. 개별 라인은 같은 모델명끼리 청구서 만들기 시 수량 합산됩니다."
+                        <TextBlock Text="거래명세서/청구서에 인쇄될 표시 라인입니다. 청구명은 청구 내역 구분명이고, 전표 품명은 청구주기와 기준일에 따라 자동 미리보기됩니다. 실제 청구/전표 대상 자산은 아래 '거래처 임대 자산' 목록에서만 결정됩니다. 개별 라인은 같은 모델명끼리 청구서 만들기 시 수량 합산됩니다."
                                    Foreground="#90CAF9"
                                    Margin="0,0,0,8"
                                    TextWrapping="Wrap"/>
@@ -745,13 +745,13 @@
                             </DataGrid.Columns>
                         </DataGrid>
 
-                        <Expander Header="내부 포함 장비 (렌탈 자산연결과 연동)" IsExpanded="True" Margin="0,0,0,10" IsEnabled="{Binding CanEditBillingProfileDetails}">
+                        <Expander Header="거래처 임대 자산 (렌탈 자산연결과 연동)" IsExpanded="True" Margin="0,0,0,10" IsEnabled="{Binding CanEditBillingProfileDetails}">
                             <StackPanel>
                                 <WrapPanel Margin="0,8,0,8">
                                     <Button Content="대표자산 지정" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,8,0" Command="{Binding SetRepresentativeAssetCommand}" IsEnabled="{Binding CanSetRepresentativeAsset}"/>
                                     <Button Content="선택 장비 표시품목 추가" Background="#3949AB" BorderBrush="#3949AB" Margin="0,0,8,0" Command="{Binding AddSelectedIncludedAssetToTemplateItemCommand}" IsEnabled="{Binding CanAddSelectedIncludedAssetToTemplateItem}"/>
                                     <Button Content="선택 장비 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,8,0" Command="{Binding RemoveIncludedAssetCommand}" IsEnabled="{Binding CanRemoveIncludedAsset}"/>
-                                    <TextBlock Text="이 목록은 현재 청구 프로필에 내부 포함된 렌탈 자산만 표시합니다. 삭제하면 이 목록에서 빠지고 렌탈 자산연결 후보로 돌아갑니다. 전표에 넣을 장비를 선택한 뒤 표시품목에 추가하세요." Foreground="#90CAF9" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                                    <TextBlock Text="이 목록은 현재 청구 프로필에 거래처에 연결된 렌탈 자산만 표시합니다. 삭제하면 이 목록에서 빠지고 렌탈 자산연결 후보로 돌아갑니다. 전표에 넣을 장비를 선택한 뒤 표시품목에 추가하세요." Foreground="#90CAF9" VerticalAlignment="Center" TextWrapping="Wrap"/>
                                 </WrapPanel>
                                 <DataGrid ItemsSource="{Binding IncludedAssets}" SelectedItem="{Binding SelectedIncludedAsset}" Height="190" Margin="0,0,0,10">
                                     <DataGrid.Columns>
@@ -765,14 +765,17 @@
                                                 </DataTemplate>
                                             </DataGridTemplateColumn.CellTemplate>
                                         </DataGridTemplateColumn>
-                                        <DataGridTextColumn Header="시리얼번호" Binding="{Binding MachineNumber}" Width="120"/>
-                                        <DataGridTextColumn Header="품명" Binding="{Binding ItemName}" Width="120"/>
+                                        <DataGridTextColumn Header="시리얼번호" Binding="{Binding MachineNumber, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="120"/>
+                                        <DataGridTextColumn Header="품목분류" Binding="{Binding ItemCategoryName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="120"/>
+                                        <DataGridTextColumn Header="품명" Binding="{Binding ItemName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="120"/>
+                                        <DataGridTextColumn Header="제조사" Binding="{Binding Manufacturer, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="100"/>
                                         <DataGridTextColumn Header="월요금" Binding="{Binding MonthlyFee, Mode=TwoWay, UpdateSourceTrigger=LostFocus, StringFormat=N0}" Width="90"/>
-                                        <DataGridTextColumn Header="현재 거래처" Binding="{Binding CurrentCustomerName}" Width="160"/>
-                                        <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocation}" Width="160"/>
-                                        <DataGridTextColumn Header="상태" Binding="{Binding AssetStatus}" Width="76"/>
-                                        <DataGridTextColumn Header="청구상태" Binding="{Binding BillingEligibilityStatus}" Width="90"/>
-                                        <DataGridTextColumn Header="자산소속" Binding="{Binding AssetScopeDisplay}" Width="170"/>
+                                        <DataGridTextColumn Header="현재 거래처" Binding="{Binding CurrentCustomerName}" Width="160" IsReadOnly="True"/>
+                                        <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocation, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="160"/>
+                                        <DataGridTextColumn Header="상태" Binding="{Binding AssetStatus, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="90"/>
+                                        <DataGridTextColumn Header="청구상태" Binding="{Binding BillingEligibilityStatus, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="90"/>
+                                        <DataGridTextColumn Header="비고" Binding="{Binding Notes, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="160"/>
+                                        <DataGridTextColumn Header="자산소속" Binding="{Binding AssetScopeDisplay}" Width="170" IsReadOnly="True"/>
                                     </DataGrid.Columns>
                                 </DataGrid>
                                 <DockPanel Margin="0,0,0,6">

@@ -297,6 +297,18 @@ public sealed class RentalIncludedBillingAssetsTests
                         AssetId = internalOnlyAssetId,
                         CustomerName = "Edit Is Not Selection Customer",
                         InstallLocation = "Internal Pool",
+                        ItemCategoryName = "A3컬러복합기",
+                        Manufacturer = "삼성전자",
+                        ItemName = "SL-X4220RX",
+                        MachineNumber = "SER-EDIT-001",
+                        PurchaseVendor = "삼성전자(직판)",
+                        ContractMonths = 12,
+                        ContractDate = new DateOnly(2026, 1, 15),
+                        RentalEndDate = new DateOnly(2026, 12, 31),
+                        PurchaseDate = new DateOnly(2025, 12, 20),
+                        InstallDate = new DateOnly(2026, 1, 20),
+                        FreeSupplyItems = "토너",
+                        PaidSupplyItems = "용지",
                         MonthlyFee = 123_456m,
                         Notes = "internal only"
                     }
@@ -310,6 +322,18 @@ public sealed class RentalIncludedBillingAssetsTests
             Assert.Equal(profileId, selectedAsset.BillingProfileId);
             Assert.Equal(profileId, internalOnlyAsset.BillingProfileId);
             Assert.Equal("Internal Pool", internalOnlyAsset.InstallLocation);
+            Assert.Equal("A3컬러복합기", internalOnlyAsset.ItemCategoryName);
+            Assert.Equal("삼성전자", internalOnlyAsset.Manufacturer);
+            Assert.Equal("SL-X4220RX", internalOnlyAsset.ItemName);
+            Assert.Equal("SER-EDIT-001", internalOnlyAsset.MachineNumber);
+            Assert.Equal("삼성전자(직판)", internalOnlyAsset.PurchaseVendor);
+            Assert.Equal(12, internalOnlyAsset.ContractMonths);
+            Assert.Equal(new DateOnly(2026, 1, 15), internalOnlyAsset.ContractDate);
+            Assert.Equal(new DateOnly(2026, 12, 31), internalOnlyAsset.RentalEndDate);
+            Assert.Equal(new DateOnly(2025, 12, 20), internalOnlyAsset.PurchaseDate);
+            Assert.Equal(new DateOnly(2026, 1, 20), internalOnlyAsset.InstallDate);
+            Assert.Equal("토너", internalOnlyAsset.FreeSupplyItems);
+            Assert.Equal("용지", internalOnlyAsset.PaidSupplyItems);
             Assert.Equal(123_456m, internalOnlyAsset.MonthlyFee);
 
             var persistedProfile = await db.RentalBillingProfiles

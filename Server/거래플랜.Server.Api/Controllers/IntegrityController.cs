@@ -1993,7 +1993,7 @@ public sealed class IntegrityController : ControllerBase
                     $"청구프로필 {FirstNonEmpty(row.Profile.CustomerName, row.Profile.ProfileKey, FormatGuid(row.Profile.Id))}",
                     $"프로필ID {FormatGuid(row.Profile.Id)}",
                     $"표시품목 포함 자산 {row.TemplateAssetIds.Count:N0}대",
-                    "조치: 렌탈 청구관리에서 내부 포함 장비/표시 품목을 다시 저장하거나 잘못 연결된 자산을 해제하세요.")))
+                    "조치: 렌탈 청구관리에서 거래처 임대 자산/표시 품목을 다시 저장하거나 잘못 연결된 자산을 해제하세요.")))
             .ToList();
     }
 

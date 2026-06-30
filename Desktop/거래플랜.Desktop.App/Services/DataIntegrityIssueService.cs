@@ -296,7 +296,7 @@ public sealed class DataIntegrityIssueService
             "Error",
             "렌탈 연결",
             "자산은 청구 프로필에 연결되어 있으나 청구서 표시 품목의 IncludedAssetIds에는 없어 실제 전표/청구 대상에서 누락될 수 있습니다.",
-            "렌탈 청구관리에서 내부 포함 장비와 청구서 표시 품목을 다시 저장하거나 잘못 연결된 자산을 해제하세요."),
+            "렌탈 청구관리에서 거래처 임대 자산과 청구서 표시 품목을 다시 저장하거나 잘못 연결된 자산을 해제하세요."),
         [DataIntegrityIssueCodes.RentalOperationalScopeMismatch] = new(
             DataIntegrityIssueCodes.RentalOperationalScopeMismatch,
             "렌탈 scope 자체 불일치",
