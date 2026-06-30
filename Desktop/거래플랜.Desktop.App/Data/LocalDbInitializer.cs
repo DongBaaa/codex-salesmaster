@@ -796,7 +796,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                 Id = OfficeCodeCatalog.UsenetDefaultCompanyProfileId,
                 ProfileName = "USENET 기본",
                 OfficeCode = OfficeCodeCatalog.Usenet,
-                TradeName = OfficeCodeCatalog.Usenet,
+                TradeName = "유즈넷",
                 Representative = "",
                 BusinessNumber = "",
                 Address = "",
@@ -874,7 +874,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                     Id = definition.Id,
                     ProfileName = string.IsNullOrWhiteSpace(current.ProfileName) ? definition.ProfileName : current.ProfileName.Trim(),
                     OfficeCode = NormalizeRentalOfficeCode(current.OfficeCode, definition.OfficeCode),
-                    TradeName = string.IsNullOrWhiteSpace(current.TradeName) ? definition.TradeName : current.TradeName.Trim(),
+                    TradeName = ResolveDefaultCompanyProfileTradeName(current.TradeName, definition.OfficeCode, definition.TradeName),
                     Representative = string.IsNullOrWhiteSpace(current.Representative) ? definition.Representative : current.Representative.Trim(),
                     BusinessNumber = string.IsNullOrWhiteSpace(current.BusinessNumber) ? definition.BusinessNumber : current.BusinessNumber.Trim(),
                     BusinessType = current.BusinessType?.Trim() ?? string.Empty,
@@ -915,9 +915,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             current.ProfileName = string.IsNullOrWhiteSpace(current.ProfileName)
                 ? definition.ProfileName
                 : current.ProfileName.Trim();
-            current.TradeName = string.IsNullOrWhiteSpace(current.TradeName)
-                ? definition.TradeName
-                : current.TradeName.Trim();
+            current.TradeName = ResolveDefaultCompanyProfileTradeName(current.TradeName, definition.OfficeCode, definition.TradeName);
             current.OfficeCode = NormalizeRentalOfficeCode(current.OfficeCode, definition.OfficeCode);
             current.IsDefaultForOffice = true;
             current.IsActive = true;
@@ -999,7 +997,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                  string.Equals(normalizedTradeName, "연수구", StringComparison.OrdinalIgnoreCase) ||
                  string.Equals(normalizedTradeName, "연수구 사무실", StringComparison.OrdinalIgnoreCase)))
             {
-                normalizedTradeName = OfficeCodeCatalog.GetOfficeDisplayName(normalizedOfficeCode);
+                normalizedTradeName = GetDefaultCompanyProfileTradeName(normalizedOfficeCode);
             }
             if (!string.Equals(profile.TradeName, normalizedTradeName, StringComparison.CurrentCulture))
             {
@@ -1018,6 +1016,39 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                 PreserveDirtyStateForStartupMaintenance(profile, DateTime.UtcNow);
             }
         }
+    }
+
+    private static string ResolveDefaultCompanyProfileTradeName(string? tradeName, string officeCode, string definitionTradeName)
+    {
+        var trimmed = tradeName?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(trimmed) || IsDefaultCompanyProfileTradeNamePlaceholder(trimmed, officeCode))
+            return string.IsNullOrWhiteSpace(definitionTradeName)
+                ? GetDefaultCompanyProfileTradeName(officeCode)
+                : definitionTradeName.Trim();
+
+        return trimmed;
+    }
+
+    private static string GetDefaultCompanyProfileTradeName(string? officeCode)
+    {
+        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, OfficeCodeCatalog.Usenet);
+        return string.Equals(normalizedOfficeCode, OfficeCodeCatalog.Usenet, StringComparison.OrdinalIgnoreCase)
+            ? "유즈넷"
+            : OfficeCodeCatalog.GetOfficeDisplayName(normalizedOfficeCode);
+    }
+
+    private static bool IsDefaultCompanyProfileTradeNamePlaceholder(string? tradeName, string officeCode)
+    {
+        var trimmed = tradeName?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(trimmed))
+            return true;
+
+        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, OfficeCodeCatalog.Usenet);
+        if (string.Equals(trimmed, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return OfficeCodeCatalog.TryNormalize(trimmed, out var normalizedTradeName) &&
+               string.Equals(normalizedTradeName, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task NormalizeCompanyProfileAssignmentSettingsAsync(LocalDbContext db)

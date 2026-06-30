@@ -145,6 +145,89 @@ public sealed class CompanyProfileRevisionRegressionTests
     }
 
     [Fact]
+    public async Task LocalDbInitializer_KeepsUsenetDefaultTradeNameInKorean()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-company-profile-default-korean-{Guid.NewGuid():N}");
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+
+            await LocalDbInitializer.InitializeAsync(db);
+
+            db.ChangeTracker.Clear();
+            var profile = await db.CompanyProfiles.IgnoreQueryFilters()
+                .SingleAsync(current => current.Id == OfficeCodeCatalog.UsenetDefaultCompanyProfileId);
+            Assert.Equal(OfficeCodeCatalog.Usenet, profile.OfficeCode);
+            Assert.Equal("USENET 기본", profile.ProfileName);
+            Assert.Equal("유즈넷", profile.TradeName);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalCompanyProfileMaintenance_RepairsLegacyUsenetCodeTradeName_WithoutOverwritingCustomName()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-company-profile-default-repair-{Guid.NewGuid():N}");
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var legacyDefaultId = OfficeCodeCatalog.UsenetDefaultCompanyProfileId;
+            var customId = Guid.NewGuid();
+            db.CompanyProfiles.AddRange(
+                new LocalCompanyProfile
+                {
+                    Id = legacyDefaultId,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileName = "USENET 기본",
+                    TradeName = "USENET",
+                    IsDefaultForOffice = true,
+                    IsActive = true,
+                    IsDeleted = false,
+                    IsDirty = false
+                },
+                new LocalCompanyProfile
+                {
+                    Id = customId,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ProfileName = "ITWORLD 실사용 회사설정",
+                    TradeName = "ITWORLD 실제 상호",
+                    IsDefaultForOffice = true,
+                    IsActive = true,
+                    IsDeleted = false,
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            await service.EnsureCompanyProfilesHealthyAsync();
+
+            db.ChangeTracker.Clear();
+            var repaired = await db.CompanyProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == legacyDefaultId);
+            var custom = await db.CompanyProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == customId);
+            Assert.Equal("유즈넷", repaired.TradeName);
+            Assert.Equal("ITWORLD 실제 상호", custom.TradeName);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task LocalStateService_GetCompanyProfile_IgnoresAssignedProfileFromDifferentOffice()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-company-profile-office-scope-{Guid.NewGuid():N}");

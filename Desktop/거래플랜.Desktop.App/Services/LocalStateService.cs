@@ -143,7 +143,7 @@ public sealed partial class LocalStateService
 
 	private static readonly CompanyProfileDefaultDefinition[] RequiredCompanyProfileDefaults = new CompanyProfileDefaultDefinition[3]
 	{
-		new CompanyProfileDefaultDefinition("USENET 기본", "USENET", "USENET", "", "", "", ""),
+		new CompanyProfileDefaultDefinition("USENET 기본", "USENET", "유즈넷", "", "", "", ""),
 		new CompanyProfileDefaultDefinition("ITWORLD 기본", "ITWORLD", "ITWORLD", "", "", "", ""),
 		new CompanyProfileDefaultDefinition("YEONSU 기본", "YEONSU", "YEONSU", string.Empty, string.Empty, string.Empty, string.Empty)
 	};
@@ -3542,7 +3542,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		Guid result;
 		bool hasInvalidAssignment = assignmentSettings.Any((LocalSetting localSetting) => !string.IsNullOrWhiteSpace(localSetting.Value) && (!Guid.TryParse(localSetting.Value, out result) || !validProfileIds.Contains(result)));
 		bool missingDefaults = RequiredCompanyProfileDefaults.Any((CompanyProfileDefaultDefinition companyProfileDefaultDefinition) => !activeProfiles.Any((LocalCompanyProfile localCompanyProfile) => string.Equals(NormalizeOfficeCode(localCompanyProfile.OfficeCode, companyProfileDefaultDefinition.OfficeCode), companyProfileDefaultDefinition.OfficeCode, StringComparison.OrdinalIgnoreCase) && localCompanyProfile.IsDefaultForOffice));
-		if (!hasInvalidAssignment && !missingDefaults && activeProfiles.Count > 0)
+		bool hasDefaultTradeNameRepair = RequiredCompanyProfileDefaults.Any((CompanyProfileDefaultDefinition companyProfileDefaultDefinition) => activeProfiles.Any((LocalCompanyProfile localCompanyProfile) => localCompanyProfile.IsDefaultForOffice && string.Equals(NormalizeOfficeCode(localCompanyProfile.OfficeCode, companyProfileDefaultDefinition.OfficeCode), companyProfileDefaultDefinition.OfficeCode, StringComparison.OrdinalIgnoreCase) && RequiresDefaultCompanyProfileTradeNameRepair(localCompanyProfile, companyProfileDefaultDefinition)));
+		if (!hasInvalidAssignment && !missingDefaults && !hasDefaultTradeNameRepair && activeProfiles.Count > 0)
 		{
 			return;
 		}
@@ -3644,7 +3645,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			profile.ProfileName = text2;
 			flag = true;
 		}
-		string text3 = (string.IsNullOrWhiteSpace(profile.TradeName) ? definition.TradeName : profile.TradeName.Trim());
+		string text3 = ResolveDefaultCompanyProfileTradeName(profile.TradeName, definition);
 		if (!string.Equals(profile.TradeName, text3, StringComparison.CurrentCulture))
 		{
 			profile.TradeName = text3;
@@ -3691,6 +3692,40 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			profile.UpdatedAtUtc = now;
 		}
 		return flag;
+	}
+
+	private static string ResolveDefaultCompanyProfileTradeName(string? tradeName, CompanyProfileDefaultDefinition definition)
+	{
+		string trimmed = tradeName?.Trim() ?? string.Empty;
+		if (string.IsNullOrWhiteSpace(trimmed) || IsDefaultCompanyProfileTradeNamePlaceholder(trimmed, definition.OfficeCode))
+		{
+			return definition.TradeName.Trim();
+		}
+		return trimmed;
+	}
+
+	private static bool RequiresDefaultCompanyProfileTradeNameRepair(LocalCompanyProfile profile, CompanyProfileDefaultDefinition definition)
+	{
+		return !string.Equals(profile.TradeName, ResolveDefaultCompanyProfileTradeName(profile.TradeName, definition), StringComparison.CurrentCulture);
+	}
+
+	private static bool IsDefaultCompanyProfileTradeNamePlaceholder(string? tradeName, string officeCode)
+	{
+		string trimmed = tradeName?.Trim() ?? string.Empty;
+		if (string.IsNullOrWhiteSpace(trimmed))
+		{
+			return true;
+		}
+		string normalizedOfficeCode = NormalizeOfficeCode(officeCode, OfficeCodeCatalog.Usenet);
+		if (string.Equals(trimmed, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase))
+		{
+			return true;
+		}
+		if (OfficeCodeCatalog.TryNormalize(trimmed, out string normalizedTradeName))
+		{
+			return string.Equals(normalizedTradeName, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase);
+		}
+		return false;
 	}
 
 	public async Task<Guid?> GetAssignedCompanyProfileIdAsync(string? username, CancellationToken ct = default(CancellationToken))

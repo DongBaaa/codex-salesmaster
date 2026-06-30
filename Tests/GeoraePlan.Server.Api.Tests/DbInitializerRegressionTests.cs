@@ -42,6 +42,54 @@ public sealed class DbInitializerRegressionTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureDefaultCompanyProfilesAsync_CreatesUsenetTradeNameInKorean()
+    {
+        await InvokeEnsureDefaultCompanyProfilesAsync();
+
+        var profile = await _dbContext.CompanyProfiles.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == OfficeCodeCatalog.UsenetDefaultCompanyProfileId);
+        Assert.Equal(OfficeCodeCatalog.Usenet, profile.OfficeCode);
+        Assert.Equal("USENET 기본", profile.ProfileName);
+        Assert.Equal("유즈넷", profile.TradeName);
+    }
+
+    [Fact]
+    public async Task EnsureDefaultCompanyProfilesAsync_RepairsLegacyUsenetCodeTradeName_WithoutOverwritingCustomName()
+    {
+        _dbContext.CompanyProfiles.AddRange(
+            new CompanyProfile
+            {
+                Id = OfficeCodeCatalog.UsenetDefaultCompanyProfileId,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileName = "USENET 기본",
+                TradeName = "USENET",
+                IsDefaultForOffice = true,
+                IsActive = true,
+                IsDeleted = false
+            },
+            new CompanyProfile
+            {
+                Id = OfficeCodeCatalog.ItworldDefaultCompanyProfileId,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ProfileName = "ITWORLD 실사용 회사설정",
+                TradeName = "ITWORLD 실제 상호",
+                IsDefaultForOffice = true,
+                IsActive = true,
+                IsDeleted = false
+            });
+        await _dbContext.SaveChangesAsync();
+
+        await InvokeEnsureDefaultCompanyProfilesAsync();
+
+        var repaired = await _dbContext.CompanyProfiles.IgnoreQueryFilters()
+            .SingleAsync(profile => profile.Id == OfficeCodeCatalog.UsenetDefaultCompanyProfileId);
+        var custom = await _dbContext.CompanyProfiles.IgnoreQueryFilters()
+            .SingleAsync(profile => profile.Id == OfficeCodeCatalog.ItworldDefaultCompanyProfileId);
+        Assert.Equal("유즈넷", repaired.TradeName);
+        Assert.Equal("ITWORLD 실제 상호", custom.TradeName);
+    }
+
+    [Fact]
     public async Task EnsureInvoiceVersionColumnsAsync_DoesNotRequire_SourceWarehouseCode_BeforeRuntimeSchema()
     {
         await _dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
@@ -1458,6 +1506,20 @@ public sealed class DbInitializerRegressionTests : IDisposable
     {
         _dbContext.Dispose();
         _connection.Dispose();
+    }
+
+    private async Task InvokeEnsureDefaultCompanyProfilesAsync()
+    {
+        var method = typeof(DbInitializer).GetMethod(
+            "EnsureDefaultCompanyProfilesAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
+        await _dbContext.SaveChangesAsync();
     }
 
     private static DirectoryInfo FindRepositoryRoot()

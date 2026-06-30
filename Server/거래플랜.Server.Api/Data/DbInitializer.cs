@@ -40,7 +40,7 @@ public static partial class DbInitializer
     ];
     private static readonly (Guid Id, string ProfileName, string OfficeCode, string TradeName, string Representative, string BusinessNumber, string Address, string ContactNumber)[] DefaultCompanyProfiles =
     [
-        (OfficeCodeCatalog.UsenetDefaultCompanyProfileId, "USENET 기본", OfficeCodeCatalog.Usenet, OfficeCodeCatalog.Usenet, "", "", "", ""),
+        (OfficeCodeCatalog.UsenetDefaultCompanyProfileId, "USENET 기본", OfficeCodeCatalog.Usenet, "유즈넷", "", "", "", ""),
         (OfficeCodeCatalog.ItworldDefaultCompanyProfileId, "ITWORLD 기본", OfficeCodeCatalog.Itworld, OfficeCodeCatalog.Itworld, "", "", "", ""),
         (OfficeCodeCatalog.YeonsuDefaultCompanyProfileId, "YEONSU 기본", OfficeCodeCatalog.Yeonsu, OfficeCodeCatalog.Yeonsu, string.Empty, string.Empty, string.Empty, string.Empty)
     ];
@@ -639,7 +639,7 @@ public static partial class DbInitializer
                     Id = definition.Id,
                     ProfileName = string.IsNullOrWhiteSpace(current.ProfileName) ? definition.ProfileName : current.ProfileName.Trim(),
                     OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(current.OfficeCode, definition.OfficeCode),
-                    TradeName = string.IsNullOrWhiteSpace(current.TradeName) ? definition.TradeName : current.TradeName.Trim(),
+                    TradeName = ResolveDefaultCompanyProfileTradeName(current.TradeName, definition.OfficeCode, definition.TradeName),
                     Representative = string.IsNullOrWhiteSpace(current.Representative) ? definition.Representative : current.Representative.Trim(),
                     BusinessNumber = string.IsNullOrWhiteSpace(current.BusinessNumber) ? definition.BusinessNumber : current.BusinessNumber.Trim(),
                     BusinessType = current.BusinessType?.Trim() ?? string.Empty,
@@ -675,9 +675,7 @@ public static partial class DbInitializer
                 ? definition.ProfileName
                 : current.ProfileName.Trim();
             current.OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(current.OfficeCode, definition.OfficeCode);
-            current.TradeName = string.IsNullOrWhiteSpace(current.TradeName)
-                ? definition.TradeName
-                : current.TradeName.Trim();
+            current.TradeName = ResolveDefaultCompanyProfileTradeName(current.TradeName, definition.OfficeCode, definition.TradeName);
             current.Representative = string.IsNullOrWhiteSpace(current.Representative)
                 ? definition.Representative
                 : current.Representative.Trim();
@@ -742,6 +740,44 @@ public static partial class DbInitializer
         {
             TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
+    }
+
+    private static string ResolveDefaultCompanyProfileTradeName(
+        string? tradeName,
+        string officeCode,
+        string definitionTradeName)
+    {
+        var trimmed = tradeName?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(trimmed) || IsDefaultCompanyProfileTradeNamePlaceholder(trimmed, officeCode))
+        {
+            return string.IsNullOrWhiteSpace(definitionTradeName)
+                ? GetDefaultCompanyProfileTradeName(officeCode)
+                : definitionTradeName.Trim();
+        }
+
+        return trimmed;
+    }
+
+    private static string GetDefaultCompanyProfileTradeName(string? officeCode)
+    {
+        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, OfficeCodeCatalog.Usenet);
+        return string.Equals(normalizedOfficeCode, OfficeCodeCatalog.Usenet, StringComparison.OrdinalIgnoreCase)
+            ? "유즈넷"
+            : OfficeCodeCatalog.GetOfficeDisplayName(normalizedOfficeCode);
+    }
+
+    private static bool IsDefaultCompanyProfileTradeNamePlaceholder(string? tradeName, string officeCode)
+    {
+        var trimmed = tradeName?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(trimmed))
+            return true;
+
+        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, OfficeCodeCatalog.Usenet);
+        if (string.Equals(trimmed, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return OfficeCodeCatalog.TryNormalize(trimmed, out var normalizedTradeName) &&
+               string.Equals(normalizedTradeName, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task NormalizeCustomerClassificationIntegrityAsync(
