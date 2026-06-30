@@ -88,7 +88,8 @@ public static class TradePrintExecutor
                 defaultQueue,
                 pageCount,
                 LoadPrinterSnapshotSafely,
-                currentPageNumber)
+                currentPageNumber,
+                defaultFileBaseName: jobName)
             {
                 Owner = ResolveActiveOwner()
             };

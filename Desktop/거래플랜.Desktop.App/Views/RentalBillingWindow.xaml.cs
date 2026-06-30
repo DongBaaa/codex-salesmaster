@@ -150,7 +150,7 @@ public partial class RentalBillingWindow : Window
             if (!viewModel.CanRegisterSettlementSelected)
             {
                 MessageBox.Show(
-                    "거래처별 요약행에서는 바로 수금등록할 수 없습니다. '수정할 청구건 선택'으로 실제 청구건을 선택한 뒤 다시 시도하세요.",
+                    "거래처별 요약행에서는 바로 수금등록할 수 없습니다. '개별 청구건 직접 보기'으로 실제 청구건을 선택한 뒤 다시 시도하세요.",
                     "알림",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
@@ -259,7 +259,7 @@ public partial class RentalBillingWindow : Window
         if (!viewModel.CanRegisterSettlementSelected)
         {
             MessageBox.Show(
-                "거래처별 요약행에서는 바로 입금등록할 수 없습니다. '수정할 청구건 선택'으로 실제 청구건을 선택한 뒤 다시 시도하세요.",
+                "거래처별 요약행에서는 바로 입금등록할 수 없습니다. '개별 청구건 직접 보기'으로 실제 청구건을 선택한 뒤 다시 시도하세요.",
                 "알림",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
@@ -277,7 +277,7 @@ public partial class RentalBillingWindow : Window
             if (history.BillingProfileId != viewModel.SelectedRow.Source.Id)
             {
                 MessageBox.Show(
-                    "거래처별 요약에 포함된 다른 청구건입니다. '수정할 청구건 선택'으로 실제 청구건을 선택한 뒤 입금 등록하세요.",
+                    "거래처별 요약에 포함된 다른 청구건입니다. '개별 청구건 직접 보기'으로 실제 청구건을 선택한 뒤 입금 등록하세요.",
                     "알림",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
@@ -460,7 +460,7 @@ public partial class RentalBillingWindow : Window
         if (!viewModel.CanEditBillingProfileDetails)
         {
             MessageBox.Show(
-                "거래처별 요약행에서는 장비 연결을 직접 편집할 수 없습니다. '수정할 청구건 선택'으로 실제 청구건을 선택한 뒤 다시 시도하세요.",
+                "거래처별 요약행에서는 장비 연결을 직접 편집할 수 없습니다. '개별 청구건 직접 보기'으로 실제 청구건을 선택한 뒤 다시 시도하세요.",
                 "렌탈 자산 연결",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);

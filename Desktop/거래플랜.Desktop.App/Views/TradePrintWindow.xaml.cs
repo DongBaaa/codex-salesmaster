@@ -12,6 +12,7 @@ public partial class TradePrintWindow : Window
 {
     private readonly int _pageCount;
     private readonly int? _currentPageNumber;
+    private readonly string _defaultFileBaseName;
     private readonly Func<(IReadOnlyList<PrintQueue> PrintQueues, PrintQueue? DefaultPrintQueue)>? _printerRefreshProvider;
     private bool _isRefreshingPrinters;
 
@@ -22,13 +23,15 @@ public partial class TradePrintWindow : Window
         PrintQueue? defaultPrintQueue,
         int pageCount,
         Func<(IReadOnlyList<PrintQueue> PrintQueues, PrintQueue? DefaultPrintQueue)>? printerRefreshProvider = null,
-        int? currentPageNumber = null)
+        int? currentPageNumber = null,
+        string? defaultFileBaseName = null)
     {
         ArgumentNullException.ThrowIfNull(printQueues);
 
         InitializeComponent();
         _pageCount = Math.Max(0, pageCount);
         _currentPageNumber = NormalizeCurrentPageNumber(currentPageNumber, _pageCount);
+        _defaultFileBaseName = NormalizeDefaultFileBaseName(defaultFileBaseName);
         _printerRefreshProvider = printerRefreshProvider;
         ConfigureCurrentPageOption();
         PopulatePrinters(printQueues, defaultPrintQueue);
@@ -252,7 +255,7 @@ public partial class TradePrintWindow : Window
     private void SaveToFile(TradePrintFileFormat fileFormat)
     {
         var extension = fileFormat == TradePrintFileFormat.Pdf ? ".pdf" : ".xps";
-        var defaultFileName = MakeSafeFileName($"거래플랜-인쇄문서-{DateTime.Now:yyyyMMdd-HHmm}{extension}");
+        var defaultFileName = MakeSafeFileName($"{_defaultFileBaseName}-{DateTime.Now:yyyyMMdd-HHmm}{extension}");
         var dialog = new SaveFileDialog
         {
             Title = "인쇄 문서 파일 저장",
@@ -446,6 +449,14 @@ public partial class TradePrintWindow : Window
         return currentPageNumber.Value >= 1 && currentPageNumber.Value <= pageCount
             ? currentPageNumber.Value
             : null;
+    }
+
+    private static string NormalizeDefaultFileBaseName(string? defaultFileBaseName)
+    {
+        var normalized = (defaultFileBaseName ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(normalized)
+            ? "출력서류"
+            : normalized;
     }
 
     private static string MakeSafeFileName(string fileName)

@@ -1715,6 +1715,79 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     [Fact]
+    public async Task RegisterBillingSettlement_UsesBillingMethodReceiptBucketForDirectInput()
+    {
+        PrepareAppRoot($"georaeplan-rental-register-settlement-method-{Guid.NewGuid():N}");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+            var cases = new[]
+            {
+                new { BillingMethod = "\uD604\uAE08", ExpectedBucket = "cash" },
+                new { BillingMethod = "\uCE74\uB4DC", ExpectedBucket = "card" },
+                new { BillingMethod = "CMS", ExpectedBucket = "bank" },
+                new { BillingMethod = "\uC804\uC790\uC138\uAE08\uACC4\uC0B0\uC11C", ExpectedBucket = "bank" }
+            };
+
+            foreach (var currentCase in cases)
+            {
+                var profileId = Guid.NewGuid();
+                var assetId = Guid.NewGuid();
+                var customerId = Guid.NewGuid();
+                var customerName = $"Billing method settlement {currentCase.ExpectedBucket} {profileId:N}";
+                db.Customers.Add(CreateCustomer(customerId, customerName));
+                var profile = CreateBillingProfile(profileId, assetId, customerName);
+                profile.CustomerId = customerId;
+                profile.BillingMethod = currentCase.BillingMethod;
+                db.RentalBillingProfiles.Add(profile);
+                db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "\uCCAD\uAD6C\uB300\uC0C1"));
+                await db.SaveChangesAsync();
+
+                var start = await rental.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+                Assert.True(start.Success, start.Message);
+
+                var invoice = await db.Invoices.AsNoTracking().SingleAsync(row => row.Id == start.RelatedEntityId);
+                var runId = Assert.IsType<Guid>(invoice.LinkedRentalBillingRunId);
+
+                var register = await rental.RegisterBillingSettlementAsync(
+                    profileId,
+                    new DateOnly(2026, 5, 27),
+                    invoice.TotalAmount,
+                    "billing method bucket",
+                    session,
+                    billingRunId: runId);
+                Assert.True(register.Success, register.Message);
+
+                var transaction = Assert.Single(await db.Transactions
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .Where(row =>
+                        !row.IsDeleted &&
+                        row.LinkedRentalBillingProfileId == profileId &&
+                        row.LinkedRentalBillingRunId == runId)
+                    .ToListAsync());
+
+                Assert.Equal(invoice.TotalAmount, transaction.SettlementAmount);
+                Assert.Equal(invoice.TotalAmount, transaction.ReceiptTotal);
+                Assert.Equal(currentCase.ExpectedBucket == "cash" ? invoice.TotalAmount : 0m, transaction.CashReceipt);
+                Assert.Equal(currentCase.ExpectedBucket == "card" ? invoice.TotalAmount : 0m, transaction.CardReceipt);
+                Assert.Equal(currentCase.ExpectedBucket == "bank" ? invoice.TotalAmount : 0m, transaction.BankReceipt);
+            }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task RegisterBillingSettlement_PartialThenCompleteCreatesDeltaEvidenceAndCompletedRun()
     {
         PrepareAppRoot("georaeplan-rental-register-settlement-partial-complete");

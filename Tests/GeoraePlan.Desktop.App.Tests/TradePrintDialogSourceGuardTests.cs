@@ -329,6 +329,38 @@ public sealed class TradePrintDialogSourceGuardTests
     }
 
     [Fact]
+    public void TradePrintWindow_DefaultFileNameUsesCustomerAndOutputDocumentNames()
+    {
+        var repoRoot = FindRepositoryRoot();
+        var appRoot = Directory.EnumerateDirectories(
+                Path.Combine(repoRoot, "Desktop"),
+                "*.Desktop.App",
+                SearchOption.TopDirectoryOnly)
+            .Single();
+        var codeBehind = File.ReadAllText(Path.Combine(
+            appRoot,
+            "Views",
+            "TradePrintWindow.xaml.cs"));
+        var executor = File.ReadAllText(Path.Combine(
+            appRoot,
+            "Services",
+            "TradePrintExecutor.cs"));
+        var salesViewModel = File.ReadAllText(Path.Combine(
+            appRoot,
+            "ViewModels",
+            "SalesViewModel.cs"));
+
+        Assert.Contains("_defaultFileBaseName", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("defaultFileBaseName: jobName", executor, StringComparison.Ordinal);
+        Assert.Contains("MakeSafeFileName($\"{_defaultFileBaseName}-", codeBehind, StringComparison.Ordinal);
+        Assert.DoesNotContain("\uAC70\uB798\uD50C\uB79C-\uC778\uC1C4\uBB38\uC11C", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("BuildPrintOutputJobName(", salesViewModel, StringComparison.Ordinal);
+        Assert.Contains("selectedCodes.Select(AttachmentDocumentCatalog.GetDisplayName)", salesViewModel, StringComparison.Ordinal);
+        Assert.DoesNotContain("\uCD9C\uB825\uBB3C_{invoice.InvoiceDate", salesViewModel, StringComparison.Ordinal);
+        Assert.DoesNotContain("\uAD6C\uB9E4\uBA85\uC138\uC11C_{invoice.InvoiceDate", salesViewModel, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TradePrintExecutor_SavesPdfFileFromFixedDocument()
     {
         RunOnSta(() =>

@@ -19,6 +19,7 @@ public sealed partial class RentalBillingTemplateEditorItem : ObservableObject
     [ObservableProperty] private decimal _unitPrice;
     [ObservableProperty] private decimal _amount;
     [ObservableProperty] private string _note = string.Empty;
+    [ObservableProperty] private string _invoiceItemNamePreview = string.Empty;
     [ObservableProperty] private string _includedAssetSummary = string.Empty;
     [ObservableProperty] private string _representativeAssetSummary = "대표자산 미지정";
 

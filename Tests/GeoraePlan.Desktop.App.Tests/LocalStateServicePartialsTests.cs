@@ -3334,18 +3334,49 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
-    public void RentalBillingWindow_CheckedDeleteButtonBindsEnabledState()
+    public void RentalBillingViewModel_DefersMaintenanceUntilAfterInitialRowsLoad()
     {
+        var appRoot = Directory.EnumerateDirectories(
+                Path.Combine(FindRepositoryRoot(), "Desktop"),
+                "*.Desktop.App",
+                SearchOption.TopDirectoryOnly)
+            .Single();
+        var sourcePath = Path.Combine(
+            appRoot,
+            "ViewModels",
+            "RentalBillingViewModel.cs");
+
+        var source = File.ReadAllText(sourcePath);
+        var loadStart = source.IndexOf("public async Task LoadAsync()", StringComparison.Ordinal);
+        var loadEnd = source.IndexOf("public void CancelPendingBackgroundWork()", loadStart, StringComparison.Ordinal);
+        Assert.True(loadStart >= 0 && loadEnd > loadStart, "LoadAsync range was not found.");
+        var loadBody = source[loadStart..loadEnd];
+
+        Assert.DoesNotContain("CleanupLegacyAssignedUsernamesAsync", loadBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("RepairBillingInvoicePeriodLinksAsync", loadBody, StringComparison.Ordinal);
+        Assert.Contains("StartInitialRowsLoad();", loadBody, StringComparison.Ordinal);
+        Assert.Contains("LoadInitialRowsThenDeferredMaintenanceAsync()", source, StringComparison.Ordinal);
+        Assert.Contains("await ReloadAsync();", source, StringComparison.Ordinal);
+        Assert.Contains("await RunDeferredInitialMaintenanceAsync();", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RentalBillingWindow_RemovesBulkCheckedDeleteButtonFromHeader()
+    {
+        var appRoot = Directory.EnumerateDirectories(
+                Path.Combine(FindRepositoryRoot(), "Desktop"),
+                "*.Desktop.App",
+                SearchOption.TopDirectoryOnly)
+            .Single();
         var xamlPath = Path.Combine(
-            FindRepositoryRoot(),
-            "Desktop",
-            "거래플랜.Desktop.App",
+            appRoot,
             "Views",
             "RentalBillingWindow.xaml");
 
         var xaml = File.ReadAllText(xamlPath);
 
-        Assert.Contains("Command=\"{Binding DeleteCheckedCommand}\" IsEnabled=\"{Binding CanDeleteChecked}\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Command=\"{Binding DeleteCheckedCommand}\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("\uCCB4\uD06C \uCCAD\uAD6C \uC77C\uAD04\uC0AD\uC81C", xaml, StringComparison.Ordinal);
     }
 
     [Fact]

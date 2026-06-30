@@ -247,14 +247,10 @@
                     <Button Content="신규 렌탈 거래처 등록" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,6,6" Click="NewRentalCustomerButton_Click"/>
                     <Button Content="신규 설정" Background="#3949AB" BorderBrush="#3949AB" Margin="0,0,6,6" Command="{Binding NewProfileCommand}"/>
                     <Button Content="저장" Background="#1B5E20" BorderBrush="#1B5E20" Margin="0,0,6,6" Command="{Binding SaveCommand}" IsEnabled="{Binding CanSave}" ToolTip="청구설정 필요 장비를 선택한 뒤 저장하면 청구 프로필이 생성됩니다."/>
-                    <Button Content="선택 월 청구서 만들기" Background="#2E7D32" BorderBrush="#2E7D32" Margin="0,0,6,6" Click="StartBillingButton_Click" IsEnabled="{Binding CanStartBillingSelected}"
+                    <Button Content="청구서 만들기" Background="#2E7D32" BorderBrush="#2E7D32" Margin="0,0,6,6" Click="StartBillingButton_Click" IsEnabled="{Binding CanStartBillingSelected}"
                             ToolTip="청구일 전후와 관계없이 조회/작성 기준일에 해당하는 전표를 생성하거나 기존 청구서를 엽니다."/>
-                    <Button Content="선택 청구 보류" Background="#F9A825" BorderBrush="#F9A825" Margin="0,0,6,6" Command="{Binding HoldBillingCommand}" IsEnabled="{Binding CanHoldSelected}"/>
                     <Button Content="입금 등록" Background="#00897B" BorderBrush="#00897B" Margin="0,0,6,6" Click="RegisterSettlementButton_Click" IsEnabled="{Binding CanRegisterSettlementSelected}"/>
-                    <Button Content="완납 처리" Background="#00695C" BorderBrush="#00695C" Margin="0,0,6,6" Command="{Binding MarkCompletedCommand}" IsEnabled="{Binding CanMarkCompletedSelected}"/>
                     <Button Content="선택 청구 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,6,6" Command="{Binding DeleteCommand}" IsEnabled="{Binding CanDeleteSelected}"/>
-                    <Button Content="수정할 청구건 선택" Background="#455A64" BorderBrush="#455A64" Margin="0,0,6,6" Command="{Binding ExpandSelectedSummaryCommand}" IsEnabled="{Binding CanExpandSelectedSummary}" ToolTip="거래처별 요약행을 실제 수정 가능한 개별 청구건 목록으로 전환합니다."/>
-                    <Button Content="체크 청구 일괄삭제" Background="#8E24AA" BorderBrush="#8E24AA" Margin="0,0,6,6" Command="{Binding DeleteCheckedCommand}" IsEnabled="{Binding CanDeleteChecked}"/>
                     <Button Content="닫기 (F12)" Click="CloseButton_Click" Margin="0,0,0,6"/>
                 </WrapPanel>
             </DockPanel>
@@ -458,19 +454,10 @@
                                 <TextBlock Text="이 행은 거래처별 요약입니다. 중복 거래처처럼 보이지 않도록 여러 청구 프로필과 청구설정 필요 장비를 한 줄로 묶어 보여줍니다."
                                            Foreground="#B3E5FC"
                                            TextWrapping="Wrap"/>
-                                <TextBlock Text="저장, 삭제, 장비연결, 입금등록처럼 실제 데이터를 바꾸는 작업은 수정할 청구건을 먼저 선택한 뒤 진행하세요."
+                                <TextBlock Text="저장, 삭제, 장비연결, 입금등록처럼 실제 데이터를 바꾸는 작업은 목록에서 실제 개별 청구건을 선택한 뒤 진행하세요."
                                            Foreground="#EAF2FF"
                                            Margin="0,6,0,0"
                                            TextWrapping="Wrap"/>
-                                <Button Content="수정할 청구건 선택"
-                                        HorizontalAlignment="Left"
-                                        MinWidth="150"
-                                        Margin="0,10,0,0"
-                                        Background="#455A64"
-                                        BorderBrush="#455A64"
-                                        Command="{Binding ExpandSelectedSummaryCommand}"
-                                        IsEnabled="{Binding CanExpandSelectedSummary}"
-                                        ToolTip="이 거래처의 개별 청구건 목록으로 전환합니다."/>
                             </StackPanel>
                         </Border>
 
@@ -722,14 +709,14 @@
                             <Button Content="▲" Width="34" MinWidth="34" Padding="0" Background="#455A64" BorderBrush="#455A64" Margin="0,0,4,0" Command="{Binding MoveTemplateItemUpCommand}" ToolTip="선택한 표시 품목을 위로 이동"/>
                             <Button Content="▼" Width="34" MinWidth="34" Padding="0" Background="#455A64" BorderBrush="#455A64" Margin="0,0,8,0" Command="{Binding MoveTemplateItemDownCommand}" ToolTip="선택한 표시 품목을 아래로 이동"/>
                             <Button Content="선택 표시 라인 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,8,0" Command="{Binding RemoveTemplateItemCommand}"/>
-                            <Button Content="내부 포함 장비 연결" Background="#6A1B9A" BorderBrush="#6A1B9A" Click="OpenAssetLinkDialogButton_Click" IsEnabled="{Binding CanOpenAssetLinkDialog}"/>
+                            <Button Content="렌탈 자산연결" Background="#6A1B9A" BorderBrush="#6A1B9A" Click="OpenAssetLinkDialogButton_Click" IsEnabled="{Binding CanOpenAssetLinkDialog}"/>
                         </WrapPanel>
                         <TextBlock Text="{Binding ApplySelectedAssetsHint}" Foreground="#90CAF9" Margin="0,0,0,8" TextWrapping="Wrap"/>
                         <TextBlock Text="청구유형이 묶음/개별이면 표시품목 라인유형이 자동으로 같은 값으로 고정됩니다. 품목별로 섞어 쓰려면 청구유형을 혼합으로 선택하세요."
                                    Foreground="#90CAF9" Margin="0,0,0,8" TextWrapping="Wrap"/>
 
-                        <TextBlock Text="청구서 표시 품목 (거래명세서 출력 라인)" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,6"/>
-                        <TextBlock Text="거래명세서/청구서에 인쇄될 표시 라인입니다. 이 표에서는 품명·규격·라인유형만 정하고, 실제 청구/전표 대상 자산은 아래 '내부 포함 장비' 목록에서만 결정됩니다. 개별 라인은 같은 모델명끼리 청구서 만들기 시 수량 합산됩니다."
+                        <TextBlock Text="청구서 표시 품목 (전표/거래명세서 출력 라인)" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,6"/>
+                        <TextBlock Text="거래명세서/청구서에 인쇄될 표시 라인입니다. 청구명은 청구 내역 구분명이고, 전표 품명은 청구주기와 기준일에 따라 자동 미리보기됩니다. 실제 청구/전표 대상 자산은 아래 '내부 포함 장비' 목록에서만 결정됩니다. 개별 라인은 같은 모델명끼리 청구서 만들기 시 수량 합산됩니다."
                                    Foreground="#90CAF9"
                                    Margin="0,0,0,8"
                                    TextWrapping="Wrap"/>
@@ -744,7 +731,8 @@
                                         </DataTemplate>
                                     </DataGridTemplateColumn.CellTemplate>
                                 </DataGridTemplateColumn>
-                                <DataGridTextColumn Header="표시 품목명" Binding="{Binding DisplayItemName, UpdateSourceTrigger=PropertyChanged}" Width="160"/>
+                                <DataGridTextColumn Header="청구명" Binding="{Binding DisplayItemName, UpdateSourceTrigger=PropertyChanged}" Width="160"/>
+                                <DataGridTextColumn Header="전표 품명" Binding="{Binding InvoiceItemNamePreview}" Width="190" IsReadOnly="True"/>
                                 <DataGridTextColumn Header="규격" Binding="{Binding Specification, UpdateSourceTrigger=PropertyChanged}" Width="170"/>
                                 <DataGridTextColumn Header="수량" Binding="{Binding Quantity, UpdateSourceTrigger=PropertyChanged}" Width="70"/>
                                 <DataGridTextColumn Header="단위" Binding="{Binding Unit, UpdateSourceTrigger=PropertyChanged}" Width="62"/>
@@ -757,13 +745,13 @@
                             </DataGrid.Columns>
                         </DataGrid>
 
-                        <Expander Header="내부 포함 장비 (거래처 설치/연결 자산)" IsExpanded="True" Margin="0,0,0,10" IsEnabled="{Binding CanEditBillingProfileDetails}">
+                        <Expander Header="내부 포함 장비 (렌탈 자산연결과 연동)" IsExpanded="True" Margin="0,0,0,10" IsEnabled="{Binding CanEditBillingProfileDetails}">
                             <StackPanel>
                                 <WrapPanel Margin="0,8,0,8">
                                     <Button Content="대표자산 지정" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,8,0" Command="{Binding SetRepresentativeAssetCommand}" IsEnabled="{Binding CanSetRepresentativeAsset}"/>
                                     <Button Content="선택 장비 표시품목 추가" Background="#3949AB" BorderBrush="#3949AB" Margin="0,0,8,0" Command="{Binding AddSelectedIncludedAssetToTemplateItemCommand}" IsEnabled="{Binding CanAddSelectedIncludedAssetToTemplateItem}"/>
                                     <Button Content="선택 장비 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,8,0" Command="{Binding RemoveIncludedAssetCommand}" IsEnabled="{Binding CanRemoveIncludedAsset}"/>
-                                    <TextBlock Text="이 목록에는 거래처에 설치되었거나 청구 프로필에 연결된 자산이 모두 표시됩니다. 전표에 넣을 장비를 선택한 뒤 표시품목에 추가하세요. 청구서 표시 품목명은 전표 품명으로 그대로 저장됩니다." Foreground="#90CAF9" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                                    <TextBlock Text="이 목록은 현재 청구 프로필에 내부 포함된 렌탈 자산만 표시합니다. 삭제하면 이 목록에서 빠지고 렌탈 자산연결 후보로 돌아갑니다. 전표에 넣을 장비를 선택한 뒤 표시품목에 추가하세요." Foreground="#90CAF9" VerticalAlignment="Center" TextWrapping="Wrap"/>
                                 </WrapPanel>
                                 <DataGrid ItemsSource="{Binding IncludedAssets}" SelectedItem="{Binding SelectedIncludedAsset}" Height="190" Margin="0,0,0,10">
                                     <DataGrid.Columns>

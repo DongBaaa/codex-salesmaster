@@ -114,20 +114,22 @@ public sealed class MasterUiWiringGuardTests
         AssertContainsAll(
             xaml,
             "청구서 표시 품목(거래명세서 출력 라인)과 내부 포함 장비(실제 청구/전표 대상 자산)를 분리 관리합니다.",
-            "청구서 표시 품목 (거래명세서 출력 라인)",
+            "청구서 표시 품목 (전표/거래명세서 출력 라인)",
             "실제 청구/전표 대상 자산은 아래 '내부 포함 장비' 목록에서만 결정됩니다.",
             "개별 라인은 같은 모델명끼리 청구서 만들기 시 수량 합산됩니다.",
-            "수정할 청구건 선택",
             "개별 청구건 직접 보기",
             "표시품목 요약",
             "선택 표시 라인 삭제",
-            "내부 포함 장비 연결",
+            "렌탈 자산연결",
             "내부장비수",
-            "내부 포함 장비 (거래처 설치/연결 자산)",
+            "내부 포함 장비 (렌탈 자산연결과 연동)",
+            "청구명",
+            "전표 품명",
             "선택 장비 표시품목 추가",
             "전표에 넣을 장비를 선택한 뒤 표시품목에 추가하세요.",
+            "삭제하면 이 목록에서 빠지고 렌탈 자산연결 후보로 돌아갑니다.",
             "이 행은 거래처별 요약입니다.",
-            "실제 데이터를 바꾸는 작업은 수정할 청구건을 먼저 선택한 뒤 진행하세요.",
+            "실제 데이터를 바꾸는 작업은 목록에서 실제 개별 청구건을 선택한 뒤 진행하세요.",
             "BillingAssetCoverageWarning",
             "HasBillingAssetCoverageWarning");
 
@@ -135,23 +137,28 @@ public sealed class MasterUiWiringGuardTests
         Assert.DoesNotContain("그룹을 개별 청구건으로 보기", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Content=\"선택 품목 삭제\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Content=\"새 장비연결\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Content=\"선택 청구 보류\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Content=\"완납 처리\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Content=\"수정할 청구건 선택\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Content=\"체크 청구 일괄삭제\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Content=\"선택 월 청구서 만들기\"", xaml, StringComparison.Ordinal);
 
         AssertContainsAll(
             code,
             "GetBillingAssetCoverageStartWarning()",
             "거래처별 요약행에서는 장비 연결을 직접 편집할 수 없습니다.",
-            "'수정할 청구건 선택'",
+            "'개별 청구건 직접 보기'",
             "청구 대상 장비 확인");
 
         AssertContainsAll(
             viewModel,
-            "표시 품목명만 저장해도 자산은 자동 추가되지 않습니다.",
+            "청구명만 저장해도 자산은 자동 추가되지 않습니다.",
             "내부 포함 장비에서 전표에 넣을 장비를 선택한 뒤 '선택 장비 표시품목 추가'를 누르세요.",
             "청구서 표시 품목에 내부 포함 장비가 없습니다.",
             "청구 프로필 연결 자산",
             "표시품목 포함 자산",
             "거래처별 요약 보기입니다.",
-            "수정할 청구건 선택",
+            "개별 청구건 직접 보기",
             "GetBillingAssetCoverageStartWarning");
     }
 

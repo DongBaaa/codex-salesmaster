@@ -1889,10 +1889,13 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             System.Windows.Documents.IDocumentPaginatorSource previewDocument = documents.Count == 1
                 ? documents[0]
                 : SupplementDocumentBuilder.MergeDocuments(documents);
+            var outputJobName = BuildPrintOutputJobName(
+                customer,
+                selectedCodes.Select(AttachmentDocumentCatalog.GetDisplayName));
             var previewViewModel = new PrintPreviewViewModel(
                 previewDocument,
                 _invoicePrintService,
-                $"출력물_{invoice.InvoiceDate:yyyyMMdd}_{customer.NameOriginal}");
+                outputJobName);
             var previewWindow = new PrintPreviewWindow(previewViewModel)
             {
                 Owner = GetActiveWindow()
@@ -1948,7 +1951,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         var previewViewModel = new PrintPreviewViewModel(
             previewDocument,
             _invoicePrintService,
-            $"구매명세서_{invoice.InvoiceDate:yyyyMMdd}_{customer.NameOriginal}");
+            BuildPrintOutputJobName(customer, new[] { "매입명세서" }));
         var previewWindow = new PrintPreviewWindow(previewViewModel)
         {
             Owner = GetActiveWindow()
@@ -1992,7 +1995,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         var previewViewModel = new PrintPreviewViewModel(
             previewDocument,
             _invoicePrintService,
-            $"{jobTitle}_{invoice.InvoiceDate:yyyyMMdd}_{customer.NameOriginal}");
+            BuildPrintOutputJobName(customer, new[] { jobTitle }));
         var previewWindow = new PrintPreviewWindow(previewViewModel)
         {
             Owner = GetActiveWindow()
@@ -2061,6 +2064,32 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
                 System.Windows.MessageBoxButton.OK,
                 System.Windows.MessageBoxImage.Error);
         }
+    }
+
+    private static string BuildPrintOutputJobName(LocalCustomer customer, IEnumerable<string> documentNames)
+    {
+        var customerName = NormalizePrintFileNamePart(customer.NameOriginal, "거래처");
+        var documentName = string.Join("+", documentNames
+            .Select(name => NormalizePrintFileNamePart(name, string.Empty))
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.Ordinal));
+
+        if (string.IsNullOrWhiteSpace(documentName))
+            documentName = "출력서류";
+
+        return $"{customerName}-{documentName}";
+    }
+
+    private static string NormalizePrintFileNamePart(string? value, string fallback)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+            normalized = fallback;
+
+        foreach (var invalidChar in Path.GetInvalidFileNameChars())
+            normalized = normalized.Replace(invalidChar, '-');
+
+        return normalized.Trim();
     }
 
     private async Task<InvoicePrintModel> LoadOrCreateInvoicePrintModelAsync(

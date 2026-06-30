@@ -42,14 +42,70 @@ public sealed class RentalBillingSpecificationTests
 
         InvokePrivateInstance(vm, "ApplyTemplateSalesFieldDefaults", item);
 
-        Assert.Equal("\uB9AC\uCF54 IMC 2000 \uC678", item.Specification);
+        Assert.Equal("IMC 2000 \uC678", item.Specification);
+    }
+
+    [Fact]
+    public void RentalBillingViewModel_BundleTemplateSumsIncludedAssetFeesAndPreviewsCycleInvoiceNames()
+    {
+        var representativeAssetId = Guid.Parse("16161616-1616-1616-1616-161616161616");
+        var otherAssetId = Guid.Parse("17171717-1717-1717-1717-171717171717");
+        var vm = new RentalBillingViewModel(null!, null!, new SessionState())
+        {
+            EditBillingType = "\uBB36\uC74C",
+            EditBillingCycleMonths = 3,
+            EditBillingAnchorMonth = 4,
+            EditBillingDay = 25,
+            ReferenceDate = new DateOnly(2026, 6, 29),
+            EditContractDate = new DateTime(2026, 4, 1)
+        };
+        var includedPool = GetPrivateField<List<RentalBillingAssetOption>>(vm, "_includedAssetPool");
+        includedPool.Add(new RentalBillingAssetOption
+        {
+            AssetId = representativeAssetId,
+            ItemName = "CLX-9201NA",
+            Manufacturer = "\uC0BC\uC131\uC804\uC790",
+            MonthlyFee = 110_000m
+        });
+        includedPool.Add(new RentalBillingAssetOption
+        {
+            AssetId = otherAssetId,
+            ItemName = "SL-X4220RX",
+            Manufacturer = "\uC0BC\uC131\uC804\uC790",
+            MonthlyFee = 90_000m
+        });
+
+        var item = new RentalBillingTemplateEditorItem
+        {
+            DisplayItemName = "\uBCF5\uD569\uAE30 \uB80C\uD0C8\uB8CC",
+            BillingLineMode = "\uBB36\uC74C",
+            RepresentativeAssetId = representativeAssetId,
+            Specification = "\uB300\uD45C \uC7A5\uBE44",
+            Quantity = 2m,
+            UnitPrice = 1m
+        };
+        item.IncludedAssetIds.Add(representativeAssetId);
+        item.IncludedAssetIds.Add(otherAssetId);
+        vm.TemplateItems.Add(item);
+
+        InvokePrivateInstance(vm, "ApplyIncludedAssetMonthlyFeesToTemplateItem", item, true);
+        InvokePrivateInstance(vm, "UpdateTemplateDerivedValues");
+
+        Assert.Equal(1m, item.Quantity);
+        Assert.Equal(200_000m, item.UnitPrice);
+        Assert.Equal(200_000m, item.Amount);
+        Assert.Equal("CLX-9201NA \uC678", item.Specification);
+        Assert.Equal("\uC0AC\uBB34\uAE30\uAE30 \uB80C\uD0C8\uB300\uAE08[4\uC6D4], \uC0AC\uBB34\uAE30\uAE30 \uB80C\uD0C8\uB300\uAE08[5\uC6D4], \uC0AC\uBB34\uAE30\uAE30 \uB80C\uD0C8\uB300\uAE08[6\uC6D4]", item.InvoiceItemNamePreview);
     }
 
     [Fact]
     public void RentalBillingViewModel_AppliesManufacturerModelSpecificationForIndividualTemplateItem()
     {
         var assetId = Guid.Parse("33333333-3333-3333-3333-333333333333");
-        var vm = new RentalBillingViewModel(null!, null!, new SessionState());
+        var vm = new RentalBillingViewModel(null!, null!, new SessionState())
+        {
+            EditBillingType = "\uAC1C\uBCC4"
+        };
         var includedPool = GetPrivateField<List<RentalBillingAssetOption>>(vm, "_includedAssetPool");
         includedPool.Add(new RentalBillingAssetOption
         {
@@ -329,7 +385,7 @@ public sealed class RentalBillingSpecificationTests
             representativeAsset,
             new List<LocalRentalAsset> { representativeAsset, otherAsset });
 
-        Assert.Equal("\uB9AC\uCF54 IMC 2000 \uC678", specification);
+        Assert.Equal("IMC 2000 \uC678", specification);
     }
 
     [Fact]
@@ -364,7 +420,7 @@ public sealed class RentalBillingSpecificationTests
             representativeAsset,
             new List<LocalRentalAsset> { representativeAsset, otherAsset });
 
-        Assert.Equal("\uB9AC\uCF54\uCF54\uB9AC\uC544 IMC2010 \uC678", specification);
+        Assert.Equal("IMC2010 \uC678", specification);
     }
 
     [Fact]
@@ -536,11 +592,17 @@ public sealed class RentalBillingSpecificationTests
         });
 
         InvokePrivateInstance(vm, "RefreshBillingAssetCollections", (object?)null);
-        var candidateRow = Assert.Single(vm.IncludedAssets, asset => asset.AssetId == assetId);
+        Assert.DoesNotContain(vm.IncludedAssets, asset => asset.AssetId == assetId);
+        var candidateRow = Assert.Single(vm.CandidateAssets, asset => asset.AssetId == assetId);
         Assert.False(candidateRow.IsSelected);
-        vm.SelectedIncludedAsset = candidateRow;
-        Assert.True(vm.CanAddSelectedIncludedAssetToTemplateItem);
         Assert.False(vm.CanRemoveIncludedAsset);
+
+        vm.ApplyAssetLinkSelections([candidateRow]);
+        var linkedRow = Assert.Single(vm.IncludedAssets, asset => asset.AssetId == assetId);
+        Assert.False(linkedRow.IsSelected);
+        vm.SelectedIncludedAsset = linkedRow;
+        Assert.True(vm.CanAddSelectedIncludedAssetToTemplateItem);
+        Assert.True(vm.CanRemoveIncludedAsset);
 
         InvokePrivateInstance(vm, "AddSelectedIncludedAssetToTemplateItem");
 
@@ -555,6 +617,49 @@ public sealed class RentalBillingSpecificationTests
 
         var edits = InvokePrivateInstance<IReadOnlyList<RentalBillingAssetLinkEdit>>(vm, "BuildPendingAssetLinkEdits");
         Assert.Contains(edits, edit => edit.AssetId == assetId);
+    }
+
+    [Fact]
+    public void RentalBillingViewModel_RemoveIncludedAssetReturnsAssetToLinkCandidates()
+    {
+        var assetId = Guid.Parse("15151515-1515-1515-1515-151515151515");
+        var vm = new RentalBillingViewModel(null!, null!, CreateUserSession(AppPermissionNames.RentalProfileEdit))
+        {
+            EditBillingType = "\uBB36\uC74C",
+            EditCustomerName = "\uBBF8\uCD94\uD640\uAD6C \uC2DC\uC124\uAD00\uB9AC\uACF5\uB2E8"
+        };
+        var item = new RentalBillingTemplateEditorItem
+        {
+            DisplayItemName = "\uB80C\uD0C8 \uC784\uB300\uB8CC",
+            BillingLineMode = "\uBB36\uC74C",
+            RepresentativeAssetId = assetId,
+            Quantity = 1m,
+            UnitPrice = 50_000m,
+            Amount = 50_000m
+        };
+        item.IncludedAssetIds.Add(assetId);
+        vm.TemplateItems.Add(item);
+        vm.SelectedTemplateItem = item;
+        var includedPool = GetPrivateField<List<RentalBillingAssetOption>>(vm, "_includedAssetPool");
+        includedPool.Add(new RentalBillingAssetOption
+        {
+            AssetId = assetId,
+            ItemName = "IMC2010",
+            MonthlyFee = 50_000m,
+            BillingProfileId = Guid.NewGuid(),
+            IsLinkedToCurrentProfile = true
+        });
+
+        InvokePrivateInstance(vm, "RefreshBillingAssetCollections", (object?)null);
+        vm.SelectedIncludedAsset = Assert.Single(vm.IncludedAssets, asset => asset.AssetId == assetId);
+
+        InvokePrivateInstance(vm, "RemoveIncludedAsset");
+
+        Assert.DoesNotContain(vm.IncludedAssets, asset => asset.AssetId == assetId);
+        Assert.Contains(vm.CandidateAssets, asset => asset.AssetId == assetId);
+        Assert.DoesNotContain(item.IncludedAssetIds, id => id == assetId);
+        Assert.DoesNotContain(includedPool, asset => asset.AssetId == assetId);
+        Assert.False(vm.CanRemoveIncludedAsset);
     }
 
     [Fact]
