@@ -9,17 +9,20 @@ import {
   FileText,
   Filter,
   Info,
+  KeyRound,
   LineChart,
   Loader2,
   LogIn,
   LogOut,
+  PlugZap,
   Search,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Unplug,
 } from "lucide-react";
 import { sampleCandidates } from "./data/sampleCandidates";
-import type { AiAnalyzeResponse, AiCitation, AiResearchReport, AuthStatus, PortfolioSettings, RankedCandidate, ScreeningFilters } from "./types";
+import type { AiAnalyzeResponse, AiCitation, AiProviderRegistration, AiResearchReport, AuthStatus, PortfolioSettings, RankedCandidate, ScreeningFilters } from "./types";
 import { buildOpenAiAnalysisPrompt } from "./lib/reportPrompt";
 import { buildAiReportMarkdown } from "./lib/aiReport";
 import { buildReportMarkdown, formatMarketCap, formatPercent, formatWon, getScreeningResult, rankCandidates } from "./lib/metrics";
@@ -122,6 +125,79 @@ function AuthControl({ status, onRefresh }: { status: AuthStatus | null; onRefre
         <LogOut size={15} />
       </button>
     </div>
+  );
+}
+
+function AiProviderPanel({
+  providers,
+  loading,
+  error,
+  onRefresh,
+}: {
+  providers: AiProviderRegistration[];
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+}) {
+  const disconnect = async (providerId: string) => {
+    await fetch(`/api/ai-providers/${providerId}/disconnect`, { method: "POST" }).catch(() => undefined);
+    onRefresh();
+  };
+
+  return (
+    <section className="providerPanel" aria-label="AI OAuth 등록">
+      <div className="panelHeader compact">
+        <div>
+          <p className="sectionKicker">AI OAuth 등록</p>
+          <h2>Claude · GPT · Gemini · Perplexity 연결</h2>
+        </div>
+        <span className="providerHint">
+          <KeyRound size={14} /> OAuth endpoint 설정 시 활성화
+        </span>
+      </div>
+      {error ? <div className="analysisStatus error"><AlertTriangle size={15} /> {error}</div> : null}
+      <div className="providerGrid">
+        {providers.map((provider) => (
+          <article className={provider.registered ? "providerCard registered" : "providerCard"} key={provider.id}>
+            <div className="providerTop">
+              <div className={`providerLogo ${provider.id}`}>{provider.shortLabel.slice(0, 2).toUpperCase()}</div>
+              <div>
+                <strong>{provider.shortLabel}</strong>
+                <span>{provider.modelFamily}</span>
+              </div>
+              <span className={provider.registered ? "providerState ok" : provider.configured ? "providerState ready" : "providerState off"}>
+                {provider.registered ? "등록 완료" : provider.configured ? "등록 가능" : "설정 필요"}
+              </span>
+            </div>
+            <p>{provider.authNote}</p>
+            <div className="providerMeta">
+              <span>Callback</span>
+              <code>{provider.callbackUrl}</code>
+            </div>
+            {provider.registered ? (
+              <div className="providerActions">
+                <span className="registeredAccount"><ShieldCheck size={13} /> {provider.account}</span>
+                <button className="secondaryButton compactButton" type="button" onClick={() => disconnect(provider.id)}>
+                  <Unplug size={15} /> 해제
+                </button>
+              </div>
+            ) : (
+              <div className="providerActions">
+                <a className={provider.configured ? "primaryButton compactButton" : "secondaryButton compactButton disabledLink"} href={provider.configured ? `/api/ai-providers/${provider.id}/oauth/start` : provider.docsUrl}>
+                  <PlugZap size={15} /> {provider.shortLabel} OAuth 등록
+                </a>
+                {!provider.configured ? <span className="requiredEnv">{provider.requiredEnv.slice(0, 3).join(" · ")}</span> : null}
+              </div>
+            )}
+          </article>
+        ))}
+        {loading && providers.length === 0 ? (
+          <article className="providerCard">
+            <div className="analysisStatus loading"><Loader2 size={15} className="spin" /> AI 제공자 상태 확인 중</div>
+          </article>
+        ) : null}
+      </div>
+    </section>
   );
 }
 
@@ -485,6 +561,9 @@ export default function App() {
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [aiReport, setAiReport] = useState<AiResearchReport | null>(null);
   const [aiCitations, setAiCitations] = useState<AiCitation[]>([]);
+  const [aiProviders, setAiProviders] = useState<AiProviderRegistration[]>([]);
+  const [aiProvidersLoading, setAiProvidersLoading] = useState(false);
+  const [aiProviderError, setAiProviderError] = useState<string | null>(null);
 
   const ranked = useMemo(() => rankCandidates(sampleCandidates, filters, settings), [filters, settings]);
   const visibleRanked = useMemo(() => {
@@ -511,8 +590,24 @@ export default function App() {
     }
   };
 
+  const refreshAiProviders = async () => {
+    setAiProvidersLoading(true);
+    setAiProviderError(null);
+    try {
+      const response = await fetch("/api/ai-providers", { headers: { Accept: "application/json" } });
+      if (!response.ok) throw new Error(`status ${response.status}`);
+      const payload = await response.json() as { providers: AiProviderRegistration[] };
+      setAiProviders(payload.providers || []);
+    } catch {
+      setAiProviderError("AI 제공자 등록 상태를 확인하지 못했습니다. Node API 서버 상태를 확인하세요.");
+    } finally {
+      setAiProvidersLoading(false);
+    }
+  };
+
   useEffect(() => {
     void refreshAuthStatus();
+    void refreshAiProviders();
   }, []);
 
   const runAnalysis = async () => {
@@ -616,6 +711,13 @@ export default function App() {
             setSettings(defaultSettings);
             setSearchTerm("");
           }}
+        />
+
+        <AiProviderPanel
+          providers={aiProviders}
+          loading={aiProvidersLoading}
+          error={aiProviderError}
+          onRefresh={refreshAiProviders}
         />
 
         <div className="workspaceGrid">

@@ -280,6 +280,7 @@ button {
 
 .summaryCard,
 .filterPanel,
+.providerPanel,
 .tablePanel,
 .detailDrawer,
 .exclusionPanel,
@@ -348,6 +349,172 @@ button {
   display: grid;
   grid-template-columns: repeat(8, minmax(110px, 1fr));
   gap: 10px;
+}
+
+.providerPanel {
+  padding: 16px;
+  margin-bottom: 14px;
+}
+
+.providerHint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.providerGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.providerCard {
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface-soft);
+  min-height: 232px;
+}
+
+.providerCard.registered {
+  background: linear-gradient(180deg, #f2fbf7 0%, #fff 100%);
+  border-color: #bdebd8;
+}
+
+.providerTop {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+}
+
+.providerLogo {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  color: white;
+  font-size: 12px;
+  font-weight: 900;
+  background: #1d4ed8;
+}
+
+.providerLogo.claude {
+  background: #8b5a2b;
+}
+
+.providerLogo.gemini {
+  background: #5b5bd6;
+}
+
+.providerLogo.perplexity {
+  background: #0891b2;
+}
+
+.providerTop strong {
+  display: block;
+  font-size: 14px;
+}
+
+.providerTop span:not(.providerState) {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.providerState {
+  border-radius: 999px;
+  padding: 5px 8px;
+  font-size: 11px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.providerState.ok {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.providerState.ready {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.providerState.off {
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.providerCard p {
+  margin: 0;
+  min-height: 50px;
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.providerMeta {
+  display: grid;
+  gap: 4px;
+}
+
+.providerMeta span,
+.requiredEnv {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.providerMeta code {
+  display: block;
+  padding: 7px 8px;
+  border-radius: 9px;
+  background: #eef2f7;
+  color: #274060;
+  font-size: 11px;
+  line-height: 1.35;
+  word-break: break-all;
+}
+
+.providerActions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.compactButton {
+  padding: 8px 10px;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.disabledLink {
+  color: var(--warning);
+  background: #fffdf4;
+}
+
+.registeredAccount {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--success);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .field {
@@ -835,6 +1002,10 @@ tbody tr.selected {
 
   .filterGrid {
     grid-template-columns: repeat(4, minmax(130px, 1fr));
+  }
+
+  .providerGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .workspaceGrid {

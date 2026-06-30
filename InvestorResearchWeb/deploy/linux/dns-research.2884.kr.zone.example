@@ -1,0 +1,13 @@
+; DNS zone example for research.2884.kr
+; Apply on the authoritative DNS server for 2884.kr.
+; Current authoritative NS observed: ns.2884.kr, ns1.2884.kr
+;
+; Public DNS should point to the public reverse-proxy IP.
+; 2884.kr currently resolves to 112.155.36.24, so research can normally use the same public proxy IP.
+
+research.2884.kr. 3600 IN A 112.155.36.24
+
+; Optional split-horizon/LAN DNS only:
+; research.2884.kr. 3600 IN A 192.168.0.200
+; or, if clients directly reach the Linux PC on LAN:
+; research.2884.kr. 3600 IN A 192.168.0.199

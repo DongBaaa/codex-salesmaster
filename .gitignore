@@ -79,6 +79,7 @@ Mobile/**/android-signing.local.json
 배포/*.sha256.txt
 배포/README.txt
 배포/관리자용/**
+release-temp/
 
 # Additional local scratch / investigation artifacts
 .inspect-*.db

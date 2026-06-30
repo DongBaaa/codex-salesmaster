@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ProjectRoot = "D:\거래플랜",
     [string]$AppRelativePath = "InvestorResearchWeb",
     [string]$LinuxHost = "192.168.0.199",
@@ -60,7 +60,7 @@ if ($LASTEXITCODE -gt 7) {
 
 Write-Step "스테이징 텍스트 파일 UTF-8 BOM 제거"
 $bomTargets = Get-ChildItem -Path $stageRoot -Recurse -File | Where-Object {
-    $_.Extension -in @(".conf", ".yml", ".yaml", ".json", ".md", ".ts", ".tsx", ".js", ".mjs", ".css", ".html", ".example", ".ignore") -or
+    $_.Extension -in @(".conf", ".yml", ".yaml", ".json", ".md", ".ts", ".tsx", ".js", ".mjs", ".css", ".html", ".example", ".ignore", ".zone") -or
     $_.Name -in @("Dockerfile", ".dockerignore", ".env.example")
 }
 foreach ($file in $bomTargets) {
@@ -209,28 +209,12 @@ mv "$REMOTE_ROOT/source.new" "$REMOTE_ROOT/source"
 docker build -t "$IMAGE_TAG" "$REMOTE_ROOT/source"
 docker compose --env-file "$REMOTE_ROOT/.env" -f "$REMOTE_ROOT/docker-compose.yml" up -d --no-deps investor-research-web
 sleep 3
-HEALTH_HOST="$(REMOTE_ROOT_FOR_PY="$REMOTE_ROOT" python3 - <<'PY'
-from pathlib import Path
-import os
-root = Path(os.environ['REMOTE_ROOT_FOR_PY'])
-value = '127.0.0.1'
-for line in (root / '.env').read_text(encoding='utf-8-sig').splitlines():
-    if line.startswith('INVESTOR_RESEARCH_HOST_BIND='):
-        value = line.split('=', 1)[1].strip().strip('"').strip("'") or value
-print(value)
-PY
-)"
-HEALTH_PORT="$(REMOTE_ROOT_FOR_PY="$REMOTE_ROOT" python3 - <<'PY'
-from pathlib import Path
-import os
-root = Path(os.environ['REMOTE_ROOT_FOR_PY'])
-value = '18088'
-for line in (root / '.env').read_text(encoding='utf-8-sig').splitlines():
-    if line.startswith('INVESTOR_RESEARCH_HOST_PORT='):
-        value = line.split('=', 1)[1].strip().strip('"').strip("'") or value
-print(value)
-PY
-)"
+HEALTH_HOST="__HOST_BIND__"
+HEALTH_PORT="18088"
+if grep -q '^INVESTOR_RESEARCH_HOST_PORT=' "$REMOTE_ROOT/.env"; then
+  HEALTH_PORT="$(grep '^INVESTOR_RESEARCH_HOST_PORT=' "$REMOTE_ROOT/.env" | tail -n 1 | cut -d= -f2- | tr -cd '0-9')"
+fi
+HEALTH_PORT="${HEALTH_PORT:-18088}"
 if [ "$HEALTH_HOST" = "0.0.0.0" ]; then HEALTH_HOST="127.0.0.1"; fi
 curl -fsS "http://${HEALTH_HOST}:${HEALTH_PORT}/healthz"
 echo

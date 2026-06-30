@@ -91,6 +91,21 @@ export interface AuthStatus {
   docs?: Record<string, string>;
 }
 
+export interface AiProviderRegistration {
+  id: "gpt" | "claude" | "gemini" | "perplexity" | string;
+  label: string;
+  shortLabel: string;
+  modelFamily: string;
+  configured: boolean;
+  registered: boolean;
+  account: string | null;
+  registeredAt: string | null;
+  callbackUrl: string;
+  docsUrl: string;
+  authNote: string;
+  requiredEnv: string[];
+}
+
 export interface AiResearchRecommendation {
   rank: number;
   ticker: string;

@@ -17,6 +17,7 @@
 | `deploy/linux/docker-compose.yml` | Linux PC 전용 compose 정의 |
 | `deploy/linux/.env.example` | 운영 `.env` 예시 |
 | `deploy/linux/nginx-research.2884.kr.example.conf` | 공개 reverse proxy 예시 |
+| `deploy/linux/dns-research.2884.kr.zone.example` | DNS zone 예시 |
 | `D:\거래플랜\tools\linux\Publish-InvestorResearchLinuxPcRelease.ps1` | 패키징/배포 스크립트 |
 
 ## 로컬 패키지 검증
@@ -74,6 +75,24 @@ OPENAI_MODEL=gpt-5.4-mini
 OPENAI_ENABLE_WEB_SEARCH=true
 ```
 
+AI 제공자별 OAuth 등록 버튼 callback:
+
+```text
+https://research.2884.kr/api/ai-providers/gpt/oauth/callback
+https://research.2884.kr/api/ai-providers/claude/oauth/callback
+https://research.2884.kr/api/ai-providers/gemini/oauth/callback
+https://research.2884.kr/api/ai-providers/perplexity/oauth/callback
+```
+
+환경변수 prefix:
+
+```text
+AI_GPT_*
+AI_CLAUDE_*
+AI_GEMINI_*
+AI_PERPLEXITY_*
+```
+
 공개 도메인 전환 후 예시:
 
 ```env
@@ -93,10 +112,14 @@ OAUTH_REDIRECT_URI=https://research.2884.kr/api/auth/callback
 관리자 작업:
 
 1. DNS에 `research.2884.kr` 레코드 생성
+   - 예시: `deploy/linux/dns-research.2884.kr.zone.example`
+   - 현재 `2884.kr` A 레코드는 `112.155.36.24`
+   - 권장 public DNS: `research.2884.kr A 112.155.36.24`
 2. 공용 reverse proxy에서 `research.2884.kr` → `http://192.168.0.199:18088`
 3. SSL 인증서 발급/갱신 설정
 4. OAuth 제공자 콘솔에 `https://research.2884.kr/api/auth/callback` 등록
-5. 적용 후 기존 서비스 헬스체크 확인
+5. AI 제공자별 OAuth callback 4개 등록
+6. 적용 후 기존 서비스 헬스체크 확인
    - `https://trade.2884.kr/healthz`
    - `https://work.2884.kr/healthz`
    - `https://itw.2884.kr/`

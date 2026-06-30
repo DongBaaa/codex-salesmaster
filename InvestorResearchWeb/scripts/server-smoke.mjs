@@ -59,6 +59,16 @@ try {
   if (status.oauthConfigured !== false) throw new Error("OAuth should be disabled in smoke test");
   if (status.aiConfigured !== false) throw new Error("OpenAI should be missing in smoke test");
 
+  const providers = await fetch(`${baseUrl}/api/ai-providers`).then((r) => r.json());
+  if (!Array.isArray(providers.providers) || providers.providers.length !== 4) {
+    throw new Error(`Expected 4 AI providers, got ${JSON.stringify(providers)}`);
+  }
+  for (const id of ["gpt", "claude", "gemini", "perplexity"]) {
+    if (!providers.providers.some((provider) => provider.id === id)) {
+      throw new Error(`Missing provider ${id}`);
+    }
+  }
+
   const analyze = await fetch(`${baseUrl}/api/research/analyze`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

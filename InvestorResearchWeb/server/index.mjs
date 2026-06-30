@@ -23,6 +23,7 @@ const openaiModel = firstNonEmpty(env.OPENAI_MODEL, "gpt-5.4-mini");
 const enableWebSearch = boolEnv("OPENAI_ENABLE_WEB_SEARCH", true);
 const maxOutputTokens = Number(env.OPENAI_MAX_OUTPUT_TOKENS || 6500);
 const allowedEmails = parseCsv(env.AUTH_ALLOWED_EMAILS);
+const aiProviderConfigs = buildAiProviderConfigs();
 
 if (!env.SESSION_SECRET) {
   console.warn("[investor-research] SESSION_SECRET is not set. Sessions will be invalidated on restart.");
@@ -166,6 +167,122 @@ app.get("/api/auth/callback", async (req, res) => {
 app.post("/api/auth/logout", (_req, res) => {
   clearCookie(res, "ir_session", { path: "/" });
   res.json({ ok: true });
+});
+
+app.get("/api/ai-providers", (req, res) => {
+  res.json({
+    providers: aiProviderConfigs.map((provider) => buildAiProviderStatus(req, provider)),
+    note: "Claude, GPT, Gemini, Perplexity 등록 버튼은 OAuth/OIDC 설정이 있는 제공자만 활성화됩니다. 모델 API 호출용 키는 서버 환경변수에만 보관하세요.",
+  });
+});
+
+app.get("/api/ai-providers/:provider/oauth/start", (req, res) => {
+  const provider = findAiProvider(req.params.provider);
+  if (!provider) {
+    return res.status(404).json({ error: "provider_not_found", message: "지원하지 않는 AI 제공자입니다." });
+  }
+  if (!provider.configured) {
+    return res.status(503).json({
+      error: "provider_oauth_not_configured",
+      message: `${provider.label} OAuth 환경변수가 설정되지 않았습니다.`,
+      requiredEnv: provider.requiredEnv,
+    });
+  }
+
+  const returnTo = sanitizeReturnTo(req.query.returnTo);
+  const state = randomToken();
+  const nonce = randomToken();
+  const codeVerifier = randomToken(64);
+  const codeChallenge = base64url(crypto.createHash("sha256").update(codeVerifier).digest());
+
+  setSignedCookie(res, `ir_ai_state_${provider.id}`, {
+    providerId: provider.id,
+    state,
+    nonce,
+    codeVerifier,
+    returnTo,
+    exp: Date.now() + 10 * 60 * 1000,
+  }, {
+    httpOnly: true,
+    secure: secureCookies,
+    sameSite: "Lax",
+    maxAge: 10 * 60,
+    path: `/api/ai-providers/${provider.id}/oauth`,
+  });
+
+  const params = new URLSearchParams({
+    response_type: "code",
+    client_id: provider.clientId,
+    redirect_uri: provider.redirectUri,
+    scope: provider.scopes,
+    state,
+    code_challenge: codeChallenge,
+    code_challenge_method: "S256",
+  });
+  if (provider.scopes.includes("openid")) {
+    params.set("nonce", nonce);
+  }
+  for (const [key, value] of Object.entries(provider.extraAuthorizationParams || {})) {
+    params.set(key, value);
+  }
+
+  res.redirect(`${provider.authorizationUrl}?${params.toString()}`);
+});
+
+app.get("/api/ai-providers/:provider/oauth/callback", async (req, res) => {
+  const provider = findAiProvider(req.params.provider);
+  if (!provider) {
+    return res.status(404).send("지원하지 않는 AI 제공자입니다.");
+  }
+  if (!provider.configured) {
+    return res.status(503).send(`${provider.label} OAuth 환경변수가 설정되지 않았습니다.`);
+  }
+
+  const stateCookieName = `ir_ai_state_${provider.id}`;
+  const stateCookie = getSignedCookie(req, stateCookieName);
+  clearCookie(res, stateCookieName, { path: `/api/ai-providers/${provider.id}/oauth` });
+
+  if (!stateCookie || stateCookie.exp < Date.now() || stateCookie.providerId !== provider.id) {
+    return res.status(400).send("AI 제공자 OAuth state가 만료되었거나 유효하지 않습니다.");
+  }
+  if (!req.query.state || req.query.state !== stateCookie.state) {
+    return res.status(400).send("AI 제공자 OAuth state 검증에 실패했습니다.");
+  }
+  if (!req.query.code || typeof req.query.code !== "string") {
+    return res.status(400).send("AI 제공자 OAuth authorization code가 없습니다.");
+  }
+
+  try {
+    const tokenSet = await exchangeOAuthCode(provider, req.query.code, stateCookie.codeVerifier);
+    const profile = await loadOAuthProfileForConfig(provider, tokenSet);
+    setSignedCookie(res, `ir_ai_provider_${provider.id}`, {
+      providerId: provider.id,
+      label: provider.label,
+      account: profile.email || profile.name || `${provider.label} 계정`,
+      name: profile.name || "",
+      registeredAt: new Date().toISOString(),
+      exp: Date.now() + 30 * 24 * 60 * 60 * 1000,
+    }, {
+      httpOnly: true,
+      secure: secureCookies,
+      sameSite: "Lax",
+      maxAge: 30 * 24 * 60 * 60,
+      path: "/",
+    });
+    res.redirect(stateCookie.returnTo || "/");
+  } catch (error) {
+    console.error(`[investor-research] ${provider.id} OAuth callback failed`, error);
+    res.status(502).send(`${provider.label} OAuth 등록 처리 중 오류가 발생했습니다.`);
+  }
+});
+
+app.post("/api/ai-providers/:provider/disconnect", (req, res) => {
+  const provider = findAiProvider(req.params.provider);
+  if (!provider) {
+    return res.status(404).json({ error: "provider_not_found", message: "지원하지 않는 AI 제공자입니다." });
+  }
+  clearCookie(res, `ir_ai_provider_${provider.id}`, { path: "/" });
+  res.json({ ok: true, provider: provider.id });
 });
 
 const rateLimitMemory = new Map();
@@ -337,6 +454,157 @@ function buildOAuthConfig() {
     ...config,
     configured: boolEnv("OAUTH_ENABLED", hasMinimum) && hasMinimum,
   };
+}
+
+function buildAiProviderConfigs() {
+  const defaults = {
+    gpt: {
+      label: "GPT / OpenAI",
+      shortLabel: "GPT",
+      envPrefix: "AI_GPT",
+      modelFamily: "OpenAI",
+      defaultScopes: "openid email profile",
+      authorizationUrl: "",
+      tokenUrl: "",
+      userinfoUrl: "",
+      authNote: "OpenAI Platform 일반 API는 서버 측 API key/Bearer 사용이 기본입니다. OAuth endpoint가 있는 조직용 구성을 환경변수로 넣으면 버튼이 활성화됩니다.",
+      docsUrl: "https://developers.openai.com/api/reference/overview#authentication",
+    },
+    claude: {
+      label: "Claude / Anthropic",
+      shortLabel: "Claude",
+      envPrefix: "AI_CLAUDE",
+      modelFamily: "Anthropic",
+      defaultScopes: "openid email profile",
+      authorizationUrl: "",
+      tokenUrl: "",
+      userinfoUrl: "",
+      authNote: "Anthropic Claude API 사용은 API key 구성이 일반적입니다. 별도 OAuth/OIDC gateway가 있으면 환경변수로 연결하세요.",
+      docsUrl: "https://docs.anthropic.com/en/api/getting-started",
+    },
+    gemini: {
+      label: "Gemini / Google",
+      shortLabel: "Gemini",
+      envPrefix: "AI_GEMINI",
+      modelFamily: "Google",
+      defaultScopes: "openid email profile",
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      userinfoUrl: "https://openidconnect.googleapis.com/v1/userinfo",
+      extraAuthorizationParams: { access_type: "offline", prompt: "select_account" },
+      authNote: "Gemini는 Google OAuth/OIDC endpoint를 기본값으로 제공합니다. 실제 모델 호출 권한은 Google Cloud/API 설정을 별도로 확인하세요.",
+      docsUrl: "https://ai.google.dev/gemini-api/docs/api-key",
+    },
+    perplexity: {
+      label: "Perplexity",
+      shortLabel: "Perplexity",
+      envPrefix: "AI_PERPLEXITY",
+      modelFamily: "Perplexity",
+      defaultScopes: "openid email profile",
+      authorizationUrl: "",
+      tokenUrl: "",
+      userinfoUrl: "",
+      authNote: "Perplexity API 사용은 API key 구성이 일반적입니다. 별도 OAuth/OIDC gateway가 있으면 환경변수로 연결하세요.",
+      docsUrl: "https://docs.perplexity.ai/",
+    },
+  };
+
+  return Object.entries(defaults).map(([id, definition]) => {
+    const prefix = definition.envPrefix;
+    const provider = {
+      id,
+      label: definition.label,
+      shortLabel: definition.shortLabel,
+      modelFamily: definition.modelFamily,
+      clientId: env[`${prefix}_CLIENT_ID`] || "",
+      clientSecret: env[`${prefix}_CLIENT_SECRET`] || "",
+      authorizationUrl: env[`${prefix}_AUTHORIZATION_URL`] || definition.authorizationUrl || "",
+      tokenUrl: env[`${prefix}_TOKEN_URL`] || definition.tokenUrl || "",
+      userinfoUrl: env[`${prefix}_USERINFO_URL`] || definition.userinfoUrl || "",
+      scopes: env[`${prefix}_SCOPES`] || definition.defaultScopes,
+      redirectUri: env[`${prefix}_REDIRECT_URI`] || `${appBaseUrl}/api/ai-providers/${id}/oauth/callback`,
+      extraAuthorizationParams: definition.extraAuthorizationParams || null,
+      authNote: definition.authNote,
+      docsUrl: definition.docsUrl,
+      requiredEnv: [
+        `${prefix}_OAUTH_ENABLED=true`,
+        `${prefix}_CLIENT_ID`,
+        `${prefix}_CLIENT_SECRET`,
+        `${prefix}_AUTHORIZATION_URL`,
+        `${prefix}_TOKEN_URL`,
+        `${prefix}_REDIRECT_URI`,
+      ],
+    };
+    const hasMinimum = Boolean(provider.clientId && provider.authorizationUrl && provider.tokenUrl);
+    return {
+      ...provider,
+      configured: boolEnv(`${prefix}_OAUTH_ENABLED`, hasMinimum) && hasMinimum,
+    };
+  });
+}
+
+function buildAiProviderStatus(req, provider) {
+  const registration = getSignedCookie(req, `ir_ai_provider_${provider.id}`);
+  const registered = Boolean(registration && registration.exp > Date.now() && registration.providerId === provider.id);
+  return {
+    id: provider.id,
+    label: provider.label,
+    shortLabel: provider.shortLabel,
+    modelFamily: provider.modelFamily,
+    configured: provider.configured,
+    registered,
+    account: registered ? registration.account : null,
+    registeredAt: registered ? registration.registeredAt : null,
+    callbackUrl: provider.redirectUri,
+    docsUrl: provider.docsUrl,
+    authNote: provider.authNote,
+    requiredEnv: provider.requiredEnv,
+  };
+}
+
+function findAiProvider(id) {
+  return aiProviderConfigs.find((provider) => provider.id === String(id || "").toLowerCase());
+}
+
+async function exchangeOAuthCode(config, code, codeVerifier) {
+  const params = new URLSearchParams({
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: config.redirectUri,
+    client_id: config.clientId,
+    code_verifier: codeVerifier,
+  });
+  if (config.clientSecret) {
+    params.set("client_secret", config.clientSecret);
+  }
+
+  const response = await fetch(config.tokenUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(`Token exchange failed: ${response.status} ${JSON.stringify(payload)}`);
+  }
+  return payload;
+}
+
+async function loadOAuthProfileForConfig(config, tokenSet) {
+  if (config.userinfoUrl && tokenSet.access_token) {
+    const response = await fetch(config.userinfoUrl, {
+      headers: { Authorization: `Bearer ${tokenSet.access_token}` },
+    });
+    if (response.ok) {
+      const profile = await response.json();
+      return normalizeProfile(profile);
+    }
+  }
+  if (tokenSet.id_token) {
+    const payload = decodeJwtPayload(tokenSet.id_token);
+    return normalizeProfile(payload);
+  }
+  return {};
 }
 
 async function exchangeCodeForToken(code, codeVerifier) {
