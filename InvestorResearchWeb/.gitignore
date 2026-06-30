@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+*.local
+*.tsbuildinfo
+artifacts/*.tmp
+artifacts/*.png
+npm-debug.log*

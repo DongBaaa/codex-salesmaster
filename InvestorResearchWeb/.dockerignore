@@ -1,0 +1,8 @@
+node_modules
+dist
+artifacts
+release-temp
+.git
+.env
+*.tsbuildinfo
+npm-debug.log*

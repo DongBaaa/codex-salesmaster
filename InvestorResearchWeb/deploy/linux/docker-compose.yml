@@ -1,0 +1,42 @@
+services:
+  investor-research-web:
+    image: ${INVESTOR_RESEARCH_IMAGE:-investor-research-web:local}
+    container_name: investor-research-web
+    restart: unless-stopped
+    ports:
+      - "${INVESTOR_RESEARCH_HOST_BIND:-127.0.0.1}:${INVESTOR_RESEARCH_HOST_PORT:-18088}:8080"
+    environment:
+      TZ: Asia/Seoul
+      NODE_ENV: production
+      PORT: 8080
+      APP_BASE_URL: ${APP_BASE_URL:-http://127.0.0.1:18088}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      AUTH_REQUIRED: ${AUTH_REQUIRED:-true}
+      AUTH_ALLOWED_EMAILS: ${AUTH_ALLOWED_EMAILS:-}
+      OAUTH_ENABLED: ${OAUTH_ENABLED:-false}
+      OAUTH_PROVIDER: ${OAUTH_PROVIDER:-google}
+      OAUTH_PROVIDER_NAME: ${OAUTH_PROVIDER_NAME:-Google}
+      OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID:-}
+      OAUTH_CLIENT_SECRET: ${OAUTH_CLIENT_SECRET:-}
+      OAUTH_AUTHORIZATION_URL: ${OAUTH_AUTHORIZATION_URL:-}
+      OAUTH_TOKEN_URL: ${OAUTH_TOKEN_URL:-}
+      OAUTH_USERINFO_URL: ${OAUTH_USERINFO_URL:-}
+      OAUTH_SCOPES: ${OAUTH_SCOPES:-openid email profile}
+      OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BEARER_TOKEN: ${OPENAI_BEARER_TOKEN:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4-mini}
+      OPENAI_ENABLE_WEB_SEARCH: ${OPENAI_ENABLE_WEB_SEARCH:-true}
+      OPENAI_MAX_OUTPUT_TOKENS: ${OPENAI_MAX_OUTPUT_TOKENS:-6500}
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    labels:
+      service.owner: "itworld"
+      service.name: "investor-research"
+      service.scope: "isolated-static-web"

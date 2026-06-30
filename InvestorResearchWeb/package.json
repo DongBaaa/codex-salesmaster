@@ -1,0 +1,30 @@
+{
+    "name":  "investor-research-web",
+    "version":  "0.1.0",
+    "private":  true,
+    "type":  "module",
+    "scripts":  {
+                    "dev":  "vite --host 127.0.0.1",
+                    "build":  "tsc --noEmit \u0026\u0026 vite build",
+                    "start":  "node server/index.mjs",
+                    "preview":  "vite preview --host 127.0.0.1",
+                    "smoke:interaction":  "node scripts/interaction-smoke.mjs",
+                    "smoke:server":  "node scripts/server-smoke.mjs"
+                },
+    "dependencies":  {
+                         "express":  "^5.2.1",
+                         "lucide-react":  "latest",
+                         "openai":  "^6.15.0",
+                         "react":  "latest",
+                         "react-dom":  "latest"
+                     },
+    "devDependencies":  {
+                            "@types/node":  "^26.0.1",
+                            "@types/react":  "^19.2.17",
+                            "@types/react-dom":  "^19.2.3",
+                            "@vitejs/plugin-react":  "latest",
+                            "playwright":  "^1.61.1",
+                            "typescript":  "latest",
+                            "vite":  "latest"
+                        }
+}
