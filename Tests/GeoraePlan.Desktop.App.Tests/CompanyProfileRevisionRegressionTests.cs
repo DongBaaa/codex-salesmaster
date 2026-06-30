@@ -90,7 +90,7 @@ public sealed class CompanyProfileRevisionRegressionTests
             {
                 Id = profileId,
                 OfficeCode = OfficeCodeCatalog.Usenet,
-                ProfileName = "USENET 기본",
+                ProfileName = "유즈넷 기본",
                 TradeName = "로컬 최신 상호",
                 Representative = "로컬 대표",
                 IsActive = true,
@@ -115,7 +115,7 @@ public sealed class CompanyProfileRevisionRegressionTests
             {
                 Id = profileId,
                 OfficeCode = OfficeCodeCatalog.Usenet,
-                ProfileName = "USENET 기본",
+                ProfileName = "유즈넷 기본",
                 TradeName = "서버 이전 상호",
                 Representative = "서버 이전 대표",
                 IsActive = true,
@@ -161,7 +161,7 @@ public sealed class CompanyProfileRevisionRegressionTests
             var profile = await db.CompanyProfiles.IgnoreQueryFilters()
                 .SingleAsync(current => current.Id == OfficeCodeCatalog.UsenetDefaultCompanyProfileId);
             Assert.Equal(OfficeCodeCatalog.Usenet, profile.OfficeCode);
-            Assert.Equal("USENET 기본", profile.ProfileName);
+            Assert.Equal("유즈넷 기본", profile.ProfileName);
             Assert.Equal("유즈넷", profile.TradeName);
         }
         finally
@@ -190,7 +190,7 @@ public sealed class CompanyProfileRevisionRegressionTests
                 {
                     Id = legacyDefaultId,
                     OfficeCode = OfficeCodeCatalog.Usenet,
-                    ProfileName = "USENET 기본",
+                    ProfileName = "유즈넷 기본",
                     TradeName = "USENET",
                     IsDefaultForOffice = true,
                     IsActive = true,
@@ -246,7 +246,7 @@ public sealed class CompanyProfileRevisionRegressionTests
                 {
                     Id = usenetProfileId,
                     OfficeCode = OfficeCodeCatalog.Usenet,
-                    ProfileName = "USENET 기본",
+                    ProfileName = "유즈넷 기본",
                     TradeName = "유즈넷",
                     BankAccountText = "USENET-ACCOUNT",
                     IsActive = true,

@@ -895,7 +895,7 @@ public sealed class PeriodLedgerAggregationService
     {
         var normalized = (warehouseCode ?? string.Empty).Trim().ToUpperInvariant();
         if (string.Equals(normalized, DomainConstants.WarehouseUsenetMain, StringComparison.OrdinalIgnoreCase))
-            return "USENET 창고";
+            return "유즈넷 창고";
 
         if (string.Equals(normalized, DomainConstants.WarehouseYeonsuMain, StringComparison.OrdinalIgnoreCase))
             return "YEONSU 창고";
@@ -953,4 +953,3 @@ public sealed class PeriodLedgerAggregationService
         return "수금/지급 전표";
     }
 }
-

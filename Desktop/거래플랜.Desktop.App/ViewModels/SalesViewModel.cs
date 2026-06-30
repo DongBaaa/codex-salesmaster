@@ -250,7 +250,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     };
     public string HeaderSubtitleText => VoucherType switch
     {
-        VoucherType.Purchase => "구매(매입) 전표작성/수정 - USENET 재고 등록 및 매입 명세서 출력",
+        VoucherType.Purchase => "구매(매입) 전표작성/수정 - 유즈넷 재고 등록 및 매입 명세서 출력",
         VoucherType.Procurement => "견적/발주 전표작성/수정 - 발주서, 납품서, 의뢰서 출력",
         _ => "판매(매출) 전표작성/수정/삭제 - 거래명세서, 세금계산서, 영수증 발행"
     };

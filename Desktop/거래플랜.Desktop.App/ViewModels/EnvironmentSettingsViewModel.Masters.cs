@@ -150,7 +150,7 @@ public sealed partial class EnvironmentSettingsViewModel
             UserOfficeOptions.Add(new DisplayOption
             {
                 Value = DomainConstants.OfficeUsenet,
-                DisplayName = $"USENET ({DomainConstants.OfficeUsenet})"
+                DisplayName = $"{OfficeCodeCatalog.GetOfficeDisplayName(DomainConstants.OfficeUsenet)} ({DomainConstants.OfficeUsenet})"
             });
         }
 
@@ -192,7 +192,7 @@ public sealed partial class EnvironmentSettingsViewModel
         TenantStructureRows.Add(new DisplayOption
         {
             Value = TenantScopeCatalog.UsenetGroup,
-            DisplayName = $"USENET_GROUP: {OfficeCodeCatalog.Usenet}, {OfficeCodeCatalog.Yeonsu}"
+            DisplayName = $"유즈넷/연수구 권역: {OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet)}, {OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Yeonsu)}"
         });
         TenantStructureRows.Add(new DisplayOption
         {
@@ -209,7 +209,7 @@ public sealed partial class EnvironmentSettingsViewModel
         TenantSharingPolicyRows.Add(new DisplayOption
         {
             Value = "USENET_SCOPE",
-            DisplayName = "연수구 사용자는 연수구 지점 데이터만 조회, 유즈넷은 USENET_GROUP 전체 조회"
+            DisplayName = "연수구 사용자는 연수구 지점 데이터만 조회, 유즈넷은 유즈넷/연수구 권역 전체 조회"
         });
         TenantSharingPolicyRows.Add(new DisplayOption
         {

@@ -198,7 +198,7 @@ public static class OfficeCodeCatalog
         {
             Itworld => Itworld,
             Yeonsu => Yeonsu,
-            _ => Usenet
+            _ => "유즈넷"
         };
 
     public static Guid GetDefaultCompanyProfileId(string? officeCode)

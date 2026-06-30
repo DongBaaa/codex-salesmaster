@@ -235,7 +235,7 @@ public static class TenantScopeCatalog
         => NormalizeTenantCodeOrDefault(tenantCode) switch
         {
             Itworld => "ITWORLD",
-            _ => "USENET / 연수구"
+            _ => "유즈넷 / 연수구"
         };
 
     public static string GetDatabaseName(string? tenantCodeOrDatabaseName)

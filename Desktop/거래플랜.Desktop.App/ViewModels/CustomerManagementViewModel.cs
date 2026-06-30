@@ -188,12 +188,12 @@ public sealed partial class CustomerManagementViewModel : ObservableObject, IDis
                 ? _session.HasAdministrativePrivileges
                     ? $"거래처 '{pending[0].NameOriginal}' 담당지점을 바로 저장했습니다."
                     : grantedTemporaryAccess
-                        ? "거래처 담당지점을 저장했습니다. USENET 거래처는 당일만 계속 작업할 수 있습니다."
+                        ? "거래처 담당지점을 저장했습니다. 유즈넷 거래처는 당일만 계속 작업할 수 있습니다."
                         : $"거래처 '{pending[0].NameOriginal}' 담당지점을 바로 저장했습니다."
                 : _session.HasAdministrativePrivileges
                     ? $"담당지점 변경 {savedCount:N0}건을 저장했습니다."
                     : grantedTemporaryAccess
-                        ? "거래처를 저장했습니다. USENET 거래처는 당일만 계속 작업할 수 있습니다."
+                        ? "거래처를 저장했습니다. 유즈넷 거래처는 당일만 계속 작업할 수 있습니다."
                         : $"담당지점 변경 {savedCount:N0}건을 저장했습니다.";
 
             var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));

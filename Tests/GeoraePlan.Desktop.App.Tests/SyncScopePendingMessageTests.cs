@@ -55,7 +55,7 @@ public sealed class SyncScopePendingMessageTests
 
             var usenetMessage = await service.GetPendingSyncWaitingMessageAsync(usenetSession, "status:");
             Assert.NotNull(usenetMessage);
-            Assert.Contains("USENET", usenetMessage);
+            Assert.Contains("유즈넷", usenetMessage);
             Assert.DoesNotContain("ITWORLD", usenetMessage);
 
             var itworldMessage = await service.GetPendingSyncWaitingMessageAsync(itworldSession, "status:");

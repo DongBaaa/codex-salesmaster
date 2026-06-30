@@ -88,7 +88,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     public string TransferGuideMessage => IsAdmin
         ? "상단 재고이동 버튼으로 지점간 이동을 입력하고 아래 이동 내역에서 출고/입고를 확인하세요."
         : "아래 이동 내역에서 자동이동 출고/입고를 확인하세요.";
-    public string UsenetTabText => $"USENET 재고 ({UsenetTotalQuantity:N0})";
+    public string UsenetTabText => $"유즈넷 재고 ({UsenetTotalQuantity:N0})";
     public string ItworldTabText => $"ITWORLD 재고 ({ItworldTotalQuantity:N0})";
     public string YeonsuTabText => $"YEONSU 재고 ({YeonsuTotalQuantity:N0})";
     public bool CanDeleteSelectedItem =>
@@ -724,7 +724,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 
             if (_allItems.Any(item => item.CurrentStock != 0m))
             {
-                StatusMessage = "창고별 재고 스냅샷이 없어 기존 전체 재고를 USENET 기준으로 표시합니다.";
+                StatusMessage = "창고별 재고 스냅샷이 없어 기존 전체 재고를 유즈넷 기준으로 표시합니다.";
             }
 
             return;
@@ -1075,7 +1075,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             return "YEONSU 창고";
 
         if (string.Equals(normalizedWarehouseCode, DomainConstants.WarehouseUsenetMain, StringComparison.OrdinalIgnoreCase))
-            return "USENET 창고";
+            return "유즈넷 창고";
 
         return string.IsNullOrWhiteSpace(normalizedWarehouseCode) ? "-" : normalizedWarehouseCode;
     }

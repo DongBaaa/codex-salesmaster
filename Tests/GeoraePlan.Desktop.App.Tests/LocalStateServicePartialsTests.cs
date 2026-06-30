@@ -2620,8 +2620,8 @@ public sealed class LocalStateServicePartialsTests
 
             var expandedUsenetAsset = Assert.Single(expanded, candidate => candidate.Source.Id == usenetOwnedAssetId);
             Assert.True(expandedUsenetAsset.IsOutsideCurrentOffice);
-            Assert.Equal("USENET", expandedUsenetAsset.ManagementCompanyName);
-            Assert.Equal("USENET", expandedUsenetAsset.AssetScopeDisplay);
+            Assert.Equal("유즈넷", expandedUsenetAsset.ManagementCompanyName);
+            Assert.Equal("유즈넷", expandedUsenetAsset.AssetScopeDisplay);
 
             var expandedItworldAsset = Assert.Single(expanded, candidate => candidate.Source.Id == itworldAssetId);
             Assert.True(expandedItworldAsset.IsOutsideCurrentOffice);

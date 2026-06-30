@@ -22,7 +22,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject, IDisposa
     private decimal _feeRatePercentValue = 20m;
 
     public const string WarehouseOptionAll = "전체";
-    public const string WarehouseOptionUsenet = "USENET 창고";
+    public const string WarehouseOptionUsenet = "유즈넷 창고";
     public const string WarehouseOptionYeonsu = "YEONSU 창고";
 
     public const string ViewTargetAll = "전체";

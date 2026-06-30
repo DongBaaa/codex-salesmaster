@@ -312,7 +312,7 @@
                                    FontWeight="Bold"
                                    Foreground="#4FC3F7"/>
                         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                            <TextBlock Text="{Binding UsenetTotalQuantity, StringFormat='USENET 합계 {0:N0}'}"
+                            <TextBlock Text="{Binding UsenetTotalQuantity, StringFormat='유즈넷 합계 {0:N0}'}"
                                        Foreground="#90CAF9"
                                        Margin="0,0,12,0"
                                        Visibility="{Binding CanSwitchOfficeTabs, Converter={StaticResource BoolToVisibility}}"/>
@@ -406,7 +406,7 @@
                                         <StackPanel Orientation="Horizontal"
                                                     Margin="0,0,18,8"
                                                     Visibility="{Binding CanSwitchOfficeTabs, Converter={StaticResource BoolToVisibility}}">
-                                            <TextBlock Text="USENET 재고"/>
+                                            <TextBlock Text="유즈넷 재고"/>
                                             <TextBlock Text="{Binding EditUsenetStock, StringFormat=N0}"
                                                        Margin="6,0,0,0"
                                                        Foreground="#90CAF9"

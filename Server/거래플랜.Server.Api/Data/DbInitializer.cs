@@ -40,7 +40,7 @@ public static partial class DbInitializer
     ];
     private static readonly (Guid Id, string ProfileName, string OfficeCode, string TradeName, string Representative, string BusinessNumber, string Address, string ContactNumber)[] DefaultCompanyProfiles =
     [
-        (OfficeCodeCatalog.UsenetDefaultCompanyProfileId, "USENET 기본", OfficeCodeCatalog.Usenet, "유즈넷", "", "", "", ""),
+        (OfficeCodeCatalog.UsenetDefaultCompanyProfileId, "유즈넷 기본", OfficeCodeCatalog.Usenet, "유즈넷", "", "", "", ""),
         (OfficeCodeCatalog.ItworldDefaultCompanyProfileId, "ITWORLD 기본", OfficeCodeCatalog.Itworld, OfficeCodeCatalog.Itworld, "", "", "", ""),
         (OfficeCodeCatalog.YeonsuDefaultCompanyProfileId, "YEONSU 기본", OfficeCodeCatalog.Yeonsu, OfficeCodeCatalog.Yeonsu, string.Empty, string.Empty, string.Empty, string.Empty)
     ];
@@ -637,7 +637,7 @@ public static partial class DbInitializer
                 var canonical = new CompanyProfile
                 {
                     Id = definition.Id,
-                    ProfileName = string.IsNullOrWhiteSpace(current.ProfileName) ? definition.ProfileName : current.ProfileName.Trim(),
+                    ProfileName = ResolveDefaultCompanyProfileName(current.ProfileName, definition.OfficeCode, definition.ProfileName),
                     OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(current.OfficeCode, definition.OfficeCode),
                     TradeName = ResolveDefaultCompanyProfileTradeName(current.TradeName, definition.OfficeCode, definition.TradeName),
                     Representative = string.IsNullOrWhiteSpace(current.Representative) ? definition.Representative : current.Representative.Trim(),
@@ -660,7 +660,7 @@ public static partial class DbInitializer
                 dbContext.CompanyProfiles.Add(canonical);
                 profiles.Add(canonical);
 
-                if (string.Equals(current.ProfileName?.Trim(), definition.ProfileName, StringComparison.OrdinalIgnoreCase))
+                if (IsDefaultCompanyProfileNamePlaceholder(current.ProfileName, definition.OfficeCode))
                 {
                     current.IsDefaultForOffice = false;
                     current.IsActive = false;
@@ -671,9 +671,7 @@ public static partial class DbInitializer
                 current = canonical;
             }
 
-            current.ProfileName = string.IsNullOrWhiteSpace(current.ProfileName)
-                ? definition.ProfileName
-                : current.ProfileName.Trim();
+            current.ProfileName = ResolveDefaultCompanyProfileName(current.ProfileName, definition.OfficeCode, definition.ProfileName);
             current.OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(current.OfficeCode, definition.OfficeCode);
             current.TradeName = ResolveDefaultCompanyProfileTradeName(current.TradeName, definition.OfficeCode, definition.TradeName);
             current.Representative = string.IsNullOrWhiteSpace(current.Representative)
@@ -758,6 +756,25 @@ public static partial class DbInitializer
         return trimmed;
     }
 
+    private static string ResolveDefaultCompanyProfileName(
+        string? profileName,
+        string officeCode,
+        string definitionProfileName)
+    {
+        var trimmed = profileName?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(trimmed) || IsDefaultCompanyProfileNamePlaceholder(trimmed, officeCode))
+        {
+            return string.IsNullOrWhiteSpace(definitionProfileName)
+                ? GetDefaultCompanyProfileName(officeCode)
+                : definitionProfileName.Trim();
+        }
+
+        return trimmed;
+    }
+
+    private static string GetDefaultCompanyProfileName(string? officeCode)
+        => $"{GetDefaultCompanyProfileTradeName(officeCode)} 기본";
+
     private static string GetDefaultCompanyProfileTradeName(string? officeCode)
     {
         var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, OfficeCodeCatalog.Usenet);
@@ -778,6 +795,17 @@ public static partial class DbInitializer
 
         return OfficeCodeCatalog.TryNormalize(trimmed, out var normalizedTradeName) &&
                string.Equals(normalizedTradeName, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsDefaultCompanyProfileNamePlaceholder(string? profileName, string officeCode)
+    {
+        var trimmed = profileName?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(trimmed))
+            return true;
+
+        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, OfficeCodeCatalog.Usenet);
+        return string.Equals(trimmed, $"{normalizedOfficeCode} 기본", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(trimmed, $"{OfficeCodeCatalog.GetOfficeDisplayName(normalizedOfficeCode)} 기본", StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task NormalizeCustomerClassificationIntegrityAsync(
@@ -1641,7 +1669,7 @@ public static partial class DbInitializer
         await UpsertTenantDefinitionAsync(
             dbContext,
             tenantCode: TenantScopeCatalog.UsenetGroup,
-            displayName: "USENET / 연수구",
+            displayName: "유즈넷 / 연수구",
             storageMode: TenantScopeCatalog.StorageSharedDatabase,
             description: "유즈넷과 연수구는 같은 업체 권역/공용 업무 DB를 사용합니다.",
             cancellationToken);

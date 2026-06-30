@@ -143,7 +143,7 @@ public sealed partial class LocalStateService
 
 	private static readonly CompanyProfileDefaultDefinition[] RequiredCompanyProfileDefaults = new CompanyProfileDefaultDefinition[3]
 	{
-		new CompanyProfileDefaultDefinition("USENET 기본", "USENET", "유즈넷", "", "", "", ""),
+		new CompanyProfileDefaultDefinition("유즈넷 기본", "USENET", "유즈넷", "", "", "", ""),
 		new CompanyProfileDefaultDefinition("ITWORLD 기본", "ITWORLD", "ITWORLD", "", "", "", ""),
 		new CompanyProfileDefaultDefinition("YEONSU 기본", "YEONSU", "YEONSU", string.Empty, string.Empty, string.Empty, string.Empty)
 	};
@@ -3542,8 +3542,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		Guid result;
 		bool hasInvalidAssignment = assignmentSettings.Any((LocalSetting localSetting) => !string.IsNullOrWhiteSpace(localSetting.Value) && (!Guid.TryParse(localSetting.Value, out result) || !validProfileIds.Contains(result)));
 		bool missingDefaults = RequiredCompanyProfileDefaults.Any((CompanyProfileDefaultDefinition companyProfileDefaultDefinition) => !activeProfiles.Any((LocalCompanyProfile localCompanyProfile) => string.Equals(NormalizeOfficeCode(localCompanyProfile.OfficeCode, companyProfileDefaultDefinition.OfficeCode), companyProfileDefaultDefinition.OfficeCode, StringComparison.OrdinalIgnoreCase) && localCompanyProfile.IsDefaultForOffice));
-		bool hasDefaultTradeNameRepair = RequiredCompanyProfileDefaults.Any((CompanyProfileDefaultDefinition companyProfileDefaultDefinition) => activeProfiles.Any((LocalCompanyProfile localCompanyProfile) => localCompanyProfile.IsDefaultForOffice && string.Equals(NormalizeOfficeCode(localCompanyProfile.OfficeCode, companyProfileDefaultDefinition.OfficeCode), companyProfileDefaultDefinition.OfficeCode, StringComparison.OrdinalIgnoreCase) && RequiresDefaultCompanyProfileTradeNameRepair(localCompanyProfile, companyProfileDefaultDefinition)));
-		if (!hasInvalidAssignment && !missingDefaults && !hasDefaultTradeNameRepair && activeProfiles.Count > 0)
+		bool hasDefaultLabelRepair = RequiredCompanyProfileDefaults.Any((CompanyProfileDefaultDefinition companyProfileDefaultDefinition) => activeProfiles.Any((LocalCompanyProfile localCompanyProfile) => localCompanyProfile.IsDefaultForOffice && string.Equals(NormalizeOfficeCode(localCompanyProfile.OfficeCode, companyProfileDefaultDefinition.OfficeCode), companyProfileDefaultDefinition.OfficeCode, StringComparison.OrdinalIgnoreCase) && RequiresDefaultCompanyProfileLabelRepair(localCompanyProfile, companyProfileDefaultDefinition)));
+		if (!hasInvalidAssignment && !missingDefaults && !hasDefaultLabelRepair && activeProfiles.Count > 0)
 		{
 			return;
 		}
@@ -3639,7 +3639,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			profile.OfficeCode = text;
 			flag = true;
 		}
-		string text2 = (string.IsNullOrWhiteSpace(profile.ProfileName) ? definition.ProfileName : profile.ProfileName.Trim());
+		string text2 = ResolveDefaultCompanyProfileName(profile.ProfileName, definition);
 		if (!string.Equals(profile.ProfileName, text2, StringComparison.CurrentCulture))
 		{
 			profile.ProfileName = text2;
@@ -3704,9 +3704,32 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return trimmed;
 	}
 
-	private static bool RequiresDefaultCompanyProfileTradeNameRepair(LocalCompanyProfile profile, CompanyProfileDefaultDefinition definition)
+	private static string ResolveDefaultCompanyProfileName(string? profileName, CompanyProfileDefaultDefinition definition)
 	{
-		return !string.Equals(profile.TradeName, ResolveDefaultCompanyProfileTradeName(profile.TradeName, definition), StringComparison.CurrentCulture);
+		string trimmed = profileName?.Trim() ?? string.Empty;
+		if (string.IsNullOrWhiteSpace(trimmed) || IsDefaultCompanyProfileNamePlaceholder(trimmed, definition.OfficeCode))
+		{
+			return definition.ProfileName.Trim();
+		}
+		return trimmed;
+	}
+
+	private static bool RequiresDefaultCompanyProfileLabelRepair(LocalCompanyProfile profile, CompanyProfileDefaultDefinition definition)
+	{
+		return !string.Equals(profile.ProfileName, ResolveDefaultCompanyProfileName(profile.ProfileName, definition), StringComparison.CurrentCulture) ||
+		       !string.Equals(profile.TradeName, ResolveDefaultCompanyProfileTradeName(profile.TradeName, definition), StringComparison.CurrentCulture);
+	}
+
+	private static bool IsDefaultCompanyProfileNamePlaceholder(string? profileName, string officeCode)
+	{
+		string trimmed = profileName?.Trim() ?? string.Empty;
+		if (string.IsNullOrWhiteSpace(trimmed))
+		{
+			return true;
+		}
+		string normalizedOfficeCode = NormalizeOfficeCode(officeCode, OfficeCodeCatalog.Usenet);
+		return string.Equals(trimmed, $"{normalizedOfficeCode} 기본", StringComparison.OrdinalIgnoreCase) ||
+		       string.Equals(trimmed, $"{OfficeCodeCatalog.GetOfficeDisplayName(normalizedOfficeCode)} 기본", StringComparison.OrdinalIgnoreCase);
 	}
 
 	private static bool IsDefaultCompanyProfileTradeNamePlaceholder(string? tradeName, string officeCode)

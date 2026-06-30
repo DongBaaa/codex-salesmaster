@@ -49,7 +49,7 @@ public sealed class DbInitializerRegressionTests : IDisposable
         var profile = await _dbContext.CompanyProfiles.IgnoreQueryFilters()
             .SingleAsync(current => current.Id == OfficeCodeCatalog.UsenetDefaultCompanyProfileId);
         Assert.Equal(OfficeCodeCatalog.Usenet, profile.OfficeCode);
-        Assert.Equal("USENET 기본", profile.ProfileName);
+        Assert.Equal("유즈넷 기본", profile.ProfileName);
         Assert.Equal("유즈넷", profile.TradeName);
     }
 
@@ -61,7 +61,7 @@ public sealed class DbInitializerRegressionTests : IDisposable
             {
                 Id = OfficeCodeCatalog.UsenetDefaultCompanyProfileId,
                 OfficeCode = OfficeCodeCatalog.Usenet,
-                ProfileName = "USENET 기본",
+                ProfileName = "유즈넷 기본",
                 TradeName = "USENET",
                 IsDefaultForOffice = true,
                 IsActive = true,
