@@ -219,6 +219,9 @@ function Set-NormalizedTemplateFromAssets {
 
     $linkedIds = @($linkedAssetMap.Keys | Sort-Object)
     $linkedMonthlyAmount = [decimal](@($linkedAssets | ForEach-Object { [Math]::Max([decimal]0, (Get-Decimal $_.monthlyFee)) }) | Measure-Object -Sum).Sum
+    $rawTemplateJson = ([string]$Profile.billingTemplateJson).Trim()
+    $templateRequiresArrayNormalization = -not [string]::IsNullOrWhiteSpace($rawTemplateJson) -and
+        $rawTemplateJson.StartsWith('{', [System.StringComparison]::Ordinal)
     $templateItems = @(Get-TemplateItems -BillingTemplateJson ([string]$Profile.billingTemplateJson))
     $originalTemplateMonthlyAmount = [decimal](@($templateItems | ForEach-Object { Get-TemplateLineAmount $_ }) | Measure-Object -Sum).Sum
     $profileTemplateSelfConsistent = $templateItems.Count -gt 0 -and
@@ -321,12 +324,13 @@ function Set-NormalizedTemplateFromAssets {
     }
 
     $templateMonthlyAmount = [decimal](@($templateItems | ForEach-Object { Get-TemplateLineAmount $_ }) | Measure-Object -Sum).Sum
-    $templateJson = ($templateItems | ConvertTo-Json -Depth 50 -Compress)
+    $templateJson = ConvertTo-Json -InputObject @($templateItems) -Depth 50 -Compress
     [pscustomobject]@{
         LinkedAssetCount = $linkedAssets.Count
         LinkedAssetMonthlyAmount = $linkedMonthlyAmount
         TemplateMonthlyAmount = $templateMonthlyAmount
         TemplateJson = $templateJson
+        TemplateRequiresArrayNormalization = $templateRequiresArrayNormalization
         OriginalTemplateMonthlyAmount = $originalTemplateMonthlyAmount
         ProfileTemplateSelfConsistent = $profileTemplateSelfConsistent
         ExistingTemplateLinkedAssetCount = $assigned.Count
@@ -494,8 +498,9 @@ foreach ($profile in @($pull.rentalBillingProfiles | Where-Object { -not $_.isDe
     $currentMonthly = Get-Decimal $profile.monthlyAmount
     $difference = $normalization.LinkedAssetMonthlyAmount - $currentMonthly
     $templateChanged = -not [string]::Equals([string]$profile.billingTemplateJson, [string]$normalization.TemplateJson, [System.StringComparison]::Ordinal)
-    if ([Math]::Abs([double]$difference) -lt 0.01) { continue }
-    if ([bool]$normalization.ProfileTemplateSelfConsistent -and [int]$normalization.MissingAssetCount -eq 0) { continue }
+    $requiresTemplateShapeRepair = [bool]$normalization.TemplateRequiresArrayNormalization
+    if ([Math]::Abs([double]$difference) -lt 0.01 -and [int]$normalization.MissingAssetCount -eq 0 -and -not $requiresTemplateShapeRepair) { continue }
+    if ([bool]$normalization.ProfileTemplateSelfConsistent -and [int]$normalization.MissingAssetCount -eq 0 -and -not $requiresTemplateShapeRepair) { continue }
 
     $applied = $false
     $pushRevision = [long]0

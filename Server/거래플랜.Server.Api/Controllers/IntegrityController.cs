@@ -337,13 +337,13 @@ public sealed class IntegrityController : ControllerBase
         var rentalAssignmentMissingReferenceCount = await scopedRentalAssignmentHistories
             .Where(history => !history.IsDeleted)
             .CountAsync(history =>
-                    history.AssetId == Guid.Empty ||
-                    !_dbContext.RentalAssets.IgnoreQueryFilters().Any(asset => !asset.IsDeleted && asset.Id == history.AssetId) ||
-                    (history.IsCurrent &&
-                     ((history.CustomerId.HasValue && history.CustomerId.Value != Guid.Empty &&
-                       !_dbContext.Customers.IgnoreQueryFilters().Any(customer => !customer.IsDeleted && customer.Id == history.CustomerId.Value)) ||
-                      (history.BillingProfileId.HasValue && history.BillingProfileId.Value != Guid.Empty &&
-                       !_dbContext.RentalBillingProfiles.IgnoreQueryFilters().Any(profile => !profile.IsDeleted && profile.Id == history.BillingProfileId.Value)))),
+                    history.IsCurrent &&
+                    (history.AssetId == Guid.Empty ||
+                     !_dbContext.RentalAssets.IgnoreQueryFilters().Any(asset => !asset.IsDeleted && asset.Id == history.AssetId) ||
+                     (history.CustomerId.HasValue && history.CustomerId.Value != Guid.Empty &&
+                      !_dbContext.Customers.IgnoreQueryFilters().Any(customer => !customer.IsDeleted && customer.Id == history.CustomerId.Value)) ||
+                     (history.BillingProfileId.HasValue && history.BillingProfileId.Value != Guid.Empty &&
+                      !_dbContext.RentalBillingProfiles.IgnoreQueryFilters().Any(profile => !profile.IsDeleted && profile.Id == history.BillingProfileId.Value))),
                 cancellationToken);
         AddIssue(issues, "rental_assignment_missing_reference_rows", rentalAssignmentMissingReferenceCount, "Error", "렌탈 임대이력이 존재하지 않거나 삭제된 자산/거래처/청구 프로필을 참조합니다.");
 
@@ -370,15 +370,16 @@ public sealed class IntegrityController : ControllerBase
         AddIssue(issues, "rental_assignment_current_scope_mismatch", rentalAssignmentScopeMismatchCount, "Error", "현재 렌탈 설치이력이 다른 업체/담당지점 자산/거래처/청구 프로필을 참조합니다.");
 
         var rentalAssignmentHistoricalStaleReferenceCount = await scopedRentalAssignmentHistories
-            .Where(history => !history.IsDeleted && !history.IsCurrent && history.AssetId != Guid.Empty)
-            .Where(history => _dbContext.RentalAssets.IgnoreQueryFilters().Any(asset => !asset.IsDeleted && asset.Id == history.AssetId))
+            .Where(history => !history.IsDeleted && !history.IsCurrent)
             .CountAsync(history =>
+                    history.AssetId == Guid.Empty ||
+                    !_dbContext.RentalAssets.IgnoreQueryFilters().Any(asset => !asset.IsDeleted && asset.Id == history.AssetId) ||
                     (history.CustomerId.HasValue && history.CustomerId.Value != Guid.Empty &&
                      !_dbContext.Customers.IgnoreQueryFilters().Any(customer => !customer.IsDeleted && customer.Id == history.CustomerId.Value)) ||
                     (history.BillingProfileId.HasValue && history.BillingProfileId.Value != Guid.Empty &&
                      !_dbContext.RentalBillingProfiles.IgnoreQueryFilters().Any(profile => !profile.IsDeleted && profile.Id == history.BillingProfileId.Value)),
                 cancellationToken);
-        AddIssue(issues, "rental_assignment_historical_stale_reference_rows", rentalAssignmentHistoricalStaleReferenceCount, "Info", "과거 렌탈 임대이력의 거래처/청구 프로필 참조가 현재 마스터에서 사라졌지만 스냅샷 표시값은 남아 있습니다.");
+        AddIssue(issues, "rental_assignment_historical_stale_reference_rows", rentalAssignmentHistoricalStaleReferenceCount, "Info", "과거 렌탈 임대이력의 자산/거래처/청구 프로필 참조가 현재 마스터에서 사라졌지만 스냅샷 표시값은 남아 있습니다.");
 
         var rentalAssetMultipleCurrentAssignmentCount = await scopedRentalAssignmentHistories
             .Where(history => !history.IsDeleted && history.IsCurrent && history.AssetId != Guid.Empty)
@@ -2158,14 +2159,13 @@ public sealed class IntegrityController : ControllerBase
         var histories = await _officeScopeService.ApplyRentalAssignmentHistoryScope(
                 _dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().AsNoTracking())
             .Where(history => !history.IsDeleted)
-            .Where(history =>
-                history.AssetId == Guid.Empty ||
-                !_dbContext.RentalAssets.IgnoreQueryFilters().Any(asset => !asset.IsDeleted && asset.Id == history.AssetId) ||
-                (history.IsCurrent &&
-                 ((history.CustomerId.HasValue && history.CustomerId.Value != Guid.Empty &&
-                   !_dbContext.Customers.IgnoreQueryFilters().Any(customer => !customer.IsDeleted && customer.Id == history.CustomerId.Value)) ||
-                  (history.BillingProfileId.HasValue && history.BillingProfileId.Value != Guid.Empty &&
-                   !_dbContext.RentalBillingProfiles.IgnoreQueryFilters().Any(profile => !profile.IsDeleted && profile.Id == history.BillingProfileId.Value)))))
+            .Where(history => history.IsCurrent &&
+                              (history.AssetId == Guid.Empty ||
+                               !_dbContext.RentalAssets.IgnoreQueryFilters().Any(asset => !asset.IsDeleted && asset.Id == history.AssetId) ||
+                               (history.CustomerId.HasValue && history.CustomerId.Value != Guid.Empty &&
+                                !_dbContext.Customers.IgnoreQueryFilters().Any(customer => !customer.IsDeleted && customer.Id == history.CustomerId.Value)) ||
+                               (history.BillingProfileId.HasValue && history.BillingProfileId.Value != Guid.Empty &&
+                                !_dbContext.RentalBillingProfiles.IgnoreQueryFilters().Any(profile => !profile.IsDeleted && profile.Id == history.BillingProfileId.Value))))
             .OrderBy(history => history.ResponsibleOfficeCode)
             .ThenBy(history => history.ManagementNumber)
             .ThenBy(history => history.LinkedAtUtc)
@@ -2232,9 +2232,10 @@ public sealed class IntegrityController : ControllerBase
     {
         var histories = await _officeScopeService.ApplyRentalAssignmentHistoryScope(
                 _dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().AsNoTracking())
-            .Where(history => !history.IsDeleted && !history.IsCurrent && history.AssetId != Guid.Empty)
-            .Where(history => _dbContext.RentalAssets.IgnoreQueryFilters().Any(asset => !asset.IsDeleted && asset.Id == history.AssetId))
+            .Where(history => !history.IsDeleted && !history.IsCurrent)
             .Where(history =>
+                history.AssetId == Guid.Empty ||
+                !_dbContext.RentalAssets.IgnoreQueryFilters().Any(asset => !asset.IsDeleted && asset.Id == history.AssetId) ||
                 (history.CustomerId.HasValue && history.CustomerId.Value != Guid.Empty &&
                  !_dbContext.Customers.IgnoreQueryFilters().Any(customer => !customer.IsDeleted && customer.Id == history.CustomerId.Value)) ||
                 (history.BillingProfileId.HasValue && history.BillingProfileId.Value != Guid.Empty &&
@@ -4417,7 +4418,7 @@ public sealed class IntegrityController : ControllerBase
             "orphan_rental_asset_item_refs" => new IntegrityIssueDefinition("orphan_rental_asset_item_refs", "Error", "품목이 없는 렌탈 자산 연결이 존재합니다."),
             "rental_assignment_missing_reference_rows" => new IntegrityIssueDefinition("rental_assignment_missing_reference_rows", "Error", "렌탈 임대이력이 존재하지 않거나 삭제된 자산/거래처/청구 프로필을 참조합니다."),
             "rental_assignment_current_scope_mismatch" => new IntegrityIssueDefinition("rental_assignment_current_scope_mismatch", "Error", "현재 렌탈 설치이력이 다른 업체/담당지점 자산/거래처/청구 프로필을 참조합니다."),
-            "rental_assignment_historical_stale_reference_rows" => new IntegrityIssueDefinition("rental_assignment_historical_stale_reference_rows", "Info", "과거 렌탈 임대이력의 거래처/청구 프로필 참조가 현재 마스터에서 사라졌지만 스냅샷 표시값은 남아 있습니다."),
+            "rental_assignment_historical_stale_reference_rows" => new IntegrityIssueDefinition("rental_assignment_historical_stale_reference_rows", "Info", "과거 렌탈 임대이력의 자산/거래처/청구 프로필 참조가 현재 마스터에서 사라졌지만 스냅샷 표시값은 남아 있습니다."),
             "rental_asset_multiple_current_assignments" => new IntegrityIssueDefinition("rental_asset_multiple_current_assignments", "Error", "하나의 렌탈 자산에 현재 임대중으로 표시된 이력이 여러 개 있습니다."),
             "orphan_transaction_invoice_refs" => new IntegrityIssueDefinition("orphan_transaction_invoice_refs", "Error", "전표가 없는 거래/수금 참조가 존재합니다."),
             "orphan_payment_invoice_refs" => new IntegrityIssueDefinition("orphan_payment_invoice_refs", "Error", "전표가 없는 수금/지급 참조가 존재합니다."),

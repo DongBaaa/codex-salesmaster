@@ -1351,23 +1351,40 @@ public sealed class IntegrityControllerTests : IDisposable
         var currentUser = CreateAdminUser();
         await using var dbContext = CreateDbContext(currentUser);
         var assetId = Guid.NewGuid();
+        var deletedAssetId = Guid.NewGuid();
         var missingCustomerId = Guid.NewGuid();
         var missingProfileId = Guid.NewGuid();
         var historyId = Guid.NewGuid();
+        var deletedAssetHistoryId = Guid.NewGuid();
 
-        dbContext.RentalAssets.Add(new RentalAsset
-        {
-            Id = assetId,
-            TenantCode = TenantScopeCatalog.UsenetGroup,
-            OfficeCode = OfficeCodeCatalog.Usenet,
-            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
-            AssetKey = "ASSET-PAST-STALE",
-            ManagementId = "PAST-STALE",
-            ManagementNumber = "PAST-STALE",
-            CustomerName = "Past Snapshot Customer",
-            ItemName = "Copier",
-            MonthlyFee = 100000m
-        });
+        dbContext.RentalAssets.AddRange(
+            new RentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "ASSET-PAST-STALE",
+                ManagementId = "PAST-STALE",
+                ManagementNumber = "PAST-STALE",
+                CustomerName = "Past Snapshot Customer",
+                ItemName = "Copier",
+                MonthlyFee = 100000m
+            },
+            new RentalAsset
+            {
+                Id = deletedAssetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "ASSET-PAST-DELETED",
+                ManagementId = "PAST-DELETED",
+                ManagementNumber = "PAST-DELETED",
+                CustomerName = "Past Deleted Asset Customer",
+                ItemName = "Deleted Copier",
+                MonthlyFee = 50000m,
+                IsDeleted = true
+            });
         dbContext.RentalAssetAssignmentHistories.Add(new RentalAssetAssignmentHistory
         {
             Id = historyId,
@@ -1386,6 +1403,22 @@ public sealed class IntegrityControllerTests : IDisposable
             LinkedAtUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
             UnlinkedAtUtc = new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc)
         });
+        dbContext.RentalAssetAssignmentHistories.Add(new RentalAssetAssignmentHistory
+        {
+            Id = deletedAssetHistoryId,
+            AssetId = deletedAssetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            CustomerName = "Past Deleted Asset Customer",
+            BillingProfileDisplay = "Past Deleted Asset Profile",
+            ItemName = "Deleted Copier",
+            ManagementNumber = "PAST-DELETED",
+            MonthlyFee = 50000m,
+            IsCurrent = false,
+            LinkedAtUtc = new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc),
+            UnlinkedAtUtc = new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc)
+        });
         await dbContext.SaveChangesAsync();
 
         var controller = CreateController(dbContext, currentUser);
@@ -1397,13 +1430,19 @@ public sealed class IntegrityControllerTests : IDisposable
         Assert.DoesNotContain(payload.Issues, issue => issue.Code == "rental_assignment_missing_reference_rows");
         var staleIssue = Assert.Single(payload.Issues, issue => issue.Code == "rental_assignment_historical_stale_reference_rows");
         Assert.Equal("Info", staleIssue.Severity);
-        Assert.Equal(1, staleIssue.Count);
+        Assert.Equal(2, staleIssue.Count);
 
-        var details = await GetSingleDetailRowAsync(controller, "rental_assignment_historical_stale_reference_rows");
-        Assert.Equal(FormatGuidForTest(historyId), details.EntityIdText);
-        Assert.Contains(FormatGuidForTest(missingCustomerId), details.ReferenceText, StringComparison.Ordinal);
-        Assert.Contains(FormatGuidForTest(missingProfileId), details.ReferenceText, StringComparison.Ordinal);
-        Assert.Contains("100,000", details.DetailText, StringComparison.Ordinal);
+        var detailsResponse = await controller.GetReportDetails("rental_assignment_historical_stale_reference_rows", CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+        Assert.Equal(2, details.DetailCount);
+        var missingMasterDetails = Assert.Single(details.Rows, row => row.EntityIdText == FormatGuidForTest(historyId));
+        Assert.Contains(FormatGuidForTest(missingCustomerId), missingMasterDetails.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains(FormatGuidForTest(missingProfileId), missingMasterDetails.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains("100,000", missingMasterDetails.DetailText, StringComparison.Ordinal);
+        var deletedAssetDetails = Assert.Single(details.Rows, row => row.EntityIdText == FormatGuidForTest(deletedAssetHistoryId));
+        Assert.Contains(FormatGuidForTest(deletedAssetId), deletedAssetDetails.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains("50,000", deletedAssetDetails.DetailText, StringComparison.Ordinal);
     }
 
     [Fact]
