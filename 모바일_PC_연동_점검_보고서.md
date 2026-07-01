@@ -65,3 +65,37 @@
 2. 모바일은 PC의 렌탈 청구서 생성/입금등록/프로필 편집을 동일하게 제공하지 않는다. 사용자가 모바일에서도 렌탈 청구 업무를 해야 한다면 별도 구현 범위로 잡아야 한다.
 3. 렌탈 청구관리 로딩은 이미 검색 제한/배치 로딩/비동기 로딩이 적용되어 있고 이번 패치는 메인 반복 로딩 병목을 우선 제거했다. 실제 운영 PC에서 여전히 느린 특정 검색어/거래처가 있으면 해당 조건의 OperationTiming 로그로 추가 최적화한다.
 4. 운영 데이터 자체 정정은 이번 범위에서 제외했다.
+
+## 6. 패키지/배포 결과
+
+- PC 버전: 1.1.644
+- Android 버전: 0.2.79 유지
+- 로컬 PC 설치 패키지:
+  - `D:\새 폴더\georaeplan-main-fix\배포\거래플랜-PC-설치패키지.exe`
+  - `D:\새 폴더\georaeplan-main-fix\배포\관리자용\거래플랜-PC-설치패키지.zip`
+  - `D:\새 폴더\georaeplan-main-fix\배포\관리자용\버전보관\거래플랜-PC-설치패키지-v1.1.644.exe`
+  - `D:\새 폴더\georaeplan-main-fix\배포\관리자용\버전보관\거래플랜-PC-설치패키지-v1.1.644.msi`
+- 로컬 업데이트 manifest: `D:\새 폴더\georaeplan-main-fix\배포\업데이트\manifest\stable.json`
+  - desktop: `tradeplan-pc-installer-v1.1.644.zip`
+  - android: `tradeplan-android-v0.2.79.apk` 보존
+- Linux PC live 배포 ReleaseId: `pc-load-1.1.644-20260701-182519`
+- live 반영 결과:
+  - `apply_release_done release_id=pc-load-1.1.644-20260701-182519`
+  - `https://trade.2884.kr/healthz` 200 OK
+  - 공통 영향 확인: `https://work.2884.kr/healthz` 200 OK, `https://itw.2884.kr/` 200 OK
+  - 전체 Docker/DB/PC 재시작 없이 거래플랜 api 컨테이너 단위 recreate/apply만 수행됨
+- live update manifest 확인:
+  - desktop version: `1.1.644`
+  - desktop package: `https://trade.2884.kr/updates/download/desktop/tradeplan-pc-installer-v1.1.644.zip`
+  - desktop HEAD: 200, size 232,910,078 bytes
+  - android version: `0.2.79`
+  - android package: `https://trade.2884.kr/updates/download/android/tradeplan-android-v0.2.79.apk`
+  - android HEAD: 200, size 26,802,876 bytes
+- operational gate:
+  - pre-deploy: WARN
+  - post-deploy: WARN
+  - WARN 사유: Android APK가 기존과 동일한 debug signing 인증서로 서명되어 있음. 이번 작업은 Android APK를 변경하지 않았고 signing continuity는 PASS.
+  - integrity report: Error 0, Warning 0
+  - account scope regression: PASS
+  - rental monthly amount consistency: candidate_count 0
+  - 운영 데이터 쓰기/수정: 없음
