@@ -700,6 +700,21 @@ public sealed class SyncController : ControllerBase
                 deviceId,
                 cancellationToken);
             await RestoreLinkedDeletedCustomerContractsForRentalBillingProfilesAsync(acceptedRentalProfiles, rentalProfileRestoreCustomerIds, cancellationToken);
+            if (acceptedRentalProfiles.Any(profile => profile.IsDeleted))
+            {
+                var detachedAssetCount = await DetachRentalAssetsFromDeletedBillingProfilesAsync(
+                    acceptedRentalProfiles,
+                    cancellationToken);
+                if (detachedAssetCount > 0)
+                    AddNotice(
+                        result,
+                        nameof(RentalBillingProfile),
+                        Guid.Empty,
+                        "deleted-rental-billing-profile-assets-detached",
+                        $"Deleted rental billing profile synchronization detached {detachedAssetCount:N0} linked rental asset(s).");
+
+                requiresRentalAssignmentRefresh = true;
+            }
             if (validRentalProfiles.Count > 0)
             {
                 await _dbContext.SaveChangesAsync(cancellationToken);
@@ -3679,6 +3694,83 @@ public sealed class SyncController : ControllerBase
             if (string.IsNullOrWhiteSpace(profile.CustomerName))
                 profile.CustomerName = customer.NameOriginal;
         }
+    }
+
+    private async Task<int> DetachRentalAssetsFromDeletedBillingProfilesAsync(
+        IEnumerable<RentalBillingProfileDto> acceptedProfiles,
+        CancellationToken cancellationToken)
+    {
+        var deletedProfiles = acceptedProfiles
+            .Where(profile => profile.IsDeleted && profile.Id != Guid.Empty)
+            .GroupBy(profile => profile.Id)
+            .ToDictionary(group => group.Key, group => group.First());
+        if (deletedProfiles.Count == 0)
+            return 0;
+
+        var deletedProfileIds = deletedProfiles.Keys.ToList();
+        var linkedAssets = await _dbContext.RentalAssets
+            .IgnoreQueryFilters()
+            .Where(asset =>
+                !asset.IsDeleted &&
+                asset.BillingProfileId.HasValue &&
+                deletedProfileIds.Contains(asset.BillingProfileId.Value))
+            .ToListAsync(cancellationToken);
+        if (linkedAssets.Count == 0)
+            return 0;
+
+        var now = DateTime.UtcNow;
+        foreach (var asset in linkedAssets)
+        {
+            var previousProfileId = asset.BillingProfileId!.Value;
+            deletedProfiles.TryGetValue(previousProfileId, out var deletedProfile);
+
+            asset.LastCustomerName = NormalizeDetachedRentalAssetSnapshotText(
+                asset.CurrentCustomerName,
+                asset.CustomerName,
+                asset.LastCustomerName);
+            asset.LastInstallLocation = NormalizeDetachedRentalAssetSnapshotText(
+                asset.InstallLocation,
+                asset.InstallSiteName,
+                asset.CurrentLocation,
+                asset.LastInstallLocation);
+            asset.LastBillingProfileId = previousProfileId;
+            asset.LastBillingProfileDisplay = BuildDeletedRentalBillingProfileDisplay(deletedProfile, asset);
+            asset.LastAssignmentClearedAtUtc = now;
+            asset.BillingProfileId = null;
+            asset.BillingEligibilityStatus = "청구제외";
+            asset.BillingExclusionReason = "청구 프로필 삭제로 청구목록 제외";
+            asset.UpdatedAtUtc = now;
+        }
+
+        return linkedAssets.Count;
+    }
+
+    private static string BuildDeletedRentalBillingProfileDisplay(
+        RentalBillingProfileDto? profile,
+        RentalAsset asset)
+    {
+        var customerName = NormalizeDetachedRentalAssetSnapshotText(
+            profile?.CustomerName,
+            asset.CurrentCustomerName,
+            asset.CustomerName,
+            asset.LastCustomerName);
+        var itemName = NormalizeDetachedRentalAssetSnapshotText(profile?.ItemName, asset.ItemName);
+        if (!string.IsNullOrWhiteSpace(customerName) && !string.IsNullOrWhiteSpace(itemName))
+            return $"{customerName} · {itemName}";
+
+        return string.IsNullOrWhiteSpace(customerName) ? itemName : customerName;
+    }
+
+    private static string NormalizeDetachedRentalAssetSnapshotText(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            var normalized = RentalCatalogValueNormalizer.NormalizeDisplayText(value);
+            if (!string.IsNullOrWhiteSpace(normalized))
+                return normalized;
+        }
+
+        return string.Empty;
     }
 
     private async Task<List<RentalBillingProfileDto>> UpsertRentalBillingProfilesAsync(

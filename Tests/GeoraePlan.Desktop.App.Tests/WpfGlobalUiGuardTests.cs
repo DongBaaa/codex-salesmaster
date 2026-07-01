@@ -236,6 +236,31 @@ public sealed class WpfGlobalUiGuardTests
     }
 
     [Fact]
+    public void RentalAssetLinkDialog_KeepsConnectButtonVisibleAndFooterSticky()
+    {
+        var root = FindRepositoryRoot();
+        var xaml = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "RentalAssetLinkDialog.xaml"));
+
+        var rootGridBlock = ExtractBlock(
+            xaml,
+            "<Grid Margin=\"14\">",
+            "<Border Grid.Row=\"0\"");
+        Assert.Contains("<RowDefinition Height=\"*\"/>", rootGridBlock, StringComparison.Ordinal);
+        Assert.DoesNotContain("<RowDefinition Height=\"Auto\"/>\r\n                                <RowDefinition Height=\"Auto\"/>", rootGridBlock, StringComparison.Ordinal);
+        Assert.True(
+            Regex.Matches(xaml, "Content=\"선택 자산 연결\"[\\s\\S]*?Click=\"ConfirmButton_Click\"", RegexOptions.CultureInvariant).Count >= 2,
+            "렌탈 자산 연결 실행 버튼은 상단 검색영역과 하단 고정 푸터에 모두 보여야 합니다.");
+        Assert.Contains("ToolTip=\"체크한 자산을 현재 거래처 청구프로필에 연결합니다.\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Grid.Row=\"3\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("IsEnabled=\"{Binding CanConfirm}\"", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void RentalAssetWindow_KeepsDetailSelectionSingleAndSelectionAutosaveStable()
     {
         var root = FindRepositoryRoot();

@@ -105,23 +105,11 @@
 
     <Grid Margin="14">
         <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                            </Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
 
         <Border Grid.Row="0" Background="#1A2B4A" Padding="12" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
             <DockPanel>
@@ -143,7 +131,13 @@
                 <TextBox Width="260" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,12,0"/>
                 <CheckBox Content="다른 담당지점 자산도 표시" IsChecked="{Binding IncludeOtherOfficeAssets}" Foreground="#EAF2FF" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,12,0"/>
                 <CheckBox Content="다른 청구프로필 연결 장비도 표시" IsChecked="{Binding IncludeRelinkTargets}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0"/>
-                <Button Content="새로고침" Command="{Binding ReloadCommand}" Background="#1565C0" BorderBrush="#1565C0"/>
+                <Button Content="새로고침" Command="{Binding ReloadCommand}" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,8,0"/>
+                <Button Content="선택 자산 연결"
+                        Background="#1B5E20"
+                        BorderBrush="#1B5E20"
+                        Click="ConfirmButton_Click"
+                        IsEnabled="{Binding CanConfirm}"
+                        ToolTip="체크한 자산을 현재 거래처 청구프로필에 연결합니다."/>
             </WrapPanel>
         </Border>
 
@@ -286,7 +280,7 @@
         <Border Grid.Row="3" Margin="0,10,0,0" Background="#122038" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="10">
             <DockPanel>
                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
-                    <Button Content="선택 반영" Background="#1B5E20" BorderBrush="#1B5E20" Margin="0,0,8,0" Click="ConfirmButton_Click" IsEnabled="{Binding CanConfirm}"/>
+                    <Button Content="선택 자산 연결" Background="#1B5E20" BorderBrush="#1B5E20" Margin="0,0,8,0" Click="ConfirmButton_Click" IsEnabled="{Binding CanConfirm}"/>
                     <Button Content="취소" Click="CancelButton_Click"/>
                 </StackPanel>
                 <ProgressBar Width="220" Height="12" IsIndeterminate="{Binding IsBusy}" Margin="0,0,12,0"/>

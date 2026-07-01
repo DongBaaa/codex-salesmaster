@@ -3354,6 +3354,150 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_DeletedRentalBillingProfile_DetachesServerAssetsAndRefreshesCurrentAssignmentHistory()
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        var historyId = Guid.NewGuid();
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "USENET",
+            IsActive = true
+        });
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Deleted profile sync customer",
+            NameMatchKey = "DELETEDPROFILESYNCCUSTOMER",
+            TradeType = "매출"
+        });
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "DELETED-PROFILE-SYNC",
+            CustomerId = customerId,
+            CustomerName = "Deleted profile sync customer",
+            ItemName = "Deleted profile copier",
+            InstallSiteName = "Deleted profile site",
+            BillingDay = 25,
+            BillingCycleMonths = 1,
+            IsActive = true
+        });
+        _dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = "DELETED-PROFILE-SYNC-ASSET",
+            CustomerId = customerId,
+            BillingProfileId = profileId,
+            CustomerName = "Deleted profile sync customer",
+            CurrentCustomerName = "Deleted profile sync customer",
+            InstallLocation = "Deleted profile site",
+            ManagementNumber = "DPS-001",
+            ItemName = "Deleted profile copier",
+            MachineNumber = "DPS-001-SN",
+            MonthlyFee = 120000m
+        });
+        _dbContext.RentalAssetAssignmentHistories.Add(new RentalAssetAssignmentHistory
+        {
+            Id = historyId,
+            AssetId = assetId,
+            BillingProfileId = profileId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            CustomerName = "Deleted profile sync customer",
+            InstallLocation = "Deleted profile site",
+            BillingProfileDisplay = "Deleted profile sync customer · Deleted profile copier",
+            ItemName = "Deleted profile copier",
+            MachineNumber = "DPS-001-SN",
+            ManagementNumber = "DPS-001",
+            MonthlyFee = 120000m,
+            IsCurrent = true,
+            LinkedAtUtc = DateTime.UtcNow.AddMonths(-1)
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var existingProfile = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "deleted-rental-profile-detach-test",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = existingProfile.TenantCode,
+                    OfficeCode = existingProfile.OfficeCode,
+                    ResponsibleOfficeCode = existingProfile.ResponsibleOfficeCode,
+                    ProfileKey = existingProfile.ProfileKey,
+                    CustomerId = existingProfile.CustomerId,
+                    CustomerName = existingProfile.CustomerName,
+                    ItemName = existingProfile.ItemName,
+                    InstallSiteName = existingProfile.InstallSiteName,
+                    BillingDay = existingProfile.BillingDay,
+                    BillingCycleMonths = existingProfile.BillingCycleMonths,
+                    IsActive = existingProfile.IsActive,
+                    IsDeleted = true,
+                    Revision = existingProfile.Revision,
+                    ExpectedRevision = existingProfile.Revision,
+                    UpdatedAtUtc = existingProfile.UpdatedAtUtc.AddSeconds(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.True(
+            result.ConflictCount == 0,
+            string.Join("; ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.EntityId}:{conflict.Reason}")));
+        Assert.Contains(result.Notices, notice =>
+            notice.Code == "deleted-rental-billing-profile-assets-detached");
+
+        var storedProfile = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        var storedAsset = await _dbContext.RentalAssets
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(asset => asset.Id == assetId);
+        var histories = await _dbContext.RentalAssetAssignmentHistories
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(history => history.AssetId == assetId)
+            .ToListAsync();
+
+        Assert.True(storedProfile.IsDeleted);
+        Assert.Null(storedAsset.BillingProfileId);
+        Assert.Equal(customerId, storedAsset.CustomerId);
+        Assert.Equal(profileId, storedAsset.LastBillingProfileId);
+        Assert.NotNull(storedAsset.LastAssignmentClearedAtUtc);
+        Assert.Equal("청구제외", storedAsset.BillingEligibilityStatus);
+        Assert.Equal("청구 프로필 삭제로 청구목록 제외", storedAsset.BillingExclusionReason);
+        Assert.DoesNotContain(histories, history => history.IsCurrent && history.BillingProfileId == profileId);
+        Assert.Contains(histories, history => history.Id == historyId && !history.IsCurrent && history.UnlinkedAtUtc.HasValue);
+        Assert.Contains(histories, history => history.IsCurrent && history.BillingProfileId is null);
+    }
+
+    [Fact]
     public async Task Push_ClearsHistoricalRentalAssignmentHistory_DeletedCustomerAndProfileReferences()
     {
         var asset = new RentalAsset
