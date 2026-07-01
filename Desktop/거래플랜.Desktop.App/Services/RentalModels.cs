@@ -442,9 +442,11 @@ public sealed class RentalBillingHistoryRow
     public bool HasInvoice { get; init; }
     public Guid? InvoiceId { get; init; }
     public long? InvoiceRevision { get; init; }
+    public Guid? SettlementTransactionId { get; init; }
     public bool IsPastUnresolved { get; init; }
     public bool CanRegisterSettlement => BillingRunId != Guid.Empty && OutstandingAmount > 0m;
     public bool HasSettlement => SettledAmount > 0m;
+    public bool CanEditSettlement => HasSettlement && SettlementTransactionId.HasValue && SettlementTransactionId.Value != Guid.Empty;
     public bool CanDelete => BillingRunId != Guid.Empty;
     public string ActionLabel => CanRegisterSettlement
         ? SettledAmount > 0m ? "추가 입금" : "입금 등록"

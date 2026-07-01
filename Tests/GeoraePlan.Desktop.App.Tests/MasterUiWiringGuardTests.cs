@@ -614,6 +614,58 @@ public sealed class MasterUiWiringGuardTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void RentalBillingHistorySettlementAmountDoubleClickOpensPaymentEditAndRefreshesHistory()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var rentalXaml = ReadAppFile(appRoot, "Views", "RentalBillingWindow.xaml");
+        var rentalCode = ReadAppFile(appRoot, "Views", "RentalBillingWindow.xaml.cs");
+        var rentalViewModel = ReadAppFile(appRoot, "ViewModels", "RentalBillingViewModel.cs");
+        var paymentXaml = ReadAppFile(appRoot, "Views", "PaymentWindow.xaml");
+        var paymentCode = ReadAppFile(appRoot, "Views", "PaymentWindow.xaml.cs");
+        var paymentViewModel = ReadAppFile(appRoot, "ViewModels", "PaymentViewModel.cs");
+        var models = ReadAppFile(appRoot, "Services", "RentalModels.cs");
+        var service = ReadAppFile(appRoot, "Services", "RentalStateService.cs");
+
+        AssertContainsAll(
+            models,
+            "public Guid? SettlementTransactionId { get; init; }",
+            "public bool CanEditSettlement => HasSettlement && SettlementTransactionId.HasValue");
+        AssertContainsAll(
+            service,
+            "LatestSettlementSourceId",
+            "SettlementTransactionId = settlementInfo.LatestSettlementSourceId");
+        AssertContainsAll(
+            rentalXaml,
+            "MouseDoubleClick=\"BillingHistoryDataGrid_MouseDoubleClick\"",
+            "Header=\"입금액\"");
+        AssertContainsAll(
+            rentalCode,
+            "IsSettlementAmountCell(source) && history.CanEditSettlement",
+            "OpenRentalSettlementWindowAsync(viewModel, history, editExistingSettlement: true)",
+            "paymentViewModel.TransactionsChanged += transactionsChangedHandler",
+            "await viewModel.RefreshSelectedBillingHistoryRowsAsync(viewModel.SelectedRow?.Source.Id)",
+            "await paymentViewModel.LoadHistoryIntoEditorByIdAsync(transactionId)");
+        AssertContainsAll(
+            rentalViewModel,
+            "public async Task RefreshSelectedBillingHistoryRowsAsync(Guid? changedProfileId = null)",
+            "ApplyBillingHistoryRowsForDisplay(histories)");
+        AssertContainsAll(
+            paymentXaml,
+            "MouseDoubleClick=\"HistoryDataGrid_MouseDoubleClick\"",
+            "저장된 수금/지급 내역을 더블클릭하면 수정 모드로 불러옵니다.");
+        AssertContainsAll(
+            paymentCode,
+            "private void HistoryDataGrid_MouseDoubleClick",
+            "_vm.LoadSelectedHistoryIntoEditorAsync()");
+        AssertContainsAll(
+            paymentViewModel,
+            "public async Task<bool> LoadSelectedHistoryIntoEditorAsync()",
+            "public async Task<bool> LoadHistoryIntoEditorByIdAsync(Guid transactionId)",
+            "ShouldAutoDistributeRentalSettlementAmount()",
+            "ApplyRentalReceiptAmountByBillingMethod(value)");
+    }
+
     private static void AssertContainsAll(string source, params string[] expectedMarkers)
     {
         foreach (var marker in expectedMarkers)

@@ -88,8 +88,13 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("$tempInitializer = Join-Path $ProjectRoot 'tools\\common\\Initialize-GeoraePlanTemp.ps1'", source, StringComparison.Ordinal);
         Assert.Contains(". $tempInitializer -ProjectRoot $ProjectRoot", source, StringComparison.Ordinal);
         Assert.Contains("function Write-JsonFileAtomically", source, StringComparison.Ordinal);
+        Assert.Contains("function Read-ExistingUpdateManifest", source, StringComparison.Ordinal);
+        Assert.Contains("function Copy-ManifestPlatformNode", source, StringComparison.Ordinal);
         Assert.Contains("[System.IO.File]::Replace($tempPath, $TargetPath, $backupPath, $true)", source, StringComparison.Ordinal);
         Assert.Contains("Move-Item -LiteralPath $tempPath -Destination $TargetPath -Force", source, StringComparison.Ordinal);
+        Assert.Contains("$existingManifest = Read-ExistingUpdateManifest -ManifestPath $manifestPath", source, StringComparison.Ordinal);
+        Assert.Contains("$manifest.android = Copy-ManifestPlatformNode -Node $existingManifest.android", source, StringComparison.Ordinal);
+        Assert.Contains("android_package_preserved=$($manifest.android.fileName)", source, StringComparison.Ordinal);
         Assert.Contains("Write-JsonFileAtomically -TargetPath $manifestPath -InputObject $manifest", source, StringComparison.Ordinal);
 
         Assert.Contains("Test-DesktopUpdatePackage -PackagePath $SourcePath -ExpectedVersion $Version", source, StringComparison.Ordinal);
@@ -104,9 +109,34 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("-PreserveFileNames $preservedAndroidFiles", source, StringComparison.Ordinal);
         AssertInOrder(
             source,
+            "$existingManifest = Read-ExistingUpdateManifest -ManifestPath $manifestPath",
+            "$manifest.android = Copy-ManifestPlatformNode -Node $existingManifest.android",
             "Write-JsonFileAtomically -TargetPath $manifestPath -InputObject $manifest",
             "$preservedDesktopFiles = Get-ManifestReferencedFileNames -ManifestRoot $manifestRoot -Platform 'desktop'",
             "$removedDesktopPackages = Remove-OldPackages");
+    }
+
+    [Fact]
+    public void LinuxPcReleaseSeedsExistingUpdateAssetsBeforeDesktopOnlyManifestPublish()
+    {
+        var source = ReadRepositoryFile(
+            "tools",
+            "linux",
+            "Publish-GeoraeplanLinuxPcRelease.ps1");
+
+        Assert.Contains("$tempUpdateRoot = Join-Path $tempPublishRoot 'updates'", source, StringComparison.Ordinal);
+        Assert.Contains("$deploymentFolderName = -join @([char]0xBC30, [char]0xD3EC)", source, StringComparison.Ordinal);
+        Assert.Contains("$updateFolderName = -join @([char]0xC5C5, [char]0xB370, [char]0xC774, [char]0xD2B8)", source, StringComparison.Ordinal);
+        Assert.Contains("$existingUpdateRoot = Join-Path $ProjectRoot (Join-Path $deploymentFolderName $updateFolderName)", source, StringComparison.Ordinal);
+        Assert.Contains("linux_pc_update_assets_seeded=$existingUpdateRoot", source, StringComparison.Ordinal);
+        Assert.Contains("OutputRoot = $tempUpdateRoot", source, StringComparison.Ordinal);
+        AssertInOrder(
+            source,
+            "$deploymentFolderName = -join @([char]0xBC30, [char]0xD3EC)",
+            "$existingUpdateRoot = Join-Path $ProjectRoot (Join-Path $deploymentFolderName $updateFolderName)",
+            "Copy-Item -Destination $tempUpdateRoot -Recurse -Force",
+            "& $updateAssetScript @updateAssetArgs",
+            "Invoke-AndroidSigningContinuityGate `");
     }
 
     [Fact]
@@ -763,6 +793,9 @@ public sealed class ReleaseTempPathGuardTests
 
         Assert.Contains("function Invoke-SshCommand", source, StringComparison.Ordinal);
         Assert.Contains("[System.Diagnostics.ProcessStartInfo]::new($sshExe)", source, StringComparison.Ordinal);
+        Assert.Contains("$normalizedCommand = $Command -replace \"`r`n\", \"`n\"", source, StringComparison.Ordinal);
+        Assert.Contains("$normalizedCommand = $normalizedCommand -replace \"`r\", \"`n\"", source, StringComparison.Ordinal);
+        Assert.Contains("$arguments += $normalizedCommand", source, StringComparison.Ordinal);
         Assert.Contains("$startInfo.Arguments = ($arguments | ForEach-Object { Quote-ProcessArgument -Argument $_ }) -join ' '", source, StringComparison.Ordinal);
         Assert.Contains("$startInfo.RedirectStandardOutput = $true", source, StringComparison.Ordinal);
         Assert.Contains("$process.Start()", source, StringComparison.Ordinal);
@@ -771,6 +804,7 @@ public sealed class ReleaseTempPathGuardTests
         AssertInOrder(
             source,
             "function Invoke-SshCommand",
+            "$normalizedCommand = $Command -replace \"`r`n\", \"`n\"",
             "[System.Diagnostics.ProcessStartInfo]::new($sshExe)",
             "$startInfo.Arguments = ($arguments | ForEach-Object { Quote-ProcessArgument -Argument $_ }) -join ' '",
             "$process.Start()");

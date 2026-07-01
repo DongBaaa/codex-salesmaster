@@ -198,7 +198,9 @@ function Invoke-SshCommand {
 
     $sshExe = Resolve-SshExecutable
     $arguments = New-SshArgumentList -Config $Config -BatchMode:$BatchMode
-    $arguments += $Command
+    $normalizedCommand = $Command -replace "`r`n", "`n"
+    $normalizedCommand = $normalizedCommand -replace "`r", "`n"
+    $arguments += $normalizedCommand
 
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new($sshExe)
     $startInfo.UseShellExecute = $false
@@ -781,9 +783,20 @@ try {
 
     $updateAssetScript = Join-Path $ProjectRoot 'tools\release\Publish-GeoraePlanUpdateAssets.ps1'
     if (Test-Path -LiteralPath $updateAssetScript) {
+        $tempUpdateRoot = Join-Path $tempPublishRoot 'updates'
+        $deploymentFolderName = -join @([char]0xBC30, [char]0xD3EC)
+        $updateFolderName = -join @([char]0xC5C5, [char]0xB370, [char]0xC774, [char]0xD2B8)
+        $existingUpdateRoot = Join-Path $ProjectRoot (Join-Path $deploymentFolderName $updateFolderName)
+        if (Test-Path -LiteralPath $existingUpdateRoot) {
+            New-Item -ItemType Directory -Force -Path $tempUpdateRoot | Out-Null
+            Get-ChildItem -LiteralPath $existingUpdateRoot -Force -ErrorAction SilentlyContinue |
+                Copy-Item -Destination $tempUpdateRoot -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "linux_pc_update_assets_seeded=$existingUpdateRoot"
+        }
+
         $updateAssetArgs = @{
             ProjectRoot = $ProjectRoot
-            OutputRoot = (Join-Path $tempPublishRoot 'updates')
+            OutputRoot = $tempUpdateRoot
         }
         if (-not [string]::IsNullOrWhiteSpace($DesktopNotes)) {
             $updateAssetArgs.DesktopNotes = $DesktopNotes

@@ -213,6 +213,17 @@ public partial class RentalBillingWindow : Window
         }
 
         viewModel.SelectedBillingHistory = history;
+        if (IsSettlementAmountCell(source) && history.CanEditSettlement)
+        {
+            UiTaskHelper.Run(
+                this,
+                () => OpenRentalSettlementWindowAsync(viewModel, history, editExistingSettlement: true),
+                "UI",
+                "렌탈 청구 수금 내역 수정",
+                "렌탈 청구 수금 내역을 수정 모드로 여는 중 오류가 발생했습니다.");
+            return;
+        }
+
         UiTaskHelper.Run(
             this,
             () => OpenBillingHistoryInvoiceAsync(history),
@@ -248,7 +259,10 @@ public partial class RentalBillingWindow : Window
         await _openInvoiceWindowAsync(invoiceId, this);
     }
 
-    private async Task OpenRentalSettlementWindowAsync(RentalBillingViewModel viewModel, RentalBillingHistoryRow? history)
+    private async Task OpenRentalSettlementWindowAsync(
+        RentalBillingViewModel viewModel,
+        RentalBillingHistoryRow? history,
+        bool editExistingSettlement = false)
     {
         if (viewModel.SelectedRow is null)
         {
@@ -308,8 +322,36 @@ public partial class RentalBillingWindow : Window
             Owner = this
         };
 
-        paymentWindow.ShowDialog();
+        EventHandler? transactionsChangedHandler = null;
+        transactionsChangedHandler = (_, _) =>
+        {
+            _ = Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+            {
+                UiTaskHelper.Forget(
+                    viewModel.RefreshSelectedBillingHistoryRowsAsync(viewModel.SelectedRow?.Source.Id),
+                    "RENTAL",
+                    "렌탈 수금 저장 후 청구/입금 내역 새로고침",
+                    ex => viewModel.StatusMessage = $"청구/입금 내역을 새로고침하지 못했습니다. {ex.Message}");
+            }));
+        };
+        paymentViewModel.TransactionsChanged += transactionsChangedHandler;
+
+        if (editExistingSettlement && history?.SettlementTransactionId is Guid transactionId && transactionId != Guid.Empty)
+        {
+            await paymentViewModel.LoadHistoryIntoEditorByIdAsync(transactionId);
+        }
+
+        try
+        {
+            paymentWindow.ShowDialog();
+        }
+        finally
+        {
+            paymentViewModel.TransactionsChanged -= transactionsChangedHandler;
+        }
+
         await viewModel.ReloadCommand.ExecuteAsync(null);
+        await viewModel.RefreshSelectedBillingHistoryRowsAsync(viewModel.SelectedRow?.Source.Id);
     }
 
     private async void HandleClosing(object? sender, CancelEventArgs e)
@@ -595,5 +637,11 @@ public partial class RentalBillingWindow : Window
         }
 
         return null;
+    }
+
+    private static bool IsSettlementAmountCell(DependencyObject source)
+    {
+        var cell = FindAncestor<DataGridCell>(source);
+        return string.Equals(cell?.Column?.Header?.ToString(), "입금액", StringComparison.Ordinal);
     }
 }

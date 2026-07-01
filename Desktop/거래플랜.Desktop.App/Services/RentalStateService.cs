@@ -2196,15 +2196,23 @@ WHERE ""AssignedUsername"" <> '';", ct);
                                       existing.LastSettledDate.Value >= row.TransactionDate
                     ? existing.LastSettledDate.Value
                     : row.TransactionDate;
+                var latestSourceId = existing.LastSettledDate.HasValue &&
+                                     existing.LastSettledDate.Value > row.TransactionDate
+                    ? existing.LatestSettlementSourceId
+                    : row.IsEditableTransaction
+                        ? row.SourceId
+                        : existing.LatestSettlementSourceId;
                 settlementByRun[row.RunId] = new RentalBillingRunSettlementInfo(
                     existing.SettledAmount + row.SettlementAmount,
-                    lastSettledDate);
+                    lastSettledDate,
+                    latestSourceId);
             }
             else
             {
                 settlementByRun[row.RunId] = new RentalBillingRunSettlementInfo(
                     row.SettlementAmount,
-                    row.TransactionDate);
+                    row.TransactionDate,
+                    row.IsEditableTransaction ? row.SourceId : null);
             }
         }
 
@@ -2224,7 +2232,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     transaction.TransactionDate,
                     transaction.TenantCode,
                     transaction.ResponsibleOfficeCode,
-                    transaction.OfficeCode))
+                    transaction.OfficeCode,
+                    true))
                 .ToListAsync(ct);
             foreach (var row in settlementRows)
             {
@@ -2253,7 +2262,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                         payment.PaymentDate,
                         invoice.TenantCode,
                         invoice.ResponsibleOfficeCode,
-                        invoice.OfficeCode))
+                        invoice.OfficeCode,
+                        false))
                 .ToListAsync(ct);
             foreach (var row in directPaymentRows)
             {
@@ -2312,9 +2322,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
         DateOnly TransactionDate,
         string TenantCode,
         string ResponsibleOfficeCode,
-        string OfficeCode);
+        string OfficeCode,
+        bool IsEditableTransaction);
 
-    private readonly record struct RentalBillingRunSettlementInfo(decimal SettledAmount, DateOnly? LastSettledDate);
+    private readonly record struct RentalBillingRunSettlementInfo(
+        decimal SettledAmount,
+        DateOnly? LastSettledDate,
+        Guid? LatestSettlementSourceId);
 
     private readonly record struct RentalBillingRunInvoiceInfo(Guid InvoiceId, long InvoiceRevision, decimal TotalAmount);
 
@@ -2472,7 +2486,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
             var settlementInfo = settlementByRun.TryGetValue(run.RunId, out var foundSettlement)
                 ? foundSettlement
-                : new RentalBillingRunSettlementInfo(Math.Max(0m, run.SettledAmount), run.SettledDate);
+                : new RentalBillingRunSettlementInfo(Math.Max(0m, run.SettledAmount), run.SettledDate, null);
             var settledAmount = Math.Max(0m, settlementInfo.SettledAmount);
             var hasInvoice = invoiceByRun.TryGetValue(run.RunId, out var invoice);
             if (ShouldIgnorePreFirstBillingRun(profile, run, referenceDate, hasInvoice, settledAmount))
@@ -2508,6 +2522,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 HasInvoice = hasInvoice,
                 InvoiceId = hasInvoice ? invoice.InvoiceId : null,
                 InvoiceRevision = hasInvoice ? invoice.InvoiceRevision : null,
+                SettlementTransactionId = settlementInfo.LatestSettlementSourceId,
                 IsPastUnresolved = isPastUnresolved
             });
         }
@@ -2635,7 +2650,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
             var settlementInfo = settlementByRun.TryGetValue(run.RunId, out var foundSettlement)
                 ? foundSettlement
-                : new RentalBillingRunSettlementInfo(Math.Max(0m, run.SettledAmount), run.SettledDate);
+                : new RentalBillingRunSettlementInfo(Math.Max(0m, run.SettledAmount), run.SettledDate, null);
             var settledAmount = Math.Max(0m, settlementInfo.SettledAmount);
             var hasInvoice = invoiceByRun.ContainsKey(run.RunId);
             if (ShouldIgnorePreFirstBillingRun(profile, run, referenceDate, hasInvoice, settledAmount))
@@ -6674,7 +6689,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 : Math.Max(0m, run.BilledAmount);
             var settlementInfo = settlementByRun.TryGetValue(run.RunId, out var foundSettlement)
                 ? foundSettlement
-                : new RentalBillingRunSettlementInfo(0m, null);
+                : new RentalBillingRunSettlementInfo(0m, null, null);
             var settledAmount = Math.Max(0m, settlementInfo.SettledAmount);
             var outstandingAmount = Math.Max(0m, billedAmount - settledAmount);
             run.BilledAmount = billedAmount;

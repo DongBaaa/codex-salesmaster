@@ -11,6 +11,8 @@ namespace 거래플랜.Desktop.App.Infrastructure;
 
 public static class DataGridAutoColumnWidthService
 {
+    private const int AutoFitDebounceMilliseconds = 180;
+    private const int MaxMeasuredRowsPerAutoFit = 120;
     private static bool _registered;
 
     private static readonly DependencyProperty IsRegisteredProperty =
@@ -40,6 +42,13 @@ public static class DataGridAutoColumnWidthService
             typeof(bool),
             typeof(DataGridAutoColumnWidthService),
             new PropertyMetadata(false));
+
+    private static readonly DependencyProperty AutoFitTimerProperty =
+        DependencyProperty.RegisterAttached(
+            "AutoFitTimer",
+            typeof(DispatcherTimer),
+            typeof(DataGridAutoColumnWidthService),
+            new PropertyMetadata(null));
 
     public static void RegisterGlobal()
     {
@@ -85,6 +94,12 @@ public static class DataGridAutoColumnWidthService
         grid.DataContextChanged -= OnDataGridDataContextChanged;
         DependencyPropertyDescriptor.FromProperty(ItemsControl.ItemsSourceProperty, typeof(DataGrid))
             ?.RemoveValueChanged(grid, OnDataGridItemsSourceChanged);
+        if (grid.GetValue(AutoFitTimerProperty) is DispatcherTimer timer)
+        {
+            timer.Stop();
+            grid.ClearValue(AutoFitTimerProperty);
+        }
+
         grid.SetValue(IsRegisteredProperty, false);
         grid.SetValue(PendingAutoFitProperty, false);
     }
@@ -137,17 +152,32 @@ public static class DataGridAutoColumnWidthService
         if (!grid.IsLoaded)
             return;
 
-        if ((bool)grid.GetValue(PendingAutoFitProperty))
-            return;
-
         grid.SetValue(PendingAutoFitProperty, true);
-        _ = grid.Dispatcher.BeginInvoke(
-            new Action(() =>
+
+        var timer = grid.GetValue(AutoFitTimerProperty) as DispatcherTimer;
+        if (timer is null)
+        {
+            timer = new DispatcherTimer(DispatcherPriority.Background, grid.Dispatcher)
             {
+                Interval = TimeSpan.FromMilliseconds(AutoFitDebounceMilliseconds)
+            };
+            timer.Tick += (_, _) =>
+            {
+                timer.Stop();
+                if (!grid.IsLoaded)
+                {
+                    grid.SetValue(PendingAutoFitProperty, false);
+                    return;
+                }
+
                 grid.SetValue(PendingAutoFitProperty, false);
                 ApplyAutoFit(grid);
-            }),
-            DispatcherPriority.ContextIdle);
+            };
+            grid.SetValue(AutoFitTimerProperty, timer);
+        }
+
+        timer.Stop();
+        timer.Start();
     }
 
     private static void ApplyAutoFit(DataGrid grid)
@@ -156,7 +186,7 @@ public static class DataGridAutoColumnWidthService
             return;
 
         grid.MinColumnWidth = Math.Max(grid.MinColumnWidth, 48);
-        grid.EnableColumnVirtualization = false;
+        grid.EnableColumnVirtualization = true;
         ScrollViewer.SetHorizontalScrollBarVisibility(grid, ScrollBarVisibility.Auto);
 
         foreach (var column in grid.Columns)
@@ -190,7 +220,7 @@ public static class DataGridAutoColumnWidthService
             return Math.Max(desiredWidth, ResolveFiniteColumnWidth(column));
         }
 
-        foreach (var item in EnumerateItems(grid))
+        foreach (var item in EnumerateItems(grid).Take(MaxMeasuredRowsPerAutoFit))
         {
             var text = ResolveBindingText(item, binding);
             if (string.IsNullOrEmpty(text))

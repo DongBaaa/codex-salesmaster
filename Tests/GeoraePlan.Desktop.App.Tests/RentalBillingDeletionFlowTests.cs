@@ -1378,6 +1378,14 @@ public sealed class RentalBillingDeletionFlowTests
             Assert.Equal(invoice.TotalAmount, updatedProfile.SettledAmount);
             Assert.Equal(0m, updatedProfile.OutstandingAmount);
             Assert.Equal(PaymentFlowConstants.CompletionDone, updatedProfile.CompletionStatus);
+
+            var histories = await rental.GetBillingHistoryRowsAsync(
+                [profileId],
+                session,
+                new DateOnly(2026, 5, 26));
+            var history = Assert.Single(histories, current => current.BillingRunId == runId);
+            Assert.Equal(transaction.Id, history.SettlementTransactionId);
+            Assert.True(history.CanEditSettlement);
         }
         finally
         {

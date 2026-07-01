@@ -266,6 +266,52 @@ function Write-JsonFileAtomically {
     }
 }
 
+function Read-ExistingUpdateManifest {
+    param([Parameter(Mandatory = $true)][string]$ManifestPath)
+
+    if (-not (Test-Path -LiteralPath $ManifestPath)) {
+        return $null
+    }
+
+    try {
+        return Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        Write-Warning "기존 업데이트 manifest를 읽지 못해 새 manifest만 생성합니다: $ManifestPath"
+        return $null
+    }
+}
+
+function Copy-ManifestPlatformNode {
+    param($Node)
+
+    if ($null -eq $Node) {
+        return $null
+    }
+
+    $packageUrl = [string]$Node.packageUrl
+    $fileName = [string]$Node.fileName
+    $version = [string]$Node.version
+    if ([string]::IsNullOrWhiteSpace($packageUrl) -or
+        [string]::IsNullOrWhiteSpace($fileName) -or
+        [string]::IsNullOrWhiteSpace($version)) {
+        return $null
+    }
+
+    return [ordered]@{
+        platform = [string]$Node.platform
+        version = $version
+        mandatory = [bool]$Node.mandatory
+        minimumSupportedVersion = [string]$Node.minimumSupportedVersion
+        packageUrl = $packageUrl
+        fileName = $fileName
+        sha256 = [string]$Node.sha256
+        fileSize = [int64]$Node.fileSize
+        notes = [string]$Node.notes
+        releasedAtUtc = [string]$Node.releasedAtUtc
+    }
+}
+
 $ErrorActionPreference = 'Stop'
 
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
@@ -326,6 +372,8 @@ $manifestRoot = Join-Path $OutputRoot 'manifest'
 $downloadsRoot = Join-Path $OutputRoot 'downloads'
 New-Item -ItemType Directory -Force -Path $manifestRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $downloadsRoot | Out-Null
+$manifestPath = Join-Path $manifestRoot ($Channel + '.json')
+$existingManifest = Read-ExistingUpdateManifest -ManifestPath $manifestPath
 
 $manifest = [ordered]@{
     channel = $Channel
@@ -343,8 +391,13 @@ if (-not [string]::IsNullOrWhiteSpace($AndroidPackagePath) -and (Test-Path -Lite
     $androidFileName = "tradeplan-android-v$AndroidVersion.apk"
     $manifest.android = Copy-PackageWithMetadata -SourcePath $AndroidPackagePath -DestinationDirectory (Join-Path $downloadsRoot 'android') -OutputFileName $androidFileName -Platform 'android' -Version $AndroidVersion -Notes $AndroidNotes -Mandatory:$MandatoryAndroid -MinimumSupportedVersion $AndroidMinimumSupportedVersion
 }
+elseif ($null -ne $existingManifest) {
+    $manifest.android = Copy-ManifestPlatformNode -Node $existingManifest.android
+    if ($manifest.android) {
+        Write-Host "android_package_preserved=$($manifest.android.fileName)"
+    }
+}
 
-$manifestPath = Join-Path $manifestRoot ($Channel + '.json')
 Write-JsonFileAtomically -TargetPath $manifestPath -InputObject $manifest
 
 $removedDesktopPackages = @()

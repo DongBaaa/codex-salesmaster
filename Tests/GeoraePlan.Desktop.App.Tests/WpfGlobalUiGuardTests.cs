@@ -315,6 +315,27 @@ public sealed class WpfGlobalUiGuardTests
     }
 
     [Fact]
+    public void DataGridAutoColumnWidthService_DebouncesAndKeepsColumnVirtualizationForLargeRentalScreens()
+    {
+        var root = FindRepositoryRoot();
+        var source = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Infrastructure",
+            "DataGridAutoColumnWidthService.cs"));
+
+        Assert.Contains("private const int AutoFitDebounceMilliseconds", source, StringComparison.Ordinal);
+        Assert.Contains("private const int MaxMeasuredRowsPerAutoFit", source, StringComparison.Ordinal);
+        Assert.Contains("DispatcherTimer", source, StringComparison.Ordinal);
+        Assert.Contains("timer.Stop();", source, StringComparison.Ordinal);
+        Assert.Contains("timer.Start();", source, StringComparison.Ordinal);
+        Assert.Contains("grid.EnableColumnVirtualization = true;", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("grid.EnableColumnVirtualization = false;", source, StringComparison.Ordinal);
+        Assert.Contains(".Take(MaxMeasuredRowsPerAutoFit)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void WpfDatePickerRuntimeAudit_CapturesRemainingDatePickerWindows()
     {
         var root = FindRepositoryRoot();

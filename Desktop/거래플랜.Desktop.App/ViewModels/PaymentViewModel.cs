@@ -39,6 +39,7 @@ public sealed partial class PaymentViewModel : ObservableObject
     private long _editingTransactionRevision;
     private bool _suppressTransactionKindChange;
     private bool _isApplyingSuggestedAmounts;
+    private bool _suppressRentalSettlementAmountDistribution;
     private int _historyLoadVersion;
     private int _attachmentLoadVersion;
     private int _contextRefreshVersion;
@@ -373,6 +374,8 @@ public sealed partial class PaymentViewModel : ObservableObject
     partial void OnSettlementAmountChanged(decimal value)
     {
         InvalidateSettlementSuggestionForManualInput();
+        if (ShouldAutoDistributeRentalSettlementAmount())
+            ApplyRentalReceiptAmountByBillingMethod(value);
     }
 
     partial void OnSelectedHistoryChanged(LocalTransaction? value)
@@ -475,6 +478,12 @@ public sealed partial class PaymentViewModel : ObservableObject
 
         Interlocked.Increment(ref _settlementSuggestionVersion);
     }
+
+    private bool ShouldAutoDistributeRentalSettlementAmount()
+        => !_isApplyingSuggestedAmounts &&
+           !_suppressRentalSettlementAmountDistribution &&
+           _linkedRentalProfile is not null &&
+           PaymentFlowConstants.IsRentalSettlementKind(SelectedTransactionKind);
 
     private void ApplySuggestedAmountChanges(Action changeAction)
     {
@@ -1359,6 +1368,45 @@ public sealed partial class PaymentViewModel : ObservableObject
         await LoadHistoryIntoEditorAsync(SelectedHistory);
     }
 
+    public async Task<bool> LoadSelectedHistoryIntoEditorAsync()
+    {
+        if (SelectedHistory is null)
+        {
+            StatusMessage = "수정할 최근 처리내역을 선택하세요.";
+            return false;
+        }
+
+        await LoadHistoryIntoEditorAsync(SelectedHistory);
+        return true;
+    }
+
+    public async Task<bool> LoadHistoryIntoEditorByIdAsync(Guid transactionId)
+    {
+        if (transactionId == Guid.Empty)
+        {
+            StatusMessage = "수정할 수금/지급 내역 식별값이 없습니다.";
+            return false;
+        }
+
+        if (SelectedCustomer is null)
+        {
+            StatusMessage = "거래처를 먼저 선택해야 수금/지급 내역을 수정할 수 있습니다.";
+            return false;
+        }
+
+        await LoadHistoryAsync(SelectedCustomer.Id, Interlocked.Increment(ref _historyLoadVersion));
+        var history = History.FirstOrDefault(current => current.Id == transactionId);
+        if (history is null)
+        {
+            StatusMessage = "연결된 수금/지급 내역을 찾을 수 없습니다. 최신 내역을 다시 조회한 뒤 확인하세요.";
+            return false;
+        }
+
+        SelectedHistory = history;
+        await LoadHistoryIntoEditorAsync(history);
+        return true;
+    }
+
     [RelayCommand(CanExecute = nameof(CanDeleteHistory))]
     private async Task DeleteHistoryAsync()
     {
@@ -1655,6 +1703,7 @@ public sealed partial class PaymentViewModel : ObservableObject
             preferPayment: history.PaymentTotal > 0m && history.ReceiptTotal <= 0m);
 
         _suppressTransactionKindChange = true;
+        _suppressRentalSettlementAmountDistribution = true;
         try
         {
             RebuildTransactionKinds(normalizedKind);
@@ -1676,6 +1725,7 @@ public sealed partial class PaymentViewModel : ObservableObject
         finally
         {
             _suppressTransactionKindChange = false;
+            _suppressRentalSettlementAmountDistribution = false;
         }
 
         IsEditingHistory = true;

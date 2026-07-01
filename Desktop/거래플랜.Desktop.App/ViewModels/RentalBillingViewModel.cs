@@ -2496,6 +2496,54 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         OnPropertyChanged(nameof(SelectedPastUnresolvedSummaryText));
     }
 
+    public async Task RefreshSelectedBillingHistoryRowsAsync(Guid? changedProfileId = null)
+    {
+        if (SelectedRow is null)
+        {
+            RefreshBillingHistoryRows(null);
+            return;
+        }
+
+        var profileIds = ResolveBillingHistoryProfileIds(SelectedRow);
+        if (profileIds.Count == 0)
+        {
+            RefreshBillingHistoryRows(SelectedRow);
+            return;
+        }
+
+        if (changedProfileId.HasValue &&
+            changedProfileId.Value != Guid.Empty &&
+            !profileIds.Contains(changedProfileId.Value))
+        {
+            return;
+        }
+
+        CancelBillingHistoryLoad();
+        var histories = await _rental.GetBillingHistoryRowsAsync(
+            profileIds,
+            _session,
+            ReferenceDate,
+            BillingHistoryDisplayLimit,
+            CancellationToken.None);
+        if (SelectedRow is null)
+            return;
+
+        var currentProfileIds = ResolveBillingHistoryProfileIds(SelectedRow);
+        if (changedProfileId.HasValue &&
+            changedProfileId.Value != Guid.Empty &&
+            !currentProfileIds.Contains(changedProfileId.Value))
+        {
+            return;
+        }
+
+        ApplyBillingHistoryRowsForDisplay(histories);
+        SelectedBillingHistory = null;
+        OnPropertyChanged(nameof(SelectedRowHasPastUnresolved));
+        OnPropertyChanged(nameof(SelectedPastUnresolvedSummaryText));
+        DeleteSelectedBillingHistoryCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(CanDeleteSelectedBillingHistory));
+    }
+
     private static bool IsSameBillingHistoryRow(RentalBillingHistoryRow left, RentalBillingHistoryRow right)
         => left.BillingProfileId == right.BillingProfileId &&
            left.BillingRunId == right.BillingRunId &&
