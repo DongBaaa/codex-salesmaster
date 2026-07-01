@@ -1104,44 +1104,24 @@ public sealed partial class MainViewModel : ObservableObject
 
     private async Task RefreshDashboardMetricsAsync(IEnumerable<LocalInvoiceListSummary>? invoices = null, CancellationToken ct = default)
     {
-        var sourceInvoices = invoices?.ToList()
-            ?? await _local.GetInvoiceListSummariesAsync(from: null, to: null, customerId: null, session: _session, ct);
         var now = DateOnly.FromDateTime(DateTime.Today);
-        var prevMonthDate = now.AddMonths(-1);
+        var sourceInvoices = invoices?.ToList();
+        var metrics = sourceInvoices is null
+            ? await _local.GetInvoiceDashboardMetricsAsync(_session, now, ct)
+            : BuildDashboardMetricsFromInvoiceList(sourceInvoices, now);
 
-        var monthlySales = sourceInvoices
-            .Where(i => i.VoucherType == VoucherType.Sales
-                     && i.InvoiceDate.Year == now.Year
-                     && i.InvoiceDate.Month == now.Month)
-            .Sum(i => i.TotalAmount);
-
-        var previousMonthlySales = sourceInvoices
-            .Where(i => i.VoucherType == VoucherType.Sales
-                     && i.InvoiceDate.Year == prevMonthDate.Year
-                     && i.InvoiceDate.Month == prevMonthDate.Month)
-            .Sum(i => i.TotalAmount);
-
-        var monthlyInvoiceCount = sourceInvoices.Count(i =>
-            i.InvoiceDate.Year == now.Year && i.InvoiceDate.Month == now.Month);
-
-        DashboardMonthlySales = monthlySales;
-        DashboardMonthlyInvoiceCount = monthlyInvoiceCount;
-        DashboardMonthlyAverageSales = monthlyInvoiceCount == 0
+        DashboardMonthlySales = metrics.MonthlySales;
+        DashboardMonthlyInvoiceCount = metrics.MonthlyInvoiceCount;
+        DashboardMonthlyAverageSales = metrics.MonthlyInvoiceCount == 0
             ? 0
-            : Math.Round(monthlySales / monthlyInvoiceCount, 0, MidpointRounding.AwayFromZero);
-        DashboardSalesTrendPercent = previousMonthlySales == 0
-            ? (monthlySales > 0 ? 100m : 0m)
-            : Math.Round(((monthlySales - previousMonthlySales) / previousMonthlySales) * 100m, 1, MidpointRounding.AwayFromZero);
-        DashboardReceivable = sourceInvoices
-            .Where(invoice => invoice.VoucherType == VoucherType.Sales)
-            .Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.SettledAmount));
-        DashboardPayable = sourceInvoices
-            .Where(invoice => invoice.VoucherType == VoucherType.Purchase)
-            .Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.SettledAmount));
+            : Math.Round(metrics.MonthlySales / metrics.MonthlyInvoiceCount, 0, MidpointRounding.AwayFromZero);
+        DashboardSalesTrendPercent = metrics.PreviousMonthlySales == 0
+            ? (metrics.MonthlySales > 0 ? 100m : 0m)
+            : Math.Round(((metrics.MonthlySales - metrics.PreviousMonthlySales) / metrics.PreviousMonthlySales) * 100m, 1, MidpointRounding.AwayFromZero);
+        DashboardReceivable = metrics.Receivable;
+        DashboardPayable = metrics.Payable;
 
-        var items = await _local.GetItemsAsync(_session, ct);
-        DashboardSafetyStockAlerts = items.Count(i =>
-            i.SafetyStock > 0 && i.CurrentStock <= i.SafetyStock);
+        DashboardSafetyStockAlerts = await _local.CountSafetyStockAlertsAsync(_session, ct);
         DashboardCustomerCount = _allCustomers.Count;
 
         var rentalSummary = await _rental.GetDashboardSummaryAsync(_session, now, ct);
@@ -1152,6 +1132,34 @@ public sealed partial class MainViewModel : ObservableObject
 
         await RefreshContractDashboardAsync();
         await RefreshRecycleBinDashboardAsync();
+    }
+
+    private static LocalInvoiceDashboardMetrics BuildDashboardMetricsFromInvoiceList(
+        IReadOnlyCollection<LocalInvoiceListSummary> sourceInvoices,
+        DateOnly currentDate)
+    {
+        var previousMonthDate = currentDate.AddMonths(-1);
+        return new LocalInvoiceDashboardMetrics
+        {
+            MonthlySales = sourceInvoices
+                .Where(i => i.VoucherType == VoucherType.Sales
+                         && i.InvoiceDate.Year == currentDate.Year
+                         && i.InvoiceDate.Month == currentDate.Month)
+                .Sum(i => i.TotalAmount),
+            PreviousMonthlySales = sourceInvoices
+                .Where(i => i.VoucherType == VoucherType.Sales
+                         && i.InvoiceDate.Year == previousMonthDate.Year
+                         && i.InvoiceDate.Month == previousMonthDate.Month)
+                .Sum(i => i.TotalAmount),
+            MonthlyInvoiceCount = sourceInvoices.Count(i =>
+                i.InvoiceDate.Year == currentDate.Year && i.InvoiceDate.Month == currentDate.Month),
+            Receivable = sourceInvoices
+                .Where(invoice => invoice.VoucherType == VoucherType.Sales)
+                .Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.SettledAmount)),
+            Payable = sourceInvoices
+                .Where(invoice => invoice.VoucherType == VoucherType.Purchase)
+                .Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.SettledAmount))
+        };
     }
 
     private void HandleInvoiceFilterChanged()
@@ -1321,10 +1329,19 @@ public sealed partial class MainViewModel : ObservableObject
     {
         var selectedId = SelectedFavoriteInvoice?.InvoiceId;
         var ids = await GetFavoriteInvoiceIdsAsync();
-        var allInvoices = sourceInvoices?.ToList()
-            ?? await _local.GetInvoiceListSummariesAsync(from: null, to: null, customerId: null, session: _session, ct);
-        var invoiceMap = allInvoices.ToDictionary(i => i.Id);
-        var customerMap = await BuildInvoiceCustomerNameMapAsync(allInvoices, ct);
+        if (ids.Count == 0)
+        {
+            FavoriteInvoices.ReplaceWith(Array.Empty<FavoriteInvoiceQuickItem>());
+            SelectedFavoriteInvoice = null;
+            return;
+        }
+
+        var favoriteIdSet = ids.ToHashSet();
+        var favoriteInvoices = sourceInvoices is null
+            ? await _local.GetInvoiceListSummariesByIdsAsync(ids, _session, ct)
+            : sourceInvoices.Where(invoice => favoriteIdSet.Contains(invoice.Id)).ToList();
+        var invoiceMap = favoriteInvoices.ToDictionary(i => i.Id);
+        var customerMap = await BuildInvoiceCustomerNameMapAsync(favoriteInvoices, ct);
 
         var favoriteItems = new List<FavoriteInvoiceQuickItem>();
         foreach (var id in ids)

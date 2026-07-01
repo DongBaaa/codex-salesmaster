@@ -1102,6 +1102,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			select i).ToListAsync(ct);
 	}
 
+	public Task<int> CountSafetyStockAlertsAsync(SessionState session, CancellationToken ct = default(CancellationToken))
+	{
+		return ApplyItemScope(_db.Items.AsNoTracking(), session)
+			.CountAsync((LocalItem item) => item.SafetyStock > 0m && item.CurrentStock <= item.SafetyStock, ct);
+	}
+
 	public Task<List<LocalItem>> GetItemsForRentalScopeAsync(SessionState session, CancellationToken ct = default(CancellationToken))
 	{
 		return (from i in ApplyRentalItemScope(_db.Items.AsNoTracking(), session)
@@ -2239,7 +2245,6 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<List<LocalInvoiceListSummary>> GetInvoiceListSummariesAsync(DateOnly? from, DateOnly? to, Guid? customerId, SessionState session, CancellationToken ct = default(CancellationToken))
 	{
-		var stopwatch = Stopwatch.StartNew();
 		IQueryable<LocalInvoice> query = ApplyInvoiceScope(_db.Invoices.AsNoTracking(), session)
 			.Where((LocalInvoice invoice) => invoice.IsLatestVersion);
 		if (from.HasValue)
@@ -2255,6 +2260,29 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			query = query.Where((LocalInvoice invoice) => invoice.CustomerId == ((Guid?)customerId).Value);
 		}
 
+		return await BuildInvoiceListSummariesAsync(query, "Invoice list summary load", ct);
+	}
+
+	public async Task<List<LocalInvoiceListSummary>> GetInvoiceListSummariesByIdsAsync(IEnumerable<Guid> invoiceIds, SessionState session, CancellationToken ct = default(CancellationToken))
+	{
+		var ids = invoiceIds
+			.Where(id => id != Guid.Empty)
+			.Distinct()
+			.ToList();
+		if (ids.Count == 0)
+			return new List<LocalInvoiceListSummary>();
+
+		IQueryable<LocalInvoice> query = ApplyInvoiceScope(_db.Invoices.AsNoTracking(), session)
+			.Where((LocalInvoice invoice) => invoice.IsLatestVersion && ids.Contains(invoice.Id));
+		return await BuildInvoiceListSummariesAsync(query, "Favorite invoice summary load", ct);
+	}
+
+	private async Task<List<LocalInvoiceListSummary>> BuildInvoiceListSummariesAsync(
+		IQueryable<LocalInvoice> query,
+		string operationName,
+		CancellationToken ct)
+	{
+		var stopwatch = Stopwatch.StartNew();
 		var invoiceRows = await (from invoice in query
 			orderby invoice.InvoiceDate descending, invoice.UpdatedAtUtc descending, invoice.VersionNumber descending
 			select new LocalInvoiceListSummary
@@ -2288,7 +2316,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			OperationTiming.LogIfSlow(
 				"DATA",
-				"Invoice list summary load",
+				operationName,
 				stopwatch.Elapsed,
 				"invoices=0",
 				infoThreshold: TimeSpan.FromMilliseconds(300),
@@ -2333,12 +2361,91 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 		OperationTiming.LogIfSlow(
 			"DATA",
-			"Invoice list summary load",
+			operationName,
 			stopwatch.Elapsed,
 			$"invoices={invoiceRows.Count:N0}, lines={lineRows.Count:N0}, payments={paymentRows.Count:N0}",
 			infoThreshold: TimeSpan.FromMilliseconds(300),
 			warningThreshold: TimeSpan.FromSeconds(2));
 		return invoiceRows;
+	}
+
+	public async Task<LocalInvoiceDashboardMetrics> GetInvoiceDashboardMetricsAsync(
+		SessionState session,
+		DateOnly currentDate,
+		CancellationToken ct = default(CancellationToken))
+	{
+		var stopwatch = Stopwatch.StartNew();
+		var previousMonthDate = currentDate.AddMonths(-1);
+		IQueryable<LocalInvoice> query = ApplyInvoiceScope(_db.Invoices.AsNoTracking(), session)
+			.Where((LocalInvoice invoice) => invoice.IsLatestVersion);
+
+		var invoiceRows = await query
+			.Select(invoice => new
+			{
+				invoice.Id,
+				invoice.InvoiceDate,
+				invoice.VoucherType,
+				invoice.TotalAmount
+			})
+			.ToListAsync(ct);
+
+		if (invoiceRows.Count == 0)
+		{
+			OperationTiming.LogIfSlow(
+				"DATA",
+				"Invoice dashboard metrics load",
+				stopwatch.Elapsed,
+				"invoices=0",
+				infoThreshold: TimeSpan.FromMilliseconds(300),
+				warningThreshold: TimeSpan.FromSeconds(2));
+			return new LocalInvoiceDashboardMetrics();
+		}
+
+		var settlementInvoiceQuery = query
+			.Where(invoice => invoice.VoucherType == VoucherType.Sales || invoice.VoucherType == VoucherType.Purchase)
+			.Select(invoice => new { invoice.Id });
+		var settledRows = await (from payment in _db.Payments.AsNoTracking()
+			join invoice in settlementInvoiceQuery on payment.InvoiceId equals invoice.Id
+			select new
+			{
+				payment.InvoiceId,
+				payment.Amount
+			}).ToListAsync(ct);
+		var settledAmounts = settledRows
+			.GroupBy(row => row.InvoiceId)
+			.ToDictionary(paymentGroup => paymentGroup.Key, paymentGroup => paymentGroup.Sum(row => row.Amount));
+
+		var metrics = new LocalInvoiceDashboardMetrics
+		{
+			MonthlySales = invoiceRows
+				.Where(invoice => invoice.VoucherType == VoucherType.Sales
+				                  && invoice.InvoiceDate.Year == currentDate.Year
+				                  && invoice.InvoiceDate.Month == currentDate.Month)
+				.Sum(invoice => invoice.TotalAmount),
+			PreviousMonthlySales = invoiceRows
+				.Where(invoice => invoice.VoucherType == VoucherType.Sales
+				                  && invoice.InvoiceDate.Year == previousMonthDate.Year
+				                  && invoice.InvoiceDate.Month == previousMonthDate.Month)
+				.Sum(invoice => invoice.TotalAmount),
+			MonthlyInvoiceCount = invoiceRows.Count(invoice =>
+				invoice.InvoiceDate.Year == currentDate.Year &&
+				invoice.InvoiceDate.Month == currentDate.Month),
+			Receivable = invoiceRows
+				.Where(invoice => invoice.VoucherType == VoucherType.Sales)
+				.Sum(invoice => Math.Max(0m, invoice.TotalAmount - (settledAmounts.TryGetValue(invoice.Id, out var settled) ? settled : 0m))),
+			Payable = invoiceRows
+				.Where(invoice => invoice.VoucherType == VoucherType.Purchase)
+				.Sum(invoice => Math.Max(0m, invoice.TotalAmount - (settledAmounts.TryGetValue(invoice.Id, out var settled) ? settled : 0m)))
+		};
+
+		OperationTiming.LogIfSlow(
+			"DATA",
+			"Invoice dashboard metrics load",
+			stopwatch.Elapsed,
+			$"invoices={invoiceRows.Count:N0}, settlementRows={settledRows.Count:N0}",
+			infoThreshold: TimeSpan.FromMilliseconds(300),
+			warningThreshold: TimeSpan.FromSeconds(2));
+		return metrics;
 	}
 
 	public async Task<(DateOnly? FirstDate, DateOnly? LastDate)> GetInvoiceDateRangeAsync(SessionState session, CancellationToken ct = default(CancellationToken))
