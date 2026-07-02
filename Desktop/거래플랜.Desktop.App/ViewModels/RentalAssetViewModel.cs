@@ -884,7 +884,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         {
             Owner = GetActiveWindow()
         };
-        editorWindow.ShowDialog();
+        WindowShowHelper.ShowModeless(editorWindow);
         StatusMessage = "렌탈계약서 작성창을 열었습니다.";
     }
 
@@ -1442,7 +1442,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         {
             Owner = GetActiveWindow()
         };
-        previewWindow.ShowDialog();
+        WindowShowHelper.ShowModeless(previewWindow);
     }
 
     public async Task<IReadOnlyList<LookupRow>> BuildCustomerLookupRowsAsync()

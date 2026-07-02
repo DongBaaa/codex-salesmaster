@@ -185,10 +185,10 @@ public sealed class MasterUiWiringGuardTests
             "history.InvoiceId is not Guid invoiceId || invoiceId == Guid.Empty",
             "await _openInvoiceWindowAsync(invoiceId, this);");
 
-        Assert.Contains(
-            "new RentalBillingWindow(vm, OpenInvoiceWindowAsync)",
+        AssertContainsAll(
             mainWindow,
-            StringComparison.Ordinal);
+            "OpenInvoiceWindowAsync,",
+            "() => _vm.LoadInvoiceListCommand.ExecuteAsync(null))");
         Assert.Contains(
             "public Guid? InvoiceId { get; init; }",
             models,
@@ -612,6 +612,121 @@ public sealed class MasterUiWiringGuardTests
             "await RunDataIntegrityScanAndPromptAsync($\"{reason} 후 동기화\", showPrompt: false);",
             mainWindow,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LargeWorkflowWindows_OpenModelessInsteadOfBlockingOwner()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var mainWindow = ReadAppFile(appRoot, "MainWindow.xaml.cs");
+        var customerEditWindow = ReadAppFile(appRoot, "Views", "CustomerEditWindow.xaml.cs");
+        var customerManagementWindow = ReadAppFile(appRoot, "Views", "CustomerManagementWindow.xaml.cs");
+        var rentalBillingWindow = ReadAppFile(appRoot, "Views", "RentalBillingWindow.xaml.cs");
+        var environmentSync = ReadAppFile(appRoot, "ViewModels", "EnvironmentSettingsViewModel.Sync.cs");
+        var helper = ReadAppFile(appRoot, "Infrastructure", "WindowShowHelper.cs");
+
+        AssertContainsAll(
+            helper,
+            "internal static class WindowShowHelper",
+            "public static void ShowModeless(Window window)",
+            "public static void ShowModelessWithDeferredLoad(",
+            "DispatcherPriority.ApplicationIdle",
+            "window.Activate();",
+            "window.Focus();");
+
+        AssertContainsAll(
+            mainWindow,
+            "private void ShowModelessWithDeferredLoad(",
+            "WindowShowHelper.ShowModelessWithDeferredLoad",
+            "WindowShowHelper.ShowModeless(win);",
+            "ShowModelessWithDeferredLoad(",
+            "OpenInvoiceWindowAsync,",
+            "() => _vm.LoadInvoiceListCommand.ExecuteAsync(null))",
+            "거래처 관리 닫기 후 거래처 목록 새로고침",
+            "환경설정 닫기 후 전표 목록 새로고침");
+
+        Assert.DoesNotContain("ShowDialogWithDeferredLoad", mainWindow, StringComparison.Ordinal);
+        Assert.DoesNotContain("win.ShowDialog();", mainWindow, StringComparison.Ordinal);
+        Assert.DoesNotContain("window.ShowDialog();", mainWindow, StringComparison.Ordinal);
+        Assert.DoesNotContain("onboardingWindow.ShowDialog();", mainWindow, StringComparison.Ordinal);
+
+        AssertContainsAll(
+            customerEditWindow,
+            "WindowShowHelper.ShowModelessWithDeferredLoad(",
+            "() => rentalAssetViewModel.LoadWithInitialCustomerFilterAsync(customer)");
+        Assert.DoesNotContain("rentalAssetWindow.ShowDialog();", customerEditWindow, StringComparison.Ordinal);
+
+        AssertContainsAll(
+            customerManagementWindow,
+            "AttachCustomerEditorReload(win);",
+            "WindowShowHelper.ShowModeless(win);",
+            "거래처 편집 후 목록 새로고침");
+        Assert.DoesNotContain("win.ShowDialog() == true", customerManagementWindow, StringComparison.Ordinal);
+
+        AssertContainsAll(
+            rentalBillingWindow,
+            "WindowShowHelper.ShowModeless(paymentWindow);",
+            "WindowShowHelper.ShowModeless(onboardingWindow);",
+            "WindowShowHelper.ShowModeless(customerWindow);");
+
+        AssertContainsAll(
+            environmentSync,
+            "WindowShowHelper.ShowModeless(window);",
+            "동기화 진단 닫기 후 상태 새로고침");
+    }
+
+    [Fact]
+    public void RentalBillingStartBillingKeepsBillingWindowOpenAndOpensInvoiceSeparately()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var rentalBillingWindow = ReadAppFile(appRoot, "Views", "RentalBillingWindow.xaml.cs");
+        var rentalBillingViewModel = ReadAppFile(appRoot, "ViewModels", "RentalBillingViewModel.cs");
+
+        AssertContainsAll(
+            rentalBillingWindow,
+            "var invoiceId = viewModel.ConsumeInvoiceToOpenAfterClose();",
+            "var billingCreated = viewModel.ConsumeBillingCreatedSinceLastConsume();",
+            "await _refreshAfterBillingChangedAsync();",
+            "await _openInvoiceWindowAsync(invoiceId.Value, this);");
+        Assert.DoesNotContain("DialogResult = true;", rentalBillingWindow, StringComparison.Ordinal);
+        Assert.DoesNotContain("_allowClose = true;\r\n            DialogResult = true;\r\n            Close();", rentalBillingWindow, StringComparison.Ordinal);
+
+        AssertContainsAll(
+            rentalBillingViewModel,
+            "public Guid? ConsumeInvoiceToOpenAfterClose()",
+            "var invoiceId = InvoiceToOpenAfterClose;",
+            "InvoiceToOpenAfterClose = null;",
+            "return invoiceId;",
+            "public bool ConsumeBillingCreatedSinceLastConsume()",
+            "BillingCreatedSinceLastConsume = false;",
+            "BillingCreatedSinceLastConsume = true;");
+    }
+
+    [Fact]
+    public void PrintPreviewAndDocumentEditorWindowsUseModelessDisplay()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var mainViewModel = ReadAppFile(appRoot, "ViewModels", "MainViewModel.cs");
+        var salesViewModel = ReadAppFile(appRoot, "ViewModels", "SalesViewModel.cs");
+        var rentalAssetViewModel = ReadAppFile(appRoot, "ViewModels", "RentalAssetViewModel.cs");
+
+        Assert.Contains("WindowShowHelper.ShowModeless(previewWindow);", mainViewModel, StringComparison.Ordinal);
+
+        AssertContainsAll(
+            salesViewModel,
+            "WindowShowHelper.ShowModeless(editorWindow);",
+            "WindowShowHelper.ShowModeless(previewWindow);",
+            "editorWindow.Closed += (_, _)",
+            "previewWindow.Closed += (_, _)");
+        Assert.DoesNotContain("editorWindow.ShowDialog();", salesViewModel, StringComparison.Ordinal);
+        Assert.DoesNotContain("previewWindow.ShowDialog();", salesViewModel, StringComparison.Ordinal);
+
+        AssertContainsAll(
+            rentalAssetViewModel,
+            "WindowShowHelper.ShowModeless(editorWindow);",
+            "WindowShowHelper.ShowModeless(previewWindow);");
+        Assert.DoesNotContain("editorWindow.ShowDialog();", rentalAssetViewModel, StringComparison.Ordinal);
+        Assert.DoesNotContain("previewWindow.ShowDialog();", rentalAssetViewModel, StringComparison.Ordinal);
     }
 
     private static void AssertContainsAll(string source, params string[] expectedMarkers)

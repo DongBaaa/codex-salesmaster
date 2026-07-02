@@ -38,8 +38,8 @@ public partial class CustomerManagementWindow : Window
             var customerVm = new CustomerEditViewModel(_local, _session, _api);
             await customerVm.LoadAsync();
             var win = new CustomerEditWindow(customerVm) { Owner = this };
-            if (win.ShowDialog() == true)
-                await _vm.ReloadCommand.ExecuteAsync(null);
+            AttachCustomerEditorReload(win);
+            WindowShowHelper.ShowModeless(win);
         }, "UI", "거래처 등록 창 열기", "거래처 등록 창을 여는 중 오류가 발생했습니다.");
     }
 
@@ -104,8 +104,18 @@ public partial class CustomerManagementWindow : Window
         var customerVm = new CustomerEditViewModel(_local, _session, _api);
         await customerVm.LoadAsync(_vm.SelectedCustomer.Source);
         var win = new CustomerEditWindow(customerVm) { Owner = this };
-        if (win.ShowDialog() == true)
-            await _vm.ReloadCommand.ExecuteAsync(null);
+        AttachCustomerEditorReload(win);
+        WindowShowHelper.ShowModeless(win);
+    }
+
+    private void AttachCustomerEditorReload(CustomerEditWindow window)
+    {
+        window.Closed += (_, _) => UiTaskHelper.Run(
+            this,
+            () => _vm.ReloadCommand.ExecuteAsync(null),
+            "UI",
+            "거래처 편집 후 목록 새로고침",
+            "거래처 편집 후 목록을 다시 불러오는 중 오류가 발생했습니다.");
     }
 
     private async Task DeleteSelectedCustomerAsync()

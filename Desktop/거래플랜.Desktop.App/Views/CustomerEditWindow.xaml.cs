@@ -64,7 +64,7 @@ public partial class CustomerEditWindow : Window
         DialogWindowCloseHelper.Close(this, true);
     }
 
-    private async Task OpenRentalAssetsAsync()
+    private Task OpenRentalAssetsAsync()
     {
         if (string.IsNullOrWhiteSpace(_vm.Name))
         {
@@ -74,7 +74,7 @@ public partial class CustomerEditWindow : Window
                 "렌탈 자산 보기",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
-            return;
+            return Task.CompletedTask;
         }
 
         var mainWindow = Application.Current?.Windows.OfType<MainWindow>().FirstOrDefault();
@@ -86,7 +86,7 @@ public partial class CustomerEditWindow : Window
                 "렌탈 자산 보기",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
-            return;
+            return Task.CompletedTask;
         }
 
         var customer = new LocalCustomer
@@ -103,13 +103,19 @@ public partial class CustomerEditWindow : Window
             mainWindow.InvoicePrintService,
             mainWindow.SessionState);
 
-        await rentalAssetViewModel.LoadWithInitialCustomerFilterAsync(customer);
-
         var rentalAssetWindow = new RentalAssetWindow(rentalAssetViewModel)
         {
             Owner = this
         };
-        rentalAssetWindow.ShowDialog();
+
+        WindowShowHelper.ShowModelessWithDeferredLoad(
+            rentalAssetWindow,
+            () => rentalAssetViewModel.LoadWithInitialCustomerFilterAsync(customer),
+            "렌탈 자산 / 설치현황",
+            "거래처 연결 렌탈 자산을 불러오지 못했습니다.",
+            this);
+
+        return Task.CompletedTask;
     }
 
     private async void Window_Closing(object? sender, CancelEventArgs e)

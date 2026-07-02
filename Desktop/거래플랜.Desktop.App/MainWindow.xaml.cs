@@ -139,42 +139,13 @@ public partial class MainWindow : Window
             operationName,
             userMessage ?? $"{operationName} 중 오류가 발생했습니다.");
 
-    private void ShowDialogWithDeferredLoad(Window window, Func<Task> loadAsync, string windowTitle, string failureMessage)
-    {
-        var loadStarted = false;
-        window.ContentRendered += async (_, _) =>
-        {
-            if (loadStarted)
-                return;
-
-            loadStarted = true;
-            try
-            {
-                await OperationTiming.MeasureAsync(
-                    "UI",
-                    $"{windowTitle} 초기화",
-                    loadAsync,
-                    detail: window.GetType().Name,
-                    infoThreshold: TimeSpan.FromMilliseconds(600),
-                    warningThreshold: TimeSpan.FromSeconds(2));
-            }
-            catch (Exception ex)
-            {
-                AppLogger.Error("UI", $"{windowTitle} 초기화 실패", ex);
-                MessageBox.Show(
-                    this,
-                    $"{failureMessage}{Environment.NewLine}{ex.Message}",
-                    windowTitle,
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
-
-                if (window.IsLoaded)
-                    window.Close();
-            }
-        };
-
-        window.ShowDialog();
-    }
+    private void ShowModelessWithDeferredLoad(
+        Window window,
+        Func<Task> loadAsync,
+        string windowTitle,
+        string failureMessage,
+        Func<Task>? closedAsync = null)
+        => WindowShowHelper.ShowModelessWithDeferredLoad(window, loadAsync, windowTitle, failureMessage, this, closedAsync);
 
     public Task InitAsync(bool deferStartupNotifications = false)
     {
@@ -939,8 +910,7 @@ public partial class MainWindow : Window
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning));
         };
-        if (win.ShowDialog() == true && win.RequestedIssue is not null)
-            await OpenDataIntegrityFixTargetAsync(win.RequestedIssue, ownerOverride);
+        WindowShowHelper.ShowModeless(win);
     }
 
     private async Task MergeDataIntegrityDuplicateAsync(
@@ -1356,7 +1326,7 @@ public partial class MainWindow : Window
             () => vm.InitializeAsync(),
             warningThreshold: TimeSpan.FromSeconds(2));
         var win = new PeriodLedgerWindow(vm) { Owner = this };
-        win.ShowDialog();
+        WindowShowHelper.ShowModeless(win);
     }
 
     private void YeonsuDeliveryButton_Click(object sender, RoutedEventArgs e)
@@ -1462,7 +1432,7 @@ public partial class MainWindow : Window
 
         var win = new SalesWindow(vm) { Owner = this };
         win.Closed += SalesWindow_Closed;
-        win.Show();
+        WindowShowHelper.ShowModeless(win);
     }
 
     private async Task OpenInvoiceWindowAsync(Guid invoiceId, Window? ownerOverride = null)
@@ -1507,7 +1477,7 @@ public partial class MainWindow : Window
 
         var win = new SalesWindow(vm) { Owner = ownerOverride ?? this };
         win.Closed += SalesWindow_Closed;
-        win.Show();
+        WindowShowHelper.ShowModeless(win);
     }
 
     private async Task OpenCustomerEditorAsync(Guid customerId, Window? ownerOverride = null)
@@ -1538,8 +1508,11 @@ public partial class MainWindow : Window
             warningThreshold: TimeSpan.FromSeconds(2));
 
         var win = new CustomerEditWindow(vm) { Owner = ownerOverride ?? this };
-        if (win.ShowDialog() == true)
-            await _vm.RefreshCustomersCommand.ExecuteAsync(null);
+        win.Closed += (_, _) => RunUiAsync(
+            () => _vm.RefreshCustomersCommand.ExecuteAsync(null),
+            "거래처 등록/수정 후 거래처 목록 새로고침",
+            "거래처 등록/수정 후 목록을 다시 불러오는 중 오류가 발생했습니다.");
+        WindowShowHelper.ShowModeless(win);
     }
 
     private Task OpenInventoryWindowAsync()
@@ -1555,7 +1528,7 @@ public partial class MainWindow : Window
             () => targetItemId.HasValue ? vm.LoadAndSelectItemAsync(targetItemId.Value) : vm.LoadAsync(),
             warningThreshold: TimeSpan.FromSeconds(2));
         var win = new InventoryWindow(vm) { Owner = ownerOverride ?? this };
-        win.Show();
+        WindowShowHelper.ShowModeless(win);
     }
 
     private Task OpenPaymentPopupAsync()
@@ -1614,7 +1587,7 @@ public partial class MainWindow : Window
             vm.TransactionsChanged -= paymentTransactionsChanged;
             RefreshMainAfterPaymentChange();
         };
-        win.Show();
+        WindowShowHelper.ShowModeless(win);
     }
 
     private async Task OpenYeonsuDeliveryWindowAsync()
@@ -1630,7 +1603,7 @@ public partial class MainWindow : Window
         {
             Owner = this
         };
-        win.Show();
+        WindowShowHelper.ShowModeless(win);
     }
 
     private async Task OpenSyncDiagnosticsWindowAsync(Window? ownerOverride = null)
@@ -1647,7 +1620,7 @@ public partial class MainWindow : Window
         {
             Owner = ownerOverride ?? this
         };
-        window.ShowDialog();
+        WindowShowHelper.ShowModeless(window);
     }
 
     private async Task OpenEnvironmentSettingsWindowAsync(EnvironmentSettingsInitialTab initialTab = EnvironmentSettingsInitialTab.General)
@@ -1677,19 +1650,17 @@ public partial class MainWindow : Window
             {
                 Owner = this
             };
-            win.ShowDialog();
-
-            if (!vm.BusinessDatabaseChanged)
+            win.Closed += (_, _) =>
             {
-                try
-                {
-                    await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
-                }
-                catch (Exception refreshEx)
-                {
-                    AppLogger.Error("SETTINGS", "환경설정 닫기 후 전표 목록 새로고침 실패", refreshEx);
-                }
-            }
+                if (vm.BusinessDatabaseChanged)
+                    return;
+
+                RunUiAsync(
+                    () => _vm.LoadInvoiceListCommand.ExecuteAsync(null),
+                    "환경설정 닫기 후 전표 목록 새로고침",
+                    "환경설정 닫기 후 전표 목록을 다시 불러오는 중 오류가 발생했습니다.");
+            };
+            WindowShowHelper.ShowModeless(win);
         }
         catch (Exception ex)
         {
@@ -1715,8 +1686,11 @@ public partial class MainWindow : Window
         {
             Owner = this
         };
-        win.ShowDialog();
-        await _vm.RefreshCustomersCommand.ExecuteAsync(null);
+        win.Closed += (_, _) => RunUiAsync(
+            () => _vm.RefreshCustomersCommand.ExecuteAsync(null),
+            "거래처 관리 닫기 후 거래처 목록 새로고침",
+            "거래처 관리 닫기 후 거래처 목록을 다시 불러오는 중 오류가 발생했습니다.");
+        WindowShowHelper.ShowModeless(win);
     }
 
     private async Task OpenRentalCustomerOnboardingAsync()
@@ -1734,12 +1708,21 @@ public partial class MainWindow : Window
             Owner = this
         };
 
-        onboardingWindow.ShowDialog();
-        if (!onboardingViewModel.IsCompleted)
-            return;
+        onboardingWindow.Closed += (_, _) =>
+        {
+            if (!onboardingViewModel.IsCompleted)
+                return;
 
-        await _vm.RefreshCustomersCommand.ExecuteAsync(null);
-        await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+            RunUiAsync(
+                async () =>
+                {
+                    await _vm.RefreshCustomersCommand.ExecuteAsync(null);
+                    await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+                },
+                "신규 렌탈 거래처 등록 후 메인 새로고침",
+                "신규 렌탈 거래처 등록 후 메인 화면을 다시 불러오는 중 오류가 발생했습니다.");
+        };
+        WindowShowHelper.ShowModeless(onboardingWindow);
     }
 
     private async Task OpenRentalDashboardWindowAsync()
@@ -1750,32 +1733,31 @@ public partial class MainWindow : Window
         {
             Owner = this
         };
-        ShowDialogWithDeferredLoad(win, () => vm.LoadAsync(), "렌탈 대시보드", "렌탈 대시보드 데이터를 불러오지 못했습니다.");
-        await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+        ShowModelessWithDeferredLoad(
+            win,
+            () => vm.LoadAsync(),
+            "렌탈 대시보드",
+            "렌탈 대시보드 데이터를 불러오지 못했습니다.",
+            () => _vm.LoadInvoiceListCommand.ExecuteAsync(null));
     }
 
     private async Task OpenRentalBillingWindowAsync(Guid? targetProfileId = null, Window? ownerOverride = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new RentalBillingViewModel(_rental, _local, _session, _api);
-        var win = new RentalBillingWindow(vm, OpenInvoiceWindowAsync)
+        var win = new RentalBillingWindow(
+            vm,
+            OpenInvoiceWindowAsync,
+            () => _vm.LoadInvoiceListCommand.ExecuteAsync(null))
         {
             Owner = ownerOverride ?? this
         };
-        ShowDialogWithDeferredLoad(
+        ShowModelessWithDeferredLoad(
             win,
             () => targetProfileId.HasValue ? vm.LoadAndSelectProfileAsync(targetProfileId.Value) : vm.LoadAsync(),
             "렌탈 청구관리",
-            "렌탈 청구관리 데이터를 불러오지 못했습니다.");
-
-        if (vm.InvoiceToOpenAfterClose.HasValue)
-        {
-            var invoice = await _local.GetLatestInvoiceVersionAsync(vm.InvoiceToOpenAfterClose.Value, _session);
-            if (invoice is not null)
-                await OpenInvoiceWindowAsync(invoice);
-        }
-
-        await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+            "렌탈 청구관리 데이터를 불러오지 못했습니다.",
+            () => _vm.LoadInvoiceListCommand.ExecuteAsync(null));
     }
 
     private async Task OpenRentalAssetWindowAsync(Guid? targetAssetId = null, Window? ownerOverride = null)
@@ -1786,12 +1768,12 @@ public partial class MainWindow : Window
         {
             Owner = ownerOverride ?? this
         };
-        ShowDialogWithDeferredLoad(
+        ShowModelessWithDeferredLoad(
             win,
             () => targetAssetId.HasValue ? vm.LoadAndSelectAssetAsync(targetAssetId.Value) : vm.LoadAsync(),
             "렌탈 자산 / 설치현황",
-            "렌탈 자산 데이터를 불러오지 못했습니다.");
-        await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+            "렌탈 자산 데이터를 불러오지 못했습니다.",
+            () => _vm.LoadInvoiceListCommand.ExecuteAsync(null));
     }
 
     private async Task OpenRentalSettingsWindowAsync()
@@ -1802,8 +1784,12 @@ public partial class MainWindow : Window
         {
             Owner = this
         };
-        ShowDialogWithDeferredLoad(win, () => vm.LoadAsync(), "렌탈 설정", "렌탈 설정 데이터를 불러오지 못했습니다.");
-        await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+        ShowModelessWithDeferredLoad(
+            win,
+            () => vm.LoadAsync(),
+            "렌탈 설정",
+            "렌탈 설정 데이터를 불러오지 못했습니다.",
+            () => _vm.LoadInvoiceListCommand.ExecuteAsync(null));
     }
 
     private void CentralRevisionPollTimer_Tick(object? sender, EventArgs e)

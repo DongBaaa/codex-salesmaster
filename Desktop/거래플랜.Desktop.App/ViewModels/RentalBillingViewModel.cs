@@ -237,6 +237,21 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     public RentalStateService RentalStateService => _rental;
     public SessionState SessionState => _session;
     public Guid? InvoiceToOpenAfterClose { get; private set; }
+    public bool BillingCreatedSinceLastConsume { get; private set; }
+
+    public Guid? ConsumeInvoiceToOpenAfterClose()
+    {
+        var invoiceId = InvoiceToOpenAfterClose;
+        InvoiceToOpenAfterClose = null;
+        return invoiceId;
+    }
+
+    public bool ConsumeBillingCreatedSinceLastConsume()
+    {
+        var created = BillingCreatedSinceLastConsume;
+        BillingCreatedSinceLastConsume = false;
+        return created;
+    }
 
     private bool CanAccessCurrentSelection => SelectedRow is null || CanOperateScope(
         ResolveProfileOfficeCode(SelectedRow.Source, _session.OfficeCode));
@@ -937,6 +952,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         }
 
         InvoiceToOpenAfterClose = null;
+        BillingCreatedSinceLastConsume = false;
         var targetId = SelectedRow.Source.Id;
         var expectedRevision = SelectedRow.Source.Revision;
         var result = await _rental.StartBillingAsync(targetId, ReferenceDate, _session, expectedRevision: expectedRevision);
@@ -959,6 +975,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         if (result.RelatedEntityId != Guid.Empty)
             InvoiceToOpenAfterClose = result.RelatedEntityId;
+        BillingCreatedSinceLastConsume = true;
 
         await ClearAutoSaveDraftAsync();
         await ReloadAsync();
@@ -979,6 +996,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         }
 
         InvoiceToOpenAfterClose = null;
+        BillingCreatedSinceLastConsume = false;
         var successCount = 0;
         var relatedInvoiceIds = new List<Guid>();
         var failureMessages = new List<string>();
@@ -1007,7 +1025,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             InvoiceToOpenAfterClose = distinctInvoiceIds[0];
 
         if (successCount > 0)
+        {
+            BillingCreatedSinceLastConsume = true;
             await ClearAutoSaveDraftAsync();
+        }
 
         var aggregateSelectionId = aggregateRow.SelectionId;
         await ReloadAsync();
@@ -1481,6 +1502,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         _contractDateRefreshCts?.Cancel();
         SelectedRow = null;
         InvoiceToOpenAfterClose = null;
+        BillingCreatedSinceLastConsume = false;
         _selectedRowBaselineSignature = string.Empty;
         UpdateTemplateDerivedValues();
         OnPropertyChanged(nameof(IsContractDateMissing));

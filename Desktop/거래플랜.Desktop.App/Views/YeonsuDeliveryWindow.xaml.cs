@@ -65,7 +65,7 @@ public partial class YeonsuDeliveryWindow : Window
         {
             Owner = this
         };
-        salesWindow.Show();
+        WindowShowHelper.ShowModeless(salesWindow);
     }
 
     private void Window_KeyDown(object sender, KeyEventArgs e)

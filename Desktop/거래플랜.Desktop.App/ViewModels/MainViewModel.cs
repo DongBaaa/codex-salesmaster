@@ -1745,7 +1745,7 @@ public sealed partial class MainViewModel : ObservableObject
                 Owner = GetActiveWindow()
             };
 
-            previewWindow.ShowDialog();
+            WindowShowHelper.ShowModeless(previewWindow);
         }
         catch (Exception ex)
         {

@@ -1,5 +1,6 @@
 using System.Windows;
 using CommunityToolkit.Mvvm.Input;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Views;
 
 namespace 거래플랜.Desktop.App.ViewModels;
@@ -16,6 +17,6 @@ public sealed partial class MainViewModel
         {
             Owner = Application.Current?.MainWindow
         };
-        window.ShowDialog();
+        WindowShowHelper.ShowModeless(window);
     }
 }

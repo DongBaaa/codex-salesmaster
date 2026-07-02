@@ -1,0 +1,28 @@
+﻿{
+    "channel":  "stable",
+    "generatedAtUtc":  "2026-07-02T08:13:39.1106800Z",
+    "desktop":  {
+                    "platform":  "desktop",
+                    "version":  "1.1.649",
+                    "mandatory":  false,
+                    "minimumSupportedVersion":  "",
+                    "packageUrl":  "/updates/download/desktop/tradeplan-pc-installer-v1.1.649.zip",
+                    "fileName":  "tradeplan-pc-installer-v1.1.649.zip",
+                    "sha256":  "896E08896AC796D8C1899CE5368853E7E6D8665BDED858AFBF3CE2C29BF89549",
+                    "fileSize":  232906929,
+                    "notes":  "업무창 비모달 전환, 렌탈 청구관리 창 유지, 청구 후 전표 목록 즉시 갱신",
+                    "releasedAtUtc":  "2026-07-02T08:13:43.7137401Z"
+                },
+    "android":  {
+                    "platform":  "android",
+                    "version":  "0.2.79",
+                    "mandatory":  false,
+                    "minimumSupportedVersion":  "",
+                    "packageUrl":  "/updates/download/android/tradeplan-android-v0.2.79.apk",
+                    "fileName":  "tradeplan-android-v0.2.79.apk",
+                    "sha256":  "6240C5EEF2324CF7BF9015BAF90C9D3EBE72B1C3BEA78C674470ED4DDFDE588E",
+                    "fileSize":  26802876,
+                    "notes":  "모바일 상세탭/첨부 보기/내부 업데이트 확인 기능 반영",
+                    "releasedAtUtc":  "2026-07-02T08:13:43.7767404Z"
+                }
+}

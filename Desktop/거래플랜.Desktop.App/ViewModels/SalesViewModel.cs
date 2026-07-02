@@ -1784,11 +1784,12 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
                 Owner = GetActiveWindow()
             };
 
-            editorWindow.ShowDialog();
-            if (editorViewModel.WasSaved)
+            editorWindow.Closed += (_, _) =>
             {
-                StatusMessage = "출력물 편집 내용을 저장했습니다.";
-            }
+                if (editorViewModel.WasSaved)
+                    StatusMessage = "출력물 편집 내용을 저장했습니다.";
+            };
+            WindowShowHelper.ShowModeless(editorWindow);
         }
         catch (Exception ex)
         {
@@ -1901,14 +1902,17 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
                 Owner = GetActiveWindow()
             };
 
-            previewWindow.ShowDialog();
-            if (previewViewModel.WasPrinted)
+            previewWindow.Closed += (_, _) =>
             {
+                if (!previewViewModel.WasPrinted)
+                    return;
+
                 var completed = selectedCodes
                     .Select(AttachmentDocumentCatalog.GetDisplayName)
                     .ToList();
                 StatusMessage = $"인쇄 완료: {string.Join(", ", completed)}";
-            }
+            };
+            WindowShowHelper.ShowModeless(previewWindow);
         }
         catch (Exception ex)
         {
@@ -1957,9 +1961,12 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             Owner = GetActiveWindow()
         };
 
-        previewWindow.ShowDialog();
-        if (previewViewModel.WasPrinted)
-            StatusMessage = "매입 명세서를 인쇄했습니다.";
+        previewWindow.Closed += (_, _) =>
+        {
+            if (previewViewModel.WasPrinted)
+                StatusMessage = "매입 명세서를 인쇄했습니다.";
+        };
+        WindowShowHelper.ShowModeless(previewWindow);
     }
 
     private async Task PrintProcurementAsync()
@@ -2001,9 +2008,12 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             Owner = GetActiveWindow()
         };
 
-        previewWindow.ShowDialog();
-        if (previewViewModel.WasPrinted)
-            StatusMessage = $"{jobTitle}를 인쇄했습니다.";
+        previewWindow.Closed += (_, _) =>
+        {
+            if (previewViewModel.WasPrinted)
+                StatusMessage = $"{jobTitle}를 인쇄했습니다.";
+        };
+        WindowShowHelper.ShowModeless(previewWindow);
     }
 
     [RelayCommand]

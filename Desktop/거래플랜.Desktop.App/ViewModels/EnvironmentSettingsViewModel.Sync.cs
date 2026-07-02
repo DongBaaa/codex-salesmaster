@@ -3,6 +3,7 @@ using System.Linq;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.Views;
 using 거래플랜.Shared.Contracts;
@@ -838,12 +839,10 @@ public sealed partial class EnvironmentSettingsViewModel
                 }, TaskScheduler.Default);
         };
 
-        if (window.ShowDialog() == true && window.RequestedIssue is not null)
-            await OpenDataIntegrityFixTargetAsync(window.RequestedIssue, ownerOverride);
-        else
-            StatusMessage = string.IsNullOrWhiteSpace(initialCode)
-                ? "운영 점검 상세 창을 열었습니다."
-                : "선택한 운영 점검 유형 상세를 열었습니다.";
+        WindowShowHelper.ShowModeless(window);
+        StatusMessage = string.IsNullOrWhiteSpace(initialCode)
+            ? "운영 점검 상세 창을 열었습니다."
+            : "선택한 운영 점검 유형 상세를 열었습니다.";
     }
 
     private async Task MergeDataIntegrityDuplicateAsync(
@@ -917,7 +916,7 @@ public sealed partial class EnvironmentSettingsViewModel
                 if (owner is not null)
                     window.Owner = owner;
 
-                window.ShowDialog();
+                WindowShowHelper.ShowModeless(window);
                 StatusMessage = "운영 점검 항목의 렌탈 청구관리 화면을 열었습니다.";
                 break;
             }
@@ -930,7 +929,7 @@ public sealed partial class EnvironmentSettingsViewModel
                 if (owner is not null)
                     window.Owner = owner;
 
-                window.ShowDialog();
+                WindowShowHelper.ShowModeless(window);
                 StatusMessage = "운영 점검 항목의 렌탈 자산 화면을 열었습니다.";
                 break;
             }
@@ -942,7 +941,7 @@ public sealed partial class EnvironmentSettingsViewModel
                 if (owner is not null)
                     window.Owner = owner;
 
-                window.ShowDialog();
+                WindowShowHelper.ShowModeless(window);
                 StatusMessage = "운영 점검 항목의 품목/재고 화면을 열었습니다.";
                 break;
             }
@@ -962,7 +961,7 @@ public sealed partial class EnvironmentSettingsViewModel
                 if (owner is not null)
                     window.Owner = owner;
 
-                window.ShowDialog();
+                WindowShowHelper.ShowModeless(window);
                 StatusMessage = "운영 점검 항목의 거래처 수정창을 열었습니다.";
                 break;
             }
@@ -989,7 +988,7 @@ public sealed partial class EnvironmentSettingsViewModel
                 if (owner is not null)
                     window.Owner = owner;
 
-                window.ShowDialog();
+                WindowShowHelper.ShowModeless(window);
                 StatusMessage = "운영 점검 항목의 전표 작성창을 열었습니다.";
                 break;
             }
@@ -1011,7 +1010,7 @@ public sealed partial class EnvironmentSettingsViewModel
                 if (owner is not null)
                     window.Owner = owner;
 
-                window.ShowDialog();
+                WindowShowHelper.ShowModeless(window);
                 StatusMessage = "운영 점검 항목의 수금/지급 창을 열었습니다.";
                 break;
             }
@@ -1023,7 +1022,7 @@ public sealed partial class EnvironmentSettingsViewModel
                 if (owner is not null)
                     window.Owner = owner;
 
-                window.ShowDialog();
+                WindowShowHelper.ShowModeless(window);
                 StatusMessage = "동기화 진단 창을 열었습니다.";
                 break;
             }
@@ -1181,8 +1180,13 @@ public sealed partial class EnvironmentSettingsViewModel
         {
             Owner = owner
         };
-        window.ShowDialog();
-        await RefreshSyncStateAsync();
+        window.Closed += (_, _) => UiTaskHelper.Run(
+            owner ?? window,
+            RefreshSyncStateAsync,
+            "SYNC",
+            "동기화 진단 닫기 후 상태 새로고침",
+            "동기화 진단 닫기 후 상태를 다시 불러오는 중 오류가 발생했습니다.");
+        WindowShowHelper.ShowModeless(window);
         StatusMessage = scope is null
             ? "동기화 진단 창을 열었습니다."
             : $"{scope.ScopeDisplayName} 범위 기준으로 동기화 진단 창을 열었습니다.";

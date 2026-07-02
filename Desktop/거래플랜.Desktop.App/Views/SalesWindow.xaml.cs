@@ -117,8 +117,13 @@ public partial class SalesWindow : Window
             Owner = this
         };
 
-        paymentWindow.ShowDialog();
-        await _vm.RefreshPaymentSummaryAsync();
+        paymentWindow.Closed += (_, _) => UiTaskHelper.Run(
+            this,
+            () => _vm.RefreshPaymentSummaryAsync(),
+            "UI",
+            "전표 수금/지급 후 요약 새로고침",
+            "수금/지급 후 전표 요약을 다시 불러오는 중 오류가 발생했습니다.");
+        WindowShowHelper.ShowModeless(paymentWindow);
     }
 
     private void LoadPreviousHistoryButton_Click(object sender, RoutedEventArgs e)
@@ -406,18 +411,25 @@ public partial class SalesWindow : Window
             Owner = this
         };
 
-        inventoryWindow.ShowDialog();
+        inventoryWindow.Closed += (_, _) => UiTaskHelper.Run(
+            this,
+            async () =>
+            {
+                await _vm.ReloadItemsAsync();
+                var matches = _vm.FindItemsForQuickInput(keyword);
+                if (matches.Count == 1)
+                {
+                    _vm.ApplyInputItem(matches[0]);
+                    _vm.StatusMessage = $"[{keyword}] 품목을 등록한 뒤 입력칸에 반영했습니다.";
+                    return;
+                }
 
-        await _vm.ReloadItemsAsync();
-        var matches = _vm.FindItemsForQuickInput(keyword);
-        if (matches.Count == 1)
-        {
-            _vm.ApplyInputItem(matches[0]);
-            _vm.StatusMessage = $"[{keyword}] 품목을 등록한 뒤 입력칸에 반영했습니다.";
-            return;
-        }
-
-        _vm.StatusMessage = $"[{keyword}] 품목 등록 창을 확인했습니다. 필요하면 다시 검색하거나 선택하세요.";
+                _vm.StatusMessage = $"[{keyword}] 품목 등록 창을 확인했습니다. 필요하면 다시 검색하거나 선택하세요.";
+            },
+            "UI",
+            "품목 등록 후 전표 품목 새로고침",
+            "품목 등록 후 전표 품목 목록을 다시 불러오는 중 오류가 발생했습니다.");
+        WindowShowHelper.ShowModeless(inventoryWindow);
     }
 
     private void ShowItemLookup(IReadOnlyList<LocalItem> items, string title)

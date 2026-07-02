@@ -18,6 +18,7 @@ public partial class RentalBillingWindow : Window
 {
     private readonly EntityEditSessionMonitor? _editSessionMonitor;
     private readonly Func<Guid, Window?, Task>? _openInvoiceWindowAsync;
+    private readonly Func<Task>? _refreshAfterBillingChangedAsync;
     private bool _allowClose;
     private bool _closeInProgress;
     private bool _customerEditorOpenInProgress;
@@ -25,11 +26,13 @@ public partial class RentalBillingWindow : Window
 
     public RentalBillingWindow(
         RentalBillingViewModel viewModel,
-        Func<Guid, Window?, Task>? openInvoiceWindowAsync = null)
+        Func<Guid, Window?, Task>? openInvoiceWindowAsync = null,
+        Func<Task>? refreshAfterBillingChangedAsync = null)
     {
         InitializeComponent();
         DataContext = viewModel;
         _openInvoiceWindowAsync = openInvoiceWindowAsync;
+        _refreshAfterBillingChangedAsync = refreshAfterBillingChangedAsync;
         Closing += HandleClosing;
         Loaded += (_, _) => _editSessionMonitor?.Start();
         Closed += (_, _) =>
@@ -128,12 +131,13 @@ public partial class RentalBillingWindow : Window
             }
 
             await viewModel.StartBillingCommand.ExecuteAsync(null);
-            if (!viewModel.InvoiceToOpenAfterClose.HasValue)
-                return;
+            var invoiceId = viewModel.ConsumeInvoiceToOpenAfterClose();
+            var billingCreated = viewModel.ConsumeBillingCreatedSinceLastConsume();
+            if (billingCreated && _refreshAfterBillingChangedAsync is not null)
+                await _refreshAfterBillingChangedAsync();
 
-            _allowClose = true;
-            DialogResult = true;
-            Close();
+            if (invoiceId.HasValue && _openInvoiceWindowAsync is not null)
+                await _openInvoiceWindowAsync(invoiceId.Value, this);
         }, "UI", "렌탈 청구 시작", "렌탈 청구 시작 중 오류가 발생했습니다.");
     }
 
@@ -308,8 +312,13 @@ public partial class RentalBillingWindow : Window
             Owner = this
         };
 
-        paymentWindow.ShowDialog();
-        await viewModel.ReloadCommand.ExecuteAsync(null);
+        paymentWindow.Closed += (_, _) => UiTaskHelper.Run(
+            this,
+            () => viewModel.ReloadCommand.ExecuteAsync(null),
+            "UI",
+            "렌탈 수금 입력 후 청구관리 새로고침",
+            "수금 입력 후 렌탈 청구관리 내역을 다시 불러오는 중 오류가 발생했습니다.");
+        WindowShowHelper.ShowModeless(paymentWindow);
     }
 
     private async void HandleClosing(object? sender, CancelEventArgs e)
@@ -383,13 +392,21 @@ public partial class RentalBillingWindow : Window
                 Owner = this
             };
 
-            onboardingWindow.ShowDialog();
-            if (!onboardingViewModel.IsCompleted)
-                return;
+            onboardingWindow.Closed += (_, _) => UiTaskHelper.Run(
+                this,
+                async () =>
+                {
+                    if (!onboardingViewModel.IsCompleted)
+                        return;
 
-            await viewModel.ReloadCommand.ExecuteAsync(null);
-            if (onboardingViewModel.SavedBillingProfileId.HasValue)
-                viewModel.SelectedRow = viewModel.Rows.FirstOrDefault(row => row.Source.Id == onboardingViewModel.SavedBillingProfileId.Value);
+                    await viewModel.ReloadCommand.ExecuteAsync(null);
+                    if (onboardingViewModel.SavedBillingProfileId.HasValue)
+                        viewModel.SelectedRow = viewModel.Rows.FirstOrDefault(row => row.Source.Id == onboardingViewModel.SavedBillingProfileId.Value);
+                },
+                "UI",
+                "신규 렌탈 거래처 등록 후 청구관리 새로고침",
+                "신규 렌탈 거래처 등록 후 청구관리 목록을 다시 불러오는 중 오류가 발생했습니다.");
+            WindowShowHelper.ShowModeless(onboardingWindow);
         }, "UI", "신규 렌탈 거래처 등록", "신규 렌탈 거래처 등록 중 오류가 발생했습니다.");
     }
 
@@ -549,11 +566,8 @@ public partial class RentalBillingWindow : Window
             {
                 Owner = this
             };
-            customerWindow.ShowDialog();
-            await viewModel.RefreshSelectedCustomerContextAsync();
-            await viewModel.ReloadCommand.ExecuteAsync(null);
-            viewModel.SelectedRow = viewModel.Rows.FirstOrDefault(current => current.SelectionId == row.SelectionId)
-                                    ?? viewModel.Rows.FirstOrDefault(current => current.Source.Id == row.Source.Id);
+            AttachCustomerEditorClosedRefresh(customerWindow, row);
+            WindowShowHelper.ShowModeless(customerWindow);
         }
         finally
         {

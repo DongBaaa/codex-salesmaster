@@ -79,8 +79,7 @@ public partial class InventoryWindow : Window
                     "UI",
                     "재고이동 창 종료 후 재고 재조회",
                     "재고 목록을 다시 불러오는 중 오류가 발생했습니다.");
-                window.Show();
-                window.Activate();
+                WindowShowHelper.ShowModeless(window);
             },
             "UI",
             "재고이동 창 열기",
