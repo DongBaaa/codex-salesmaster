@@ -173,12 +173,12 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
             BillingCycleMonths,
             BillingAnchorMonth,
-            ToDateOnly(BillingStartDate),
-            ToDateOnly(BillingStartDate),
-            null,
-            null,
-            null,
-            DateOnly.FromDateTime(DateTime.Today));
+            billingAnchorDate: null,
+            billingStartDate: null,
+            contractStartDate: null,
+            contractDate: null,
+            lastBilledDate: null,
+            referenceDate: DateOnly.FromDateTime(DateTime.Today));
         UpdateBillingPreview();
     }
     partial void OnBillingAnchorMonthChanged(int value) => UpdateBillingPreview();
@@ -240,12 +240,12 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
             BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
                 BillingCycleMonths,
                 BillingAnchorMonth,
-                ToDateOnly(BillingStartDate),
-                ToDateOnly(BillingStartDate),
-                null,
-                null,
-                null,
-                DateOnly.FromDateTime(DateTime.Today));
+                billingAnchorDate: null,
+                billingStartDate: null,
+                contractStartDate: null,
+                contractDate: null,
+                lastBilledDate: null,
+                referenceDate: DateOnly.FromDateTime(DateTime.Today));
             DocumentIssueMode = RentalBillingScheduleRules.DocumentIssueModeSameAsDueDate;
             DocumentLeadDays = 0;
             TemplateItems.Clear();
@@ -452,16 +452,16 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
                 BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
                     BillingCycleMonths,
                     BillingAnchorMonth,
-                    ToDateOnly(BillingStartDate),
-                    ToDateOnly(BillingStartDate),
-                    null,
-                    null,
-                    null,
-                    DateOnly.FromDateTime(DateTime.Today)),
+                    billingAnchorDate: null,
+                    billingStartDate: null,
+                    contractStartDate: null,
+                    contractDate: null,
+                    lastBilledDate: null,
+                    referenceDate: DateOnly.FromDateTime(DateTime.Today)),
                 DocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(DocumentIssueMode),
                 DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(DocumentLeadDays),
-                BillingStartDate = ToDateOnly(BillingStartDate),
-                BillingAnchorDate = ToDateOnly(BillingStartDate),
+                BillingStartDate = null,
+                BillingAnchorDate = null,
                 ContractDate = ToDateOnly(BillingStartDate),
                 MonthlyAmount = MonthlyAmount,
                 SubmissionDocuments = SubmissionDocuments,
@@ -548,12 +548,12 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
                 BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
                     BillingCycleMonths,
                     BillingAnchorMonth,
-                    ToDateOnly(BillingStartDate),
-                    ToDateOnly(BillingStartDate),
-                    null,
-                    null,
-                    null,
-                    DateOnly.FromDateTime(DateTime.Today));
+                    billingAnchorDate: null,
+                    billingStartDate: null,
+                    contractStartDate: null,
+                    contractDate: null,
+                    lastBilledDate: null,
+                    referenceDate: DateOnly.FromDateTime(DateTime.Today));
                 DocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(DocumentIssueMode);
                 DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(DocumentLeadDays);
 
@@ -928,12 +928,12 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
             cycleMonths,
             BillingAnchorMonth,
-            ToDateOnly(BillingStartDate),
-            ToDateOnly(BillingStartDate),
-            null,
-            null,
-            null,
-            referenceDate);
+            billingAnchorDate: null,
+            billingStartDate: null,
+            contractStartDate: null,
+            contractDate: null,
+            lastBilledDate: null,
+            referenceDate: referenceDate);
         DocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(DocumentIssueMode);
         DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(DocumentLeadDays);
 
@@ -944,7 +944,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
             BillingAnchorMonth,
             referenceDate,
             null,
-            ResolvePreviewFirstBillingDate(BillingDay, BillingDayMode, BillingAnchorMonth, referenceDate, ToDateOnly(BillingStartDate)));
+            ResolvePreviewFirstBillingDate(BillingDay, BillingDayMode, BillingAnchorMonth, referenceDate));
         var period = RentalBillingScheduleRules.ResolveBillingPeriod(cycleMonths, BillingAdvanceMode, dueDate);
         var issueDate = RentalBillingScheduleRules.CalculateDocumentIssueDate(dueDate, DocumentIssueMode, DocumentLeadDays);
         var billingDayText = string.Equals(BillingDayMode, RentalBillingScheduleRules.BillingDayModeEndOfMonth, StringComparison.Ordinal)
@@ -979,15 +979,21 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         int billingDay,
         string? billingDayMode,
         int anchorMonth,
-        DateOnly referenceDate,
-        DateOnly? billingStartDate)
+        DateOnly referenceDate)
     {
-        var startMonth = billingStartDate.HasValue
-            ? new DateOnly(billingStartDate.Value.Year, billingStartDate.Value.Month, 1)
-            : new DateOnly(referenceDate.Year, Math.Clamp(anchorMonth, 1, 12), 1);
+        var normalizedAnchorMonth = Math.Clamp(anchorMonth, 1, 12);
+        if (referenceDate.Month < normalizedAnchorMonth)
+        {
+            return RentalBillingScheduleRules.BuildBillingDate(
+                referenceDate.Year,
+                normalizedAnchorMonth,
+                billingDay,
+                billingDayMode);
+        }
+
         return RentalBillingScheduleRules.BuildBillingDate(
-            startMonth.Year,
-            startMonth.Month,
+            referenceDate.Year,
+            referenceDate.Month,
             billingDay,
             billingDayMode);
     }

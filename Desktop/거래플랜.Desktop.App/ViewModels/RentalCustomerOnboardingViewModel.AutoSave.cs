@@ -257,16 +257,16 @@ public sealed partial class RentalCustomerOnboardingViewModel
         BillingDay = RentalBillingScheduleRules.NormalizeBillingDay(draft.BillingDay);
         BillingCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(draft.BillingCycleMonths);
         BillingStartDate = draft.BillingStartDate;
-        var billingReferenceDate = ToDateOnly(BillingStartDate) ?? DateOnly.FromDateTime(DateTime.Today);
+        var billingReferenceDate = DateOnly.FromDateTime(DateTime.Today);
         BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
             BillingCycleMonths,
             draft.BillingAnchorMonth,
-            ToDateOnly(BillingStartDate),
-            ToDateOnly(BillingStartDate),
-            null,
-            null,
-            null,
-            billingReferenceDate);
+            billingAnchorDate: null,
+            billingStartDate: null,
+            contractStartDate: null,
+            contractDate: null,
+            lastBilledDate: null,
+            referenceDate: billingReferenceDate);
         DocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(draft.DocumentIssueMode);
         DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(draft.DocumentLeadDays);
         MonthlyAmount = draft.MonthlyAmount;

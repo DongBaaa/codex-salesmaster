@@ -2160,10 +2160,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 profile.BillingAnchorMonth,
                 profile.BillingAnchorDate,
                 profile.BillingStartDate,
-                profile.ContractStartDate,
-                profile.ContractDate,
-                profile.LastBilledDate,
-                referenceDate),
+                contractStartDate: null,
+                contractDate: null,
+                lastBilledDate: null,
+                referenceDate: referenceDate),
             DocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(profile.DocumentIssueMode),
             DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(profile.DocumentLeadDays),
             DocumentIssueDate = documentIssueDate,
@@ -3767,9 +3767,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
             asset.ContractDate,
             asset.ContractStartDate,
             asset.InstallDate);
-        var billingStartDate = contractDates.ContractDate
-                               ?? contractDates.ContractStartDate
-                               ?? referenceDate;
         var templateItems = new List<RentalBillingTemplateItemModel>
         {
             new()
@@ -3803,11 +3800,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
             BillingDay = 25,
             BillingDayMode = RentalBillingScheduleRules.BillingDayModeFixedDay,
             BillingCycleMonths = 1,
-            BillingAnchorMonth = billingStartDate.Month,
+            BillingAnchorMonth = Math.Clamp(referenceDate.Month, 1, 12),
             DocumentIssueMode = RentalBillingScheduleRules.DocumentIssueModeSameAsDueDate,
             MonthlyAmount = monthlyAmount,
-            BillingAnchorDate = billingStartDate,
-            BillingStartDate = billingStartDate,
+            BillingAnchorDate = null,
+            BillingStartDate = null,
             ContractDate = contractDates.ContractDate,
             ContractStartDate = contractDates.ContractStartDate,
             ContractEndDate = asset.RentalEndDate,
@@ -9048,10 +9045,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
                         profile.BillingAnchorMonth,
                         profile.BillingAnchorDate,
                         profile.BillingStartDate,
-                        profile.ContractStartDate,
-                        profile.ContractDate,
-                        profile.LastBilledDate,
-                        sheetInfo.Anchor ?? DateOnly.FromDateTime(DateTime.Today));
+                        contractStartDate: null,
+                        contractDate: null,
+                        lastBilledDate: null,
+                        referenceDate: sheetInfo.Anchor ?? DateOnly.FromDateTime(DateTime.Today));
                     profile.DocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(profile.DocumentIssueMode);
                     profile.DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(profile.DocumentLeadDays);
                     if (existing is not null)
@@ -11446,10 +11443,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
             profile.BillingAnchorMonth,
             profile.BillingAnchorDate,
             profile.BillingStartDate,
-            profile.ContractStartDate,
-            profile.ContractDate,
-            profile.LastBilledDate,
-            normalizedReference);
+            contractStartDate: null,
+            contractDate: null,
+            lastBilledDate: null,
+            referenceDate: normalizedReference);
         profile.DocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(profile.DocumentIssueMode);
         profile.DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(profile.DocumentLeadDays);
     }
@@ -11471,23 +11468,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 profile.BillingDayMode);
         }
 
-        var explicitStartDate = profile.BillingAnchorDate
-                                ?? profile.BillingStartDate
-                                ?? profile.ContractStartDate
-                                ?? profile.ContractDate;
-        if (explicitStartDate.HasValue)
-        {
-            var explicitBillingDate = RentalBillingScheduleRules.BuildBillingDate(
-                explicitStartDate.Value.Year,
-                explicitStartDate.Value.Month,
-                profile.BillingDay,
-                profile.BillingDayMode);
-
-            return firstBillingDate.HasValue && firstBillingDate.Value > explicitBillingDate
-                ? firstBillingDate.Value
-                : explicitBillingDate;
-        }
-
+        // Billing period selection must be driven by the explicit start month and the selected reference date.
+        // Contract dates and asset rental dates are contract/asset metadata; they must not push a selected
+        // March~June billing period into the next July~October cycle.
         return firstBillingDate;
     }
 
@@ -12741,15 +12724,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
             profile.BillingAnchorMonth,
             profile.BillingAnchorDate,
             profile.BillingStartDate,
-            profile.ContractStartDate,
-            profile.ContractDate,
-            profile.LastBilledDate,
-            normalizedReference);
+            contractStartDate: null,
+            contractDate: null,
+            lastBilledDate: null,
+            referenceDate: normalizedReference);
         return profile.BillingAnchorDate
                ?? profile.BillingStartDate
-               ?? profile.ContractStartDate
-               ?? profile.ContractDate
-               ?? profile.LastBilledDate
                ?? new DateOnly(normalizedReference.Year, anchorMonth, 1);
     }
 

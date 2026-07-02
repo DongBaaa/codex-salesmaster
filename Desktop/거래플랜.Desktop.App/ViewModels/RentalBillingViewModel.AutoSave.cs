@@ -329,10 +329,10 @@ public sealed partial class RentalBillingViewModel
             draft.BillingAnchorMonth,
             ToDateOnly(draft.BillingAnchorDate),
             ToDateOnly(draft.BillingStartDate),
-            ToDateOnly(draft.ContractStartDate),
-            ToDateOnly(draft.ContractDate),
-            ToDateOnly(draft.LastBilledDate),
-            DateOnly.FromDateTime(DateTime.Today));
+            contractStartDate: null,
+            contractDate: null,
+            lastBilledDate: null,
+            referenceDate: DateOnly.FromDateTime(DateTime.Today));
         EditDocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(draft.DocumentIssueMode);
         EditDocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(draft.DocumentLeadDays);
         EditMonthlyAmount = draft.MonthlyAmount;

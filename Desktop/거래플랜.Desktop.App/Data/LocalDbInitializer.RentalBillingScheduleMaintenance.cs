@@ -58,10 +58,10 @@ public static partial class LocalDbInitializer
                 profile.BillingAnchorMonth,
                 profile.BillingAnchorDate,
                 profile.BillingStartDate,
-                profile.ContractStartDate,
-                profile.ContractDate,
-                profile.LastBilledDate,
-                referenceDate);
+                contractStartDate: null,
+                contractDate: null,
+                lastBilledDate: null,
+                referenceDate: referenceDate);
             profile.DocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(profile.DocumentIssueMode);
             profile.DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(profile.DocumentLeadDays);
 

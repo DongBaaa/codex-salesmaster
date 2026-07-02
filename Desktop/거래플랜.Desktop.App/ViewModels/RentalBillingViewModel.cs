@@ -380,19 +380,6 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     partial void OnEditContractStartDateChanged(DateTime? value) => UpdateTemplateDerivedValues();
     partial void OnEditContractDateChanged(DateTime? value)
     {
-        if (!_suppressContractDateSynchronization)
-        {
-            _suppressContractDateSynchronization = true;
-            try
-            {
-                EditBillingStartDate = value;
-            }
-            finally
-            {
-                _suppressContractDateSynchronization = false;
-            }
-        }
-
         OnPropertyChanged(nameof(IsContractDateMissing));
         OnPropertyChanged(nameof(ShouldShowContractDateWarning));
         OnPropertyChanged(nameof(ContractDateWarningMessage));
@@ -407,10 +394,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             EditBillingAnchorMonth,
             ToDateOnly(EditBillingAnchorDate),
             ToDateOnly(EditBillingStartDate),
-            ToDateOnly(EditContractStartDate),
-            ToDateOnly(EditContractDate),
-            ToDateOnly(EditLastBilledDate),
-            GetBillingReferenceDate());
+            contractStartDate: null,
+            contractDate: null,
+            lastBilledDate: null,
+            referenceDate: GetBillingReferenceDate());
         UpdateTemplateDerivedValues();
     }
     partial void OnEditBillingTypeChanged(string value)
@@ -861,7 +848,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             Notes = EditNotes,
             ResponsibleOfficeCode = officeCode,
             BillingAnchorDate = ToDateOnly(EditBillingAnchorDate),
-            BillingStartDate = contractDate,
+            BillingStartDate = ToDateOnly(EditBillingStartDate),
             ContractDate = contractDate,
             ContractStartDate = ToDateOnly(EditContractStartDate),
             ContractEndDate = ToDateOnly(EditContractEndDate),
@@ -1464,7 +1451,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditSubmissionDocuments = string.Empty;
         EditNotes = string.Empty;
         EditBillingAnchorDate = null;
-        SetContractReferenceDates(null);
+        SetContractReferenceDates(null, null);
         EditContractStartDate = null;
         EditContractEndDate = null;
         EditLastBilledDate = null;
@@ -2321,10 +2308,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             source.BillingAnchorMonth,
             source.BillingAnchorDate,
             source.BillingStartDate,
-            source.ContractStartDate,
-            source.ContractDate,
-            source.LastBilledDate,
-            value.NextBillingDate ?? ReferenceDate);
+            contractStartDate: null,
+            contractDate: null,
+            lastBilledDate: null,
+            referenceDate: value.NextBillingDate ?? ReferenceDate);
         EditDocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(source.DocumentIssueMode);
         EditDocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(source.DocumentLeadDays);
         EditMonthlyAmount = value.CurrentBilledAmount > 0m ? value.CurrentBilledAmount : source.MonthlyAmount;
@@ -2335,7 +2322,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditSubmissionDocuments = source.SubmissionDocuments;
         EditNotes = source.Notes;
         EditBillingAnchorDate = ToDateTime(source.BillingAnchorDate);
-        SetContractReferenceDates(ToDateTime(source.ContractDate ?? source.BillingStartDate));
+        SetContractReferenceDates(ToDateTime(source.ContractDate), ToDateTime(source.BillingStartDate));
         EditContractStartDate = ToDateTime(source.ContractStartDate);
         EditContractEndDate = ToDateTime(source.ContractEndDate);
         EditLastBilledDate = ToDateTime(source.LastBilledDate);
@@ -2979,7 +2966,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                                               baselineSelectionId.HasValue &&
                                               SelectedRow?.SelectionId == baselineSelectionId.Value &&
                                               string.Equals(baselineSignature, BuildCurrentEditorSignature(), StringComparison.Ordinal);
-        SetContractReferenceDates(ToDateTime(contractDate));
+        SetContractReferenceDates(ToDateTime(contractDate), EditBillingStartDate);
         if (shouldRefreshSelectedRowBaseline)
             _selectedRowBaselineSignature = BuildCurrentEditorSignature();
     }
@@ -3033,18 +3020,17 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         => RentalAssetCategoryRules.IsA3ColorMultiFunctionAsset(asset);
 
     private DateOnly GetBillingReferenceDate()
-        => ToDateOnly(EditContractDate)
-           ?? ToDateOnly(EditBillingStartDate)
-           ?? ToDateOnly(EditContractStartDate)
-           ?? DateOnly.FromDateTime(DateTime.Today);
+        => ReferenceDate == default
+            ? DateOnly.FromDateTime(DateTime.Today)
+            : ReferenceDate;
 
-    private void SetContractReferenceDates(DateTime? value)
+    private void SetContractReferenceDates(DateTime? contractDate, DateTime? billingStartDate)
     {
         _suppressContractDateSynchronization = true;
         try
         {
-            EditContractDate = value?.Date;
-            EditBillingStartDate = value?.Date;
+            EditContractDate = contractDate?.Date;
+            EditBillingStartDate = billingStartDate?.Date;
         }
         finally
         {
@@ -5057,10 +5043,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             EditBillingAnchorMonth,
             ToDateOnly(EditBillingAnchorDate),
             ToDateOnly(EditBillingStartDate),
-            ToDateOnly(EditContractStartDate),
-            ToDateOnly(EditContractDate),
-            ToDateOnly(EditLastBilledDate),
-            referenceDate);
+            contractStartDate: null,
+            contractDate: null,
+            lastBilledDate: null,
+            referenceDate: referenceDate);
         var dueDate = RentalBillingScheduleRules.ResolveApplicableBillingDate(
             EditBillingDay,
             EditBillingDayMode,
@@ -5096,10 +5082,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             EditBillingAnchorMonth,
             ToDateOnly(EditBillingAnchorDate),
             ToDateOnly(EditBillingStartDate),
-            ToDateOnly(EditContractStartDate),
-            ToDateOnly(EditContractDate),
-            ToDateOnly(EditLastBilledDate),
-            referenceDate);
+            contractStartDate: null,
+            contractDate: null,
+            lastBilledDate: null,
+            referenceDate: referenceDate);
         var dueDate = RentalBillingScheduleRules.ResolveApplicableBillingDate(
             EditBillingDay,
             EditBillingDayMode,
@@ -5157,10 +5143,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             EditBillingAnchorMonth,
             ToDateOnly(EditBillingAnchorDate),
             ToDateOnly(EditBillingStartDate),
-            ToDateOnly(EditContractStartDate),
-            ToDateOnly(EditContractDate),
-            ToDateOnly(EditLastBilledDate),
-            referenceDate);
+            contractStartDate: null,
+            contractDate: null,
+            lastBilledDate: null,
+            referenceDate: referenceDate);
         var dueDate = RentalBillingScheduleRules.ResolveApplicableBillingDate(
             EditBillingDay,
             EditBillingDayMode,
@@ -5202,16 +5188,19 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         DateOnly? contractStartDate,
         DateOnly? contractDate)
     {
-        var explicitStartDate = billingAnchorDate
-                                ?? billingStartDate
-                                ?? contractStartDate
-                                ?? contractDate;
-        var startMonth = explicitStartDate.HasValue
-            ? new DateOnly(explicitStartDate.Value.Year, explicitStartDate.Value.Month, 1)
-            : new DateOnly(referenceDate.Year, Math.Clamp(anchorMonth, 1, 12), 1);
+        var normalizedAnchorMonth = Math.Clamp(anchorMonth, 1, 12);
+        if (referenceDate.Month < normalizedAnchorMonth)
+        {
+            return RentalBillingScheduleRules.BuildBillingDate(
+                referenceDate.Year,
+                normalizedAnchorMonth,
+                billingDay,
+                billingDayMode);
+        }
+
         return RentalBillingScheduleRules.BuildBillingDate(
-            startMonth.Year,
-            startMonth.Month,
+            referenceDate.Year,
+            referenceDate.Month,
             billingDay,
             billingDayMode);
     }
