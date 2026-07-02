@@ -630,9 +630,12 @@ public sealed class MasterUiWiringGuardTests
             "internal static class WindowShowHelper",
             "public static void ShowModeless(Window window)",
             "public static void ShowModelessWithDeferredLoad(",
+            "_ = StartLoadAsync();",
             "DispatcherPriority.ApplicationIdle",
             "window.Activate();",
             "window.Focus();");
+        Assert.DoesNotContain("window.Loaded +=", helper, StringComparison.Ordinal);
+        Assert.DoesNotContain("ContentRendered", helper, StringComparison.Ordinal);
 
         AssertContainsAll(
             mainWindow,

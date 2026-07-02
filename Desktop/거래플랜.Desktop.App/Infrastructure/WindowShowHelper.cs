@@ -26,7 +26,8 @@ internal static class WindowShowHelper
         ArgumentNullException.ThrowIfNull(loadAsync);
 
         var loadStarted = false;
-        window.ContentRendered += async (_, _) =>
+
+        async Task StartLoadAsync()
         {
             if (loadStarted)
                 return;
@@ -55,7 +56,7 @@ internal static class WindowShowHelper
                 if (window.IsLoaded)
                     window.Close();
             }
-        };
+        }
 
         if (closedAsync is not null)
         {
@@ -70,6 +71,7 @@ internal static class WindowShowHelper
             };
         }
 
+        _ = StartLoadAsync();
         ShowModeless(window);
     }
 
