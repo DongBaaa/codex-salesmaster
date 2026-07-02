@@ -1,17 +1,17 @@
 ﻿{
     "channel":  "stable",
-    "generatedAtUtc":  "2026-07-02T08:51:05.6496365Z",
+    "generatedAtUtc":  "2026-07-02T10:17:31.3964997Z",
     "desktop":  {
                     "platform":  "desktop",
-                    "version":  "1.1.650",
+                    "version":  "1.1.651",
                     "mandatory":  false,
                     "minimumSupportedVersion":  "",
-                    "packageUrl":  "/updates/download/desktop/tradeplan-pc-installer-v1.1.650.zip",
-                    "fileName":  "tradeplan-pc-installer-v1.1.650.zip",
-                    "sha256":  "43352C1D002A087EEBA4CA9F1B780CE0510A330C83CB4AE8A4A4D49E4767F6D5",
-                    "fileSize":  232906223,
-                    "notes":  "큰 업무창 조회 즉시 시작, 비모달 창 유지",
-                    "releasedAtUtc":  "2026-07-02T08:51:09.3817472Z"
+                    "packageUrl":  "/updates/download/desktop/tradeplan-pc-installer-v1.1.651.zip",
+                    "fileName":  "tradeplan-pc-installer-v1.1.651.zip",
+                    "sha256":  "5630499B40E33B473D4C488A3FB8D1FA32847B52FE91F5149BFDDA41E7D178E9",
+                    "fileSize":  232906941,
+                    "notes":  "렌탈 청구서 작성일을 작성 기준일로 저장, 청구일은 알림 기준 유지",
+                    "releasedAtUtc":  "2026-07-02T10:17:34.6151440Z"
                 },
     "android":  {
                     "platform":  "android",
@@ -23,6 +23,6 @@
                     "sha256":  "6240C5EEF2324CF7BF9015BAF90C9D3EBE72B1C3BEA78C674470ED4DDFDE588E",
                     "fileSize":  26802876,
                     "notes":  "모바일 상세탭/첨부 보기/내부 업데이트 확인 기능 반영",
-                    "releasedAtUtc":  "2026-07-02T08:51:09.5977471Z"
+                    "releasedAtUtc":  "2026-07-02T10:17:34.6771750Z"
                 }
 }
