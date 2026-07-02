@@ -4906,6 +4906,14 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			select transaction;
 		transactionQuery = ApplyTransactionScope(transactionQuery, session);
 		List<LocalTransaction> transactions = await transactionQuery.ToListAsync(ct);
+		decimal unlinkedGeneralReceiptAmount = transactions
+			.Where(IsUnlinkedGeneralReceiptSettlement)
+			.Sum((LocalTransaction transaction) => Math.Max(0m, transaction.ReceiptTotal));
+		decimal unlinkedGeneralPaymentAmount = transactions
+			.Where(IsUnlinkedGeneralPaymentSettlement)
+			.Sum((LocalTransaction transaction) => Math.Max(0m, transaction.PaymentTotal));
+		receivableAmount = Math.Max(0m, receivableAmount - unlinkedGeneralReceiptAmount);
+		payableAmount = Math.Max(0m, payableAmount - unlinkedGeneralPaymentAmount);
 		decimal prepaymentAmount = transactions.Where((LocalTransaction transaction) => transaction.AdvanceDelta > 0m && (transaction.LinkedInvoiceId.HasValue || transaction.LinkedRentalBillingProfileId.HasValue)).Sum((LocalTransaction transaction) => transaction.AdvanceDelta);
 		decimal prepaidAmount = transactions.Sum((LocalTransaction transaction) => transaction.PrepaidDelta);
 		return new CustomerFinancialSummary
@@ -4925,6 +4933,32 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			invoice.IsLatestVersion &&
 			invoice.IsConfirmed &&
 			(invoice.VoucherType == VoucherType.Sales || invoice.VoucherType == VoucherType.Purchase);
+	}
+
+	private static bool IsUnlinkedGeneralReceiptSettlement(LocalTransaction transaction)
+	{
+		return transaction is not null &&
+			!transaction.LinkedInvoiceId.HasValue &&
+			!transaction.LinkedRentalBillingProfileId.HasValue &&
+			transaction.AdvanceDelta == 0m &&
+			transaction.PrepaidDelta == 0m &&
+			string.Equals(
+				PaymentFlowConstants.NormalizeTransactionKind(transaction.TransactionKind),
+				PaymentFlowConstants.TransactionKindReceipt,
+				StringComparison.OrdinalIgnoreCase);
+	}
+
+	private static bool IsUnlinkedGeneralPaymentSettlement(LocalTransaction transaction)
+	{
+		return transaction is not null &&
+			!transaction.LinkedInvoiceId.HasValue &&
+			!transaction.LinkedRentalBillingProfileId.HasValue &&
+			transaction.AdvanceDelta == 0m &&
+			transaction.PrepaidDelta == 0m &&
+			string.Equals(
+				PaymentFlowConstants.NormalizeTransactionKind(transaction.TransactionKind, preferPayment: true),
+				PaymentFlowConstants.TransactionKindPayment,
+				StringComparison.OrdinalIgnoreCase);
 	}
 
 	public async Task<InvoiceSettlementSummary> GetInvoiceSettlementSummaryAsync(Guid invoiceId, SessionState session, CancellationToken ct = default(CancellationToken))
@@ -5048,6 +5082,19 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		Guid? previousLinkedRentalId = existing?.LinkedRentalBillingProfileId;
 		Guid? previousLinkedRentalRunId = existing?.LinkedRentalBillingRunId;
 		transaction.TransactionKind = PaymentFlowConstants.NormalizeTransactionKind(transaction.TransactionKind, transaction.PaymentTotal > 0m && transaction.ReceiptTotal <= 0m);
+		if ((!transaction.LinkedInvoiceId.HasValue || transaction.LinkedInvoiceId.Value == Guid.Empty) &&
+		    (!transaction.LinkedRentalBillingProfileId.HasValue || transaction.LinkedRentalBillingProfileId.Value == Guid.Empty) &&
+		    PaymentFlowConstants.IsGeneralSettlementKind(transaction.TransactionKind))
+		{
+			var autoLinkedInvoice = await FindOpenInvoiceForGeneralSettlementAsync(transaction, session, ct);
+			if (autoLinkedInvoice is not null)
+			{
+				transaction.LinkedInvoiceId = autoLinkedInvoice.Id;
+				transaction.LinkedInvoiceNumber = string.IsNullOrWhiteSpace(autoLinkedInvoice.InvoiceNumber)
+					? autoLinkedInvoice.LocalTempNumber
+					: autoLinkedInvoice.InvoiceNumber;
+			}
+		}
 		LocalInvoice? linkedInvoice = null;
 		if (transaction.LinkedInvoiceId.HasValue && transaction.LinkedInvoiceId.Value != Guid.Empty)
 		{
@@ -5619,6 +5666,46 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			.ToList();
 		var dates = transactionDates.Concat(directPaymentDates).ToList();
 		return dates.Count == 0 ? null : dates.Max();
+	}
+
+	private async Task<LocalInvoice?> FindOpenInvoiceForGeneralSettlementAsync(LocalTransaction transaction, SessionState session, CancellationToken ct)
+	{
+		if (transaction.CustomerId == Guid.Empty)
+		{
+			return null;
+		}
+
+		var normalizedKind = PaymentFlowConstants.NormalizeTransactionKind(
+			transaction.TransactionKind,
+			transaction.PaymentTotal > 0m && transaction.ReceiptTotal <= 0m);
+		var targetVoucherType = normalizedKind switch
+		{
+			PaymentFlowConstants.TransactionKindReceipt => (VoucherType?)VoucherType.Sales,
+			PaymentFlowConstants.TransactionKindPayment => VoucherType.Purchase,
+			_ => null
+		};
+		if (!targetVoucherType.HasValue)
+		{
+			return null;
+		}
+
+		var candidates = await _db.Invoices.IgnoreQueryFilters()
+			.AsNoTracking()
+			.Include((LocalInvoice invoice) => invoice.Payments.Where((LocalPayment payment) => !payment.IsDeleted))
+			.Where((LocalInvoice invoice) =>
+				!invoice.IsDeleted &&
+				invoice.IsLatestVersion &&
+				invoice.IsConfirmed &&
+				invoice.CustomerId == transaction.CustomerId &&
+				invoice.VoucherType == targetVoucherType.Value)
+			.OrderBy((LocalInvoice invoice) => invoice.InvoiceDate)
+			.ThenBy((LocalInvoice invoice) => invoice.CreatedAtUtc)
+			.ToListAsync(ct)
+			.ConfigureAwait(false);
+
+		return candidates.FirstOrDefault((LocalInvoice invoice) =>
+			CanWriteOperationalScope(session, invoice.TenantCode, invoice.ResponsibleOfficeCode, invoice.OfficeCode) &&
+			Math.Max(0m, invoice.TotalAmount - invoice.Payments.Where((LocalPayment payment) => !payment.IsDeleted).Sum((LocalPayment payment) => payment.Amount)) > 0m);
 	}
 
 	private async Task<LocalInvoice?> FindTrackedSalesInvoiceForRentalBillingAsync(Guid billingProfileId, Guid? billingRunId, CancellationToken ct)

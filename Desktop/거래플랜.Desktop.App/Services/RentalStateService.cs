@@ -345,18 +345,20 @@ WHERE ""AssignedUsername"" <> '';", ct);
         DateOnly referenceDate,
         CancellationToken ct = default)
     {
-        var alertDays = await GetAlertDayValuesAsync(ct);
+        var alertDays = await GetAlertDayValuesAsync(ct).ConfigureAwait(false);
         var alertWindow = alertDays.Count == 0 ? 7 : alertDays.Max();
 
-        var offices = await GetOfficeMapAsync(ct);
+        var offices = await GetOfficeMapAsync(ct).ConfigureAwait(false);
         var profiles = await SelectDashboardBillingProfileProjection(ApplyBillingScope(_db.RentalBillingProfiles.AsNoTracking(), session)
             .Where(profile => profile.IsActive)
         )
-            .ToListAsync(ct);
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
         var assets = await SelectDashboardAssetProjection(ApplyAssetScope(_db.RentalAssets.AsNoTracking(), session)
             .Where(asset => asset.AssetStatus != "폐기")
         )
-            .ToListAsync(ct);
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
         var assetsByProfile = BuildDashboardAssetsByProfile(assets);
 
         var alertItems = profiles
@@ -415,7 +417,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             BuildDashboardCustomerCandidateQuery(session),
             billingCustomerReviewProfiles,
             assetCustomerReviewAssets,
-            ct);
+            ct).ConfigureAwait(false);
 
         var unresolvedLinkItems = new List<RentalLinkReviewItem>();
         unresolvedLinkItems.AddRange(billingCustomerReviewProfiles
@@ -625,7 +627,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 customer.Id,
                 customer.NameOriginal,
                 customer.BusinessNumber))
-            .ToListAsync(ct);
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
     }
 
     private static void AddDashboardCustomerBusinessNumberCandidate(
@@ -702,7 +705,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     customer.Id,
                     customer.NameOriginal
                 })
-                .ToListAsync(ct);
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
 
             foreach (var customer in customers)
                 result[customer.Id] = customer.NameOriginal;
@@ -729,7 +733,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             var prefixCandidates = await LoadBoundedCustomerSearchCandidatesAsync(
                 customers.Where(customer => customer.NameOriginal.StartsWith(keyword)),
                 AssetSearchCustomerMatchLimit,
-                ct);
+                ct).ConfigureAwait(false);
             customerIds = MergeCustomerSearchCandidateIds(AssetSearchCustomerMatchLimit, prefixCandidates);
         }
         else
@@ -737,13 +741,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
             var nameOriginalCandidates = await LoadBoundedCustomerSearchCandidatesAsync(
                 customers.Where(customer => customer.NameOriginal.StartsWith(keyword)),
                 AssetSearchCustomerMatchLimit,
-                ct);
+                ct).ConfigureAwait(false);
             var nameMatchKeyCandidates = await LoadBoundedCustomerSearchCandidatesAsync(
                 customers.Where(customer =>
                     customer.NameMatchKey != null &&
                     customer.NameMatchKey.StartsWith(normalizedKeyword)),
                 AssetSearchCustomerMatchLimit,
-                ct);
+                ct).ConfigureAwait(false);
             customerIds = MergeCustomerSearchCandidateIds(
                 AssetSearchCustomerMatchLimit,
                 nameOriginalCandidates,
@@ -760,7 +764,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             if (customerIds.Count > 0)
                 containsQuery = containsQuery.Where(customer => !customerIds.Contains(customer.Id));
 
-            var containsCandidates = await LoadBoundedCustomerSearchCandidatesAsync(containsQuery, remainingLimit, ct);
+            var containsCandidates = await LoadBoundedCustomerSearchCandidatesAsync(containsQuery, remainingLimit, ct).ConfigureAwait(false);
             containsCustomerIds = MergeCustomerSearchCandidateIds(remainingLimit, containsCandidates);
         }
         else
@@ -778,11 +782,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
             var containsNameOriginalCandidates = await LoadBoundedCustomerSearchCandidatesAsync(
                 containsNameOriginalQuery,
                 remainingLimit,
-                ct);
+                ct).ConfigureAwait(false);
             var containsNameMatchKeyCandidates = await LoadBoundedCustomerSearchCandidatesAsync(
                 containsNameMatchKeyQuery,
                 remainingLimit,
-                ct);
+                ct).ConfigureAwait(false);
             containsCustomerIds = MergeCustomerSearchCandidateIds(
                 remainingLimit,
                 containsNameOriginalCandidates,
@@ -807,7 +811,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 customer.Id,
                 customer.NameOriginal))
             .Take(maxResults)
-            .ToListAsync(ct);
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
     }
 
     private static List<Guid> MergeCustomerSearchCandidateIds(
@@ -904,7 +909,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         var customerNameMap = customerIdsNeedingLookup is { Count: > 0 }
-            ? await GetCustomerNameMapAsync(customerIdsNeedingLookup, ct)
+            ? await GetCustomerNameMapAsync(customerIdsNeedingLookup, ct).ConfigureAwait(false)
             : EmptyCustomerNameMap;
 
         foreach (var asset in assets)
@@ -1020,11 +1025,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var totalStopwatch = Stopwatch.StartNew();
         var stepStopwatch = Stopwatch.StartNew();
-        await EnsureAdministrativeBusinessCachesAsync(session, ct);
+        await EnsureAdministrativeBusinessCachesAsync(session, ct).ConfigureAwait(false);
         LogRentalLoadStep("Rental billing admin cache", stepStopwatch, BuildBillingFilterTimingDetail(filter));
 
         stepStopwatch.Restart();
-        var offices = await GetOfficeMapAsync(ct);
+        var offices = await GetOfficeMapAsync(ct).ConfigureAwait(false);
         var canLoadUnlinkedAssets = ShouldLoadUnlinkedBillingAssets(filter);
         var searchKeyword = (filter.SearchText ?? string.Empty).Trim();
         var baseFilter = string.IsNullOrWhiteSpace(searchKeyword)
@@ -1034,12 +1039,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
         query = ApplyBillingFilter(query, baseFilter, session);
         var profileResultLimit = ResolveBillingProfileResultLimit(filter);
         var profiles = string.IsNullOrWhiteSpace(searchKeyword)
-            ? await LoadBillingProfilesAsync(query, profileResultLimit, ct)
-            : await LoadBillingProfileSearchResultsAsync(query, searchKeyword, profileResultLimit, ct);
+            ? await LoadBillingProfilesAsync(query, profileResultLimit, ct).ConfigureAwait(false)
+            : await LoadBillingProfileSearchResultsAsync(query, searchKeyword, profileResultLimit, ct).ConfigureAwait(false);
         LogRentalLoadStep("Rental billing profile query", stepStopwatch, $"profiles={profiles.Count:N0}, limit={profileResultLimit?.ToString("N0", CultureInfo.CurrentCulture) ?? "none"}, {BuildBillingFilterTimingDetail(filter)}");
 
         stepStopwatch.Restart();
-        var alertWindow = (await GetAlertDayValuesAsync(ct)).DefaultIfEmpty(7).Max();
+        var alertWindow = (await GetAlertDayValuesAsync(ct).ConfigureAwait(false)).DefaultIfEmpty(7).Max();
         var profileCountBeforeDuePrefilter = profiles.Count;
         profiles = ApplyDueOnlyProfilePrefilter(profiles, filter, alertWindow, filter.ReferenceDate);
         if (ShouldPrefilterDueOnlyBillingProfiles(filter))
@@ -1052,7 +1057,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         stepStopwatch.Restart();
         var profileCountBeforePastDuePrefilter = profiles.Count;
-        profiles = await ApplyPastDueOnlyProfilePrefilterAsync(profiles, filter, filter.ReferenceDate, ct);
+        profiles = await ApplyPastDueOnlyProfilePrefilterAsync(profiles, filter, filter.ReferenceDate, ct).ConfigureAwait(false);
         if (ShouldPrefilterPastDueOnlyBillingProfiles(filter))
         {
             LogRentalLoadStep(
@@ -1090,8 +1095,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     .ThenBy(asset => asset.CurrentCustomerName)
                     .ThenBy(asset => asset.ManagementNumber)
                     .Take(unlinkedAssetLimit)
-                    .ToListAsync(ct)
-                : await LoadUnlinkedBillingAssetSearchResultsAsync(unlinkedAssetBaseQuery!, searchKeyword, unlinkedAssetLimit, ct)
+                    .ToListAsync(ct).ConfigureAwait(false)
+                : await LoadUnlinkedBillingAssetSearchResultsAsync(unlinkedAssetBaseQuery!, searchKeyword, unlinkedAssetLimit, ct).ConfigureAwait(false)
             : new List<LocalRentalAsset>();
         if (includeUnlinkedAssets && unlinkedAssets.Count > 0)
         {
@@ -1099,7 +1104,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             var activeTemplateAssetIds = await LoadActiveBillingTemplateAssetIdsForCandidateAssetsAsync(
                 unlinkedAssets,
                 session,
-                ct);
+                ct).ConfigureAwait(false);
             foreach (var assetId in activeTemplateAssetIds)
                 templateIncludedAssetIds.Add(assetId);
             if (templateIncludedAssetIds.Count > 0)
@@ -1110,14 +1115,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
         LogRentalLoadStep("Rental billing unlinked asset query", stepStopwatch, $"assets={unlinkedAssets.Count:N0}, include={includeUnlinkedAssets}, limit={unlinkedAssetLimit:N0}");
 
         stepStopwatch.Restart();
-        var rows = await BuildBillingProfileRowsAsync(profiles, session, offices, filter.ReferenceDate, filter.IncludeHistoryRows, ct);
+        var rows = await BuildBillingProfileRowsAsync(profiles, session, offices, filter.ReferenceDate, filter.IncludeHistoryRows, ct).ConfigureAwait(false);
         LogRentalLoadStep("Rental billing row build", stepStopwatch, $"rows={rows.Count:N0}, profiles={profiles.Count:N0}");
 
         if (includeUnlinkedAssets)
         {
             stepStopwatch.Restart();
             var unlinkedCustomerIds = CollectUnlinkedBillingCustomerIds(unlinkedAssets);
-            var unlinkedCustomersById = await GetRentalBillingCustomerLookupMapAsync(unlinkedCustomerIds, ct);
+            var unlinkedCustomersById = await GetRentalBillingCustomerLookupMapAsync(unlinkedCustomerIds, ct).ConfigureAwait(false);
 
             if (unlinkedAssets.Count > 0)
                 rows.EnsureCapacity(rows.Count + unlinkedAssets.Count);
@@ -1159,15 +1164,16 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (profileId == Guid.Empty)
             return null;
 
-        await EnsureAdministrativeBusinessCachesAsync(session, ct);
+        await EnsureAdministrativeBusinessCachesAsync(session, ct).ConfigureAwait(false);
 
-        var offices = await GetOfficeMapAsync(ct);
+        var offices = await GetOfficeMapAsync(ct).ConfigureAwait(false);
         var profile = await ApplyBillingScope(_db.RentalBillingProfiles.AsNoTracking(), session)
-            .FirstOrDefaultAsync(current => current.Id == profileId, ct);
+            .FirstOrDefaultAsync(current => current.Id == profileId, ct)
+            .ConfigureAwait(false);
         if (profile is null)
             return null;
 
-        var rows = await BuildBillingProfileRowsAsync([profile], session, offices, referenceDate, includeHistoryRows: true, ct);
+        var rows = await BuildBillingProfileRowsAsync([profile], session, offices, referenceDate, includeHistoryRows: true, ct).ConfigureAwait(false);
         return rows.FirstOrDefault();
     }
 
@@ -1195,7 +1201,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (profileResultLimit.HasValue)
             profileQuery = profileQuery.Take(profileResultLimit.Value);
 
-        return await profileQuery.ToListAsync(ct);
+        return await profileQuery.ToListAsync(ct).ConfigureAwait(false);
     }
 
     private async Task<List<LocalRentalBillingProfile>> LoadBillingProfileSearchResultsAsync(
@@ -1205,10 +1211,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
         CancellationToken ct)
     {
         var normalizedKeyword = RentalCatalogValueNormalizer.NormalizeLooseKey(keyword);
-        var linkedCustomerIds = await GetBoundedAssetSearchCustomerIdsAsync(keyword, normalizedKeyword, ct);
+        var linkedCustomerIds = await GetBoundedAssetSearchCustomerIdsAsync(keyword, normalizedKeyword, ct).ConfigureAwait(false);
 
         if (!profileResultLimit.HasValue)
-            return await ApplyBillingProfileSearchContainsFilter(baseQuery, keyword, linkedCustomerIds).ToListAsync(ct);
+            return await ApplyBillingProfileSearchContainsFilter(baseQuery, keyword, linkedCustomerIds).ToListAsync(ct).ConfigureAwait(false);
 
         var profiles = new List<LocalRentalBillingProfile>(profileResultLimit.Value);
         await AddDistinctBillingProfilePrefixSearchResultsAsync(
@@ -1217,7 +1223,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             keyword,
             linkedCustomerIds,
             profileResultLimit.Value,
-            ct);
+            ct).ConfigureAwait(false);
 
         if (profiles.Count < profileResultLimit.Value)
         {
@@ -1226,7 +1232,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 ApplyBillingProfileSearchContainsFilter(baseQuery, keyword, linkedCustomerIds),
                 profileResultLimit.Value,
                 orderByListColumns: false,
-                ct);
+                ct).ConfigureAwait(false);
         }
 
         return profiles;
@@ -1254,7 +1260,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var nextProfiles = await query
             .Take(remaining)
-            .ToListAsync(ct);
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
         profiles.AddRange(nextProfiles);
     }
 
@@ -1279,25 +1286,25 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var customerNameCandidates = await LoadBoundedBillingProfileSearchCandidatesAsync(
             baseQuery.Where(profile => profile.CustomerName.StartsWith(keyword)),
             remaining,
-            ct);
+            ct).ConfigureAwait(false);
         var businessNumberCandidates = await LoadBoundedBillingProfileSearchCandidatesAsync(
             baseQuery.Where(profile => profile.BusinessNumber.StartsWith(keyword)),
             remaining,
-            ct);
+            ct).ConfigureAwait(false);
         var itemNameCandidates = await LoadBoundedBillingProfileSearchCandidatesAsync(
             baseQuery.Where(profile => profile.ItemName.StartsWith(keyword)),
             remaining,
-            ct);
+            ct).ConfigureAwait(false);
         var notesCandidates = await LoadBoundedBillingProfileSearchCandidatesAsync(
             baseQuery.Where(profile => profile.Notes.StartsWith(keyword)),
             remaining,
-            ct);
+            ct).ConfigureAwait(false);
         var linkedCustomerCandidates = linkedCustomerIds.Count == 0
             ? new List<LocalRentalBillingProfile>()
             : await LoadBoundedBillingProfileSearchCandidatesAsync(
                 baseQuery.Where(profile => profile.CustomerId.HasValue && linkedCustomerIds.Contains(profile.CustomerId.Value)),
                 remaining,
-                ct);
+                ct).ConfigureAwait(false);
 
         profiles.AddRange(MergeBillingProfileSearchCandidates(
             remaining,
@@ -1321,7 +1328,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .ThenBy(profile => profile.ItemName)
             .ThenBy(profile => profile.Id)
             .Take(maxResults)
-            .ToListAsync(ct);
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
     }
 
     private static List<LocalRentalBillingProfile> MergeBillingProfileSearchCandidates(
@@ -1408,21 +1416,21 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (ids.Count == 0)
             return Array.Empty<RentalBillingHistoryRow>();
 
-        await EnsureAdministrativeBusinessCachesAsync(session, ct);
+        await EnsureAdministrativeBusinessCachesAsync(session, ct).ConfigureAwait(false);
 
-        var profiles = await LoadBillingHistoryProfilesAsync(ids, session, ct);
+        var profiles = await LoadBillingHistoryProfilesAsync(ids, session, ct).ConfigureAwait(false);
         if (profiles.Count == 0)
             return Array.Empty<RentalBillingHistoryRow>();
 
-        var customerNameMap = await GetBillingProfileCustomerNameMapAsync(profiles, ct);
+        var customerNameMap = await GetBillingProfileCustomerNameMapAsync(profiles, ct).ConfigureAwait(false);
         var billingRunsByProfile = BuildBillingRunsByProfile(profiles);
-        await AddSupplementalFinancialBillingRunsAsync(profiles, billingRunsByProfile, ct);
+        await AddSupplementalFinancialBillingRunsAsync(profiles, billingRunsByProfile, ct).ConfigureAwait(false);
         var displayBillingRunsByProfile = maxDisplayRows > 0
             ? LimitBillingRunsForHistoryDisplay(billingRunsByProfile, maxDisplayRows)
             : billingRunsByProfile;
         var allRunIds = CollectBillingRunReferenceIds(displayBillingRunsByProfile);
         var runProfileScopes = BuildBillingRunProfileScopeMap(profiles, displayBillingRunsByProfile, allRunIds);
-        var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(runProfileScopes, ct);
+        var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(runProfileScopes, ct).ConfigureAwait(false);
 
         var rows = new List<RentalBillingHistoryRow>();
         foreach (var profile in profiles)
@@ -1463,7 +1471,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             var scopedBatchIds = batchIds;
             var batchProfiles = await ApplyBillingScope(_db.RentalBillingProfiles.AsNoTracking(), session)
                 .Where(profile => scopedBatchIds.Contains(profile.Id))
-                .ToListAsync(ct);
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
             profiles.AddRange(batchProfiles);
         }
 
@@ -1487,7 +1496,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var stepStopwatch = Stopwatch.StartNew();
         var profileIds = BuildBillingProfileIds(profiles);
         var templateAssetIdsByProfile = BuildBillingTemplateAssetIdsByProfile(profiles);
-        var billingAssets = await LoadBillingAssetsForProfilesAsync(profileIds, templateAssetIdsByProfile, session, ct);
+        var billingAssets = await LoadBillingAssetsForProfilesAsync(profileIds, templateAssetIdsByProfile, session, ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
         LogRentalLoadStep("Rental billing linked asset query", stepStopwatch, $"assets={billingAssets.Count:N0}, profiles={profiles.Count:N0}");
 
@@ -1496,13 +1505,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
         LogRentalLoadStep("Rental billing linked asset grouping", stepStopwatch, $"assetGroups={assetsByProfile.Count:N0}");
 
         stepStopwatch.Restart();
-        var customerNameMap = await GetBillingProfileCustomerNameMapAsync(profiles, ct);
+        var customerNameMap = await GetBillingProfileCustomerNameMapAsync(profiles, ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
         LogRentalLoadStep("Rental billing customer lookup", stepStopwatch, $"customers={customerNameMap.Count:N0}");
 
         stepStopwatch.Restart();
         var billingRunsByProfile = BuildBillingRunsByProfile(profiles);
-        await AddSupplementalFinancialBillingRunsAsync(profiles, billingRunsByProfile, ct);
+        await AddSupplementalFinancialBillingRunsAsync(profiles, billingRunsByProfile, ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
         LogRentalLoadStep("Rental billing financial run supplement", stepStopwatch, $"profiles={billingRunsByProfile.Count:N0}");
 
@@ -1540,7 +1549,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             referenceDate,
             includeHistoryRows);
         var runProfileScopes = BuildBillingRunProfileScopeMap(preparedProfiles, referenceRunIds);
-        var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(runProfileScopes, ct);
+        var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(runProfileScopes, ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
         LogRentalLoadStep("Rental billing run reference query", stepStopwatch, $"runs={runProfileScopes.Count:N0}, settlements={settlementByRun.Count:N0}, invoices={invoiceByRun.Count:N0}, history={includeHistoryRows}");
 
@@ -1664,7 +1673,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 MonthlyAmount = profile.MonthlyAmount,
                 BillingTemplateJson = profile.BillingTemplateJson
             })
-            .ToListAsync(ct);
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
 
         foreach (var profile in profiles)
         {
@@ -1767,7 +1777,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                         .Where(asset => !asset.IsDeleted &&
                                         asset.BillingProfileId.HasValue &&
                                         scopedBatchIds.Contains(asset.BillingProfileId.Value)))
-                    .ToListAsync(ct);
+                    .ToListAsync(ct)
+                    .ConfigureAwait(false);
                 foreach (var asset in batchAssets)
                     assetsById[asset.Id] = asset;
             }
@@ -1781,7 +1792,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 var scopedBatchIds = batchIds;
                 var batchAssets = await SelectBillingLinkedAssetRowProjection(ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session)
                         .Where(asset => !asset.IsDeleted && scopedBatchIds.Contains(asset.Id)))
-                    .ToListAsync(ct);
+                    .ToListAsync(ct)
+                    .ConfigureAwait(false);
                 foreach (var asset in batchAssets)
                     assetsById[asset.Id] = asset;
             }
@@ -1852,7 +1864,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (customerIds.Count == 0)
             return new Dictionary<Guid, string>();
 
-        return await GetCustomerNameMapAsync(customerIds, ct);
+        return await GetCustomerNameMapAsync(customerIds, ct).ConfigureAwait(false);
     }
 
     private async Task<Dictionary<Guid, RentalBillingCustomerLookup>> GetRentalBillingCustomerLookupMapAsync(
@@ -1879,7 +1891,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     customer.Id,
                     customer.NameOriginal,
                     customer.BusinessNumber))
-                .ToListAsync(ct);
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
 
             foreach (var customer in customers)
                 result[customer.Id] = customer;
@@ -2234,7 +2247,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     transaction.ResponsibleOfficeCode,
                     transaction.OfficeCode,
                     true))
-                .ToListAsync(ct);
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
             foreach (var row in settlementRows)
             {
                 if (!profileByRunId.TryGetValue(row.RunId, out var profile) ||
@@ -2264,7 +2278,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                         invoice.ResponsibleOfficeCode,
                         invoice.OfficeCode,
                         false))
-                .ToListAsync(ct);
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
             foreach (var row in directPaymentRows)
             {
                 if (scopedTransactionIds.Contains(row.SourceId) ||
@@ -2290,7 +2305,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     invoice.TenantCode,
                     invoice.ResponsibleOfficeCode,
                     invoice.OfficeCode))
-                .ToListAsync(ct);
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
             foreach (var row in invoiceRows)
             {
                 if (!profileByRunId.TryGetValue(row.RunId, out var profile) ||
@@ -2760,7 +2776,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     invoice.TenantCode,
                     invoice.ResponsibleOfficeCode,
                     invoice.OfficeCode))
-                .ToListAsync(ct);
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
             foreach (var row in invoiceRows)
             {
                 if (!profileById.TryGetValue(row.ProfileId, out var rowProfile) ||
@@ -2795,7 +2812,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     transaction.TenantCode,
                     transaction.ResponsibleOfficeCode,
                     transaction.OfficeCode))
-                .ToListAsync(ct);
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
             foreach (var row in transactionRows)
             {
                 if (!profileById.TryGetValue(row.ProfileId, out var rowProfile) ||
@@ -2835,7 +2853,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                         invoice.TenantCode,
                         invoice.ResponsibleOfficeCode,
                         invoice.OfficeCode))
-                .ToListAsync(ct);
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
             foreach (var row in directPaymentRows)
             {
                 if (scopedTransactionIds.Contains(row.SourceId) ||
@@ -3331,7 +3350,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             baseQuery,
             keyword,
             maxResults,
-            ct);
+            ct).ConfigureAwait(false);
 
         if (assets.Count < maxResults)
         {
@@ -3340,7 +3359,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 ApplyUnlinkedBillingAssetSearchContainsFilter(baseQuery, keyword),
                 maxResults,
                 orderByListColumns: false,
-                ct);
+                ct).ConfigureAwait(false);
         }
 
         return assets;
@@ -3374,7 +3393,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var nextAssets = await projectedQuery
             .Take(remaining)
-            .ToListAsync(ct);
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
         assets.AddRange(nextAssets);
     }
 
@@ -3398,31 +3418,31 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var customerNameCandidates = await LoadBoundedUnlinkedBillingAssetSearchCandidatesAsync(
             baseQuery.Where(asset => asset.CustomerName.StartsWith(keyword)),
             remaining,
-            ct);
+            ct).ConfigureAwait(false);
         var currentCustomerNameCandidates = await LoadBoundedUnlinkedBillingAssetSearchCandidatesAsync(
             baseQuery.Where(asset => asset.CurrentCustomerName.StartsWith(keyword)),
             remaining,
-            ct);
+            ct).ConfigureAwait(false);
         var itemNameCandidates = await LoadBoundedUnlinkedBillingAssetSearchCandidatesAsync(
             baseQuery.Where(asset => asset.ItemName.StartsWith(keyword)),
             remaining,
-            ct);
+            ct).ConfigureAwait(false);
         var installLocationCandidates = await LoadBoundedUnlinkedBillingAssetSearchCandidatesAsync(
             baseQuery.Where(asset => asset.InstallLocation.StartsWith(keyword)),
             remaining,
-            ct);
+            ct).ConfigureAwait(false);
         var installSiteNameCandidates = await LoadBoundedUnlinkedBillingAssetSearchCandidatesAsync(
             baseQuery.Where(asset => asset.InstallSiteName.StartsWith(keyword)),
             remaining,
-            ct);
+            ct).ConfigureAwait(false);
         var managementNumberCandidates = await LoadBoundedUnlinkedBillingAssetSearchCandidatesAsync(
             baseQuery.Where(asset => asset.ManagementNumber.StartsWith(keyword)),
             remaining,
-            ct);
+            ct).ConfigureAwait(false);
         var machineNumberCandidates = await LoadBoundedUnlinkedBillingAssetSearchCandidatesAsync(
             baseQuery.Where(asset => asset.MachineNumber.StartsWith(keyword)),
             remaining,
-            ct);
+            ct).ConfigureAwait(false);
 
         assets.AddRange(MergeAssetSearchCandidates(
             remaining,
@@ -3450,7 +3470,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .ThenBy(asset => asset.ManagementNumber)
             .ThenBy(asset => asset.Id)
             .Take(maxResults)
-            .ToListAsync(ct);
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
     }
 
     private static IQueryable<LocalRentalAsset> ApplyUnlinkedBillingAssetSearchContainsFilter(
@@ -3620,7 +3641,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return new List<LocalRentalBillingProfile>();
 
         var runProfileScopes = BuildBillingRunProfileScopeMap(profiles, pastRunsByProfile, pastRunIds);
-        var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(runProfileScopes, ct);
+        var (settlementByRun, invoiceByRun) = await LoadBillingRunReferencesAsync(runProfileScopes, ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
 
         var pastDueProfileIds = new HashSet<Guid>();
@@ -4300,11 +4321,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var totalStopwatch = Stopwatch.StartNew();
         var stepStopwatch = Stopwatch.StartNew();
-        await EnsureAdministrativeBusinessCachesAsync(session, ct);
+        await EnsureAdministrativeBusinessCachesAsync(session, ct).ConfigureAwait(false);
         LogRentalLoadStep("Rental asset admin cache", stepStopwatch, BuildAssetFilterTimingDetail(filter));
 
         stepStopwatch.Restart();
-        var offices = await GetOfficeMapAsync(ct);
+        var offices = await GetOfficeMapAsync(ct).ConfigureAwait(false);
         var referenceDate = DateOnly.FromDateTime(DateTime.Today);
         var query = ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session);
         LogRentalLoadStep("Rental asset reference data", stepStopwatch, $"offices={offices.Count:N0}");
@@ -4326,18 +4347,18 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     SelectAssetListProjection(query),
                     filter.PinnedAssetId)
                 .Take(maxResults)
-                .ToListAsync(ct)
+                .ToListAsync(ct).ConfigureAwait(false)
             : await LoadAssetSearchResultAssetsAsync(
                 query,
                 searchKeyword,
                 maxResults,
                 filter.PinnedAssetId,
-                ct);
+                ct).ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(searchKeyword) && assets.Count < maxResults)
         {
             stepStopwatch.Restart();
             var normalizedKeyword = RentalCatalogValueNormalizer.NormalizeLooseKey(searchKeyword);
-            var linkedCustomerIds = await GetBoundedAssetSearchCustomerIdsAsync(searchKeyword, normalizedKeyword, ct);
+            var linkedCustomerIds = await GetBoundedAssetSearchCustomerIdsAsync(searchKeyword, normalizedKeyword, ct).ConfigureAwait(false);
             LogRentalLoadStep(
                 "Rental asset customer search match",
                 stepStopwatch,
@@ -4354,7 +4375,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     linkedCustomerIds,
                     maxResults,
                     filter.PinnedAssetId,
-                    ct);
+                    ct).ConfigureAwait(false);
                 LogRentalLoadStep(
                     "Rental asset linked customer fallback",
                     stepStopwatch,
@@ -4364,7 +4385,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         LogRentalLoadStep("Rental asset DB query", stepStopwatch, $"assets={assets.Count:N0}, {BuildAssetFilterTimingDetail(filter, maxResults)}");
 
         stepStopwatch.Restart();
-        await NormalizeAssetCustomerDisplayNamesAsync(assets, ct);
+        await NormalizeAssetCustomerDisplayNamesAsync(assets, ct).ConfigureAwait(false);
         LogRentalLoadStep("Rental asset customer display normalize", stepStopwatch, $"assets={assets.Count:N0}");
 
         stepStopwatch.Restart();
@@ -4388,16 +4409,17 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (assetId == Guid.Empty)
             return null;
 
-        await EnsureAdministrativeBusinessCachesAsync(session, ct);
+        await EnsureAdministrativeBusinessCachesAsync(session, ct).ConfigureAwait(false);
 
-        var offices = await GetOfficeMapAsync(ct);
+        var offices = await GetOfficeMapAsync(ct).ConfigureAwait(false);
         var referenceDate = DateOnly.FromDateTime(DateTime.Today);
         var asset = await ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session)
-            .FirstOrDefaultAsync(current => current.Id == assetId, ct);
+            .FirstOrDefaultAsync(current => current.Id == assetId, ct)
+            .ConfigureAwait(false);
         if (asset is null)
             return null;
 
-        await NormalizeAssetCustomerDisplayNamesAsync([asset], ct);
+        await NormalizeAssetCustomerDisplayNamesAsync([asset], ct).ConfigureAwait(false);
         return CreateAssetViewRow(asset, offices, referenceDate);
     }
 
@@ -4498,7 +4520,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             var pinnedAsset = await SelectAssetListProjection(ApplyAssetSearchContainsFilter(
                     baseQuery.Where(asset => asset.Id == pinnedId),
                     keyword))
-                .FirstOrDefaultAsync(ct);
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
             if (pinnedAsset is not null)
                 assets.Add(pinnedAsset);
         }
@@ -4510,7 +4533,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 baseQuery,
                 keyword,
                 maxResults,
-                ct);
+                ct).ConfigureAwait(false);
         }
 
         if (assets.Count < maxResults)
@@ -4521,7 +4544,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 containsQuery,
                 maxResults,
                 orderByListColumns: false,
-                ct);
+                ct).ConfigureAwait(false);
         }
 
         return assets;
@@ -4546,7 +4569,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             var pinnedAsset = await SelectAssetListProjection(ApplyAssetLinkedCustomerSearchFilter(
                     baseQuery.Where(asset => asset.Id == pinnedId),
                     linkedCustomerIds))
-                .FirstOrDefaultAsync(ct);
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
             if (pinnedAsset is not null)
                 assets.Add(pinnedAsset);
         }
@@ -4559,7 +4583,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             ApplyAssetLinkedCustomerSearchFilter(baseQuery, linkedCustomerIds),
             maxResults,
             orderByListColumns: true,
-            ct);
+            ct).ConfigureAwait(false);
     }
 
     private static async Task AddDistinctAssetSearchResultsAsync(
@@ -4585,7 +4609,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var nextAssets = await projectedQuery
             .Take(remaining)
-            .ToListAsync(ct);
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
         assets.AddRange(nextAssets);
     }
 
@@ -4609,35 +4634,35 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var managementNumberCandidates = await LoadBoundedAssetSearchCandidatesAsync(
             baseQuery.Where(asset => asset.ManagementNumber.StartsWith(keyword)),
             remaining,
-            ct);
+            ct).ConfigureAwait(false);
         var customerNameCandidates = await LoadBoundedAssetSearchCandidatesAsync(
             baseQuery.Where(asset => asset.CustomerName.StartsWith(keyword)),
             remaining,
-            ct);
+            ct).ConfigureAwait(false);
         var currentCustomerNameCandidates = await LoadBoundedAssetSearchCandidatesAsync(
             baseQuery.Where(asset => asset.CurrentCustomerName.StartsWith(keyword)),
             remaining,
-            ct);
+            ct).ConfigureAwait(false);
         var itemCategoryCandidates = await LoadBoundedAssetSearchCandidatesAsync(
             baseQuery.Where(asset => asset.ItemCategoryName.StartsWith(keyword)),
             remaining,
-            ct);
+            ct).ConfigureAwait(false);
         var itemNameCandidates = await LoadBoundedAssetSearchCandidatesAsync(
             baseQuery.Where(asset => asset.ItemName.StartsWith(keyword)),
             remaining,
-            ct);
+            ct).ConfigureAwait(false);
         var machineNumberCandidates = await LoadBoundedAssetSearchCandidatesAsync(
             baseQuery.Where(asset => asset.MachineNumber.StartsWith(keyword)),
             remaining,
-            ct);
+            ct).ConfigureAwait(false);
         var installLocationCandidates = await LoadBoundedAssetSearchCandidatesAsync(
             baseQuery.Where(asset => asset.InstallLocation.StartsWith(keyword)),
             remaining,
-            ct);
+            ct).ConfigureAwait(false);
         var installSiteNameCandidates = await LoadBoundedAssetSearchCandidatesAsync(
             baseQuery.Where(asset => asset.InstallSiteName.StartsWith(keyword)),
             remaining,
-            ct);
+            ct).ConfigureAwait(false);
 
         assets.AddRange(MergeAssetSearchCandidates(
             remaining,
@@ -4663,7 +4688,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return await ApplyAssetListOrdering(SelectAssetListProjection(query), pinnedAssetId: null)
             .ThenBy(asset => asset.Id)
             .Take(maxResults)
-            .ToListAsync(ct);
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
     }
 
     private static List<LocalRentalAsset> MergeAssetSearchCandidates(
@@ -4880,7 +4906,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .ThenBy(asset => asset.ManagementNumber)
             .ThenBy(asset => asset.ItemName)
             .Take(EquipmentDetailAssetLimit)
-            .ToListAsync(ct);
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
     }
 
     public async Task<LocalMutationResult> SaveManagementCompanyAsync(
@@ -5987,7 +6014,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
             directPaymentQuery = directPaymentQuery.Where(row => row.LinkedRentalBillingRunId == billingRunId.Value);
 
-        var directPaymentRows = await directPaymentQuery.ToListAsync(ct);
+        var directPaymentRows = await directPaymentQuery.ToListAsync(ct).ConfigureAwait(false);
         var directPaymentSettledAmount = directPaymentRows
             .Where(row =>
                 !scopedTransactionIds.Contains(row.PaymentId) &&
@@ -6030,7 +6057,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 transaction.ResponsibleOfficeCode,
                 transaction.OfficeCode
             })
-            .ToListAsync(ct);
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
         var scopedTransactionRows = transactionRows
             .Where(row => IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
             .ToList();
@@ -6059,7 +6087,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (billingRunId.HasValue && billingRunId.Value != Guid.Empty)
             directPaymentQuery = directPaymentQuery.Where(row => row.LinkedRentalBillingRunId == billingRunId.Value);
 
-        var directPaymentDates = (await directPaymentQuery.ToListAsync(ct))
+        var directPaymentDates = (await directPaymentQuery.ToListAsync(ct).ConfigureAwait(false))
             .Where(row =>
                 !scopedTransactionIds.Contains(row.PaymentId) &&
                 IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
@@ -6739,7 +6767,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         SessionState session,
         CancellationToken ct = default)
     {
-        await EnsureAdministrativeBusinessCachesAsync(session, ct);
+        await EnsureAdministrativeBusinessCachesAsync(session, ct).ConfigureAwait(false);
 
         var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, session.OfficeCode);
         var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
@@ -6756,7 +6784,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 null,
                 ct,
                 preferredOfficeCode: normalizedOfficeCode,
-                preferredTenantCode: normalizedTenantCode);
+                preferredTenantCode: normalizedTenantCode).ConfigureAwait(false);
         }
 
         var normalizedCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(customerName);
@@ -6795,8 +6823,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .OrderBy(asset => asset.CustomerName)
                 .ThenBy(asset => asset.ManagementNumber)
                 .Take(200))
-                .ToListAsync(ct);
-            await NormalizeAssetCustomerDisplayNamesAsync(customerScopedAssets, ct);
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
+            await NormalizeAssetCustomerDisplayNamesAsync(customerScopedAssets, ct).ConfigureAwait(false);
             return customerScopedAssets
                 .OrderBy(asset => ResolvePrimaryAssetCustomerName(asset), StringComparer.CurrentCultureIgnoreCase)
                 .ThenBy(asset => asset.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
@@ -6811,7 +6840,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .OrderBy(asset => asset.CustomerName)
                 .ThenBy(asset => asset.ManagementNumber)
                 .Take(BillingAssetCandidateResultLimit))
-                .ToListAsync(ct));
+                .ToListAsync(ct)
+                .ConfigureAwait(false));
         }
 
         if (candidateAssets.Count < BillingAssetCandidateResultLimit)
@@ -6825,10 +6855,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .OrderBy(asset => asset.CustomerName)
                 .ThenBy(asset => asset.ManagementNumber)
                 .Take(BillingAssetCandidateResultLimit - candidateAssets.Count))
-                .ToListAsync(ct));
+                .ToListAsync(ct)
+                .ConfigureAwait(false));
         }
 
-        await NormalizeAssetCustomerDisplayNamesAsync(candidateAssets, ct);
+        await NormalizeAssetCustomerDisplayNamesAsync(candidateAssets, ct).ConfigureAwait(false);
         return candidateAssets
             .OrderByDescending(asset => IsBillingCandidateCustomerMatch(asset, resolvedCustomerId, normalizedCustomerName))
             .ThenBy(asset => ResolvePrimaryAssetCustomerName(asset), StringComparer.CurrentCultureIgnoreCase)
@@ -6852,7 +6883,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if ((!billingProfileId.HasValue || billingProfileId.Value == Guid.Empty) && assetIds.Count == 0)
             return Array.Empty<LocalRentalAsset>();
 
-        await EnsureAdministrativeBusinessCachesAsync(session, ct);
+        await EnsureAdministrativeBusinessCachesAsync(session, ct).ConfigureAwait(false);
 
         var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, session.OfficeCode);
         var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
@@ -6869,9 +6900,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
             billingProfileId,
             normalizedTenantCode,
             normalizedOfficeCode,
-            ct);
+            ct).ConfigureAwait(false);
 
-        await NormalizeAssetCustomerDisplayNamesAsync(includedAssets, ct);
+        await NormalizeAssetCustomerDisplayNamesAsync(includedAssets, ct).ConfigureAwait(false);
         return includedAssets
             .OrderBy(asset => ResolvePrimaryAssetCustomerName(asset), StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(asset => asset.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
@@ -6895,7 +6926,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 var scopedBatchIds = batchIds;
                 var explicitAssets = await SelectAssetLinkCandidateProjection(query
                         .Where(asset => scopedBatchIds.Contains(asset.Id)))
-                    .ToListAsync(ct);
+                    .ToListAsync(ct)
+                    .ConfigureAwait(false);
 
                 foreach (var asset in explicitAssets)
                     assetsById[asset.Id] = asset;
@@ -6917,7 +6949,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     .OrderBy(asset => asset.CustomerName)
                     .ThenBy(asset => asset.ManagementNumber)
                     .Take(300))
-                .ToListAsync(ct);
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
 
             foreach (var asset in linkedAssets)
                 assetsById[asset.Id] = asset;
@@ -6955,7 +6988,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             if (excludeDeleted)
                 query = query.Where(asset => !asset.IsDeleted);
 
-            var assets = await query.ToListAsync(ct);
+            var assets = await query.ToListAsync(ct).ConfigureAwait(false);
             foreach (var asset in assets)
                 assetsById[asset.Id] = asset;
         }
@@ -6981,7 +7014,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             var scopedBatchIds = batchIds;
             var batchHistories = await _db.RentalAssetAssignmentHistories
                 .Where(history => scopedBatchIds.Contains(history.AssetId))
-                .ToListAsync(ct);
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
             histories.AddRange(batchHistories);
         }
 
@@ -6999,7 +7033,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         int maxResults = AssetLinkCandidateResultLimit,
         CancellationToken ct = default)
     {
-        await EnsureAdministrativeBusinessCachesAsync(session, ct);
+        await EnsureAdministrativeBusinessCachesAsync(session, ct).ConfigureAwait(false);
 
         var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, session.OfficeCode);
         var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
@@ -7016,7 +7050,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 null,
                 ct,
                 preferredOfficeCode: normalizedOfficeCode,
-                preferredTenantCode: normalizedTenantCode);
+                preferredTenantCode: normalizedTenantCode).ConfigureAwait(false);
         }
 
         var normalizedCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(customerName);
@@ -7046,15 +7080,16 @@ WHERE ""AssignedUsername"" <> '';", ct);
             normalizedCustomerName);
         var assets = await SelectAssetLinkCandidateProjection(orderedCandidateQuery
             .Take(cappedMaxResults))
-            .ToListAsync(ct);
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
 
-        var offices = await GetOfficeMapAsync(ct);
+        var offices = await GetOfficeMapAsync(ct).ConfigureAwait(false);
         var linkedProfileIds = assets
             .Where(asset => asset.BillingProfileId.HasValue && asset.BillingProfileId.Value != Guid.Empty)
             .Select(asset => asset.BillingProfileId!.Value)
             .Distinct()
             .ToList();
-        var profilesById = await GetBillingProfileDisplayLookupMapAsync(linkedProfileIds, ct);
+        var profilesById = await GetBillingProfileDisplayLookupMapAsync(linkedProfileIds, ct).ConfigureAwait(false);
         var customerNameMap = await GetCustomerNameMapAsync(
             assets
                 .Where(asset => asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
@@ -7062,7 +7097,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .Concat(profilesById.Values
                     .Where(profile => profile.CustomerId.HasValue && profile.CustomerId.Value != Guid.Empty)
                     .Select(profile => profile.CustomerId!.Value)),
-            ct);
+            ct).ConfigureAwait(false);
 
         return assets
             .Select(asset =>
@@ -7126,7 +7161,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     profile.ProfileKey,
                     profile.InstallSiteName
                 })
-                .ToListAsync(ct);
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
 
             foreach (var profile in profiles)
             {
@@ -7229,7 +7265,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var asset = await SelectAssignmentHistoryFallbackAssetProjection(_db.RentalAssets
             .AsNoTracking()
             .Where(current => current.Id == assetId))
-            .FirstOrDefaultAsync(ct);
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false);
         if (asset is null)
             return [];
 
@@ -7244,7 +7281,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             query = query.Take(rawFetchLimit.Value);
 
         var histories = await SelectAssignmentHistoryViewProjection(query)
-            .ToListAsync(ct);
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
         if (histories.Count == 0)
             return [];
 
@@ -7253,7 +7291,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Select(history => history.BillingProfileId!.Value)
             .Distinct()
             .ToList();
-        var profileDisplayLookup = await GetBillingProfileDisplayTextMapAsync(profileIds, session, ct);
+        var profileDisplayLookup = await GetBillingProfileDisplayTextMapAsync(profileIds, session, ct).ConfigureAwait(false);
 
         IEnumerable<LocalRentalAssetAssignmentHistory> displayHistories = histories
             .GroupBy(BuildAssignmentHistoryLogicalKey)
@@ -7337,7 +7375,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     profile.CustomerName,
                     profile.ItemName
                 })
-                .ToListAsync(ct);
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
 
             foreach (var profile in profiles)
                 result[profile.Id] = BuildBillingProfileDisplay(profile.CustomerName, profile.ItemName);
@@ -10201,7 +10240,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (_officeMapCache is not null)
             return _officeMapCache;
 
-        var offices = await _db.Offices.AsNoTracking().ToListAsync(ct);
+        var offices = await _db.Offices.AsNoTracking().ToListAsync(ct).ConfigureAwait(false);
         var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var office in offices)
         {
