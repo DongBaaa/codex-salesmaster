@@ -131,10 +131,29 @@ public partial class RentalBillingWindow : Window
             if (!viewModel.InvoiceToOpenAfterClose.HasValue)
                 return;
 
-            _allowClose = true;
-            DialogResult = true;
-            Close();
+            await OpenCreatedBillingInvoiceAsync(viewModel.InvoiceToOpenAfterClose.Value);
         }, "UI", "렌탈 청구 시작", "렌탈 청구 시작 중 오류가 발생했습니다.");
+    }
+
+    private async Task OpenCreatedBillingInvoiceAsync(Guid invoiceId)
+    {
+        if (_openInvoiceWindowAsync is null)
+        {
+            if (DataContext is RentalBillingViewModel viewModel)
+                viewModel.StatusMessage = "청구서는 생성했지만 전표 창 열기 경로가 연결되지 않았습니다. 메인 거래내역에서 생성된 전표를 확인하세요.";
+
+            MessageBox.Show(
+                this,
+                "청구서는 생성했지만 전표 창 열기 경로가 연결되지 않았습니다. 메인 거래내역에서 생성된 전표를 확인하세요.",
+                "렌탈 청구 전표",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        await _openInvoiceWindowAsync(invoiceId, this);
+        if (DataContext is RentalBillingViewModel billingViewModel)
+            billingViewModel.StatusMessage = "청구서를 만들고 연결 전표 창을 열었습니다. 렌탈 청구관리 창은 계속 열어둡니다.";
     }
 
     private void RegisterSettlementButton_Click(object sender, RoutedEventArgs e)
@@ -341,15 +360,36 @@ public partial class RentalBillingWindow : Window
             await paymentViewModel.LoadHistoryIntoEditorByIdAsync(transactionId);
         }
 
-        try
-        {
-            paymentWindow.ShowDialog();
-        }
-        finally
+        paymentWindow.Closed += (_, _) =>
         {
             paymentViewModel.TransactionsChanged -= transactionsChangedHandler;
-        }
 
+            _ = Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+            {
+                UiTaskHelper.Forget(
+                    RefreshBillingRowsAfterSettlementWindowClosedAsync(viewModel),
+                    "RENTAL",
+                    "렌탈 수금 창 닫힘 후 청구관리 새로고침",
+                    ex => viewModel.StatusMessage = $"수금 창 닫힘 후 청구/입금 내역을 새로고침하지 못했습니다. {ex.Message}");
+            }));
+        };
+
+        paymentWindow.Show();
+        _ = paymentWindow.Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(() =>
+        {
+            if (!paymentWindow.IsLoaded)
+                return;
+
+            if (paymentWindow.WindowState == WindowState.Minimized)
+                paymentWindow.WindowState = WindowState.Normal;
+
+            paymentWindow.Activate();
+            paymentWindow.Focus();
+        }));
+    }
+
+    private static async Task RefreshBillingRowsAfterSettlementWindowClosedAsync(RentalBillingViewModel viewModel)
+    {
         await viewModel.ReloadCommand.ExecuteAsync(null);
         await viewModel.RefreshSelectedBillingHistoryRowsAsync(viewModel.SelectedRow?.Source.Id);
     }
@@ -494,10 +534,10 @@ public partial class RentalBillingWindow : Window
             viewModel.ApplySelectedCustomer(customer);
     }
 
-    private async Task OpenAssetLinkDialogAsync()
+    private Task OpenAssetLinkDialogAsync()
     {
         if (DataContext is not RentalBillingViewModel viewModel)
-            return;
+            return Task.CompletedTask;
 
         if (!viewModel.CanEditBillingProfileDetails)
         {
@@ -506,13 +546,13 @@ public partial class RentalBillingWindow : Window
                 "렌탈 자산 연결",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
-            return;
+            return Task.CompletedTask;
         }
 
         if (string.IsNullOrWhiteSpace(viewModel.EditCustomerName))
         {
             MessageBox.Show("먼저 거래처를 선택하거나 입력하세요.", "렌탈 자산 연결", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
+            return Task.CompletedTask;
         }
 
         var dialogViewModel = new RentalAssetLinkDialogViewModel(
@@ -523,17 +563,45 @@ public partial class RentalBillingWindow : Window
             viewModel.EditCustomerName,
             viewModel.EditOfficeCode,
             viewModel.EditInstallLocation);
-        await dialogViewModel.LoadAsync();
 
         var dialog = new RentalAssetLinkDialog(dialogViewModel)
         {
             Owner = this
         };
+        var loadStarted = false;
+        dialog.ContentRendered += async (_, _) =>
+        {
+            if (loadStarted)
+                return;
+
+            loadStarted = true;
+            try
+            {
+                await dialogViewModel.LoadAsync();
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    dialog,
+                    $"렌탈 자산 연결 후보를 불러오지 못했습니다.{Environment.NewLine}{ex.Message}",
+                    "렌탈 자산 연결",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                dialog.DialogResult = false;
+                dialog.Close();
+            }
+        };
+        dialog.Closed += (_, _) => dialogViewModel.CancelPendingLoad();
 
         if (dialog.ShowDialog() != true)
-            return;
+            return Task.CompletedTask;
 
         viewModel.ApplyAssetLinkSelections(dialogViewModel.GetSelectedAssets());
+        return Task.CompletedTask;
     }
 
     private async Task OpenCustomerEditorForSelectedRowAsync(RentalBillingViewRow row)
@@ -591,11 +659,19 @@ public partial class RentalBillingWindow : Window
             {
                 Owner = this
             };
-            customerWindow.ShowDialog();
-            await viewModel.RefreshSelectedCustomerContextAsync();
-            await viewModel.ReloadCommand.ExecuteAsync(null);
-            viewModel.SelectedRow = viewModel.Rows.FirstOrDefault(current => current.SelectionId == row.SelectionId)
-                                    ?? viewModel.Rows.FirstOrDefault(current => current.Source.Id == row.Source.Id);
+            AttachCustomerEditorClosedRefresh(customerWindow, row);
+            customerWindow.Show();
+            _ = customerWindow.Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(() =>
+            {
+                if (!customerWindow.IsLoaded)
+                    return;
+
+                if (customerWindow.WindowState == WindowState.Minimized)
+                    customerWindow.WindowState = WindowState.Normal;
+
+                customerWindow.Activate();
+                customerWindow.Focus();
+            }));
         }
         finally
         {

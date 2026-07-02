@@ -23,6 +23,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private const string AllOption = "전체";
     private const int BillingHistoryDisplayLimit = 600;
     private const int AssignmentHistoryDisplayLimit = 300;
+    private static readonly TimeSpan DeferredInitialMaintenanceDelay = TimeSpan.FromMilliseconds(900);
 
     private readonly RentalStateService _rental;
     private readonly LocalStateService _local;
@@ -574,6 +575,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private async Task LoadInitialRowsThenDeferredMaintenanceAsync()
     {
         await ReloadAsync();
+        if (_isDisposed)
+            return;
+
+        await Task.Delay(DeferredInitialMaintenanceDelay);
         await RunDeferredInitialMaintenanceAsync();
     }
 

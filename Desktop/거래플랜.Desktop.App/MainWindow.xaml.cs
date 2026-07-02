@@ -139,9 +139,26 @@ public partial class MainWindow : Window
             operationName,
             userMessage ?? $"{operationName} 중 오류가 발생했습니다.");
 
-    private void ShowDialogWithDeferredLoad(Window window, Func<Task> loadAsync, string windowTitle, string failureMessage)
+    private void ShowModelessWithDeferredLoad(
+        Window window,
+        Func<Task> loadAsync,
+        string windowTitle,
+        string failureMessage,
+        Func<Task>? closedAsync = null)
     {
         var loadStarted = false;
+        if (closedAsync is not null)
+        {
+            window.Closed += (_, _) =>
+            {
+                UiTaskHelper.Forget(
+                    closedAsync(),
+                    "UI",
+                    $"{windowTitle} 닫힘 후 새로고침",
+                    ex => _vm.SyncStatus = $"{windowTitle} 닫힘 후 새로고침 중 오류가 발생했습니다. {ex.Message}");
+            };
+        }
+
         window.ContentRendered += async (_, _) =>
         {
             if (loadStarted)
@@ -173,7 +190,18 @@ public partial class MainWindow : Window
             }
         };
 
-        window.ShowDialog();
+        window.Show();
+        _ = window.Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(() =>
+        {
+            if (!window.IsLoaded)
+                return;
+
+            if (window.WindowState == WindowState.Minimized)
+                window.WindowState = WindowState.Normal;
+
+            window.Activate();
+            window.Focus();
+        }));
     }
 
     public Task InitAsync(bool deferStartupNotifications = false)
@@ -1750,8 +1778,12 @@ public partial class MainWindow : Window
         {
             Owner = this
         };
-        ShowDialogWithDeferredLoad(win, () => vm.LoadAsync(), "렌탈 대시보드", "렌탈 대시보드 데이터를 불러오지 못했습니다.");
-        await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+        ShowModelessWithDeferredLoad(
+            win,
+            () => vm.LoadAsync(),
+            "렌탈 대시보드",
+            "렌탈 대시보드 데이터를 불러오지 못했습니다.",
+            () => _vm.LoadInvoiceListCommand.ExecuteAsync(null));
     }
 
     private async Task OpenRentalBillingWindowAsync(Guid? targetProfileId = null, Window? ownerOverride = null)
@@ -1762,20 +1794,12 @@ public partial class MainWindow : Window
         {
             Owner = ownerOverride ?? this
         };
-        ShowDialogWithDeferredLoad(
+        ShowModelessWithDeferredLoad(
             win,
             () => targetProfileId.HasValue ? vm.LoadAndSelectProfileAsync(targetProfileId.Value) : vm.LoadAsync(),
             "렌탈 청구관리",
-            "렌탈 청구관리 데이터를 불러오지 못했습니다.");
-
-        if (vm.InvoiceToOpenAfterClose.HasValue)
-        {
-            var invoice = await _local.GetLatestInvoiceVersionAsync(vm.InvoiceToOpenAfterClose.Value, _session);
-            if (invoice is not null)
-                await OpenInvoiceWindowAsync(invoice);
-        }
-
-        await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+            "렌탈 청구관리 데이터를 불러오지 못했습니다.",
+            () => _vm.LoadInvoiceListCommand.ExecuteAsync(null));
     }
 
     private async Task OpenRentalAssetWindowAsync(Guid? targetAssetId = null, Window? ownerOverride = null)
@@ -1786,12 +1810,12 @@ public partial class MainWindow : Window
         {
             Owner = ownerOverride ?? this
         };
-        ShowDialogWithDeferredLoad(
+        ShowModelessWithDeferredLoad(
             win,
             () => targetAssetId.HasValue ? vm.LoadAndSelectAssetAsync(targetAssetId.Value) : vm.LoadAsync(),
             "렌탈 자산 / 설치현황",
-            "렌탈 자산 데이터를 불러오지 못했습니다.");
-        await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+            "렌탈 자산 데이터를 불러오지 못했습니다.",
+            () => _vm.LoadInvoiceListCommand.ExecuteAsync(null));
     }
 
     private async Task OpenRentalSettingsWindowAsync()
@@ -1802,8 +1826,12 @@ public partial class MainWindow : Window
         {
             Owner = this
         };
-        ShowDialogWithDeferredLoad(win, () => vm.LoadAsync(), "렌탈 설정", "렌탈 설정 데이터를 불러오지 못했습니다.");
-        await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+        ShowModelessWithDeferredLoad(
+            win,
+            () => vm.LoadAsync(),
+            "렌탈 설정",
+            "렌탈 설정 데이터를 불러오지 못했습니다.",
+            () => _vm.LoadInvoiceListCommand.ExecuteAsync(null));
     }
 
     private void CentralRevisionPollTimer_Tick(object? sender, EventArgs e)

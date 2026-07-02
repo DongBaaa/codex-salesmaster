@@ -172,6 +172,15 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
         }
     }
 
+    public void CancelPendingLoad()
+    {
+        _searchDebounceCts?.Cancel();
+        _searchDebounceCts = null;
+
+        _loadCts?.Cancel();
+        _loadCts = null;
+    }
+
     [RelayCommand]
     private Task ReloadAsync()
         => LoadAsync();

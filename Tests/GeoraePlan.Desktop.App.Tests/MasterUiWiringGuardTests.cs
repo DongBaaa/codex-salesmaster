@@ -666,6 +666,95 @@ public sealed class MasterUiWiringGuardTests
             "ApplyRentalReceiptAmountByBillingMethod(value)");
     }
 
+    [Fact]
+    public void RentalWorkWindows_OpenModelessAndKeepExistingWindowsAlive()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var mainWindow = ReadAppFile(appRoot, "MainWindow.xaml.cs");
+        var helperBlock = ExtractBlock(
+            mainWindow,
+            "private void ShowModelessWithDeferredLoad",
+            "public Task InitAsync");
+        var billingOpenBlock = ExtractBlock(
+            mainWindow,
+            "private async Task OpenRentalBillingWindowAsync",
+            "private async Task OpenRentalAssetWindowAsync");
+        var assetOpenBlock = ExtractBlock(
+            mainWindow,
+            "private async Task OpenRentalAssetWindowAsync",
+            "private async Task OpenRentalSettingsWindowAsync");
+
+        AssertContainsAll(
+            helperBlock,
+            "window.Show();",
+            "window.Activate();",
+            "window.Focus();");
+        Assert.DoesNotContain("window.ShowDialog();", helperBlock, StringComparison.Ordinal);
+        AssertContainsAll(
+            billingOpenBlock,
+            "ShowModelessWithDeferredLoad(",
+            "() => targetProfileId.HasValue ? vm.LoadAndSelectProfileAsync(targetProfileId.Value) : vm.LoadAsync()");
+        Assert.DoesNotContain("InvoiceToOpenAfterClose", billingOpenBlock, StringComparison.Ordinal);
+        AssertContainsAll(
+            assetOpenBlock,
+            "ShowModelessWithDeferredLoad(",
+            "() => targetAssetId.HasValue ? vm.LoadAndSelectAssetAsync(targetAssetId.Value) : vm.LoadAsync()");
+    }
+
+    [Fact]
+    public void RentalBillingWindow_StartBillingOpensInvoiceWithoutClosingBillingWindow()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var rentalCode = ReadAppFile(appRoot, "Views", "RentalBillingWindow.xaml.cs");
+        var startBillingBlock = ExtractBlock(
+            rentalCode,
+            "private void StartBillingButton_Click",
+            "private async Task OpenCreatedBillingInvoiceAsync");
+        var createdInvoiceBlock = ExtractBlock(
+            rentalCode,
+            "private async Task OpenCreatedBillingInvoiceAsync",
+            "private void RegisterSettlementButton_Click");
+
+        AssertContainsAll(
+            startBillingBlock,
+            "await viewModel.StartBillingCommand.ExecuteAsync(null);",
+            "await OpenCreatedBillingInvoiceAsync(viewModel.InvoiceToOpenAfterClose.Value);");
+        Assert.DoesNotContain("DialogResult = true", startBillingBlock, StringComparison.Ordinal);
+        Assert.DoesNotContain("Close();", startBillingBlock, StringComparison.Ordinal);
+        AssertContainsAll(
+            createdInvoiceBlock,
+            "await _openInvoiceWindowAsync(invoiceId, this);",
+            "렌탈 청구관리 창은 계속 열어둡니다.");
+    }
+
+    [Fact]
+    public void RentalBillingFollowUpWindows_DoNotBlockBillingWindowWhileOpen()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var rentalCode = ReadAppFile(appRoot, "Views", "RentalBillingWindow.xaml.cs");
+        var settlementBlock = ExtractBlock(
+            rentalCode,
+            "private async Task OpenRentalSettlementWindowAsync",
+            "private static async Task RefreshBillingRowsAfterSettlementWindowClosedAsync");
+        var customerEditorBlock = ExtractBlock(
+            rentalCode,
+            "private async Task OpenCustomerEditorForSelectedRowAsync",
+            "private void AttachCustomerEditorClosedRefresh");
+
+        AssertContainsAll(
+            settlementBlock,
+            "paymentWindow.Closed += (_, _) =>",
+            "paymentWindow.Show();",
+            "paymentWindow.Activate();");
+        Assert.DoesNotContain("paymentWindow.ShowDialog();", settlementBlock, StringComparison.Ordinal);
+        AssertContainsAll(
+            customerEditorBlock,
+            "AttachCustomerEditorClosedRefresh(customerWindow, row);",
+            "customerWindow.Show();",
+            "customerWindow.Activate();");
+        Assert.DoesNotContain("customerWindow.ShowDialog();", customerEditorBlock, StringComparison.Ordinal);
+    }
+
     private static void AssertContainsAll(string source, params string[] expectedMarkers)
     {
         foreach (var marker in expectedMarkers)
@@ -674,6 +763,16 @@ public sealed class MasterUiWiringGuardTests
 
     private static int CountOccurrences(string source, string marker)
         => source.Split(marker, StringSplitOptions.None).Length - 1;
+
+    private static string ExtractBlock(string source, string startMarker, string endMarker)
+    {
+        var normalizedSource = source.Replace("\r\n", "\n", StringComparison.Ordinal);
+        var start = normalizedSource.IndexOf(startMarker, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"시작 마커를 찾을 수 없습니다: {startMarker}");
+        var end = normalizedSource.IndexOf(endMarker, start + startMarker.Length, StringComparison.Ordinal);
+        Assert.True(end > start, $"끝 마커를 찾을 수 없습니다: {endMarker}");
+        return normalizedSource[start..end];
+    }
 
     private static string ReadAppFile(string appRoot, params string[] pathParts)
         => File.ReadAllText(Path.Combine([appRoot, .. pathParts]));
