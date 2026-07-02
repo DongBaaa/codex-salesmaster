@@ -123,6 +123,19 @@ public static class RentalBillingScheduleRules
         var periodStartMonth = new DateOnly(referenceDate.Year, referenceDate.Month, 1).AddMonths(-lag);
         var candidate = BuildBillingDateForPeriodEnd(periodStartMonth, cycleMonths, billingDay, billingDayMode);
 
+        if (cycleMonths > 1 && candidate > referenceDate && firstBillingDate.HasValue)
+        {
+            var previousPeriodStartMonth = periodStartMonth.AddMonths(-cycleMonths);
+            var previousCandidate = BuildBillingDateForPeriodEnd(previousPeriodStartMonth, cycleMonths, billingDay, billingDayMode);
+            if (previousCandidate <= referenceDate &&
+                previousCandidate >= firstBillingDate.Value &&
+                (!lastBilledDate.HasValue || !IsAlreadyBilledPeriod(previousPeriodStartMonth, previousCandidate, lastBilledDate.Value)))
+            {
+                periodStartMonth = previousPeriodStartMonth;
+                candidate = previousCandidate;
+            }
+        }
+
         if (firstBillingDate.HasValue)
         {
             while (candidate < firstBillingDate.Value)

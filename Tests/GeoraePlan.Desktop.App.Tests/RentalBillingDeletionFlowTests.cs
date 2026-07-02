@@ -1045,9 +1045,13 @@ public sealed class RentalBillingDeletionFlowTests
 
             Assert.True(result.Success, result.Message);
             var invoice = await db.Invoices.SingleAsync(current => current.Id == result.RelatedEntityId);
-            Assert.Equal(new DateOnly(2026, 10, 25), invoice.InvoiceDate);
+            Assert.Equal(new DateOnly(2026, 6, 10), invoice.InvoiceDate);
             Assert.Equal(profileId, invoice.LinkedRentalBillingProfileId);
             Assert.NotNull(invoice.LinkedRentalBillingRunId);
+
+            var persisted = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(current => current.Id == profileId);
+            var run = Assert.Single(DeserializeRuns(persisted));
+            Assert.Equal(new DateOnly(2026, 10, 25), run.ScheduledDate);
         }
         finally
         {

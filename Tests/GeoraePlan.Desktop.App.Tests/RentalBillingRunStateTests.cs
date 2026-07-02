@@ -804,7 +804,7 @@ public sealed class RentalBillingRunStateTests
                 .Include(current => current.Lines)
                 .AsNoTracking()
                 .SingleAsync(current => current.LinkedRentalBillingProfileId == profileId);
-            Assert.Equal(new DateOnly(2026, 12, 25), invoice.InvoiceDate);
+            Assert.Equal(new DateOnly(2026, 6, 16), invoice.InvoiceDate);
             Assert.Equal(6, invoice.Lines.Count(line => !line.IsDeleted));
             var orderedLineNames = invoice.Lines
                 .Where(line => !line.IsDeleted)
@@ -864,7 +864,7 @@ public sealed class RentalBillingRunStateTests
                 .Include(current => current.Lines)
                 .AsNoTracking()
                 .SingleAsync(current => current.LinkedRentalBillingProfileId == profileId);
-            Assert.Equal(new DateOnly(2026, 6, 25), invoice.InvoiceDate);
+            Assert.Equal(new DateOnly(2026, 6, 29), invoice.InvoiceDate);
             Assert.Equal(3, invoice.Lines.Count(line => !line.IsDeleted));
 
             var persistedProfile = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(current => current.Id == profileId);
@@ -873,6 +873,60 @@ public sealed class RentalBillingRunStateTests
             Assert.Equal(new DateOnly(2026, 4, 1), currentRun.PeriodStartDate);
             Assert.Equal(new DateOnly(2026, 6, 30), currentRun.PeriodEndDate);
             Assert.Equal("2026-04 ~ 2026-06", currentRun.PeriodLabel);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task StartBilling_FourMonthStartMonthThreeOnNextCycleStart_CreatesPreviousCycleInvoice()
+    {
+        PrepareAppRoot("georaeplan-rental-four-month-previous-cycle-invoice");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Four month previous cycle customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName, customerId);
+            profile.BillingCycleMonths = 4;
+            profile.BillingAnchorMonth = 3;
+            profile.BillingDay = 25;
+            profile.BillingStartDate = new DateOnly(2026, 3, 25);
+            profile.ContractDate = new DateOnly(2026, 3, 1);
+            profile.LastBilledDate = null;
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+
+            var result = await service.StartBillingAsync(profileId, new DateOnly(2026, 7, 2), session);
+
+            Assert.True(result.Success, result.Message);
+            var invoice = await db.Invoices
+                .Include(current => current.Lines)
+                .AsNoTracking()
+                .SingleAsync(current => current.LinkedRentalBillingProfileId == profileId);
+            Assert.Equal(new DateOnly(2026, 7, 2), invoice.InvoiceDate);
+            Assert.Equal(4, invoice.Lines.Count(line => !line.IsDeleted));
+
+            var persistedProfile = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(current => current.Id == profileId);
+            var currentRun = Assert.Single(DeserializeRuns(persistedProfile.BillingRunsJson));
+            Assert.Equal(new DateOnly(2026, 6, 25), currentRun.ScheduledDate);
+            Assert.Equal(new DateOnly(2026, 3, 1), currentRun.PeriodStartDate);
+            Assert.Equal(new DateOnly(2026, 6, 30), currentRun.PeriodEndDate);
+            Assert.Equal("2026-03 ~ 2026-06", currentRun.PeriodLabel);
         }
         finally
         {

@@ -85,4 +85,46 @@ public sealed class RentalBillingScheduleRulesTests
         Assert.Equal(new DateOnly(2026, 4, 1), period.StartDate);
         Assert.Equal(new DateOnly(2026, 6, 30), period.EndDate);
     }
+
+    [Fact]
+    public void ResolveApplicableBillingDate_WhenReferenceIsNextCycleStartButPreviousCycleUnbilled_UsesPreviousCycleEnd()
+    {
+        var scheduledDate = RentalBillingScheduleRules.ResolveApplicableBillingDate(
+            billingDay: 25,
+            billingDayMode: RentalBillingScheduleRules.BillingDayModeFixedDay,
+            cycleMonths: 4,
+            anchorMonth: 3,
+            referenceDate: new DateOnly(2026, 7, 2),
+            lastBilledDate: null,
+            firstBillingDate: new DateOnly(2026, 3, 25));
+        var period = RentalBillingScheduleRules.ResolveBillingPeriod(
+            cycleMonths: 4,
+            billingAdvanceMode: "후불",
+            scheduledDate);
+
+        Assert.Equal(new DateOnly(2026, 6, 25), scheduledDate);
+        Assert.Equal(new DateOnly(2026, 3, 1), period.StartDate);
+        Assert.Equal(new DateOnly(2026, 6, 30), period.EndDate);
+    }
+
+    [Fact]
+    public void ResolveApplicableBillingDate_WhenPreviousCycleAlreadyBilled_UsesNextCycleEnd()
+    {
+        var scheduledDate = RentalBillingScheduleRules.ResolveApplicableBillingDate(
+            billingDay: 25,
+            billingDayMode: RentalBillingScheduleRules.BillingDayModeFixedDay,
+            cycleMonths: 4,
+            anchorMonth: 3,
+            referenceDate: new DateOnly(2026, 7, 2),
+            lastBilledDate: new DateOnly(2026, 6, 25),
+            firstBillingDate: new DateOnly(2026, 3, 25));
+        var period = RentalBillingScheduleRules.ResolveBillingPeriod(
+            cycleMonths: 4,
+            billingAdvanceMode: "후불",
+            scheduledDate);
+
+        Assert.Equal(new DateOnly(2026, 10, 25), scheduledDate);
+        Assert.Equal(new DateOnly(2026, 7, 1), period.StartDate);
+        Assert.Equal(new DateOnly(2026, 10, 31), period.EndDate);
+    }
 }

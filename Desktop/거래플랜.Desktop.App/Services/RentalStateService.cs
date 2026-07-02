@@ -5736,8 +5736,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (_local is null)
             return LocalMutationResult.Denied("렌탈 청구 전표 저장 서비스를 사용할 수 없습니다.");
         NormalizeBillingSchedule(profile, referenceDate);
-        // 실제 작업일이 청구 예정 월/일과 달라도 사용자가 선택한 조회/작성 기준일의 전표를 만들 수 있어야 합니다.
-        // GetOrCreateBillingRun이 referenceDate와 LastBilledDate 기준으로 이번/다음 미청구 예정일을 계산합니다.
+        var invoiceDate = NormalizeReferenceDate(referenceDate);
+        // 청구일/청구일 유형은 미청구 알림과 예정 기준일 계산에만 사용합니다.
+        // 실제 전표 작성일은 사용자가 선택한 조회/작성 기준일(작성 당일)로 저장합니다.
         var currentRun = GetOrCreateBillingRun(profile, referenceDate, persistChanges: true);
         if (currentRun is null)
             return LocalMutationResult.Denied("선택한 조회/작성 기준일의 청구 정보를 만들 수 없습니다.");
@@ -5828,7 +5829,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 Id = Guid.NewGuid(),
                 CustomerId = customerId.Value,
                 VoucherType = VoucherType.Sales,
-                InvoiceDate = currentRun.ScheduledDate,
+                InvoiceDate = invoiceDate,
                 Memo = string.Empty,
                 ResponsibleOfficeCode = officeCode,
                 SourceWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(null, officeCode, officeCode),
