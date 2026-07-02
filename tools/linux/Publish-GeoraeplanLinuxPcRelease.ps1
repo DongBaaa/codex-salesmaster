@@ -636,6 +636,67 @@ function Invoke-AndroidSigningContinuityGate {
     Write-Host 'pre-deploy_android_signing_continuity_done'
 }
 
+function Copy-StandaloneDesktopInstallerAssets {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$PublishRoot,
+        [string]$Channel = 'stable'
+    )
+
+    $desktopDownloadsRoot = Join-Path $PublishRoot 'updates\downloads\desktop'
+    New-Item -ItemType Directory -Force -Path $desktopDownloadsRoot | Out-Null
+
+    $manifestPath = Join-Path $PublishRoot (Join-Path 'updates\manifest' ($Channel + '.json'))
+    $desktopVersion = ''
+    if (Test-Path -LiteralPath $manifestPath) {
+        try {
+            $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+            if ($null -ne $manifest.desktop) {
+                $desktopVersion = ([string]$manifest.desktop.version).Trim()
+            }
+        }
+        catch {
+            Write-Warning "Unable to read desktop update manifest for standalone installer mirroring: $($_.Exception.Message)"
+        }
+    }
+
+    $deploymentFolderName = -join @([char]0xBC30, [char]0xD3EC)
+    $adminFolderName = -join @([char]0xAD00, [char]0xB9AC, [char]0xC790, [char]0xC6A9)
+    $packageBaseName = (-join @([char]0xAC70, [char]0xB798, [char]0xD50C, [char]0xB79C)) + '-PC-' + (-join @([char]0xC124, [char]0xCE58, [char]0xD328, [char]0xD0A4, [char]0xC9C0))
+
+    $installerSources = @(
+        [pscustomobject]@{
+            Path = Join-Path $ProjectRoot (Join-Path $deploymentFolderName ($packageBaseName + '.exe'))
+            Extension = '.exe'
+        },
+        [pscustomobject]@{
+            Path = Join-Path $ProjectRoot (Join-Path (Join-Path $deploymentFolderName $adminFolderName) ($packageBaseName + '.msi'))
+            Extension = '.msi'
+        }
+    )
+
+    foreach ($installerSource in $installerSources) {
+        if (-not (Test-Path -LiteralPath $installerSource.Path)) {
+            Write-Warning "Standalone desktop installer source was not found: $($installerSource.Path)"
+            continue
+        }
+
+        $targetNames = New-Object System.Collections.Generic.List[string]
+        $targetNames.Add($packageBaseName + $installerSource.Extension)
+        if (-not [string]::IsNullOrWhiteSpace($desktopVersion)) {
+            $targetNames.Add("tradeplan-pc-installer-v$desktopVersion$($installerSource.Extension)")
+        }
+
+        foreach ($targetName in ($targetNames | Select-Object -Unique)) {
+            $targetPath = Join-Path $desktopDownloadsRoot $targetName
+            Copy-Item -LiteralPath $installerSource.Path -Destination $targetPath -Force
+            $item = Get-Item -LiteralPath $targetPath
+            $hash = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            Write-Host "linux_pc_standalone_installer_asset=$targetName size=$($item.Length) sha256=$hash"
+        }
+    }
+}
+
 function Update-PublishedAppSettings {
     param(
         [Parameter(Mandatory = $true)][string]$PublishRoot,
@@ -809,6 +870,8 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw 'Update asset publish failed.'
         }
+
+        Copy-StandaloneDesktopInstallerAssets -ProjectRoot $ProjectRoot -PublishRoot $tempPublishRoot -Channel 'stable'
     }
 
     if ($MirrorToLive -and -not $SkipAndroidSigningContinuityCheck.IsPresent) {
