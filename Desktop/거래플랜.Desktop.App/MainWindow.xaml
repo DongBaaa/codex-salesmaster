@@ -63,6 +63,48 @@
             <Setter Property="Padding" Value="10"/>
             <Setter Property="Margin" Value="0,0,8,0"/>
         </Style>
+        <Style x:Key="DashboardMetricButtonStyle" TargetType="Button">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="10"/>
+            <Setter Property="MinHeight" Value="56"/>
+            <Setter Property="MinWidth" Value="72"/>
+            <Setter Property="Margin" Value="0,0,8,0"/>
+            <Setter Property="FontFamily" Value="맑은 고딕"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="VerticalContentAlignment" Value="Stretch"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="CardBorder"
+                                Background="#1A2B4A"
+                                BorderBrush="#2E4060"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="CardBorder" Property="Background" Value="#223754"/>
+                                <Setter TargetName="CardBorder" Property="BorderBrush" Value="#4FC3F7"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="CardBorder" Property="Background" Value="#29466E"/>
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="CardBorder" Property="BorderBrush" Value="#4FC3F7"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.55"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style x:Key="DashboardMetricLabelTextStyle" TargetType="TextBlock">
             <Setter Property="Foreground" Value="#9FB3C8"/>
             <Setter Property="FontSize" Value="11"/>
@@ -275,14 +317,34 @@
         </Border>
 
         <Border DockPanel.Dock="Top" Background="#122038" Padding="12,10" BorderBrush="#2E4060" BorderThickness="0,0,0,1">
-            <UniformGrid Columns="9">
-                <Border Style="{StaticResource DashboardMetricCardStyle}">
+            <DockPanel LastChildFill="True">
+                <Button DockPanel.Dock="Left"
+                        Style="{StaticResource DashboardMetricButtonStyle}"
+                        Command="{Binding ToggleDashboardSalesMetricsCommand}"
+                        MinWidth="142"
+                        ToolTip="이번 달 매출과 월 평균 전표 카드를 접거나 펼칩니다.">
+                    <StackPanel>
+                        <TextBlock Text="{Binding DashboardSalesMetricToggleText}"
+                                   Style="{StaticResource DashboardMetricLabelTextStyle}"
+                                   Foreground="#4FC3F7"
+                                   FontWeight="Bold"/>
+                        <TextBlock Text="이번 달 매출 / 월 평균"
+                                   Foreground="#EAF2FF"
+                                   FontSize="12"
+                                   TextTrimming="CharacterEllipsis"
+                                   Margin="0,4,0,0"/>
+                    </StackPanel>
+                </Button>
+                <UniformGrid Columns="{Binding DashboardSummaryColumnCount}">
+                <Border Style="{StaticResource DashboardMetricCardStyle}"
+                        Visibility="{Binding DashboardSalesMetricsExpanded, Converter={StaticResource BoolToVisibility}}">
                     <StackPanel>
                         <TextBlock Text="이번 달 매출" Style="{StaticResource DashboardMetricLabelTextStyle}"/>
                         <TextBlock Text="{Binding DashboardMonthlySales, StringFormat={}{0:N0}원}" Style="{StaticResource DashboardMetricValueTextStyle}" Foreground="#A5D6A7"/>
                     </StackPanel>
                 </Border>
-                <Border Style="{StaticResource DashboardMetricCardStyle}">
+                <Border Style="{StaticResource DashboardMetricCardStyle}"
+                        Visibility="{Binding DashboardSalesMetricsExpanded, Converter={StaticResource BoolToVisibility}}">
                     <StackPanel>
                         <TextBlock Text="월 평균 전표" Style="{StaticResource DashboardMetricLabelTextStyle}"/>
                         <TextBlock Text="{Binding DashboardMonthlyAverageSales, StringFormat={}{0:N0}원}" Style="{StaticResource DashboardMetricValueTextStyle}"/>
@@ -294,18 +356,24 @@
                         <TextBlock Text="{Binding DashboardMonthlyInvoiceCount, StringFormat={}{0:N0}건}" Style="{StaticResource DashboardMetricValueTextStyle}"/>
                     </StackPanel>
                 </Border>
-                <Border Style="{StaticResource DashboardMetricCardStyle}">
+                <Button Style="{StaticResource DashboardMetricButtonStyle}"
+                        Command="{Binding OpenDashboardReceivableDetailsCommand}"
+                        ToolTip="클릭하면 거래처별 미수 잔액과 전표내역을 조회합니다.">
                     <StackPanel>
                         <TextBlock Text="미수 잔액" Style="{StaticResource DashboardMetricLabelTextStyle}"/>
                         <TextBlock Text="{Binding DashboardReceivable, StringFormat={}{0:N0}원}" Style="{StaticResource DashboardMetricValueTextStyle}" Foreground="#FFCC80"/>
+                        <TextBlock Text="클릭 상세" Foreground="#9FB3C8" FontSize="10" Margin="0,2,0,0"/>
                     </StackPanel>
-                </Border>
-                <Border Style="{StaticResource DashboardMetricCardStyle}">
+                </Button>
+                <Button Style="{StaticResource DashboardMetricButtonStyle}"
+                        Command="{Binding OpenDashboardPayableDetailsCommand}"
+                        ToolTip="클릭하면 거래처별 미지급 잔액과 전표내역을 조회합니다.">
                     <StackPanel>
                         <TextBlock Text="미지급 잔액" Style="{StaticResource DashboardMetricLabelTextStyle}"/>
                         <TextBlock Text="{Binding DashboardPayable, StringFormat={}{0:N0}원}" Style="{StaticResource DashboardMetricValueTextStyle}" Foreground="#CE93D8"/>
+                        <TextBlock Text="클릭 상세" Foreground="#9FB3C8" FontSize="10" Margin="0,2,0,0"/>
                     </StackPanel>
-                </Border>
+                </Button>
                 <Border Style="{StaticResource DashboardMetricCardStyle}">
                     <StackPanel>
                         <TextBlock Text="거래처" Style="{StaticResource DashboardMetricLabelTextStyle}"/>
@@ -318,12 +386,6 @@
                         <TextBlock Text="{Binding DashboardSafetyStockAlerts, StringFormat={}{0:N0}건}" Style="{StaticResource DashboardMetricValueTextStyle}" Foreground="#EF9A9A"/>
                     </StackPanel>
                 </Border>
-                <Border Style="{StaticResource DashboardMetricCardStyle}">
-                    <StackPanel>
-                        <TextBlock Text="전월 대비" Style="{StaticResource DashboardMetricLabelTextStyle}"/>
-                        <TextBlock Text="{Binding DashboardSalesTrendPercent, StringFormat={}{0:N1}%}" Style="{StaticResource DashboardMetricValueTextStyle}" Foreground="#B3E5FC"/>
-                    </StackPanel>
-                </Border>
                 <Border Style="{StaticResource DashboardMetricCardStyle}" Margin="0">
                     <StackPanel>
                         <TextBlock Text="렌탈 예정 / 지연" Foreground="#9FB3C8" FontSize="11"/>
@@ -331,7 +393,8 @@
                         <TextBlock Text="{Binding DashboardRentalOverdueCount, StringFormat=지연 {0:N0}건}" Foreground="#EF9A9A" FontSize="10" Margin="0,2,0,0"/>
                     </StackPanel>
                 </Border>
-            </UniformGrid>
+                </UniformGrid>
+            </DockPanel>
         </Border>
 
         <Border DockPanel.Dock="Top" Background="#102039" Padding="12,10" BorderBrush="#2E4060" BorderThickness="0,0,0,1">

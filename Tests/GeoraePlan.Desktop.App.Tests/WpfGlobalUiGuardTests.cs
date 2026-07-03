@@ -1,4 +1,6 @@
 using System.Text.RegularExpressions;
+using 거래플랜.Desktop.App.Services;
+using 거래플랜.Shared.Contracts;
 using Xunit;
 
 namespace GeoraePlan.Desktop.App.Tests;
@@ -139,7 +141,15 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("DashboardPayable", xaml, StringComparison.Ordinal);
         Assert.Contains("DashboardCustomerCount", xaml, StringComparison.Ordinal);
         Assert.Contains("DashboardSafetyStockAlerts", xaml, StringComparison.Ordinal);
-        Assert.Contains("DashboardSalesTrendPercent", xaml, StringComparison.Ordinal);
+        Assert.Contains("ToggleDashboardSalesMetricsCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("DashboardSalesMetricsExpanded", xaml, StringComparison.Ordinal);
+        Assert.Contains("DashboardSummaryColumnCount", xaml, StringComparison.Ordinal);
+        Assert.Contains("OpenDashboardReceivableDetailsCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("OpenDashboardPayableDetailsCommand", xaml, StringComparison.Ordinal);
+        Assert.Contains("DashboardBalanceDetailsWindow", viewModel, StringComparison.Ordinal);
+        Assert.DoesNotContain("전월 대비", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("DashboardSalesTrendPercent", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("DashboardSalesTrendPercent", viewModel, StringComparison.Ordinal);
         Assert.DoesNotContain("DashboardMonthlySalesChartPoints", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("UpdateDashboardMonthlySalesChart", viewModel, StringComparison.Ordinal);
         Assert.DoesNotContain("const int monthCount = 6", viewModel, StringComparison.Ordinal);
@@ -147,6 +157,65 @@ public sealed class WpfGlobalUiGuardTests
         Assert.DoesNotContain("DashboardMonthlySalesChartPoint", viewModel, StringComparison.Ordinal);
         Assert.Contains("안전재고 알림", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("<Border Background=\"Transparent\" Margin=\"0,0,8,0\" CornerRadius=\"6\" Padding=\"10\"/>", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DashboardBalanceDetailBuilder_GroupsReceivableRowsByCustomerAndKeepsInvoiceDetails()
+    {
+        var customerA = Guid.NewGuid();
+        var customerB = Guid.NewGuid();
+        var rows = DashboardBalanceDetailBuilder.BuildRows(
+            [
+                new LocalInvoiceListSummary
+                {
+                    Id = Guid.NewGuid(),
+                    CustomerId = customerA,
+                    InvoiceNumber = "S-001",
+                    InvoiceDate = new DateOnly(2026, 7, 1),
+                    VoucherType = VoucherType.Sales,
+                    FirstItemSummary = "복합기 임대료",
+                    TotalAmount = 100_000m,
+                    SettledAmount = 40_000m,
+                    ResponsibleOfficeCode = "USENET"
+                },
+                new LocalInvoiceListSummary
+                {
+                    Id = Guid.NewGuid(),
+                    CustomerId = customerA,
+                    InvoiceNumber = "S-002",
+                    InvoiceDate = new DateOnly(2026, 7, 2),
+                    VoucherType = VoucherType.Sales,
+                    FirstItemSummary = "추가 장비",
+                    TotalAmount = 30_000m,
+                    SettledAmount = 0m,
+                    ResponsibleOfficeCode = "USENET"
+                },
+                new LocalInvoiceListSummary
+                {
+                    Id = Guid.NewGuid(),
+                    CustomerId = customerB,
+                    InvoiceNumber = "P-001",
+                    InvoiceDate = new DateOnly(2026, 7, 3),
+                    VoucherType = VoucherType.Purchase,
+                    FirstItemSummary = "매입 전표",
+                    TotalAmount = 50_000m,
+                    SettledAmount = 0m,
+                    ResponsibleOfficeCode = "ITWORLD"
+                }
+            ],
+            new Dictionary<Guid, string>
+            {
+                [customerA] = "테스트 거래처",
+                [customerB] = "매입 거래처"
+            },
+            VoucherType.Sales);
+
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, row => Assert.Equal("테스트 거래처", row.CustomerName));
+        Assert.All(rows, row => Assert.Equal(90_000m, row.CustomerBalance));
+        Assert.Contains(rows, row => row.InvoiceNumberDisplay == "S-001" && row.BalanceAmount == 60_000m && row.FirstItemSummary == "복합기 임대료");
+        Assert.Contains(rows, row => row.InvoiceNumberDisplay == "S-002" && row.BalanceAmount == 30_000m && row.FirstItemSummary == "추가 장비");
+        Assert.DoesNotContain(rows, row => row.InvoiceNumberDisplay == "P-001");
     }
 
     [Fact]

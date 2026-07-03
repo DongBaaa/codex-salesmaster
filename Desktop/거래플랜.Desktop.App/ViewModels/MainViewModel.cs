@@ -60,11 +60,16 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] private int _dashboardSafetyStockAlerts;
     [ObservableProperty] private int _dashboardMonthlyInvoiceCount;
     [ObservableProperty] private decimal _dashboardMonthlyAverageSales;
-    [ObservableProperty] private decimal _dashboardSalesTrendPercent;
     [ObservableProperty] private int _dashboardRentalDueTodayCount;
     [ObservableProperty] private int _dashboardRentalUpcomingCount;
     [ObservableProperty] private int _dashboardRentalOverdueCount;
     [ObservableProperty] private string _rentalAlertPopupMessage = string.Empty;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(DashboardSalesMetricToggleText))]
+    [NotifyPropertyChangedFor(nameof(DashboardSummaryColumnCount))]
+    private bool _dashboardSalesMetricsExpanded = true;
+    public string DashboardSalesMetricToggleText => DashboardSalesMetricsExpanded ? "매출/평균 접기" : "매출/평균 펼치기";
+    public int DashboardSummaryColumnCount => DashboardSalesMetricsExpanded ? 8 : 6;
 
     // 전표 목록 - Left panel (거래처 필터)
     private List<LocalCustomer> _allCustomers = new();
@@ -1107,18 +1112,11 @@ public sealed partial class MainViewModel : ObservableObject
         var sourceInvoices = invoices?.ToList()
             ?? await _local.GetInvoiceListSummariesAsync(from: null, to: null, customerId: null, session: _session, ct);
         var now = DateOnly.FromDateTime(DateTime.Today);
-        var prevMonthDate = now.AddMonths(-1);
 
         var monthlySales = sourceInvoices
             .Where(i => i.VoucherType == VoucherType.Sales
                      && i.InvoiceDate.Year == now.Year
                      && i.InvoiceDate.Month == now.Month)
-            .Sum(i => i.TotalAmount);
-
-        var previousMonthlySales = sourceInvoices
-            .Where(i => i.VoucherType == VoucherType.Sales
-                     && i.InvoiceDate.Year == prevMonthDate.Year
-                     && i.InvoiceDate.Month == prevMonthDate.Month)
             .Sum(i => i.TotalAmount);
 
         var monthlyInvoiceCount = sourceInvoices.Count(i =>
@@ -1129,9 +1127,6 @@ public sealed partial class MainViewModel : ObservableObject
         DashboardMonthlyAverageSales = monthlyInvoiceCount == 0
             ? 0
             : Math.Round(monthlySales / monthlyInvoiceCount, 0, MidpointRounding.AwayFromZero);
-        DashboardSalesTrendPercent = previousMonthlySales == 0
-            ? (monthlySales > 0 ? 100m : 0m)
-            : Math.Round(((monthlySales - previousMonthlySales) / previousMonthlySales) * 100m, 1, MidpointRounding.AwayFromZero);
         DashboardReceivable = sourceInvoices
             .Where(invoice => invoice.VoucherType == VoucherType.Sales)
             .Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.SettledAmount));
@@ -1152,6 +1147,62 @@ public sealed partial class MainViewModel : ObservableObject
 
         await RefreshContractDashboardAsync();
         await RefreshRecycleBinDashboardAsync();
+    }
+
+    [RelayCommand]
+    private void ToggleDashboardSalesMetrics()
+        => DashboardSalesMetricsExpanded = !DashboardSalesMetricsExpanded;
+
+    [RelayCommand]
+    private async Task OpenDashboardReceivableDetailsAsync()
+        => await OpenDashboardBalanceDetailsAsync(VoucherType.Sales, "미수 잔액 상세", "미수 잔액", "#FFCC80");
+
+    [RelayCommand]
+    private async Task OpenDashboardPayableDetailsAsync()
+        => await OpenDashboardBalanceDetailsAsync(VoucherType.Purchase, "미지급 잔액 상세", "미지급 잔액", "#CE93D8");
+
+    private async Task OpenDashboardBalanceDetailsAsync(
+        VoucherType voucherType,
+        string title,
+        string balanceKindText,
+        string accentBrush)
+    {
+        try
+        {
+            var invoices = await _local.GetInvoiceListSummariesAsync(
+                from: null,
+                to: null,
+                customerId: null,
+                session: _session);
+            var candidateInvoices = invoices
+                .Where(invoice => invoice.VoucherType == voucherType
+                                  && Math.Max(0m, invoice.TotalAmount - invoice.SettledAmount) > 0m)
+                .ToList();
+            var customerMap = await BuildInvoiceCustomerNameMapAsync(candidateInvoices, CancellationToken.None);
+            var detailRows = DashboardBalanceDetailBuilder.BuildRows(candidateInvoices, customerMap, voucherType);
+            var detailViewModel = new DashboardBalanceDetailViewModel(
+                title,
+                $"{balanceKindText}이 남은 거래처와 전표내역을 현재 계정/담당지점 조회 권한 범위로 표시합니다.",
+                balanceKindText,
+                accentBrush,
+                detailRows);
+            var window = new DashboardBalanceDetailsWindow(detailViewModel);
+            var owner = Application.Current?.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive)
+                        ?? Application.Current?.MainWindow;
+            if (owner is not null && !ReferenceEquals(owner, window))
+                window.Owner = owner;
+
+            WindowShowHelper.ShowModeless(window);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("MAIN", $"{title} 조회 실패: {ex.Message}");
+            System.Windows.MessageBox.Show(
+                $"{title}을 불러오지 못했습니다.{Environment.NewLine}{ex.Message}",
+                title,
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Warning);
+        }
     }
 
     private void HandleInvoiceFilterChanged()
