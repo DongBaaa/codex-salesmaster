@@ -147,6 +147,7 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("OpenDashboardReceivableDetailsCommand", xaml, StringComparison.Ordinal);
         Assert.Contains("OpenDashboardPayableDetailsCommand", xaml, StringComparison.Ordinal);
         Assert.Contains("DashboardBalanceDetailsWindow", viewModel, StringComparison.Ordinal);
+        Assert.Contains("afterPaymentSavedAsync: LoadInvoiceListAsync", viewModel, StringComparison.Ordinal);
         Assert.DoesNotContain("전월 대비", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("DashboardSalesTrendPercent", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("DashboardSalesTrendPercent", viewModel, StringComparison.Ordinal);
@@ -157,6 +158,38 @@ public sealed class WpfGlobalUiGuardTests
         Assert.DoesNotContain("DashboardMonthlySalesChartPoint", viewModel, StringComparison.Ordinal);
         Assert.Contains("안전재고 알림", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("<Border Background=\"Transparent\" Margin=\"0,0,8,0\" CornerRadius=\"6\" Padding=\"10\"/>", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DashboardBalanceDetailsWindow_ProvidesDirectPaymentProcessingPanel()
+    {
+        var root = FindRepositoryRoot();
+        var xaml = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "DashboardBalanceDetailsWindow.xaml"));
+        var viewModel = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "ViewModels",
+            "DashboardBalanceDetailViewModel.cs"));
+
+        Assert.Contains("SelectedItem=\"{Binding SelectedRow, Mode=TwoWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("SelectionMode=\"Single\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"처리일\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("SelectedDate=\"{Binding ProcessDate, Mode=TwoWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("BasedOn=\"{StaticResource UnifiedDatePickerButtonStyle}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"처리금액\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"메모\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Command=\"{Binding ProcessSelectedBalanceCommand}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Command=\"{Binding ProcessSelectedFullBalanceCommand}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("SavePaymentAsync(payment, _session)", viewModel, StringComparison.Ordinal);
+        Assert.Contains("WaitForServerWriteWithTimeoutAsync", viewModel, StringComparison.Ordinal);
+        Assert.Contains("await RefreshAsync();", viewModel, StringComparison.Ordinal);
+        Assert.Contains("await _afterPaymentSavedAsync();", viewModel, StringComparison.Ordinal);
     }
 
     [Fact]

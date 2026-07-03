@@ -1169,23 +1169,16 @@ public sealed partial class MainViewModel : ObservableObject
     {
         try
         {
-            var invoices = await _local.GetInvoiceListSummariesAsync(
-                from: null,
-                to: null,
-                customerId: null,
-                session: _session);
-            var candidateInvoices = invoices
-                .Where(invoice => invoice.VoucherType == voucherType
-                                  && Math.Max(0m, invoice.TotalAmount - invoice.SettledAmount) > 0m)
-                .ToList();
-            var customerMap = await BuildInvoiceCustomerNameMapAsync(candidateInvoices, CancellationToken.None);
-            var detailRows = DashboardBalanceDetailBuilder.BuildRows(candidateInvoices, customerMap, voucherType);
             var detailViewModel = new DashboardBalanceDetailViewModel(
+                _local,
+                _session,
+                voucherType,
                 title,
                 $"{balanceKindText}이 남은 거래처와 전표내역을 현재 계정/담당지점 조회 권한 범위로 표시합니다.",
                 balanceKindText,
                 accentBrush,
-                detailRows);
+                afterPaymentSavedAsync: LoadInvoiceListAsync);
+            await detailViewModel.RefreshAsync();
             var window = new DashboardBalanceDetailsWindow(detailViewModel);
             var owner = Application.Current?.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive)
                         ?? Application.Current?.MainWindow;
