@@ -3185,6 +3185,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Conflict(conflictMessage);
 		}
+		var ownsTransaction = _db.Database.CurrentTransaction is null;
+		await using var dbTransaction = ownsTransaction
+			? await _db.Database.BeginTransactionAsync(ct)
+			: null;
 		if (existing == null)
 		{
 			_db.Payments.Add(payment);
@@ -3194,8 +3198,63 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			_db.Entry(existing).CurrentValues.SetValues(payment);
 		}
 		await _db.SaveChangesAsync(ct);
+		var linkedTransactionResult = await SyncTransactionFromDirectPaymentAsync(payment, invoice, session, ct);
+		if (!linkedTransactionResult.Success)
+		{
+			if (dbTransaction != null)
+				await dbTransaction.RollbackAsync(ct);
+			return linkedTransactionResult;
+		}
+
 		await RecalculateRentalSettlementForInvoicePaymentsAsync(affectedInvoiceIds, ct, markDirty: true);
+		if (dbTransaction != null)
+			await dbTransaction.CommitAsync(ct);
 		return OfficeMutationResult.Ok(payment.Id, "수금/지급을 저장했습니다.");
+	}
+
+	private async Task<OfficeMutationResult> SyncTransactionFromDirectPaymentAsync(
+		LocalPayment payment,
+		LocalInvoice invoice,
+		SessionState session,
+		CancellationToken ct)
+	{
+		var existingTransaction = await _db.Transactions.IgnoreQueryFilters()
+			.AsNoTracking()
+			.FirstOrDefaultAsync(current => current.Id == payment.Id, ct);
+		var transaction = new LocalTransaction
+		{
+			Id = payment.Id,
+			Revision = existingTransaction?.Revision ?? 0,
+			CustomerId = invoice.CustomerId,
+			TenantCode = invoice.TenantCode,
+			OfficeCode = invoice.OfficeCode,
+			ResponsibleOfficeCode = invoice.ResponsibleOfficeCode,
+			TransactionDate = payment.PaymentDate,
+			TransactionKind = invoice.VoucherType == VoucherType.Purchase
+				? PaymentFlowConstants.TransactionKindPayment
+				: PaymentFlowConstants.TransactionKindReceipt,
+			LinkedInvoiceId = invoice.Id,
+			LinkedInvoiceNumber = string.IsNullOrWhiteSpace(invoice.InvoiceNumber)
+				? invoice.LocalTempNumber
+				: invoice.InvoiceNumber,
+			LinkedRentalBillingProfileId = invoice.LinkedRentalBillingProfileId,
+			LinkedRentalBillingRunId = invoice.LinkedRentalBillingRunId,
+			SettlementAmount = payment.Amount,
+			Note = payment.Note
+		};
+
+		if (invoice.VoucherType == VoucherType.Purchase)
+		{
+			transaction.BankPayment = payment.Amount;
+			transaction.PaymentTotal = payment.Amount;
+		}
+		else
+		{
+			transaction.BankReceipt = payment.Amount;
+			transaction.ReceiptTotal = payment.Amount;
+		}
+
+		return await SaveTransactionAsync(transaction, session, ct);
 	}
 
 	public async Task DeletePaymentAsync(Guid id, CancellationToken ct = default(CancellationToken))
@@ -4890,6 +4949,39 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return transaction;
 	}
 
+	public async Task<OfficeMutationResult> SaveTransactionsAsync(
+		IReadOnlyList<LocalTransaction> transactions,
+		SessionState session,
+		CancellationToken ct = default(CancellationToken))
+	{
+		if (transactions == null || transactions.Count == 0)
+		{
+			return OfficeMutationResult.Denied("저장할 수금/지급 내역이 없습니다.");
+		}
+
+		await using var dbTransaction = await _db.Database.BeginTransactionAsync(ct);
+		var warnings = new List<string>();
+		Guid lastEntityId = Guid.Empty;
+		foreach (var transaction in transactions)
+		{
+			var result = await SaveTransactionAsync(transaction, session, ct);
+			if (!result.Success)
+			{
+				await dbTransaction.RollbackAsync(ct);
+				return result;
+			}
+
+			lastEntityId = result.EntityId;
+			warnings.AddRange(result.Warnings);
+		}
+
+		await dbTransaction.CommitAsync(ct);
+		return OfficeMutationResult.Ok(
+			lastEntityId,
+			$"수금/지급 {transactions.Count:N0}건을 저장했습니다.",
+			warnings: warnings);
+	}
+
 	public async Task<OfficeMutationResult> SaveTransactionAsync(LocalTransaction transaction, SessionState session, CancellationToken ct = default(CancellationToken))
 	{
 		if (transaction == null)
@@ -5326,32 +5418,23 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	private static string NormalizeLinkedInvoiceTransactionKind(string? transactionKind, bool preferPayment)
 	{
 		string text = PaymentFlowConstants.NormalizeTransactionKind(transactionKind, preferPayment);
-		string result;
 		if (preferPayment)
 		{
-			if (1 == 0)
+			return text switch
 			{
-			}
-			result = text switch
-			{
-				"일반수금" => "일반지급",
-				"전표수금" => "전표지급",
-				"선수금차감" => "일반지급",
+				PaymentFlowConstants.TransactionKindReceipt => PaymentFlowConstants.TransactionKindPayment,
+				PaymentFlowConstants.TransactionKindInvoiceReceipt => PaymentFlowConstants.TransactionKindInvoicePayment,
+				PaymentFlowConstants.TransactionKindAdvanceApply => PaymentFlowConstants.TransactionKindPayment,
 				_ => text,
 			};
-			if (1 == 0)
-			{
-			}
-			return result;
 		}
-		if (1 == 0)
+
+		return text switch
 		{
-		}
-		result = ((text == "일반지급") ? "일반수금" : ((!(text == "전표지급")) ? text : "전표수금"));
-		if (1 == 0)
-		{
-		}
-		return result;
+			PaymentFlowConstants.TransactionKindPayment => PaymentFlowConstants.TransactionKindReceipt,
+			PaymentFlowConstants.TransactionKindInvoicePayment => PaymentFlowConstants.TransactionKindInvoiceReceipt,
+			_ => text,
+		};
 	}
 
 	private async Task<decimal> GetInvoiceRemainingAmountForTransactionAsync(Guid invoiceId, Guid transactionId, decimal invoiceTotal, CancellationToken ct)

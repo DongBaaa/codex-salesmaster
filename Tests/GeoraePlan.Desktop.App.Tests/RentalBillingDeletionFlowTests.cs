@@ -286,7 +286,12 @@ public sealed class RentalBillingDeletionFlowTests
                 Note = "direct rental payment permission guard"
             }, adminSession);
             Assert.True(savePayment.Success, savePayment.Message);
-            Assert.False(await db.Transactions.IgnoreQueryFilters().AnyAsync(current => current.Id == paymentId));
+            var mirroredTransaction = await db.Transactions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == paymentId);
+            Assert.Equal(invoice.Id, mirroredTransaction.LinkedInvoiceId);
+            Assert.Equal(invoice.TotalAmount, mirroredTransaction.SettlementAmount);
 
             var invoiceOnlySession = CreateUserSession(
                 AppPermissionNames.RentalProfileEdit,
@@ -566,7 +571,12 @@ public sealed class RentalBillingDeletionFlowTests
                 Note = "direct rental payment delete success"
             }, session);
             Assert.True(savePayment.Success, savePayment.Message);
-            Assert.False(await db.Transactions.IgnoreQueryFilters().AnyAsync(current => current.Id == paymentId));
+            var mirroredTransaction = await db.Transactions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == paymentId);
+            Assert.Equal(invoice.Id, mirroredTransaction.LinkedInvoiceId);
+            Assert.Equal(invoice.TotalAmount, mirroredTransaction.SettlementAmount);
 
             var paidProfile = await db.RentalBillingProfiles
                 .IgnoreQueryFilters()
@@ -577,7 +587,7 @@ public sealed class RentalBillingDeletionFlowTests
 
             var deleted = await rental.DeleteBillingHistoryAsync(profileId, runId, session);
             Assert.True(deleted.Success, deleted.Message);
-            Assert.Contains("직접 수금", deleted.Message);
+            Assert.Contains("입금 내역", deleted.Message);
 
             var deletedPayment = await db.Payments
                 .IgnoreQueryFilters()
@@ -1496,7 +1506,12 @@ public sealed class RentalBillingDeletionFlowTests
             }, session);
 
             Assert.True(savePayment.Success, savePayment.Message);
-            Assert.False(await db.Transactions.IgnoreQueryFilters().AnyAsync(current => current.Id == paymentId));
+            var mirroredTransaction = await db.Transactions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == paymentId);
+            Assert.Equal(invoice.Id, mirroredTransaction.LinkedInvoiceId);
+            Assert.Equal(invoice.TotalAmount, mirroredTransaction.SettlementAmount);
             var savedPayment = await db.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == paymentId);
             Assert.False(savedPayment.IsDeleted);
             Assert.Equal(invoice.TotalAmount, savedPayment.Amount);

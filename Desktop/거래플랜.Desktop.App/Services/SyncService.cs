@@ -5972,9 +5972,130 @@ public sealed class SyncService : IDisposable
         }
 
         await UpsertPulledAsync(dtos, _db.Payments, LocalMappings.ToLocal, ct);
+        await ReconcilePulledPaymentTransactionMirrorsAsync(paymentIds, invoiceIdsToRecalculate, ct);
         await _local.RecalculateRentalSettlementForInvoicePaymentsAsync(
             invoiceIdsToRecalculate,
             ct);
+    }
+
+    private async Task ReconcilePulledPaymentTransactionMirrorsAsync(
+        IReadOnlyList<Guid> paymentIds,
+        List<Guid> invoiceIdsToRecalculate,
+        CancellationToken ct)
+    {
+        if (paymentIds.Count == 0)
+            return;
+
+        var payments = await _db.Payments
+            .IgnoreQueryFilters()
+            .Where(payment => paymentIds.Contains(payment.Id))
+            .ToListAsync(ct);
+        if (payments.Count == 0)
+            return;
+
+        foreach (var payment in payments)
+        {
+            var transaction = await _db.Transactions
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == payment.Id, ct);
+            if (transaction?.LinkedInvoiceId is Guid previousLinkedInvoiceId && previousLinkedInvoiceId != Guid.Empty)
+                invoiceIdsToRecalculate.Add(previousLinkedInvoiceId);
+
+            if (payment.IsDeleted)
+            {
+                if (transaction != null)
+                {
+                    transaction.IsDeleted = true;
+                    transaction.IsDirty = false;
+                    transaction.UpdatedAtUtc = payment.UpdatedAtUtc;
+                    transaction.Revision = Math.Max(transaction.Revision, payment.Revision);
+                }
+
+                continue;
+            }
+
+            var invoice = await _db.Invoices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .FirstOrDefaultAsync(current => current.Id == payment.InvoiceId, ct);
+            if (invoice == null || invoice.IsDeleted)
+            {
+                if (transaction != null)
+                {
+                    transaction.IsDeleted = true;
+                    transaction.IsDirty = false;
+                    transaction.UpdatedAtUtc = payment.UpdatedAtUtc;
+                    transaction.Revision = Math.Max(transaction.Revision, payment.Revision);
+                }
+
+                continue;
+            }
+
+            invoiceIdsToRecalculate.Add(invoice.Id);
+            if (transaction == null)
+            {
+                transaction = new LocalTransaction
+                {
+                    Id = payment.Id,
+                    CreatedAtUtc = payment.CreatedAtUtc,
+                    Revision = 0
+                };
+                _db.Transactions.Add(transaction);
+            }
+
+            ApplyPulledPaymentToTransactionMirror(payment, invoice, transaction);
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private static void ApplyPulledPaymentToTransactionMirror(
+        LocalPayment payment,
+        LocalInvoice invoice,
+        LocalTransaction transaction)
+    {
+        transaction.CustomerId = invoice.CustomerId;
+        transaction.TenantCode = invoice.TenantCode;
+        transaction.OfficeCode = invoice.OfficeCode;
+        transaction.ResponsibleOfficeCode = invoice.ResponsibleOfficeCode;
+        transaction.TransactionDate = payment.PaymentDate;
+        transaction.TransactionKind = invoice.VoucherType == VoucherType.Purchase
+            ? PaymentFlowConstants.TransactionKindPayment
+            : PaymentFlowConstants.TransactionKindReceipt;
+        transaction.LinkedInvoiceId = invoice.Id;
+        transaction.LinkedInvoiceNumber = string.IsNullOrWhiteSpace(invoice.InvoiceNumber)
+            ? invoice.LocalTempNumber
+            : invoice.InvoiceNumber;
+        transaction.LinkedRentalBillingProfileId = invoice.LinkedRentalBillingProfileId;
+        transaction.LinkedRentalBillingRunId = invoice.LinkedRentalBillingRunId;
+        transaction.SettlementAmount = Math.Max(0m, payment.Amount);
+        transaction.AdvanceDelta = 0m;
+        transaction.PrepaidDelta = 0m;
+        transaction.CashReceipt = 0m;
+        transaction.CardReceipt = 0m;
+        transaction.BankReceipt = 0m;
+        transaction.DiscountApplied = 0m;
+        transaction.ReceiptTotal = 0m;
+        transaction.CashPayment = 0m;
+        transaction.CardPayment = 0m;
+        transaction.BankPayment = 0m;
+        transaction.DiscountReceived = 0m;
+        transaction.PaymentTotal = 0m;
+        if (invoice.VoucherType == VoucherType.Purchase)
+        {
+            transaction.BankPayment = Math.Max(0m, payment.Amount);
+            transaction.PaymentTotal = Math.Max(0m, payment.Amount);
+        }
+        else
+        {
+            transaction.BankReceipt = Math.Max(0m, payment.Amount);
+            transaction.ReceiptTotal = Math.Max(0m, payment.Amount);
+        }
+
+        transaction.Note = payment.Note;
+        transaction.IsDeleted = false;
+        transaction.IsDirty = false;
+        transaction.UpdatedAtUtc = payment.UpdatedAtUtc;
     }
 
     private async Task<PulledTransactionSideEffectState> UpsertPulledTransactionsAsync(IReadOnlyList<TransactionDto> dtos, CancellationToken ct)

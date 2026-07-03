@@ -137,6 +137,15 @@
                           SelectedItem="{Binding SelectedRow, Mode=TwoWay}"
                           SelectionMode="Single">
                     <DataGrid.Columns>
+                        <DataGridTemplateColumn Header="처리" Width="54">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <CheckBox IsChecked="{Binding IsBatchSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
                         <DataGridTextColumn Header="거래처" Binding="{Binding CustomerName}" Width="220"/>
                         <DataGridTextColumn Header="거래처 잔액" Binding="{Binding CustomerBalance, StringFormat={}{0:N0}}" Width="120"/>
                         <DataGridTextColumn Header="작성일" Binding="{Binding InvoiceDateDisplay}" Width="100"/>
@@ -195,6 +204,18 @@
 
                             <TextBlock Text="메모" Foreground="#9FB3C8" FontSize="11" Margin="0,0,0,4"/>
                             <TextBox Text="{Binding ProcessNote, UpdateSourceTrigger=PropertyChanged}" MinHeight="72" TextWrapping="Wrap" AcceptsReturn="True"/>
+
+                            <Border Background="#122038"
+                                    BorderBrush="#2E4060"
+                                    BorderThickness="1"
+                                    CornerRadius="4"
+                                    Padding="8"
+                                    Margin="0,12,0,0">
+                                <TextBlock Text="{Binding CheckedRowsSummaryText}"
+                                           Foreground="#B8C7D8"
+                                           FontSize="12"
+                                           TextWrapping="Wrap"/>
+                            </Border>
                         </StackPanel>
                     </ScrollViewer>
 
@@ -206,6 +227,16 @@
                         <Button Content="{Binding ProcessFullActionText}"
                                 Command="{Binding ProcessSelectedFullBalanceCommand}"
                                 Background="#1B5E20"
+                                Margin="0,0,0,8"/>
+                        <Button Content="체크 합계 입력"
+                                Command="{Binding FillCheckedBalanceAmountCommand}"
+                                IsEnabled="{Binding HasCheckedRows}"
+                                Background="#455A64"
+                                Margin="0,0,0,8"/>
+                        <Button Content="체크 전표 일괄 처리"
+                                Command="{Binding ProcessCheckedBalancesCommand}"
+                                IsEnabled="{Binding HasCheckedRows}"
+                                Background="#00695C"
                                 Margin="0,0,0,8"/>
                         <TextBlock Text="저장 후 목록과 메인 요약 금액이 다시 계산됩니다."
                                    Foreground="#9FB3C8"

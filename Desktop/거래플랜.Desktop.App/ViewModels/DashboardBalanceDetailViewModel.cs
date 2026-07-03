@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -60,9 +61,23 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
 
     public bool HasRows => Rows.Count > 0;
     public bool HasSelectedRow => SelectedRow is not null;
+    public bool HasCheckedRows => Rows.Any(row => row.IsBatchSelected);
     public string TotalAmountText => $"{TotalAmount:N0}원";
     public string CustomerCountText => $"{CustomerCount:N0}곳";
     public string InvoiceCountText => $"{InvoiceCount:N0}건";
+    public string CheckedRowsSummaryText
+    {
+        get
+        {
+            var checkedRows = GetCheckedRows();
+            if (checkedRows.Count == 0)
+                return "체크한 전표가 없습니다. 여러 건을 처리하려면 왼쪽 표의 처리 칸을 체크하세요.";
+
+            var customerCount = checkedRows.Select(row => row.CustomerId).Distinct().Count();
+            var customerText = customerCount == 1 ? checkedRows[0].CustomerName : $"거래처 {customerCount:N0}곳";
+            return $"체크 {checkedRows.Count:N0}건 / {customerText} / 합계 {checkedRows.Sum(row => row.BalanceAmount):N0}원";
+        }
+    }
     public string SummaryText => HasRows
         ? $"{BalanceKindText} {TotalAmount:N0}원 · 거래처 {CustomerCount:N0}곳 · 전표 {InvoiceCount:N0}건"
         : $"{BalanceKindText}이 남은 전표가 없습니다.";
@@ -124,6 +139,107 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
     private async Task ProcessSelectedFullBalanceAsync()
         => await SaveSelectedPaymentAsync(useFullBalance: true);
 
+    [RelayCommand]
+    private void FillCheckedBalanceAmount()
+    {
+        var checkedRows = GetCheckedRows();
+        if (!TryValidateCheckedRows(checkedRows))
+            return;
+
+        var total = checkedRows.Sum(row => row.BalanceAmount);
+        ProcessAmountText = total.ToString("N0", CultureInfo.CurrentCulture);
+        ProcessNote = $"{checkedRows[0].CustomerName} {PaymentKindText} 일괄 처리 {checkedRows.Count:N0}건";
+        StatusMessage = $"체크한 전표 {checkedRows.Count:N0}건의 합계 {total:N0}원을 처리금액에 입력했습니다.";
+    }
+
+    [RelayCommand]
+    private async Task ProcessCheckedBalancesAsync()
+    {
+        var checkedRows = GetCheckedRows()
+            .OrderBy(row => row.InvoiceDate)
+            .ThenBy(row => row.InvoiceNumberDisplay, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        if (!TryValidateCheckedRows(checkedRows))
+            return;
+
+        var totalBalance = checkedRows.Sum(row => row.BalanceAmount);
+        var amount = totalBalance;
+        if (!string.IsNullOrWhiteSpace(ProcessAmountText) && !TryParseAmount(ProcessAmountText, out amount))
+        {
+            StatusMessage = "일괄 처리금액을 숫자로 입력하세요.";
+            return;
+        }
+
+        amount = decimal.Round(amount, 0, MidpointRounding.AwayFromZero);
+        if (amount <= 0m)
+        {
+            StatusMessage = "일괄 처리금액은 0보다 커야 합니다.";
+            return;
+        }
+
+        if (amount > totalBalance)
+        {
+            StatusMessage = $"일괄 처리금액이 체크 전표 잔액보다 {amount - totalBalance:N0}원 많습니다.";
+            return;
+        }
+
+        IsBusy = true;
+        StatusMessage = $"체크 전표 {checkedRows.Count:N0}건 {PaymentKindText} 일괄 저장 중입니다.";
+        try
+        {
+            var transactionDate = DateOnly.FromDateTime(ProcessDate ?? DateTime.Today);
+            var baseNote = BuildBatchBaseNote(checkedRows, amount);
+            var batchMemo = $"dashboard-balance-batch:{Guid.NewGuid():N}";
+            var remaining = amount;
+            var transactions = new List<LocalTransaction>();
+            foreach (var row in checkedRows)
+            {
+                if (remaining <= 0m)
+                    break;
+
+                var allocatedAmount = Math.Min(row.BalanceAmount, remaining);
+                if (allocatedAmount <= 0m)
+                    continue;
+
+                transactions.Add(BuildSettlementTransaction(
+                    row,
+                    allocatedAmount,
+                    transactionDate,
+                    $"{baseNote} - {row.InvoiceNumberDisplay}",
+                    batchMemo));
+                remaining -= allocatedAmount;
+            }
+
+            var result = await _local.SaveTransactionsAsync(transactions, _session);
+            if (!result.Success)
+            {
+                StatusMessage = string.IsNullOrWhiteSpace(result.Message)
+                    ? $"일괄 {PaymentKindText} 저장에 실패했습니다."
+                    : result.Message;
+                if (result.ConcurrencyConflict)
+                    await RefreshAsync();
+                return;
+            }
+
+            var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
+            await RefreshAsync();
+            if (_afterPaymentSavedAsync is not null)
+                await _afterPaymentSavedAsync();
+
+            StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(
+                $"{PaymentKindText} {amount:N0}원이 체크 전표 {transactions.Count:N0}건에 배분 저장되었습니다.",
+                serverWriteResult);
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"일괄 {PaymentKindText} 저장 실패: {ex.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
     private async Task SaveSelectedPaymentAsync(bool useFullBalance)
     {
         var row = SelectedRow;
@@ -157,15 +273,13 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
         StatusMessage = $"{PaymentKindText} 저장 중입니다.";
         try
         {
-            var payment = new LocalPayment
-            {
-                Id = Guid.NewGuid(),
-                InvoiceId = row.InvoiceId,
-                PaymentDate = DateOnly.FromDateTime(ProcessDate ?? DateTime.Today),
-                Amount = amount,
-                Note = NormalizeNote(ProcessNote, row)
-            };
-            var result = await _local.SavePaymentAsync(payment, _session);
+            var transaction = BuildSettlementTransaction(
+                row,
+                amount,
+                DateOnly.FromDateTime(ProcessDate ?? DateTime.Today),
+                NormalizeNote(ProcessNote, row),
+                memo: string.Empty);
+            var result = await _local.SaveTransactionAsync(transaction, _session);
             if (!result.Success)
             {
                 StatusMessage = string.IsNullOrWhiteSpace(result.Message)
@@ -182,7 +296,7 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
                 await _afterPaymentSavedAsync();
 
             StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(
-                $"{PaymentKindText} {amount:N0}원이 저장되었습니다.",
+                $"{PaymentKindText} {amount:N0}원이 거래내역과 전표 잔액에 함께 저장되었습니다.",
                 serverWriteResult);
         }
         catch (Exception ex)
@@ -219,9 +333,15 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
     private void ReplaceRows(IReadOnlyList<DashboardBalanceDetailRow> rows)
     {
         var previousInvoiceId = SelectedRow?.InvoiceId;
+        foreach (var oldRow in Rows)
+            oldRow.PropertyChanged -= OnRowPropertyChanged;
+
         Rows.Clear();
         foreach (var row in rows)
+        {
+            row.PropertyChanged += OnRowPropertyChanged;
             Rows.Add(row);
+        }
 
         TotalAmount = rows.Sum(row => row.BalanceAmount);
         CustomerCount = rows.Select(row => row.CustomerId).Distinct().Count();
@@ -231,6 +351,86 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
             : null;
         if (SelectedRow is null && Rows.Count > 0)
             SelectedRow = Rows[0];
+        NotifyBatchSelectionChanged();
+    }
+
+    private void OnRowPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(DashboardBalanceDetailRow.IsBatchSelected))
+            NotifyBatchSelectionChanged();
+    }
+
+    private void NotifyBatchSelectionChanged()
+    {
+        OnPropertyChanged(nameof(HasCheckedRows));
+        OnPropertyChanged(nameof(CheckedRowsSummaryText));
+    }
+
+    private List<DashboardBalanceDetailRow> GetCheckedRows()
+        => Rows.Where(row => row.IsBatchSelected).ToList();
+
+    private bool TryValidateCheckedRows(IReadOnlyList<DashboardBalanceDetailRow> checkedRows)
+    {
+        if (checkedRows.Count == 0)
+        {
+            StatusMessage = "일괄 처리할 전표의 처리 칸을 먼저 체크하세요.";
+            return false;
+        }
+
+        if (checkedRows.Select(row => row.CustomerId).Distinct().Count() > 1)
+        {
+            StatusMessage = "일괄 수금/지급은 같은 거래처 전표끼리만 처리할 수 있습니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private LocalTransaction BuildSettlementTransaction(
+        DashboardBalanceDetailRow row,
+        decimal amount,
+        DateOnly transactionDate,
+        string note,
+        string memo)
+    {
+        var transaction = new LocalTransaction
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = row.CustomerId,
+            TransactionDate = transactionDate,
+            TransactionKind = _voucherType == VoucherType.Purchase
+                ? PaymentFlowConstants.TransactionKindPayment
+                : PaymentFlowConstants.TransactionKindReceipt,
+            LinkedInvoiceId = row.InvoiceId,
+            LinkedInvoiceNumber = row.InvoiceNumberDisplay,
+            SettlementAmount = amount,
+            Note = note,
+            Memo = memo,
+            ResponsibleOfficeCode = row.ResponsibleOfficeCode
+        };
+
+        if (_voucherType == VoucherType.Purchase)
+        {
+            transaction.BankPayment = amount;
+            transaction.PaymentTotal = amount;
+        }
+        else
+        {
+            transaction.BankReceipt = amount;
+            transaction.ReceiptTotal = amount;
+        }
+
+        return transaction;
+    }
+
+    private string BuildBatchBaseNote(IReadOnlyList<DashboardBalanceDetailRow> checkedRows, decimal amount)
+    {
+        var trimmed = (ProcessNote ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(trimmed))
+            return trimmed;
+
+        var customerName = checkedRows[0].CustomerName;
+        return $"{customerName} {PaymentKindText} 일괄 처리 {checkedRows.Count:N0}건 / {amount:N0}원";
     }
 
     private string NormalizeNote(string note, DashboardBalanceDetailRow row)
@@ -255,8 +455,10 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
     }
 }
 
-public sealed class DashboardBalanceDetailRow
+public sealed partial class DashboardBalanceDetailRow : ObservableObject
 {
+    [ObservableProperty] private bool _isBatchSelected;
+
     public Guid CustomerId { get; init; }
     public string CustomerName { get; init; } = string.Empty;
     public decimal CustomerBalance { get; init; }

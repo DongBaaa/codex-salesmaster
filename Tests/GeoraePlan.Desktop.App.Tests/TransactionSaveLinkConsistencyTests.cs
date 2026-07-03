@@ -66,6 +66,108 @@ public sealed class TransactionSaveLinkConsistencyTests
     }
 
     [Fact]
+    public async Task SaveTransactionAsync_KeepsGeneralReceiptKindWhenLinkedInvoiceIsRequested()
+    {
+        PrepareAppRoot("georaeplan-transaction-general-kind-linked-invoice");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var invoiceId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(customerId, "General receipt linked invoice customer"));
+            db.Invoices.Add(CreateInvoice(invoiceId, customerId));
+            await db.SaveChangesAsync();
+
+            var session = CreatePaymentEditorSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var transactionId = Guid.NewGuid();
+
+            var result = await local.SaveTransactionAsync(new LocalTransaction
+            {
+                Id = transactionId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 6, 23),
+                TransactionKind = PaymentFlowConstants.TransactionKindReceipt,
+                LinkedInvoiceId = invoiceId,
+                BankReceipt = 600m,
+                ReceiptTotal = 600m,
+                SettlementAmount = 600m,
+                Note = "general receipt with invoice allocation"
+            }, session);
+
+            Assert.True(result.Success, result.Message);
+            var stored = await db.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == transactionId);
+            Assert.Equal(PaymentFlowConstants.TransactionKindReceipt, stored.TransactionKind);
+            Assert.Equal(invoiceId, stored.LinkedInvoiceId);
+
+            var payment = await db.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == transactionId);
+            Assert.Equal(invoiceId, payment.InvoiceId);
+            Assert.Equal(600m, payment.Amount);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SavePaymentAsync_CreatesTransactionMirrorForRecentHistory()
+    {
+        PrepareAppRoot("georaeplan-payment-transaction-mirror");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var invoiceId = Guid.NewGuid();
+            var paymentId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(customerId, "Payment mirror customer"));
+            db.Invoices.Add(CreateInvoice(invoiceId, customerId));
+            await db.SaveChangesAsync();
+
+            var session = CreatePaymentEditorSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var result = await local.SavePaymentAsync(new LocalPayment
+            {
+                Id = paymentId,
+                InvoiceId = invoiceId,
+                PaymentDate = new DateOnly(2026, 6, 24),
+                Amount = 450m,
+                Note = "dashboard payment mirror"
+            }, session);
+
+            Assert.True(result.Success, result.Message);
+            var transaction = await db.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == paymentId);
+            Assert.Equal(customerId, transaction.CustomerId);
+            Assert.Equal(invoiceId, transaction.LinkedInvoiceId);
+            Assert.Equal(PaymentFlowConstants.TransactionKindReceipt, transaction.TransactionKind);
+            Assert.Equal(450m, transaction.ReceiptTotal);
+            Assert.Equal(450m, transaction.SettlementAmount);
+
+            var payment = await db.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == paymentId);
+            Assert.Equal(invoiceId, payment.InvoiceId);
+            Assert.Equal(450m, payment.Amount);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SaveTransactionAsync_RelinksMissingCustomerToLinkedInvoiceCustomer()
     {
         PrepareAppRoot("georaeplan-transaction-missing-customer-link");

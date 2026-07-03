@@ -184,9 +184,13 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("BasedOn=\"{StaticResource UnifiedDatePickerButtonStyle}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Text=\"처리금액\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Text=\"메모\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("IsChecked=\"{Binding IsBatchSelected, Mode=TwoWay", xaml, StringComparison.Ordinal);
+        Assert.Contains("Command=\"{Binding FillCheckedBalanceAmountCommand}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Command=\"{Binding ProcessCheckedBalancesCommand}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Command=\"{Binding ProcessSelectedBalanceCommand}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Command=\"{Binding ProcessSelectedFullBalanceCommand}\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("SavePaymentAsync(payment, _session)", viewModel, StringComparison.Ordinal);
+        Assert.Contains("SaveTransactionAsync(transaction, _session)", viewModel, StringComparison.Ordinal);
+        Assert.Contains("SaveTransactionsAsync(transactions, _session)", viewModel, StringComparison.Ordinal);
         Assert.Contains("WaitForServerWriteWithTimeoutAsync", viewModel, StringComparison.Ordinal);
         Assert.Contains("await RefreshAsync();", viewModel, StringComparison.Ordinal);
         Assert.Contains("await _afterPaymentSavedAsync();", viewModel, StringComparison.Ordinal);
