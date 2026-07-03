@@ -299,6 +299,29 @@ public sealed class PaymentsController : ControllerBase
         dto.Id = entity.Id;
         entity.Apply(dto);
         _dbContext.Payments.Add(entity);
+        var linkedTransaction = await _dbContext.Transactions
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(transaction => transaction.Id == entity.Id, cancellationToken);
+        if (linkedTransaction is not null &&
+            !linkedTransaction.IsDeleted &&
+            linkedTransaction.LinkedInvoiceId.HasValue &&
+            linkedTransaction.LinkedInvoiceId.Value != invoice.Id)
+        {
+            return Conflict($"Linked transaction invoice does not match the payment invoice: {linkedTransaction.LinkedInvoiceId.Value}");
+        }
+
+        if (linkedTransaction is null)
+        {
+            linkedTransaction = new TransactionRecord
+            {
+                Id = entity.Id,
+                CreatedAtUtc = entity.CreatedAtUtc,
+                UpdatedAtUtc = entity.UpdatedAtUtc
+            };
+            _dbContext.Transactions.Add(linkedTransaction);
+        }
+
+        SynchronizeLinkedTransactionFromPayment(linkedTransaction, entity, invoice);
         await ProcessedSyncMutationRecorder.RecordAsync(_dbContext, dto, nameof(Payment), cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await RecalculateRentalSettlementsForPaymentInvoicesAsync([invoice], cancellationToken);
@@ -517,6 +540,8 @@ public sealed class PaymentsController : ControllerBase
         transaction.SettlementAmount = payment.Amount;
         transaction.TransactionKind = ResolveLinkedTransactionKind(invoice);
         ApplyLinkedTransactionTotals(transaction, payment.Amount, IsPaymentVoucher(invoice.VoucherType));
+        transaction.Note = payment.Note;
+        transaction.IsDeleted = false;
     }
 
     private static string ResolveLinkedTransactionKind(Invoice invoice)

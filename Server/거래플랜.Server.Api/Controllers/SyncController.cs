@@ -1628,10 +1628,8 @@ public sealed class SyncController : ControllerBase
         var paymentById = payments.ToDictionary(payment => payment.Id);
         var paymentIds = paymentById.Keys.ToList();
         var transactions = await _dbContext.Transactions.IgnoreQueryFilters()
-            .Where(transaction => !transaction.IsDeleted && paymentIds.Contains(transaction.Id))
+            .Where(transaction => paymentIds.Contains(transaction.Id))
             .ToListAsync(cancellationToken);
-        if (transactions.Count == 0)
-            return [];
 
         var invoiceIds = payments
             .Select(payment => payment.InvoiceId)
@@ -1641,17 +1639,34 @@ public sealed class SyncController : ControllerBase
         var invoicesById = await _dbContext.Invoices.IgnoreQueryFilters()
             .Where(invoice => invoiceIds.Contains(invoice.Id) && !invoice.IsDeleted)
             .ToDictionaryAsync(invoice => invoice.Id, cancellationToken);
+        var transactionsById = transactions
+            .GroupBy(transaction => transaction.Id)
+            .ToDictionary(group => group.Key, group => group.First());
 
         var targets = new List<(Guid ProfileId, Guid? RunId)>();
-        foreach (var transaction in transactions)
+        foreach (var payment in payments)
         {
-            if (!paymentById.TryGetValue(transaction.Id, out var payment) ||
-                !invoicesById.TryGetValue(payment.InvoiceId, out var invoice))
+            if (!invoicesById.TryGetValue(payment.InvoiceId, out var invoice))
             {
                 continue;
             }
 
-            AddRentalSettlementTarget(targets, transaction.LinkedRentalBillingProfileId, transaction.LinkedRentalBillingRunId);
+            if (!transactionsById.TryGetValue(payment.Id, out var transaction))
+            {
+                transaction = new TransactionRecord
+                {
+                    Id = payment.Id,
+                    CreatedAtUtc = payment.CreatedAtUtc == default ? DateTime.UtcNow : payment.CreatedAtUtc,
+                    UpdatedAtUtc = payment.UpdatedAtUtc == default ? DateTime.UtcNow : payment.UpdatedAtUtc
+                };
+                _dbContext.Transactions.Add(transaction);
+                transactionsById[payment.Id] = transaction;
+            }
+            else if (!transaction.IsDeleted)
+            {
+                AddRentalSettlementTarget(targets, transaction.LinkedRentalBillingProfileId, transaction.LinkedRentalBillingRunId);
+            }
+
             SynchronizeLinkedTransactionFromPayment(transaction, payment, invoice);
             AddRentalSettlementTarget(targets, transaction.LinkedRentalBillingProfileId, transaction.LinkedRentalBillingRunId);
         }
@@ -1676,6 +1691,8 @@ public sealed class SyncController : ControllerBase
         transaction.SettlementAmount = payment.Amount;
         transaction.TransactionKind = ResolveLinkedTransactionKind(invoice);
         ApplyLinkedTransactionTotals(transaction, payment.Amount, IsPaymentVoucher(invoice.VoucherType));
+        transaction.Note = payment.Note;
+        transaction.IsDeleted = false;
     }
 
     private static string ResolveInvoiceDisplayNumber(Invoice invoice)

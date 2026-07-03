@@ -9501,6 +9501,92 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_PaymentOnlyCreate_CreatesLinkedTransaction()
+    {
+        var customerId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-PAYMENT-CREATE-MIRROR-CUSTOMER",
+            NameMatchKey = "SYNCPAYMENTCREATEMIRRORCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-PAYMENT-CREATE-MIRROR-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 7, 3),
+            TotalAmount = 100_000m,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m
+        });
+        await _dbContext.SaveChangesAsync();
+        var storedInvoice = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(invoice => invoice.Id == invoiceId);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-payment-only-create-linked-transaction",
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = paymentId,
+                    InvoiceId = invoiceId,
+                    PaymentDate = new DateOnly(2026, 7, 4),
+                    Amount = 55_000m,
+                    Note = "sync payment create should create transaction",
+                    ExpectedRevision = storedInvoice.Revision,
+                    CreatedAtUtc = new DateTime(2026, 7, 4, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 7, 4, 0, 1, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(
+            result.ConflictCount == 0,
+            string.Join(" / ", result.Conflicts.Select(conflict => conflict.Reason)));
+
+        var payment = await _dbContext.Payments
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == paymentId);
+        var transaction = await _dbContext.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == paymentId);
+        Assert.Equal(55_000m, payment.Amount);
+        Assert.False(transaction.IsDeleted);
+        Assert.Equal(customerId, transaction.CustomerId);
+        Assert.Equal(invoiceId, transaction.LinkedInvoiceId);
+        Assert.Equal("SYNC-PAYMENT-CREATE-MIRROR-001", transaction.LinkedInvoiceNumber);
+        Assert.Equal(new DateOnly(2026, 7, 4), transaction.TransactionDate);
+        Assert.Equal(55_000m, transaction.SettlementAmount);
+        Assert.Equal(55_000m, transaction.ReceiptTotal);
+        Assert.Equal(55_000m, transaction.BankReceipt);
+        Assert.Equal(0m, transaction.PaymentTotal);
+        Assert.Equal("sync payment create should create transaction", transaction.Note);
+    }
+
+    [Fact]
     public async Task Push_PaymentOnlyUpdate_SynchronizesExistingLinkedTransaction()
     {
         var customerId = Guid.NewGuid();

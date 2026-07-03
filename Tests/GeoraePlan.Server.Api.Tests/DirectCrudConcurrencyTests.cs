@@ -1648,6 +1648,67 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task PaymentsController_Create_CreatesLinkedTransactionMirror()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "DIRECT-PAYMENT-MIRROR-CUSTOMER",
+            NameMatchKey = "DIRECTPAYMENTMIRRORCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "DIRECT-PAYMENT-MIRROR-001",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 7, 3),
+            TotalAmount = 100_000m
+        });
+        await dbContext.SaveChangesAsync();
+
+        var paymentId = Guid.NewGuid();
+        var controller = CreatePaymentsController(dbContext, currentUser);
+
+        var response = await controller.Create(new PaymentDto
+        {
+            Id = paymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 7, 4),
+            Amount = 45_000m,
+            Note = "direct payment should create transaction"
+        }, CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(response.Result);
+        var transaction = await dbContext.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == paymentId);
+        Assert.False(transaction.IsDeleted);
+        Assert.Equal(customerId, transaction.CustomerId);
+        Assert.Equal(invoiceId, transaction.LinkedInvoiceId);
+        Assert.Equal("DIRECT-PAYMENT-MIRROR-001", transaction.LinkedInvoiceNumber);
+        Assert.Equal(new DateOnly(2026, 7, 4), transaction.TransactionDate);
+        Assert.Equal(45_000m, transaction.SettlementAmount);
+        Assert.Equal(45_000m, transaction.ReceiptTotal);
+        Assert.Equal(45_000m, transaction.BankReceipt);
+        Assert.Equal(0m, transaction.PaymentTotal);
+        Assert.Equal("direct payment should create transaction", transaction.Note);
+    }
+
+    [Fact]
     public async Task DirectCrud_AllowsConsecutiveUpdates_WhenClientUsesReturnedRevision()
     {
         var currentUser = CreateAdminUser();
