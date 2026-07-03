@@ -103,6 +103,28 @@ public static class PaymentFlowConstants
         if (string.IsNullOrWhiteSpace(trimmed))
             return string.Empty;
 
+        foreach (var (label, prefixLength) in EnumerateLinkedPaymentKindNotePrefixes(trimmed, transactionKind))
+        {
+            if (prefixLength == label.Length)
+                return string.Empty;
+
+            return trimmed[prefixLength..].Trim();
+        }
+
+        return trimmed;
+    }
+
+    public static bool IsLinkedPaymentNotePrefixedByKind(string? note, string? transactionKind)
+    {
+        var trimmed = (note ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+            return false;
+
+        return EnumerateLinkedPaymentKindNotePrefixes(trimmed, transactionKind).Any();
+    }
+
+    private static IEnumerable<(string Label, int PrefixLength)> EnumerateLinkedPaymentKindNotePrefixes(string trimmed, string? transactionKind)
+    {
         var labels = new[]
             {
                 GetTransactionKindDisplayName(transactionKind),
@@ -114,17 +136,21 @@ public static class PaymentFlowConstants
         foreach (var label in labels)
         {
             if (string.Equals(trimmed, label, StringComparison.OrdinalIgnoreCase))
-                return string.Empty;
+            {
+                yield return (label, label.Length);
+                continue;
+            }
 
             foreach (var separator in new[] { " - ", "-", " / ", "/" })
             {
                 var prefix = label + separator;
                 if (trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                    return trimmed[prefix.Length..].Trim();
+                {
+                    yield return (label, prefix.Length);
+                    break;
+                }
             }
         }
-
-        return trimmed;
     }
 
     public static string NormalizeBillingStatus(string? status)

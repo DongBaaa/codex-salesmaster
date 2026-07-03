@@ -4780,24 +4780,26 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 	}
 
-	public Task<List<LocalTransaction>> GetTransactionsAsync(Guid customerId, CancellationToken ct = default(CancellationToken))
+	public async Task<List<LocalTransaction>> GetTransactionsAsync(Guid customerId, CancellationToken ct = default(CancellationToken))
 	{
-		return (from transaction in _db.Transactions.AsNoTracking()
+		var transactions = await (from transaction in _db.Transactions.AsNoTracking()
 			where transaction.CustomerId == customerId
 			orderby transaction.TransactionDate descending
 			select transaction).ToListAsync(ct);
+		return NormalizeLinkedPaymentTransactionsForDisplay(transactions);
 	}
 
-	public Task<List<LocalTransaction>> GetTransactionsAsync(Guid customerId, SessionState session, CancellationToken ct = default(CancellationToken))
+	public async Task<List<LocalTransaction>> GetTransactionsAsync(Guid customerId, SessionState session, CancellationToken ct = default(CancellationToken))
 	{
 		IQueryable<LocalTransaction> query = from transaction in _db.Transactions.AsNoTracking()
 			where transaction.CustomerId == customerId
 			select transaction;
 		query = ApplyTransactionScope(query, session);
-		return query.OrderByDescending((LocalTransaction transaction) => transaction.TransactionDate).ToListAsync(ct);
+		var transactions = await query.OrderByDescending((LocalTransaction transaction) => transaction.TransactionDate).ToListAsync(ct);
+		return NormalizeLinkedPaymentTransactionsForDisplay(transactions);
 	}
 
-	public Task<List<LocalTransaction>> GetTransactionsAsync(DateOnly from, DateOnly to, Guid? customerId = null, CancellationToken ct = default(CancellationToken))
+	public async Task<List<LocalTransaction>> GetTransactionsAsync(DateOnly from, DateOnly to, Guid? customerId = null, CancellationToken ct = default(CancellationToken))
 	{
 		IQueryable<LocalTransaction> source = from transaction in _db.Transactions.AsNoTracking()
 			where transaction.TransactionDate >= @from && transaction.TransactionDate <= to
@@ -4806,12 +4808,13 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			source = source.Where((LocalTransaction transaction) => transaction.CustomerId == ((Guid?)customerId).Value);
 		}
-		return (from transaction in source
+		var transactions = await (from transaction in source
 			orderby transaction.TransactionDate descending, transaction.CreatedAtUtc descending
 			select transaction).ToListAsync(ct);
+		return NormalizeLinkedPaymentTransactionsForDisplay(transactions);
 	}
 
-	public Task<List<LocalTransaction>> GetTransactionsAsync(DateOnly from, DateOnly to, Guid? customerId, SessionState session, CancellationToken ct = default(CancellationToken))
+	public async Task<List<LocalTransaction>> GetTransactionsAsync(DateOnly from, DateOnly to, Guid? customerId, SessionState session, CancellationToken ct = default(CancellationToken))
 	{
 		IQueryable<LocalTransaction> query = from transaction in _db.Transactions.AsNoTracking()
 			where transaction.TransactionDate >= @from && transaction.TransactionDate <= to
@@ -4821,9 +4824,59 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			query = query.Where((LocalTransaction transaction) => transaction.CustomerId == ((Guid?)customerId).Value);
 		}
-		return (from transaction in query
+		var transactions = await (from transaction in query
 			orderby transaction.TransactionDate descending, transaction.CreatedAtUtc descending
 			select transaction).ToListAsync(ct);
+		return NormalizeLinkedPaymentTransactionsForDisplay(transactions);
+	}
+
+	private static List<LocalTransaction> NormalizeLinkedPaymentTransactionsForDisplay(List<LocalTransaction> transactions)
+	{
+		foreach (var transaction in transactions)
+		{
+			var displayKind = ResolveLinkedPaymentDisplayTransactionKind(transaction);
+			transaction.TransactionKind = displayKind;
+			transaction.Note = PaymentFlowConstants.NormalizeLinkedPaymentNote(transaction.Note, displayKind);
+		}
+
+		return transactions;
+	}
+
+	private static string ResolveLinkedPaymentDisplayTransactionKind(LocalTransaction transaction)
+	{
+		var normalized = PaymentFlowConstants.NormalizeTransactionKind(
+			transaction.TransactionKind,
+			preferPayment: transaction.PaymentTotal > 0m && transaction.ReceiptTotal <= 0m);
+
+		if (transaction.LinkedRentalBillingProfileId.HasValue &&
+		    transaction.LinkedRentalBillingProfileId.Value != Guid.Empty &&
+		    PaymentFlowConstants.IsLinkedPaymentNotePrefixedByKind(transaction.Note, PaymentFlowConstants.TransactionKindRentalReceipt))
+		{
+			return PaymentFlowConstants.TransactionKindRentalReceipt;
+		}
+
+		if (!transaction.LinkedInvoiceId.HasValue || transaction.LinkedInvoiceId.Value == Guid.Empty)
+			return normalized;
+
+		if (transaction.PaymentTotal > 0m &&
+		    PaymentFlowConstants.IsLinkedPaymentNotePrefixedByKind(transaction.Note, PaymentFlowConstants.TransactionKindInvoicePayment))
+		{
+			return PaymentFlowConstants.TransactionKindInvoicePayment;
+		}
+
+		if (transaction.ReceiptTotal > 0m &&
+		    PaymentFlowConstants.IsLinkedPaymentNotePrefixedByKind(transaction.Note, PaymentFlowConstants.TransactionKindInvoiceReceipt))
+		{
+			return PaymentFlowConstants.TransactionKindInvoiceReceipt;
+		}
+
+		if (PaymentFlowConstants.IsLinkedPaymentNotePrefixedByKind(transaction.Note, PaymentFlowConstants.TransactionKindInvoicePayment))
+			return PaymentFlowConstants.TransactionKindInvoicePayment;
+
+		if (PaymentFlowConstants.IsLinkedPaymentNotePrefixedByKind(transaction.Note, PaymentFlowConstants.TransactionKindInvoiceReceipt))
+			return PaymentFlowConstants.TransactionKindInvoiceReceipt;
+
+		return normalized;
 	}
 
 	public async Task<decimal> GetAdvanceBalanceAsync(Guid customerId, SessionState session, CancellationToken ct = default(CancellationToken))

@@ -212,6 +212,61 @@ public sealed class TransactionSaveLinkConsistencyTests
     }
 
     [Fact]
+    public async Task GetTransactionsAsync_NormalizesLegacyGeneralReceiptMirrorForDisplay()
+    {
+        PrepareAppRoot("georaeplan-payment-legacy-mirror-display");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var invoiceId = Guid.NewGuid();
+            var transactionId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(customerId, "Legacy mirror customer"));
+            db.Invoices.Add(CreateInvoice(invoiceId, customerId));
+            db.Transactions.Add(new LocalTransaction
+            {
+                Id = transactionId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 7, 3),
+                TransactionKind = PaymentFlowConstants.TransactionKindReceipt,
+                LinkedInvoiceId = invoiceId,
+                LinkedInvoiceNumber = "202607-0001",
+                BankReceipt = 605_000m,
+                ReceiptTotal = 605_000m,
+                SettlementAmount = 605_000m,
+                Note = $"{PaymentFlowConstants.TransactionKindInvoiceReceipt} - 입금 확인",
+                IsDeleted = false
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreatePaymentEditorSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var rows = await local.GetTransactionsAsync(customerId, session);
+            var row = Assert.Single(rows);
+            Assert.Equal(PaymentFlowConstants.TransactionKindInvoiceReceipt, row.TransactionKind);
+            Assert.Equal(PaymentFlowConstants.TransactionKindInvoiceReceipt, row.TransactionKindDisplay);
+            Assert.Equal("입금 확인", row.Note);
+
+            var stored = await db.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == transactionId);
+            Assert.Equal(PaymentFlowConstants.TransactionKindReceipt, stored.TransactionKind);
+            Assert.Equal($"{PaymentFlowConstants.TransactionKindInvoiceReceipt} - 입금 확인", stored.Note);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SaveTransactionAsync_RelinksMissingCustomerToLinkedInvoiceCustomer()
     {
         PrepareAppRoot("georaeplan-transaction-missing-customer-link");

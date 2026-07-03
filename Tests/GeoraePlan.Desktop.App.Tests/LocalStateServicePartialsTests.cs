@@ -183,6 +183,12 @@ public sealed class LocalStateServicePartialsTests
             PaymentFlowConstants.NormalizeLinkedPaymentNote(
                 $"{PaymentFlowConstants.TransactionKindInvoiceReceipt} - 입금 확인",
                 PaymentFlowConstants.TransactionKindInvoiceReceipt));
+        Assert.True(PaymentFlowConstants.IsLinkedPaymentNotePrefixedByKind(
+            $"{PaymentFlowConstants.TransactionKindInvoiceReceipt} - 입금 확인",
+            PaymentFlowConstants.TransactionKindInvoiceReceipt));
+        Assert.False(PaymentFlowConstants.IsLinkedPaymentNotePrefixedByKind(
+            "거래처 요청 메모",
+            PaymentFlowConstants.TransactionKindInvoiceReceipt));
         Assert.Equal(
             "거래처 요청 메모",
             PaymentFlowConstants.NormalizeLinkedPaymentNote(
