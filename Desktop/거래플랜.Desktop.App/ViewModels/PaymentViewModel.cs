@@ -623,11 +623,7 @@ public sealed partial class PaymentViewModel : ObservableObject
             return PaymentFlowConstants.TransactionKindRentalReceipt;
 
         if (_linkedInvoice is not null)
-        {
-            return _linkedInvoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement
-                ? PaymentFlowConstants.TransactionKindPayment
-                : PaymentFlowConstants.TransactionKindReceipt;
-        }
+            return ResolveInvoiceDefaultTransactionKind(_linkedInvoice);
 
         return PaymentFlowConstants.TransactionKindReceipt;
     }
@@ -691,15 +687,15 @@ public sealed partial class PaymentViewModel : ObservableObject
             return;
         }
 
-        if (_linkedInvoice is not null && SelectedCustomer is not null)
-        {
-            await ApplyInvoiceDefaultSettlementAsync(forceResetAmounts, advanceOnly: false, version);
-            return;
-        }
-
         if (_linkedRentalProfile is not null && SelectedCustomer is not null)
         {
             await ApplyRentalDefaultSettlementAsync(forceResetAmounts, version);
+            return;
+        }
+
+        if (_linkedInvoice is not null && SelectedCustomer is not null)
+        {
+            await ApplyInvoiceDefaultSettlementAsync(forceResetAmounts, advanceOnly: false, version);
             return;
         }
 
@@ -731,11 +727,6 @@ public sealed partial class PaymentViewModel : ObservableObject
 
             if (advanceOnly || SettlementAmount <= 0m)
                 return;
-
-            if (_linkedInvoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement)
-                BankPayment = SettlementAmount;
-            else
-                BankReceipt = SettlementAmount;
         });
     }
 

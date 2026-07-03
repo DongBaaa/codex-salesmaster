@@ -197,6 +197,39 @@ public sealed class WpfGlobalUiGuardTests
     }
 
     [Fact]
+    public void PaymentWindow_KeepsInvoiceSettlementKindAndLongCustomerNameReadable()
+    {
+        var root = FindRepositoryRoot();
+        var xamlPath = Directory.EnumerateFiles(
+                Path.Combine(root, "Desktop"),
+                "PaymentWindow.xaml",
+                SearchOption.AllDirectories)
+            .Single();
+        var localStatePath = Directory.EnumerateFiles(
+                Path.Combine(root, "Desktop"),
+                "LocalStateService.cs",
+                SearchOption.AllDirectories)
+            .Single();
+        var syncServicePath = Directory.EnumerateFiles(
+                Path.Combine(root, "Desktop"),
+                "SyncService.cs",
+                SearchOption.AllDirectories)
+            .Single();
+
+        var xaml = File.ReadAllText(xamlPath);
+        var localState = File.ReadAllText(localStatePath);
+        var syncService = File.ReadAllText(syncServicePath);
+
+        Assert.Contains("ToolTip=\"{Binding CustomerName}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("TextTrimming=\"CharacterEllipsis\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("MinWidth=\"260\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("ResolveDirectPaymentTransactionKind(invoice)", localState, StringComparison.Ordinal);
+        Assert.Contains("NormalizeLinkedPaymentNote(payment.Note, transactionKind)", localState, StringComparison.Ordinal);
+        Assert.Contains("ResolvePulledPaymentTransactionKind(invoice)", syncService, StringComparison.Ordinal);
+        Assert.Contains("NormalizeLinkedPaymentNote(payment.Note, transactionKind)", syncService, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DashboardBalanceDetailBuilder_GroupsReceivableRowsByCustomerAndKeepsInvoiceDetails()
     {
         var customerA = Guid.NewGuid();

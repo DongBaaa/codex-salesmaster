@@ -6059,9 +6059,8 @@ public sealed class SyncService : IDisposable
         transaction.OfficeCode = invoice.OfficeCode;
         transaction.ResponsibleOfficeCode = invoice.ResponsibleOfficeCode;
         transaction.TransactionDate = payment.PaymentDate;
-        transaction.TransactionKind = invoice.VoucherType == VoucherType.Purchase
-            ? PaymentFlowConstants.TransactionKindPayment
-            : PaymentFlowConstants.TransactionKindReceipt;
+        var transactionKind = ResolvePulledPaymentTransactionKind(invoice);
+        transaction.TransactionKind = transactionKind;
         transaction.LinkedInvoiceId = invoice.Id;
         transaction.LinkedInvoiceNumber = string.IsNullOrWhiteSpace(invoice.InvoiceNumber)
             ? invoice.LocalTempNumber
@@ -6092,10 +6091,20 @@ public sealed class SyncService : IDisposable
             transaction.ReceiptTotal = Math.Max(0m, payment.Amount);
         }
 
-        transaction.Note = payment.Note;
+        transaction.Note = PaymentFlowConstants.NormalizeLinkedPaymentNote(payment.Note, transactionKind);
         transaction.IsDeleted = false;
         transaction.IsDirty = false;
         transaction.UpdatedAtUtc = payment.UpdatedAtUtc;
+    }
+
+    private static string ResolvePulledPaymentTransactionKind(LocalInvoice invoice)
+    {
+        if (invoice.LinkedRentalBillingProfileId.HasValue && invoice.LinkedRentalBillingProfileId.Value != Guid.Empty)
+            return PaymentFlowConstants.TransactionKindRentalReceipt;
+
+        return invoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement
+            ? PaymentFlowConstants.TransactionKindInvoicePayment
+            : PaymentFlowConstants.TransactionKindInvoiceReceipt;
     }
 
     private async Task<PulledTransactionSideEffectState> UpsertPulledTransactionsAsync(IReadOnlyList<TransactionDto> dtos, CancellationToken ct)

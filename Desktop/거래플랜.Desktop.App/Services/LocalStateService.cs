@@ -3221,6 +3221,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		var existingTransaction = await _db.Transactions.IgnoreQueryFilters()
 			.AsNoTracking()
 			.FirstOrDefaultAsync(current => current.Id == payment.Id, ct);
+		var transactionKind = ResolveDirectPaymentTransactionKind(invoice);
 		var transaction = new LocalTransaction
 		{
 			Id = payment.Id,
@@ -3230,9 +3231,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			OfficeCode = invoice.OfficeCode,
 			ResponsibleOfficeCode = invoice.ResponsibleOfficeCode,
 			TransactionDate = payment.PaymentDate,
-			TransactionKind = invoice.VoucherType == VoucherType.Purchase
-				? PaymentFlowConstants.TransactionKindPayment
-				: PaymentFlowConstants.TransactionKindReceipt,
+			TransactionKind = transactionKind,
 			LinkedInvoiceId = invoice.Id,
 			LinkedInvoiceNumber = string.IsNullOrWhiteSpace(invoice.InvoiceNumber)
 				? invoice.LocalTempNumber
@@ -3240,7 +3239,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			LinkedRentalBillingProfileId = invoice.LinkedRentalBillingProfileId,
 			LinkedRentalBillingRunId = invoice.LinkedRentalBillingRunId,
 			SettlementAmount = payment.Amount,
-			Note = payment.Note
+			Note = PaymentFlowConstants.NormalizeLinkedPaymentNote(payment.Note, transactionKind)
 		};
 
 		if (invoice.VoucherType == VoucherType.Purchase)
@@ -3255,6 +3254,16 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 
 		return await SaveTransactionAsync(transaction, session, ct);
+	}
+
+	private static string ResolveDirectPaymentTransactionKind(LocalInvoice invoice)
+	{
+		if (invoice.LinkedRentalBillingProfileId.HasValue && invoice.LinkedRentalBillingProfileId.Value != Guid.Empty)
+			return PaymentFlowConstants.TransactionKindRentalReceipt;
+
+		return invoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement
+			? PaymentFlowConstants.TransactionKindInvoicePayment
+			: PaymentFlowConstants.TransactionKindInvoiceReceipt;
 	}
 
 	public async Task DeletePaymentAsync(Guid id, CancellationToken ct = default(CancellationToken))
@@ -5641,8 +5650,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			}
 			return;
 		}
-		string transactionKindLabel = PaymentFlowConstants.GetTransactionKindDisplayName(transaction.TransactionKind);
-		string note = (string.IsNullOrWhiteSpace(transaction.Note) ? transactionKindLabel : (transactionKindLabel + " - " + transaction.Note.Trim()));
+		string note = PaymentFlowConstants.NormalizeLinkedPaymentNote(transaction.Note, transaction.TransactionKind);
 		if (payment == null)
 		{
 			_db.Payments.Add(new LocalPayment

@@ -538,10 +538,31 @@ public sealed class PaymentsController : ControllerBase
         transaction.LinkedRentalBillingProfileId = invoice.LinkedRentalBillingProfileId;
         transaction.LinkedRentalBillingRunId = invoice.LinkedRentalBillingRunId;
         transaction.SettlementAmount = payment.Amount;
-        transaction.TransactionKind = ResolveLinkedTransactionKind(invoice);
+        var transactionKind = ResolveLinkedTransactionKind(invoice);
+        transaction.TransactionKind = transactionKind;
         ApplyLinkedTransactionTotals(transaction, payment.Amount, IsPaymentVoucher(invoice.VoucherType));
-        transaction.Note = payment.Note;
+        transaction.Note = NormalizeLinkedPaymentNote(payment.Note, transactionKind);
         transaction.IsDeleted = false;
+    }
+
+    private static string NormalizeLinkedPaymentNote(string? note, string transactionKind)
+    {
+        var trimmed = (note ?? string.Empty).Trim();
+        var kindLabel = (transactionKind ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(trimmed) || string.IsNullOrWhiteSpace(kindLabel))
+            return trimmed;
+
+        if (string.Equals(trimmed, kindLabel, StringComparison.OrdinalIgnoreCase))
+            return string.Empty;
+
+        foreach (var separator in new[] { " - ", "-", " / ", "/" })
+        {
+            var prefix = kindLabel + separator;
+            if (trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return trimmed[prefix.Length..].Trim();
+        }
+
+        return trimmed;
     }
 
     private static string ResolveLinkedTransactionKind(Invoice invoice)

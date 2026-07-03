@@ -97,6 +97,36 @@ public static class PaymentFlowConstants
         };
     }
 
+    public static string NormalizeLinkedPaymentNote(string? note, string? transactionKind)
+    {
+        var trimmed = (note ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+            return string.Empty;
+
+        var labels = new[]
+            {
+                GetTransactionKindDisplayName(transactionKind),
+                NormalizeTransactionKind(transactionKind)
+            }
+            .Where(label => !string.IsNullOrWhiteSpace(label))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var label in labels)
+        {
+            if (string.Equals(trimmed, label, StringComparison.OrdinalIgnoreCase))
+                return string.Empty;
+
+            foreach (var separator in new[] { " - ", "-", " / ", "/" })
+            {
+                var prefix = label + separator;
+                if (trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    return trimmed[prefix.Length..].Trim();
+            }
+        }
+
+        return trimmed;
+    }
+
     public static string NormalizeBillingStatus(string? status)
     {
         var trimmed = (status ?? string.Empty).Trim();

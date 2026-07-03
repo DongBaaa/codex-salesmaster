@@ -398,9 +398,7 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
             Id = Guid.NewGuid(),
             CustomerId = row.CustomerId,
             TransactionDate = transactionDate,
-            TransactionKind = _voucherType == VoucherType.Purchase
-                ? PaymentFlowConstants.TransactionKindPayment
-                : PaymentFlowConstants.TransactionKindReceipt,
+            TransactionKind = ResolveInvoiceSettlementKind(_voucherType),
             LinkedInvoiceId = row.InvoiceId,
             LinkedInvoiceNumber = row.InvoiceNumberDisplay,
             SettlementAmount = amount,
@@ -422,6 +420,11 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
 
         return transaction;
     }
+
+    private static string ResolveInvoiceSettlementKind(VoucherType voucherType)
+        => voucherType is VoucherType.Purchase or VoucherType.Procurement
+            ? PaymentFlowConstants.TransactionKindInvoicePayment
+            : PaymentFlowConstants.TransactionKindInvoiceReceipt;
 
     private string BuildBatchBaseNote(IReadOnlyList<DashboardBalanceDetailRow> checkedRows, decimal amount)
     {

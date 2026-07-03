@@ -217,9 +217,9 @@
                     CornerRadius="6">
                 <Grid>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="1.38*"/>
+                        <ColumnDefinition Width="1.55*"/>
                         <ColumnDefinition Width="8"/>
-                        <ColumnDefinition Width="0.92*"/>
+                        <ColumnDefinition Width="0.75*"/>
                     </Grid.ColumnDefinitions>
 
                     <Grid Grid.Column="0">
@@ -230,7 +230,7 @@
                         <Grid Grid.Row="0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*" MinWidth="260"/>
                                 <ColumnDefinition Width="10"/>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="118"/>
@@ -244,7 +244,6 @@
                             <TextBlock Grid.Column="0" Text="고객/거래처" Style="{StaticResource InlineInfoLabelStyle}"/>
                             <Button Grid.Column="1"
                                     Style="{StaticResource BaseButtonStyle}"
-                                    Content="{Binding CustomerName}"
                                     Background="#D9E6F5"
                                     IsEnabled="{Binding CanSelectCustomer}"
                                     HorizontalAlignment="Stretch"
@@ -252,9 +251,15 @@
                                     FontWeight="Bold"
                                     Foreground="Black"
                                     Height="28"
-                                    MinWidth="0"
+                                    MinWidth="260"
                                     Padding="8,0"
-                                    Click="CustomerSelectButton_Click"/>
+                                    ToolTip="{Binding CustomerName}"
+                                    Click="CustomerSelectButton_Click">
+                                <TextBlock Text="{Binding CustomerName}"
+                                           Foreground="Black"
+                                           FontWeight="Bold"
+                                           TextTrimming="CharacterEllipsis"/>
+                            </Button>
 
                             <TextBlock Grid.Column="3" Text="대표전화" Style="{StaticResource InlineInfoLabelStyle}"/>
                             <TextBlock Grid.Column="4" Text="{Binding CustomerPhone}" Style="{StaticResource InlineInfoValueStyle}"/>
@@ -613,7 +618,10 @@
                                 <TextBlock Text="{Binding SelectedCustomer.NameOriginal, TargetNullValue=거래처를 선택하면 표시됩니다.}"
                                            Foreground="#8EA6C4"
                                            FontSize="12"
-                                           VerticalAlignment="Center"/>
+                                           VerticalAlignment="Center"
+                                           MaxWidth="320"
+                                           TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding SelectedCustomer.NameOriginal}"/>
                                 <Button Content="수정"
                                         Style="{StaticResource BaseButtonStyle}"
                                         MinWidth="62"

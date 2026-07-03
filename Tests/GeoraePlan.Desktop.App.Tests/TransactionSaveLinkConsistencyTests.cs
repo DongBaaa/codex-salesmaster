@@ -57,6 +57,7 @@ public sealed class TransactionSaveLinkConsistencyTests
             var payment = await db.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == transactionId);
             Assert.Equal(invoiceId, payment.InvoiceId);
             Assert.Equal(700m, payment.Amount);
+            Assert.Equal("invoice customer relink", payment.Note);
         }
         finally
         {
@@ -152,13 +153,56 @@ public sealed class TransactionSaveLinkConsistencyTests
             var transaction = await db.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == paymentId);
             Assert.Equal(customerId, transaction.CustomerId);
             Assert.Equal(invoiceId, transaction.LinkedInvoiceId);
-            Assert.Equal(PaymentFlowConstants.TransactionKindReceipt, transaction.TransactionKind);
+            Assert.Equal(PaymentFlowConstants.TransactionKindInvoiceReceipt, transaction.TransactionKind);
             Assert.Equal(450m, transaction.ReceiptTotal);
             Assert.Equal(450m, transaction.SettlementAmount);
+            Assert.Equal("dashboard payment mirror", transaction.Note);
 
             var payment = await db.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == paymentId);
             Assert.Equal(invoiceId, payment.InvoiceId);
             Assert.Equal(450m, payment.Amount);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SavePaymentAsync_StripsSettlementKindLabelFromRecentHistoryNote()
+    {
+        PrepareAppRoot("georaeplan-payment-transaction-note-kind-strip");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var invoiceId = Guid.NewGuid();
+            var paymentId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(customerId, "Payment note strip customer"));
+            db.Invoices.Add(CreateInvoice(invoiceId, customerId));
+            await db.SaveChangesAsync();
+
+            var session = CreatePaymentEditorSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var result = await local.SavePaymentAsync(new LocalPayment
+            {
+                Id = paymentId,
+                InvoiceId = invoiceId,
+                PaymentDate = new DateOnly(2026, 6, 24),
+                Amount = 450m,
+                Note = $"{PaymentFlowConstants.TransactionKindInvoiceReceipt} - 입금 확인"
+            }, session);
+
+            Assert.True(result.Success, result.Message);
+            var transaction = await db.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == paymentId);
+            Assert.Equal(PaymentFlowConstants.TransactionKindInvoiceReceipt, transaction.TransactionKind);
+            Assert.Equal("입금 확인", transaction.Note);
         }
         finally
         {

@@ -171,6 +171,98 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public void PaymentFlowConstants_NormalizeLinkedPaymentNote_RemovesDuplicatedSettlementKindOnly()
+    {
+        Assert.Equal(
+            string.Empty,
+            PaymentFlowConstants.NormalizeLinkedPaymentNote(
+                PaymentFlowConstants.TransactionKindInvoiceReceipt,
+                PaymentFlowConstants.TransactionKindInvoiceReceipt));
+        Assert.Equal(
+            "입금 확인",
+            PaymentFlowConstants.NormalizeLinkedPaymentNote(
+                $"{PaymentFlowConstants.TransactionKindInvoiceReceipt} - 입금 확인",
+                PaymentFlowConstants.TransactionKindInvoiceReceipt));
+        Assert.Equal(
+            "거래처 요청 메모",
+            PaymentFlowConstants.NormalizeLinkedPaymentNote(
+                "거래처 요청 메모",
+                PaymentFlowConstants.TransactionKindInvoiceReceipt));
+    }
+
+    [Fact]
+    public async Task PaymentViewModel_ConfigureForInvoice_SuggestsAmountWithoutPrefillingBankReceipt()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-payment-invoice-default-no-bank-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.Parse("92454545-4545-4545-4545-454545454545");
+            var invoiceId = Guid.Parse("92464646-4646-4646-4646-464646464646");
+            var customer = new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "전표 수금 기본값 거래처",
+                NameMatchKey = "전표수금기본값거래처",
+                IsDirty = false
+            };
+
+            var invoice = new LocalInvoice
+            {
+                Id = invoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 7, 3),
+                InvoiceNumber = "GP-PAY-NO-BANK-001",
+                LocalTempNumber = "TMP-GP-PAY-NO-BANK-001",
+                TotalAmount = 605_000m,
+                SupplyAmount = 550_000m,
+                VatAmount = 55_000m,
+                VersionGroupId = invoiceId,
+                IsConfirmed = true,
+                IsLatestVersion = true,
+                IsDirty = false
+            };
+
+            db.Customers.Add(customer);
+            db.Invoices.Add(invoice);
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var viewModel = new PaymentViewModel(local, session);
+
+            await viewModel.LoadAsync(customer);
+            await viewModel.ConfigureForInvoiceAsync(invoice);
+
+            Assert.Equal(PaymentFlowConstants.TransactionKindInvoiceReceipt, viewModel.SelectedTransactionKind);
+            Assert.Equal(605_000m, viewModel.SettlementAmount);
+            Assert.Equal(0m, viewModel.CashReceipt);
+            Assert.Equal(0m, viewModel.CardReceipt);
+            Assert.Equal(0m, viewModel.BankReceipt);
+            Assert.Equal(0m, viewModel.ReceiptTotal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public void DataIntegrityScanResult_PassiveStartupNotice_IgnoresDuplicateCandidateNoise()
     {
         var duplicateOnly = new DataIntegrityScanResult(
