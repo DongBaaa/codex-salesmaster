@@ -268,14 +268,6 @@
                                    Text="{Binding ScopeHintMessage}"
                                    Foreground="#EF9A9A"
                                    TextWrapping="Wrap"/>
-                        <TextBlock Margin="0,12,0,0"
-                                   Text="선택거래처"
-                                   Foreground="#9FB3C8"/>
-                        <TextBlock Text="{Binding SelectedCustomer.NameOriginal, TargetNullValue=선택된 거래처 없음}"
-                                   FontWeight="Bold"
-                                   FontSize="15"
-                                   Margin="0,4,0,0"
-                                   TextWrapping="Wrap"/>
                     </StackPanel>
                 </Border>
             </Grid>

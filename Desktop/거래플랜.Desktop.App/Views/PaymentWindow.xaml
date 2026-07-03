@@ -283,9 +283,6 @@
                                 <ColumnDefinition Width="10"/>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="96"/>
-                                <ColumnDefinition Width="10"/>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
 
                             <TextBlock Grid.Column="0" Text="거래구분" Style="{StaticResource InlineInfoLabelStyle}"/>
@@ -329,12 +326,10 @@
                             <TextBlock Grid.Column="7"
                                        Text="{Binding AdvanceBalance, StringFormat={}{0:N0}}"
                                        Style="{StaticResource InlineInfoValueStyle}"/>
-                            <TextBlock Grid.Column="9" Text="처리방향" Style="{StaticResource InlineInfoLabelStyle}"/>
-                            <TextBlock Grid.Column="10" Text="{Binding PaymentActionLabel}" Style="{StaticResource InlineInfoValueStyle}"/>
 
                             <TextBlock Grid.Row="1"
                                        Grid.Column="3"
-                                       Grid.ColumnSpan="8"
+                                       Grid.ColumnSpan="5"
                                        Margin="0,6,0,0"
                                        Text="{Binding SettlementGuideText}"
                                        Foreground="#90CAF9"
@@ -412,7 +407,6 @@
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
                             <Label Grid.Row="0" Grid.Column="0" Content="수금일자"/>
@@ -425,20 +419,14 @@
                                     <Style TargetType="{x:Type Button}" BasedOn="{StaticResource UnifiedDatePickerButtonStyle}"/>
                                 </DatePicker.Resources>
                             </DatePicker>
-                            <Label Grid.Row="1" Grid.Column="0" Content="수금구분"/>
-                            <TextBox Grid.Row="1"
-                                     Grid.Column="1"
-                                     Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
-                                     Text="{Binding PaymentActionLabel, Mode=OneWay}"
-                                     Margin="0,0,0,5"/>
-                            <Label Grid.Row="2" Grid.Column="0" Content="현금수금"/>
-                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding CashReceipt, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
-                            <Label Grid.Row="3" Grid.Column="0" Content="카드수금"/>
-                            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding CardReceipt, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
-                            <Label Grid.Row="4" Grid.Column="0" Content="통장수금"/>
-                            <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding BankReceipt, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
-                            <Label Grid.Row="5" Grid.Column="0" Content="할인 처리"/>
-                            <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding DiscountApplied, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}"/>
+                            <Label Grid.Row="1" Grid.Column="0" Content="현금수금"/>
+                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding CashReceipt, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
+                            <Label Grid.Row="2" Grid.Column="0" Content="카드수금"/>
+                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding CardReceipt, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
+                            <Label Grid.Row="3" Grid.Column="0" Content="통장수금"/>
+                            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding BankReceipt, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
+                            <Label Grid.Row="4" Grid.Column="0" Content="할인 처리"/>
+                            <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding DiscountApplied, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}"/>
                         </Grid>
 
                         <Border Grid.Row="2"
@@ -498,7 +486,6 @@
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
                             <Label Grid.Row="0" Grid.Column="0" Content="지급일자"/>
@@ -511,20 +498,14 @@
                                     <Style TargetType="{x:Type Button}" BasedOn="{StaticResource UnifiedDatePickerButtonStyle}"/>
                                 </DatePicker.Resources>
                             </DatePicker>
-                            <Label Grid.Row="1" Grid.Column="0" Content="지급구분"/>
-                            <TextBox Grid.Row="1"
-                                     Grid.Column="1"
-                                     Style="{StaticResource ReadOnlyInfoTextBoxStyle}"
-                                     Text="{Binding PaymentActionLabel, Mode=OneWay}"
-                                     Margin="0,0,0,5"/>
-                            <Label Grid.Row="2" Grid.Column="0" Content="현금지급"/>
-                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding CashPayment, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
-                            <Label Grid.Row="3" Grid.Column="0" Content="카드지급"/>
-                            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding CardPayment, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
-                            <Label Grid.Row="4" Grid.Column="0" Content="통장지급"/>
-                            <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding BankPayment, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
-                            <Label Grid.Row="5" Grid.Column="0" Content="할인 받음"/>
-                            <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding DiscountReceived, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}"/>
+                            <Label Grid.Row="1" Grid.Column="0" Content="현금지급"/>
+                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding CashPayment, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
+                            <Label Grid.Row="2" Grid.Column="0" Content="카드지급"/>
+                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding CardPayment, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
+                            <Label Grid.Row="3" Grid.Column="0" Content="통장지급"/>
+                            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding BankPayment, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
+                            <Label Grid.Row="4" Grid.Column="0" Content="할인 받음"/>
+                            <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding DiscountReceived, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}"/>
                         </Grid>
 
                         <Border Grid.Row="2"

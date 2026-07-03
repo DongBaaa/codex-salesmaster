@@ -223,10 +223,40 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("ToolTip=\"{Binding CustomerName}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("TextTrimming=\"CharacterEllipsis\"", xaml, StringComparison.Ordinal);
         Assert.Contains("MinWidth=\"260\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Content=\"수금구분\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Content=\"지급구분\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Text=\"처리방향\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("PaymentActionLabel", xaml, StringComparison.Ordinal);
         Assert.Contains("ResolveDirectPaymentTransactionKind(invoice)", localState, StringComparison.Ordinal);
         Assert.Contains("NormalizeLinkedPaymentNote(payment.Note, transactionKind)", localState, StringComparison.Ordinal);
         Assert.Contains("ResolvePulledPaymentTransactionKind(invoice)", syncService, StringComparison.Ordinal);
         Assert.Contains("NormalizeLinkedPaymentNote(payment.Note, transactionKind)", syncService, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OfficeWorkflowWindows_DoNotRepeatSameReadOnlySummaryValueInOnePanel()
+    {
+        var root = FindRepositoryRoot();
+        var periodLedgerXaml = File.ReadAllText(Directory.EnumerateFiles(
+                Path.Combine(root, "Desktop"),
+                "PeriodLedgerWindow.xaml",
+                SearchOption.AllDirectories)
+            .Single());
+        var rentalOnboardingXaml = File.ReadAllText(Directory.EnumerateFiles(
+                Path.Combine(root, "Desktop"),
+                "RentalCustomerOnboardingWindow.xaml",
+                SearchOption.AllDirectories)
+            .Single());
+
+        Assert.Equal(
+            1,
+            CountOccurrences(periodLedgerXaml, "SelectedCustomer.NameOriginal, TargetNullValue=선택된 거래처 없음"));
+        Assert.Equal(
+            1,
+            CountOccurrences(rentalOnboardingXaml, "BillingStartDate, StringFormat=계약 체결일: {0:yyyy-MM-dd}"));
+        Assert.Equal(
+            2,
+            CountOccurrences(rentalOnboardingXaml, "ExpectedBillingAmountText, StringFormat=예상 청구 금액: {0}"));
     }
 
     [Fact]
@@ -470,6 +500,9 @@ public sealed class WpfGlobalUiGuardTests
         value = 0;
         return false;
     }
+
+    private static int CountOccurrences(string source, string value)
+        => Regex.Matches(source, Regex.Escape(value), RegexOptions.CultureInvariant).Count;
 
     private static string ExtractBlock(string source, string startMarker, string endMarker)
     {

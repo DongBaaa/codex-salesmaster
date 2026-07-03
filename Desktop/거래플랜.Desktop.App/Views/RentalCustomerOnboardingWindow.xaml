@@ -419,8 +419,6 @@
                                     <TextBlock Text="렌탈 / 청구 정보" Foreground="#4FC3F7" FontWeight="Bold"/>
                                     <TextBlock Text="{Binding CustomerName, StringFormat=거래처명: {0}}" Margin="0,6,0,0"/>
                                     <TextBlock Text="{Binding BillingStartDate, StringFormat=계약 체결일: {0:yyyy-MM-dd}}" Margin="0,4,0,0"/>
-                                    <TextBlock Text="{Binding BillingStartDate, StringFormat=계약 체결일: {0:yyyy-MM-dd}}" Margin="0,4,0,0"/>
-                                    <TextBlock Text="{Binding BillingStartDate, StringFormat=계약 체결일: {0:yyyy-MM-dd}}" Margin="0,4,0,0"/>
                                 </StackPanel>
                             </Border>
                             <Border Grid.Row="1" Background="#223754" CornerRadius="6" Padding="12" Margin="0,0,0,8">
@@ -429,8 +427,6 @@
                                     <TextBlock Text="{Binding InstallLocation, StringFormat=설치위치: {0}}" Margin="0,6,0,0"/>
                                     <TextBlock Text="{Binding ExpectedBillingAmountText, StringFormat=예상 청구 금액: {0}}" Margin="0,4,0,0"/>
                                     <TextBlock Text="{Binding BillingCycleMonths, StringFormat=청구주기: {0}개월}" Margin="0,4,0,0"/>
-                                    <TextBlock Text="{Binding ExpectedBillingAmountText, StringFormat=예상 청구 금액: {0}}" Margin="0,4,0,0"/>
-                                    <TextBlock Text="{Binding ExpectedBillingAmountText, StringFormat=예상 청구 금액: {0}}" Margin="0,4,0,0"/>
                                     <TextBlock Text="{Binding BillingSchedulePreviewText}" Margin="0,4,0,0" TextWrapping="Wrap"/>
                                     <TextBlock Text="{Binding DocumentIssuePreviewText}" Margin="0,4,0,0" TextWrapping="Wrap"/>
                                 </StackPanel>
