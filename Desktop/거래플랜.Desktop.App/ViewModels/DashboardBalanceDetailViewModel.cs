@@ -484,4 +484,5 @@ public sealed partial class DashboardBalanceDetailRow : ObservableObject
     public decimal SettledAmount { get; init; }
     public decimal BalanceAmount { get; init; }
     public string ResponsibleOfficeCode { get; init; } = string.Empty;
+    public long Revision { get; init; }
 }

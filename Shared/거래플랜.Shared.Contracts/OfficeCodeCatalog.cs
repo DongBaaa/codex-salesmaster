@@ -196,7 +196,7 @@ public static class OfficeCodeCatalog
     public static string GetOfficeDisplayName(string? officeCode)
         => NormalizeOrDefault(officeCode, Usenet) switch
         {
-            Itworld => Itworld,
+            Itworld => "아이티월드[ITWORLD]",
             Yeonsu => Yeonsu,
             _ => "유즈넷"
         };

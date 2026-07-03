@@ -57,7 +57,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
     private static readonly CanonicalOfficeDefinition[] CanonicalOffices =
     [
         new(OfficeCodeCatalog.Usenet, OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet), true, OfficeCodeCatalog.UsenetMainWarehouse, "유즈넷 창고"),
-        new(OfficeCodeCatalog.Itworld, OfficeCodeCatalog.Itworld, false, OfficeCodeCatalog.ItworldMainWarehouse, "ITWORLD 창고"),
+        new(OfficeCodeCatalog.Itworld, OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Itworld), false, OfficeCodeCatalog.ItworldMainWarehouse, "아이티월드 창고"),
         new(OfficeCodeCatalog.Yeonsu, OfficeCodeCatalog.Yeonsu, false, OfficeCodeCatalog.YeonsuMainWarehouse, "YEONSU 창고")
     ];
 

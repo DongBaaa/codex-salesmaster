@@ -1452,6 +1452,65 @@ public partial class MainWindow : Window
         await OpenInvoiceWindowAsync(invoice, ownerOverride);
     }
 
+    public Task OpenInvoiceFromChildWindowAsync(Guid invoiceId, Window? ownerOverride = null)
+        => OpenInvoiceWindowAsync(invoiceId, ownerOverride);
+
+    public async Task<bool> DeleteInvoiceFromChildWindowAsync(Guid invoiceId, long? expectedRevision, Window? ownerOverride = null)
+    {
+        var owner = ownerOverride ?? this;
+        var invoice = await _local.GetLatestInvoiceVersionAsync(invoiceId, _session);
+        if (invoice is null)
+        {
+            MessageBox.Show(
+                owner,
+                "삭제할 전표를 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도하세요.",
+                "전표 삭제",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return false;
+        }
+
+        var displayNumber = !string.IsNullOrWhiteSpace(invoice.InvoiceNumber)
+            ? invoice.InvoiceNumber.Trim()
+            : !string.IsNullOrWhiteSpace(invoice.LocalTempNumber)
+                ? invoice.LocalTempNumber.Trim()
+                : "(번호 없음)";
+        var confirm = MessageBox.Show(
+            owner,
+            $"전표 '{displayNumber}'을 삭제하시겠습니까?{Environment.NewLine}삭제된 전표는 환경설정 > 휴지통에서 복원할 수 있습니다.",
+            "전표 삭제 확인",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning);
+
+        if (confirm != MessageBoxResult.OK)
+            return false;
+
+        var result = await _local.DeleteInvoiceAsync(invoice.Id, _session, expectedRevision ?? invoice.Revision);
+        if (!result.Success)
+        {
+            await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+            MessageBox.Show(
+                owner,
+                result.Message,
+                result.ConcurrencyConflict ? "동시 수정 충돌" : result.PermissionDenied ? "권한 없음" : "삭제 실패",
+                MessageBoxButton.OK,
+                result.ConcurrencyConflict || result.PermissionDenied
+                    ? MessageBoxImage.Warning
+                    : MessageBoxImage.Error);
+            return false;
+        }
+
+        var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
+        await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+        MessageBox.Show(
+            owner,
+            LocalStateService.ComposeServerWriteStatusMessage("전표를 삭제했습니다.", serverWriteResult),
+            "전표 삭제",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+        return true;
+    }
+
     private async Task OpenInvoiceWindowAsync(Data.LocalInvoice invoice, Window? ownerOverride = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");

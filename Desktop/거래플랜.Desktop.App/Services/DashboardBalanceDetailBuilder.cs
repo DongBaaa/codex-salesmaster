@@ -52,7 +52,8 @@ public static class DashboardBalanceDetailBuilder
                     TotalAmount = invoice.TotalAmount,
                     SettledAmount = invoice.SettledAmount,
                     BalanceAmount = row.BalanceAmount,
-                    ResponsibleOfficeCode = invoice.ResponsibleOfficeCode
+                    ResponsibleOfficeCode = invoice.ResponsibleOfficeCode,
+                    Revision = invoice.Revision
                 };
             })
             .OrderBy(row => row.CustomerName, StringComparer.CurrentCultureIgnoreCase)

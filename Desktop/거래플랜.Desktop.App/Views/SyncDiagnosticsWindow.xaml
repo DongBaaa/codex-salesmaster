@@ -306,7 +306,7 @@
                                 <DataGridTextColumn Header="필터" Binding="{Binding SummaryText}" Width="220"/>
                                 <DataGridTextColumn Header="원인 요약" Binding="{Binding RawMessage}" Width="2*"/>
                                 <DataGridTextColumn Header="상태" Binding="{Binding Status}" Width="90"/>
-                                <DataGridCheckBoxColumn Header="복구" Binding="{Binding IsRecoverable}" Width="70"/>
+                                <DataGridCheckBoxColumn Header="복구" Binding="{Binding IsRecoverable}" Width="70" IsReadOnly="True"/>
                                 <DataGridTextColumn Header="횟수" Binding="{Binding OccurrenceCount}" Width="70"/>
                                 <DataGridTextColumn Header="사용자 범위" Binding="{Binding UserScopeText}" Width="170"/>
                             </DataGrid.Columns>

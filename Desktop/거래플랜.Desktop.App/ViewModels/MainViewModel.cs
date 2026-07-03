@@ -67,9 +67,15 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(DashboardSalesMetricToggleText))]
     [NotifyPropertyChangedFor(nameof(DashboardSummaryColumnCount))]
+    [NotifyPropertyChangedFor(nameof(ShowDashboardExpandedSalesCards))]
     private bool _dashboardSalesMetricsExpanded = true;
     public string DashboardSalesMetricToggleText => DashboardSalesMetricsExpanded ? "매출/평균 접기" : "매출/평균 펼치기";
-    public int DashboardSummaryColumnCount => DashboardSalesMetricsExpanded ? 8 : 6;
+    public bool CanViewDashboardSalesCards => _session.HasAdministrativePrivileges;
+    public bool ShowDashboardSalesMetricToggle => CanViewDashboardSalesCards;
+    public bool ShowDashboardExpandedSalesCards => CanViewDashboardSalesCards && DashboardSalesMetricsExpanded;
+    public int DashboardSummaryColumnCount => CanViewDashboardSalesCards
+        ? (DashboardSalesMetricsExpanded ? 8 : 6)
+        : 5;
 
     // 전표 목록 - Left panel (거래처 필터)
     private List<LocalCustomer> _allCustomers = new();
@@ -1113,20 +1119,29 @@ public sealed partial class MainViewModel : ObservableObject
             ?? await _local.GetInvoiceListSummariesAsync(from: null, to: null, customerId: null, session: _session, ct);
         var now = DateOnly.FromDateTime(DateTime.Today);
 
-        var monthlySales = sourceInvoices
-            .Where(i => i.VoucherType == VoucherType.Sales
-                     && i.InvoiceDate.Year == now.Year
-                     && i.InvoiceDate.Month == now.Month)
-            .Sum(i => i.TotalAmount);
+        if (CanViewDashboardSalesCards)
+        {
+            var monthlySales = sourceInvoices
+                .Where(i => i.VoucherType == VoucherType.Sales
+                         && i.InvoiceDate.Year == now.Year
+                         && i.InvoiceDate.Month == now.Month)
+                .Sum(i => i.TotalAmount);
 
-        var monthlyInvoiceCount = sourceInvoices.Count(i =>
-            i.InvoiceDate.Year == now.Year && i.InvoiceDate.Month == now.Month);
+            var monthlyInvoiceCount = sourceInvoices.Count(i =>
+                i.InvoiceDate.Year == now.Year && i.InvoiceDate.Month == now.Month);
 
-        DashboardMonthlySales = monthlySales;
-        DashboardMonthlyInvoiceCount = monthlyInvoiceCount;
-        DashboardMonthlyAverageSales = monthlyInvoiceCount == 0
-            ? 0
-            : Math.Round(monthlySales / monthlyInvoiceCount, 0, MidpointRounding.AwayFromZero);
+            DashboardMonthlySales = monthlySales;
+            DashboardMonthlyInvoiceCount = monthlyInvoiceCount;
+            DashboardMonthlyAverageSales = monthlyInvoiceCount == 0
+                ? 0
+                : Math.Round(monthlySales / monthlyInvoiceCount, 0, MidpointRounding.AwayFromZero);
+        }
+        else
+        {
+            DashboardMonthlySales = 0m;
+            DashboardMonthlyInvoiceCount = 0;
+            DashboardMonthlyAverageSales = 0m;
+        }
         DashboardReceivable = sourceInvoices
             .Where(invoice => invoice.VoucherType == VoucherType.Sales)
             .Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.SettledAmount));

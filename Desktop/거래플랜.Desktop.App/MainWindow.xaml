@@ -322,7 +322,8 @@
                         Style="{StaticResource DashboardMetricButtonStyle}"
                         Command="{Binding ToggleDashboardSalesMetricsCommand}"
                         MinWidth="142"
-                        ToolTip="이번 달 매출과 월 평균 전표 카드를 접거나 펼칩니다.">
+                        ToolTip="이번 달 매출과 월 평균 전표 카드를 접거나 펼칩니다."
+                        Visibility="{Binding ShowDashboardSalesMetricToggle, Converter={StaticResource BoolToVisibility}}">
                     <StackPanel>
                         <TextBlock Text="{Binding DashboardSalesMetricToggleText}"
                                    Style="{StaticResource DashboardMetricLabelTextStyle}"
@@ -337,20 +338,21 @@
                 </Button>
                 <UniformGrid Columns="{Binding DashboardSummaryColumnCount}">
                 <Border Style="{StaticResource DashboardMetricCardStyle}"
-                        Visibility="{Binding DashboardSalesMetricsExpanded, Converter={StaticResource BoolToVisibility}}">
+                        Visibility="{Binding ShowDashboardExpandedSalesCards, Converter={StaticResource BoolToVisibility}}">
                     <StackPanel>
                         <TextBlock Text="이번 달 매출" Style="{StaticResource DashboardMetricLabelTextStyle}"/>
                         <TextBlock Text="{Binding DashboardMonthlySales, StringFormat={}{0:N0}원}" Style="{StaticResource DashboardMetricValueTextStyle}" Foreground="#A5D6A7"/>
                     </StackPanel>
                 </Border>
                 <Border Style="{StaticResource DashboardMetricCardStyle}"
-                        Visibility="{Binding DashboardSalesMetricsExpanded, Converter={StaticResource BoolToVisibility}}">
+                        Visibility="{Binding ShowDashboardExpandedSalesCards, Converter={StaticResource BoolToVisibility}}">
                     <StackPanel>
                         <TextBlock Text="월 평균 전표" Style="{StaticResource DashboardMetricLabelTextStyle}"/>
                         <TextBlock Text="{Binding DashboardMonthlyAverageSales, StringFormat={}{0:N0}원}" Style="{StaticResource DashboardMetricValueTextStyle}"/>
                     </StackPanel>
                 </Border>
-                <Border Style="{StaticResource DashboardMetricCardStyle}">
+                <Border Style="{StaticResource DashboardMetricCardStyle}"
+                        Visibility="{Binding CanViewDashboardSalesCards, Converter={StaticResource BoolToVisibility}}">
                     <StackPanel>
                         <TextBlock Text="이번 달 전표" Style="{StaticResource DashboardMetricLabelTextStyle}"/>
                         <TextBlock Text="{Binding DashboardMonthlyInvoiceCount, StringFormat={}{0:N0}건}" Style="{StaticResource DashboardMetricValueTextStyle}"/>

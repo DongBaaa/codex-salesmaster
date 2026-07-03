@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using System.Globalization;
 using System.Net.Http;
 using System.Net.Http.Json;
@@ -1516,7 +1516,7 @@ public sealed class LocalStateServicePartialsTests
 
         var option = Assert.Single(result);
         Assert.Equal(OfficeCodeCatalog.Itworld, option.Value);
-        Assert.Equal(OfficeCodeCatalog.Itworld, option.DisplayName);
+        Assert.Equal("아이티월드[ITWORLD]", option.DisplayName);
     }
 
     [Fact]
@@ -2723,8 +2723,8 @@ public sealed class LocalStateServicePartialsTests
 
             var expandedItworldAsset = Assert.Single(expanded, candidate => candidate.Source.Id == itworldAssetId);
             Assert.True(expandedItworldAsset.IsOutsideCurrentOffice);
-            Assert.Equal("ITWORLD", expandedItworldAsset.ManagementCompanyName);
-            Assert.Equal("ITWORLD", expandedItworldAsset.AssetScopeDisplay);
+            Assert.Equal("아이티월드[ITWORLD]", expandedItworldAsset.ManagementCompanyName);
+            Assert.Equal("아이티월드[ITWORLD]", expandedItworldAsset.AssetScopeDisplay);
         }
         finally
         {
@@ -3614,7 +3614,7 @@ public sealed class LocalStateServicePartialsTests
             TenantScopeCatalog.UsenetGroup);
 
         Assert.Equal("OFFICE:ITWORLD", result.ScopeKey);
-        Assert.Equal("ITWORLD", result.ScopeDisplayName);
+        Assert.Equal("아이티월드[ITWORLD]", result.ScopeDisplayName);
     }
 
     [Fact]

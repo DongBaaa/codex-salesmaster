@@ -142,12 +142,18 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("DashboardCustomerCount", xaml, StringComparison.Ordinal);
         Assert.Contains("DashboardSafetyStockAlerts", xaml, StringComparison.Ordinal);
         Assert.Contains("ToggleDashboardSalesMetricsCommand", xaml, StringComparison.Ordinal);
-        Assert.Contains("DashboardSalesMetricsExpanded", xaml, StringComparison.Ordinal);
+        Assert.Contains("DashboardSalesMetricsExpanded", viewModel, StringComparison.Ordinal);
         Assert.Contains("DashboardSummaryColumnCount", xaml, StringComparison.Ordinal);
         Assert.Contains("OpenDashboardReceivableDetailsCommand", xaml, StringComparison.Ordinal);
         Assert.Contains("OpenDashboardPayableDetailsCommand", xaml, StringComparison.Ordinal);
         Assert.Contains("DashboardBalanceDetailsWindow", viewModel, StringComparison.Ordinal);
         Assert.Contains("afterPaymentSavedAsync: LoadInvoiceListAsync", viewModel, StringComparison.Ordinal);
+        Assert.Contains("ShowDashboardSalesMetricToggle", xaml, StringComparison.Ordinal);
+        Assert.Contains("ShowDashboardExpandedSalesCards", xaml, StringComparison.Ordinal);
+        Assert.Contains("CanViewDashboardSalesCards", xaml, StringComparison.Ordinal);
+        Assert.Contains("public bool CanViewDashboardSalesCards => _session.HasAdministrativePrivileges;", viewModel, StringComparison.Ordinal);
+        Assert.Contains("DashboardMonthlySales = 0m;", viewModel, StringComparison.Ordinal);
+        Assert.Contains("DashboardMonthlyInvoiceCount = 0;", viewModel, StringComparison.Ordinal);
         Assert.DoesNotContain("전월 대비", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("DashboardSalesTrendPercent", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("DashboardSalesTrendPercent", viewModel, StringComparison.Ordinal);
@@ -194,6 +200,27 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("WaitForServerWriteWithTimeoutAsync", viewModel, StringComparison.Ordinal);
         Assert.Contains("await RefreshAsync();", viewModel, StringComparison.Ordinal);
         Assert.Contains("await _afterPaymentSavedAsync();", viewModel, StringComparison.Ordinal);
+        Assert.Contains("MouseDoubleClick=\"BalanceRowsDataGrid_MouseDoubleClick\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("PreviewMouseRightButtonDown=\"BalanceRowsDataGrid_PreviewMouseRightButtonDown\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Header=\"전표 열기\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Header=\"전표 삭제\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("public long Revision { get; init; }", viewModel, StringComparison.Ordinal);
+        Assert.Contains("Revision = invoice.Revision", File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Services",
+            "DashboardBalanceDetailBuilder.cs")), StringComparison.Ordinal);
+        Assert.Contains("OpenInvoiceFromChildWindowAsync", File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "MainWindow.xaml.cs")), StringComparison.Ordinal);
+        Assert.Contains("DeleteInvoiceFromChildWindowAsync", File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "MainWindow.xaml.cs")), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -405,6 +432,45 @@ public sealed class WpfGlobalUiGuardTests
     }
 
     [Fact]
+    public void DataGridCheckBoxColumns_ToggleWithSingleClickAndKeepStatusColumnsReadOnly()
+    {
+        var root = FindRepositoryRoot();
+        var appStartup = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "App.xaml.cs"));
+        var service = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Infrastructure",
+            "DataGridCheckBoxSingleClickService.cs"));
+
+        Assert.Contains("DataGridCheckBoxSingleClickService.RegisterGlobal();", appStartup, StringComparison.Ordinal);
+        Assert.Contains("EventManager.RegisterClassHandler", service, StringComparison.Ordinal);
+        Assert.Contains("UIElement.PreviewMouseLeftButtonDownEvent", service, StringComparison.Ordinal);
+        Assert.Contains("DataGridCheckBoxColumn checkBoxColumn", service, StringComparison.Ordinal);
+        Assert.Contains("TryToggleBoundBoolean", service, StringComparison.Ordinal);
+        Assert.Contains("binding.Mode is BindingMode.OneWay or BindingMode.OneTime", service, StringComparison.Ordinal);
+        Assert.Contains("propertyDescriptor.IsReadOnly", service, StringComparison.Ordinal);
+        Assert.Contains("e.Handled = true", service, StringComparison.Ordinal);
+
+        AssertReadOnlyCheckBoxColumn(root, "CustomerManagementWindow.xaml", "Header=\"변경됨\"");
+        AssertReadOnlyCheckBoxColumn(root, "RentalAssetWindow.xaml", "Header=\"이상\"");
+        AssertReadOnlyCheckBoxColumn(root, "RentalSettingsWindow.xaml", "Header=\"자동\"");
+        AssertReadOnlyCheckBoxColumn(root, "SyncDiagnosticsWindow.xaml", "Header=\"복구\"");
+    }
+
+    [Fact]
+    public void OfficeCodeCatalog_KeepsItworldVisibleAsKoreanNameWithCode()
+    {
+        Assert.Equal("아이티월드[ITWORLD]", OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Itworld));
+        Assert.True(OfficeCodeCatalog.TryNormalizeOfficeCode("아이티월드", out var normalizedOfficeCode));
+        Assert.Equal(OfficeCodeCatalog.Itworld, normalizedOfficeCode);
+    }
+
+    [Fact]
     public void RentalAssetWindow_KeepsDetailSelectionSingleAndSelectionAutosaveStable()
     {
         var root = FindRepositoryRoot();
@@ -534,6 +600,23 @@ public sealed class WpfGlobalUiGuardTests
             xaml,
             StringComparison.Ordinal);
         Assert.Contains(actionMarker, xaml, StringComparison.Ordinal);
+    }
+
+    private static void AssertReadOnlyCheckBoxColumn(string root, string viewName, string headerMarker)
+    {
+        var xamlPath = Path.Combine(root, "Desktop", "거래플랜.Desktop.App", "Views", viewName);
+        var xaml = File.ReadAllText(xamlPath);
+        var headerIndex = xaml.IndexOf(headerMarker, StringComparison.Ordinal);
+        Assert.True(headerIndex >= 0, $"{viewName}에서 {headerMarker} 체크박스 컬럼을 찾을 수 없습니다.");
+
+        var columnStart = xaml.LastIndexOf("<DataGridCheckBoxColumn", headerIndex, StringComparison.Ordinal);
+        Assert.True(columnStart >= 0, $"{viewName}에서 {headerMarker} 체크박스 컬럼 시작을 찾을 수 없습니다.");
+
+        var columnEnd = xaml.IndexOf('>', headerIndex);
+        Assert.True(columnEnd > headerIndex, $"{viewName}에서 {headerMarker} 체크박스 컬럼 끝을 찾을 수 없습니다.");
+
+        var columnTag = xaml[columnStart..(columnEnd + 1)];
+        Assert.Contains("IsReadOnly=\"True\"", columnTag, StringComparison.Ordinal);
     }
 
     private static int GetLineNumber(string source, int index)

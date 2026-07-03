@@ -193,7 +193,7 @@
                         <DataGridTextColumn Header="연결 청구프로필" Binding="{Binding LinkedProfileDisplay}" Width="220"/>
                         <DataGridTextColumn Header="이슈" Binding="{Binding IssueSummary}" Width="220"/>
                         <DataGridTextColumn Header="권장 처리" Binding="{Binding SuggestedAction}" Width="190"/>
-                        <DataGridCheckBoxColumn Header="자동" Binding="{Binding CanAutoNormalize}" Width="60"/>
+                        <DataGridCheckBoxColumn Header="자동" Binding="{Binding CanAutoNormalize}" Width="60" IsReadOnly="True"/>
                     </DataGrid.Columns>
                 </DataGrid>
             </Grid>

@@ -133,9 +133,19 @@
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Style="{StaticResource PanelBorder}">
-                <DataGrid ItemsSource="{Binding Rows}"
+                <DataGrid x:Name="BalanceRowsDataGrid"
+                          ItemsSource="{Binding Rows}"
                           SelectedItem="{Binding SelectedRow, Mode=TwoWay}"
-                          SelectionMode="Single">
+                          SelectionMode="Single"
+                          MouseDoubleClick="BalanceRowsDataGrid_MouseDoubleClick"
+                          PreviewMouseRightButtonDown="BalanceRowsDataGrid_PreviewMouseRightButtonDown">
+                    <DataGrid.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="전표 열기" Click="OpenInvoiceMenuItem_Click"/>
+                            <Separator/>
+                            <MenuItem Header="전표 삭제" Click="DeleteInvoiceMenuItem_Click"/>
+                        </ContextMenu>
+                    </DataGrid.ContextMenu>
                     <DataGrid.Columns>
                         <DataGridTemplateColumn Header="처리" Width="54">
                             <DataGridTemplateColumn.CellTemplate>

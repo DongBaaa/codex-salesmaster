@@ -191,6 +191,7 @@ public partial class App : Application
         TaskScheduler.UnobservedTaskException += HandleTaskSchedulerUnhandledException;
 
         DataGridAutoColumnWidthService.RegisterGlobal();
+        DataGridCheckBoxSingleClickService.RegisterGlobal();
         WindowActivationStackService.RegisterGlobal();
 
 

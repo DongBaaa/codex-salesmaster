@@ -282,7 +282,7 @@
                         <DataGridTextColumn Header="월요금" Binding="{Binding Source.MonthlyFee, StringFormat=N0}" Width="100"/>
                         <DataGridTextColumn Header="만료일" Binding="{Binding Source.RentalEndDate}" Width="100"/>
                         <DataGridTextColumn Header="남은일수" Binding="{Binding DaysRemaining}" Width="76"/>
-                        <DataGridCheckBoxColumn Header="이상" Binding="{Binding HasDataIssue}" Width="60"/>
+                        <DataGridCheckBoxColumn Header="이상" Binding="{Binding HasDataIssue}" Width="60" IsReadOnly="True"/>
                     </DataGrid.Columns>
                 </DataGrid>
             </Border>
