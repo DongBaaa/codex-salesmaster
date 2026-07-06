@@ -819,6 +819,42 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
+        if (row.IsTransactionRow)
+        {
+            if (SelectedCustomerFilter is null)
+            {
+                var transactionCustomer = _allCustomers.FirstOrDefault(c => c.Id == row.CustomerId)
+                    ?? await _local.GetCustomerAsync(row.CustomerId);
+                if (!IsCurrentInvoicePreview(version))
+                    return;
+
+                if (transactionCustomer is not null)
+                {
+                    PreviewCustomerName = transactionCustomer.NameOriginal;
+                    _suppressCustomerSave = true;
+                    try
+                    {
+                        EditCustBizNumber = transactionCustomer.BusinessNumber;
+                        EditCustPhone = transactionCustomer.Phone;
+                        EditCustDept = transactionCustomer.Department;
+                        EditCustContactPerson = transactionCustomer.ContactPerson;
+                        EditCustAddress = transactionCustomer.Address;
+                        EditCustNotes = transactionCustomer.Notes;
+                    }
+                    finally
+                    {
+                        _suppressCustomerSave = false;
+                    }
+
+                    CustomerInlineSaveStatus = "수금/지급 내역 선택 상태입니다. 거래처 정보는 복사할 수 있으며, 수정은 왼쪽 거래처를 선택한 뒤 가능합니다.";
+                    await RefreshCustomerFinancialPreviewAsync(transactionCustomer);
+                    RequestRefreshPreviewCustomerContract(transactionCustomer);
+                }
+            }
+
+            return;
+        }
+
         var inv = await _local.GetLatestInvoiceVersionAsync(row.Id, _session);
         if (!IsCurrentInvoicePreview(version))
             return;
@@ -933,11 +969,12 @@ public sealed partial class MainViewModel : ObservableObject
             Guid? customerId = SelectedCustomerFilter?.Id;
             var queryDateRange = ResolveMainInvoiceQueryDateRange(FilterFrom, FilterTo);
             var invoiceList = await _local.GetInvoiceListSummariesAsync(queryDateRange.From, queryDateRange.To, customerId, _session, ct);
+            var standaloneTransactions = await _local.GetStandaloneTransactionsForLedgerAsync(queryDateRange.From, queryDateRange.To, customerId, _session, ct);
             if (!IsCurrentInvoiceListLoad(loadCts))
                 return;
 
             var canReuseAsAllInvoiceSet = customerId is null && queryDateRange.From is null && queryDateRange.To is null;
-            var customerMap = await BuildInvoiceCustomerNameMapAsync(invoiceList, ct);
+            var customerMap = await BuildInvoiceCustomerNameMapAsync(invoiceList, standaloneTransactions.Select(transaction => transaction.CustomerId), ct);
             if (!IsCurrentInvoiceListLoad(loadCts))
                 return;
 
@@ -960,9 +997,10 @@ public sealed partial class MainViewModel : ObservableObject
                 });
             }
 
+            VoucherType? selectedVoucherType = null;
             if (!string.Equals(SelectedVoucherTypeFilter, "전체", StringComparison.OrdinalIgnoreCase))
             {
-                var selectedType = SelectedVoucherTypeFilter switch
+                selectedVoucherType = SelectedVoucherTypeFilter switch
                 {
                     "매출" => VoucherType.Sales,
                     "매입" => VoucherType.Purchase,
@@ -972,7 +1010,7 @@ public sealed partial class MainViewModel : ObservableObject
                     _ => (VoucherType?)null
                 };
 
-                if (selectedType is { } type)
+                if (selectedVoucherType is { } type)
                     filteredInvoices = filteredInvoices.Where(inv => inv.VoucherType == type);
             }
 
@@ -983,16 +1021,52 @@ public sealed partial class MainViewModel : ObservableObject
             if (maxAmount.HasValue)
                 filteredInvoices = filteredInvoices.Where(inv => inv.TotalAmount <= maxAmount.Value);
 
+            IEnumerable<LocalTransaction> filteredTransactions = standaloneTransactions
+                .Where(transaction => MatchesSelectedInvoiceOfficeCode(transaction.ResponsibleOfficeCode));
+            if (!string.IsNullOrWhiteSpace(hiddenTextFilters.CustomerName))
+            {
+                var needle = hiddenTextFilters.CustomerName.Trim();
+                filteredTransactions = filteredTransactions.Where(transaction =>
+                {
+                    var name = customerMap.TryGetValue(transaction.CustomerId, out var n) ? n : string.Empty;
+                    return name.Contains(needle, StringComparison.OrdinalIgnoreCase);
+                });
+            }
+
+            if (!string.Equals(SelectedVoucherTypeFilter, "전체", StringComparison.OrdinalIgnoreCase))
+            {
+                filteredTransactions = selectedVoucherType == VoucherType.Collection
+                    ? filteredTransactions
+                    : Enumerable.Empty<LocalTransaction>();
+            }
+
+            if (minAmount.HasValue)
+                filteredTransactions = filteredTransactions.Where(transaction => GetStandaloneTransactionLedgerAmount(transaction) >= minAmount.Value);
+            if (maxAmount.HasValue)
+                filteredTransactions = filteredTransactions.Where(transaction => GetStandaloneTransactionLedgerAmount(transaction) <= maxAmount.Value);
+
             var finalInvoices = filteredInvoices
                 .OrderByDescending(i => i.InvoiceDate)
                 .ThenByDescending(i => i.InvoiceNumber)
                 .ToList();
+            var finalTransactions = filteredTransactions.ToList();
 
-            var rows = finalInvoices.Select(inv =>
+            var invoiceRows = finalInvoices.Select(inv =>
             {
                 var custName = customerMap.TryGetValue(inv.CustomerId, out var n) ? n : "(미지정)";
                 return InvoiceListRow.From(inv, custName, showCustomerName);
             }).ToList();
+            var transactionRows = finalTransactions.Select(transaction =>
+            {
+                var custName = customerMap.TryGetValue(transaction.CustomerId, out var n) ? n : "(미지정)";
+                return InvoiceListRow.From(transaction, custName, showCustomerName);
+            });
+            var rows = invoiceRows
+                .Concat(transactionRows)
+                .OrderByDescending(row => row.InvoiceDate)
+                .ThenByDescending(row => row.UpdatedAtUtc)
+                .ThenByDescending(row => row.DisplayNumber)
+                .ToList();
             if (!IsCurrentInvoiceListLoad(loadCts))
                 return;
 
@@ -1064,6 +1138,8 @@ public sealed partial class MainViewModel : ObservableObject
         var selected = SelectedInvoiceRow;
         if (selected is null)
             return null;
+        if (selected.IsTransactionRow)
+            return null;
 
         var latest = await _local.GetLatestInvoiceVersionAsync(selected.Id, _session, ct);
         if (latest is null)
@@ -1084,10 +1160,17 @@ public sealed partial class MainViewModel : ObservableObject
     private static Guid ResolveEffectiveVersionGroupId(LocalInvoice invoice)
         => invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId;
 
-    private async Task<Dictionary<Guid, string>> BuildInvoiceCustomerNameMapAsync(IEnumerable<LocalInvoiceListSummary> invoices, CancellationToken ct)
+    private Task<Dictionary<Guid, string>> BuildInvoiceCustomerNameMapAsync(IEnumerable<LocalInvoiceListSummary> invoices, CancellationToken ct)
+        => BuildInvoiceCustomerNameMapAsync(invoices, Enumerable.Empty<Guid>(), ct);
+
+    private async Task<Dictionary<Guid, string>> BuildInvoiceCustomerNameMapAsync(
+        IEnumerable<LocalInvoiceListSummary> invoices,
+        IEnumerable<Guid> extraCustomerIds,
+        CancellationToken ct)
     {
         var customerIds = invoices
             .Select(invoice => invoice.CustomerId)
+            .Concat(extraCustomerIds ?? Enumerable.Empty<Guid>())
             .Where(id => id != Guid.Empty)
             .Distinct()
             .ToList();
@@ -1112,6 +1195,11 @@ public sealed partial class MainViewModel : ObservableObject
         }
         return customerMap;
     }
+
+    private static decimal GetStandaloneTransactionLedgerAmount(LocalTransaction transaction)
+        => transaction.PaymentTotal > 0m && transaction.ReceiptTotal <= 0m
+            ? transaction.PaymentTotal
+            : transaction.ReceiptTotal;
 
     private async Task RefreshDashboardMetricsAsync(IEnumerable<LocalInvoiceListSummary>? invoices = null, CancellationToken ct = default)
     {
@@ -1545,7 +1633,7 @@ public sealed partial class MainViewModel : ObservableObject
         if (rows.Count == 0)
         {
             System.Windows.MessageBox.Show(
-                "삭제할 전표를 선택하세요.",
+                "삭제할 내역을 선택하세요.",
                 "알림",
                 System.Windows.MessageBoxButton.OK,
                 System.Windows.MessageBoxImage.Information);
@@ -1553,12 +1641,12 @@ public sealed partial class MainViewModel : ObservableObject
         }
 
         var targetText = rows.Count == 1
-            ? "선택한 전표 1건"
-            : $"선택한 전표 {rows.Count:N0}건";
+            ? "선택한 내역 1건"
+            : $"선택한 내역 {rows.Count:N0}건";
 
         var confirm = System.Windows.MessageBox.Show(
-            $"{targetText}을 삭제하시겠습니까?{Environment.NewLine}삭제된 전표는 환경설정 > 휴지통에서 복원할 수 있습니다.",
-            "전표 삭제 확인",
+            $"{targetText}을 삭제하시겠습니까?{Environment.NewLine}삭제된 전표/수금·지급 내역은 환경설정 > 휴지통에서 복원할 수 있습니다.",
+            "거래내역 삭제 확인",
             System.Windows.MessageBoxButton.OKCancel,
             System.Windows.MessageBoxImage.Warning);
 
@@ -1568,7 +1656,9 @@ public sealed partial class MainViewModel : ObservableObject
         var deletedCount = 0;
         foreach (var row in rows)
         {
-            var result = await _local.DeleteInvoiceAsync(row.Id, _session, row.Revision);
+            var result = row.IsTransactionRow
+                ? await _local.DeleteTransactionAsync(row.TransactionId ?? row.Id, _session, row.Revision)
+                : await _local.DeleteInvoiceAsync(row.Id, _session, row.Revision);
             if (!result.Success)
             {
                 await LoadInvoiceListAsync();
@@ -1588,8 +1678,8 @@ public sealed partial class MainViewModel : ObservableObject
         var serverWriteResult = await _local.WaitForServerWriteWithTimeoutAsync(TimeSpan.FromSeconds(3));
         await LoadInvoiceListAsync();
         var completedMessage = deletedCount == 1
-            ? "전표를 삭제했습니다."
-            : $"전표 {deletedCount:N0}건을 삭제했습니다.";
+            ? "거래내역을 삭제했습니다."
+            : $"거래내역 {deletedCount:N0}건을 삭제했습니다.";
 
         System.Windows.MessageBox.Show(
             LocalStateService.ComposeServerWriteStatusMessage(completedMessage, serverWriteResult),

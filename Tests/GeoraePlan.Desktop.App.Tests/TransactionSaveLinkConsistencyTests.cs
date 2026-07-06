@@ -533,6 +533,76 @@ public sealed class TransactionSaveLinkConsistencyTests
         }
     }
 
+    [Fact]
+    public async Task GetStandaloneTransactionsForLedgerAsync_ReturnsOnlyUnlinkedTransactions()
+    {
+        PrepareAppRoot("georaeplan-standalone-transaction-ledger");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var invoiceId = Guid.NewGuid();
+            var standaloneId = Guid.NewGuid();
+            var linkedId = Guid.NewGuid();
+            db.Customers.Add(CreateCustomer(customerId, "Standalone ledger customer"));
+            db.Invoices.Add(CreateInvoice(invoiceId, customerId));
+            db.Transactions.AddRange(
+                new LocalTransaction
+                {
+                    Id = standaloneId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 7, 6),
+                    TransactionKind = PaymentFlowConstants.TransactionKindReceipt,
+                    BankReceipt = 49_500m,
+                    ReceiptTotal = 49_500m,
+                    Note = "standalone receipt"
+                },
+                new LocalTransaction
+                {
+                    Id = linkedId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 7, 6),
+                    TransactionKind = PaymentFlowConstants.TransactionKindInvoiceReceipt,
+                    LinkedInvoiceId = invoiceId,
+                    LinkedInvoiceNumber = "202607-0001",
+                    BankReceipt = 10_000m,
+                    ReceiptTotal = 10_000m,
+                    SettlementAmount = 10_000m,
+                    Note = "linked receipt"
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreatePaymentEditorSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var rows = await local.GetStandaloneTransactionsForLedgerAsync(
+                new DateOnly(2026, 7, 1),
+                new DateOnly(2026, 7, 31),
+                customerId,
+                session);
+
+            var row = Assert.Single(rows);
+            Assert.Equal(standaloneId, row.Id);
+            Assert.Null(row.LinkedInvoiceId);
+            Assert.Equal(49_500m, row.ReceiptTotal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static LocalCustomer CreateCustomer(Guid id, string name)
         => new()
         {

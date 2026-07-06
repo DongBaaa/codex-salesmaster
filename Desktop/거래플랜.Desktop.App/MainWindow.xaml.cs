@@ -1132,13 +1132,30 @@ public partial class MainWindow : Window
     }
 
     private void InvoiceRowsDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
-        => RunUiAsync(OpenSelectedInvoiceEditorAsync, "전표 상세 열기");
+    {
+        var source = e.OriginalSource as DependencyObject;
+        var row = FindAncestor<DataGridRow>(source);
+        if (row?.DataContext is InvoiceListRow { IsTransactionRow: true } transactionRow)
+        {
+            RunUiAsync(
+                () => OpenPaymentPopupForTransactionAsync(transactionRow.TransactionId ?? transactionRow.Id, null),
+                "수금/지급 내역 수정");
+            return;
+        }
+
+        RunUiAsync(OpenSelectedInvoiceEditorAsync, "전표 상세 열기");
+    }
 
     private async Task OpenSelectedInvoiceEditorAsync()
     {
         if (_vm.SelectedInvoiceRow is null)
         {
             MessageBox.Show("수정할 전표를 선택하세요.", "알림", MessageBoxButton.OK);
+            return;
+        }
+        if (_vm.SelectedInvoiceRow.IsTransactionRow)
+        {
+            await OpenPaymentPopupForTransactionAsync(_vm.SelectedInvoiceRow.TransactionId ?? _vm.SelectedInvoiceRow.Id, null);
             return;
         }
 
@@ -1593,6 +1610,47 @@ public partial class MainWindow : Window
     private Task OpenPaymentPopupAsync()
         => OpenPaymentPopupAsync(null, null);
 
+    private async Task OpenPaymentPopupForTransactionAsync(Guid transactionId, Window? ownerOverride)
+    {
+        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
+        var transaction = await _local.GetTransactionAsync(transactionId, _session);
+        if (transaction is null)
+        {
+            MessageBox.Show(
+                ownerOverride ?? this,
+                "수정할 수금/지급 내역을 찾을 수 없습니다.",
+                "수금/지급",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var preselect = await _local.GetCustomerAsync(transaction.CustomerId, _session);
+        var vm = new PaymentViewModel(_local, _session);
+        await OperationTiming.MeasureAsync(
+            "UI",
+            "수금/지급 창 초기화",
+            () => vm.LoadAsync(preselect),
+            warningThreshold: TimeSpan.FromSeconds(2));
+        await vm.LoadTransactionForEditingAsync(transaction.Id);
+
+        var win = new PaymentWindow(vm) { Owner = ownerOverride ?? this };
+        void RefreshMainAfterPaymentChange()
+            => RunUiAsync(
+                () => _vm.RefreshAfterFinancialTransactionChangedAsync(transaction.CustomerId),
+                "수금/지급 후 메인 화면 새로고침",
+                "수금/지급 후 메인 화면을 다시 불러오는 중 오류가 발생했습니다.");
+
+        EventHandler paymentTransactionsChanged = (_, _) => RefreshMainAfterPaymentChange();
+        vm.TransactionsChanged += paymentTransactionsChanged;
+        win.Closed += (_, _) =>
+        {
+            vm.TransactionsChanged -= paymentTransactionsChanged;
+            RefreshMainAfterPaymentChange();
+        };
+        WindowShowHelper.ShowModeless(win);
+    }
+
     private async Task OpenPaymentPopupAsync(Guid? targetInvoiceId, Window? ownerOverride)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
@@ -1618,9 +1676,16 @@ public partial class MainWindow : Window
         }
         else if (preselect is null && _vm.SelectedInvoiceRow is not null)
         {
-            var invoice = await _vm.GetLatestSelectedInvoiceAsync();
-            if (invoice is not null)
-                preselect = await _local.GetCustomerAsync(invoice.CustomerId, _session);
+            if (_vm.SelectedInvoiceRow.IsTransactionRow)
+            {
+                preselect = await _local.GetCustomerAsync(_vm.SelectedInvoiceRow.CustomerId, _session);
+            }
+            else
+            {
+                var invoice = await _vm.GetLatestSelectedInvoiceAsync();
+                if (invoice is not null)
+                    preselect = await _local.GetCustomerAsync(invoice.CustomerId, _session);
+            }
         }
 
         var refreshCustomerId = preselect?.Id ?? targetInvoice?.CustomerId;

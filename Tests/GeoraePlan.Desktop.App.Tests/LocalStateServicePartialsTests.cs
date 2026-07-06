@@ -912,8 +912,8 @@ public sealed class LocalStateServicePartialsTests
         Assert.Contains("private bool IsCurrentInvoiceListLoad(CancellationTokenSource loadCts)", source, StringComparison.Ordinal);
 
         var queryIndex = source.IndexOf("var invoiceList = await _local.GetInvoiceListSummariesAsync", StringComparison.Ordinal);
-        var customerMapIndex = source.IndexOf("var customerMap = await BuildInvoiceCustomerNameMapAsync(invoiceList, ct);", StringComparison.Ordinal);
-        var rowsIndex = source.IndexOf("var rows = finalInvoices.Select(inv =>", StringComparison.Ordinal);
+        var customerMapIndex = source.IndexOf("var customerMap = await BuildInvoiceCustomerNameMapAsync(invoiceList, standaloneTransactions.Select(transaction => transaction.CustomerId), ct);", StringComparison.Ordinal);
+        var rowsIndex = source.IndexOf("var invoiceRows = finalInvoices.Select(inv =>", StringComparison.Ordinal);
         var replaceIndex = source.IndexOf("InvoiceRows.ReplaceWith(rows);", StringComparison.Ordinal);
         var dashboardIndex = source.IndexOf("await RefreshDashboardMetricsAsync(canReuseAsAllInvoiceSet ? invoiceList : null, ct);", StringComparison.Ordinal);
         var favoritesIndex = source.IndexOf("await LoadInvoiceFavoritesAsync(canReuseAsAllInvoiceSet ? invoiceList : null, ct);", StringComparison.Ordinal);

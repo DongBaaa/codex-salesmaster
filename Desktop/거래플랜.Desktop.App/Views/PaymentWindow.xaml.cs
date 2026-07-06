@@ -29,6 +29,18 @@ public partial class PaymentWindow : Window
 
     private void CloseButton_Click(object sender, RoutedEventArgs e) => DialogWindowCloseHelper.Close(this);
 
+    private void HistoryDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left)
+            return;
+
+        if (!_vm.EditHistoryCommand.CanExecute(null))
+            return;
+
+        _vm.EditHistoryCommand.Execute(null);
+        e.Handled = true;
+    }
+
     private void CustomerSelectButton_Click(object sender, RoutedEventArgs e)
     {
         if (!_vm.CanSelectCustomer)

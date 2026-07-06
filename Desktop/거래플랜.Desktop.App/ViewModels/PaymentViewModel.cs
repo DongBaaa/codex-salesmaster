@@ -198,6 +198,26 @@ public sealed partial class PaymentViewModel : ObservableObject
         await RefreshContextCoreAsync(Interlocked.Increment(ref _contextRefreshVersion));
     }
 
+    public async Task LoadTransactionForEditingAsync(Guid transactionId)
+    {
+        if (transactionId == Guid.Empty)
+        {
+            StatusMessage = "수정할 수금/지급 내역을 찾을 수 없습니다.";
+            return;
+        }
+
+        var transaction = await _local.GetTransactionAsync(transactionId, _session);
+        if (transaction is null)
+        {
+            StatusMessage = "수정할 수금/지급 내역을 찾을 수 없습니다.";
+            return;
+        }
+
+        await LoadHistoryAsync(transaction.CustomerId, Interlocked.Increment(ref _historyLoadVersion));
+        SelectedHistory = History.FirstOrDefault(current => current.Id == transaction.Id) ?? transaction;
+        await LoadHistoryIntoEditorAsync(transaction);
+    }
+
     public async Task ReloadCustomersAsync()
     {
         _allCustomers = await _local.GetCustomersForOperationalSelectionAsync(_session);
@@ -326,48 +346,56 @@ public sealed partial class PaymentViewModel : ObservableObject
     {
         InvalidateSettlementSuggestionForManualInput();
         RecalcReceipt();
+        AutoSelectTransactionKindFromEnteredAmounts(isReceiptInput: true);
     }
 
     partial void OnCardReceiptChanged(decimal value)
     {
         InvalidateSettlementSuggestionForManualInput();
         RecalcReceipt();
+        AutoSelectTransactionKindFromEnteredAmounts(isReceiptInput: true);
     }
 
     partial void OnBankReceiptChanged(decimal value)
     {
         InvalidateSettlementSuggestionForManualInput();
         RecalcReceipt();
+        AutoSelectTransactionKindFromEnteredAmounts(isReceiptInput: true);
     }
 
     partial void OnDiscountAppliedChanged(decimal value)
     {
         InvalidateSettlementSuggestionForManualInput();
         RecalcReceipt();
+        AutoSelectTransactionKindFromEnteredAmounts(isReceiptInput: true);
     }
 
     partial void OnCashPaymentChanged(decimal value)
     {
         InvalidateSettlementSuggestionForManualInput();
         RecalcPayment();
+        AutoSelectTransactionKindFromEnteredAmounts(isReceiptInput: false);
     }
 
     partial void OnCardPaymentChanged(decimal value)
     {
         InvalidateSettlementSuggestionForManualInput();
         RecalcPayment();
+        AutoSelectTransactionKindFromEnteredAmounts(isReceiptInput: false);
     }
 
     partial void OnBankPaymentChanged(decimal value)
     {
         InvalidateSettlementSuggestionForManualInput();
         RecalcPayment();
+        AutoSelectTransactionKindFromEnteredAmounts(isReceiptInput: false);
     }
 
     partial void OnDiscountReceivedChanged(decimal value)
     {
         InvalidateSettlementSuggestionForManualInput();
         RecalcPayment();
+        AutoSelectTransactionKindFromEnteredAmounts(isReceiptInput: false);
     }
 
     partial void OnSettlementAmountChanged(decimal value)
@@ -446,6 +474,65 @@ public sealed partial class PaymentViewModel : ObservableObject
         PaymentTotal = Math.Max(0m, CashPayment + CardPayment + BankPayment - DiscountReceived);
         if (ShouldSyncSettlementAmountFromInput(isReceipt: false))
             SettlementAmount = PaymentTotal;
+    }
+
+    private void AutoSelectTransactionKindFromEnteredAmounts(bool isReceiptInput)
+    {
+        if (_suppressTransactionKindChange || _isApplyingSuggestedAmounts)
+            return;
+
+        var hasReceiptAmount = CashReceipt > 0m || CardReceipt > 0m || BankReceipt > 0m || ReceiptTotal > 0m;
+        var hasPaymentAmount = CashPayment > 0m || CardPayment > 0m || BankPayment > 0m || PaymentTotal > 0m;
+        if (hasReceiptAmount == hasPaymentAmount)
+            return;
+
+        var targetKind = isReceiptInput && hasReceiptAmount
+            ? ResolveReceiptTransactionKindForCurrentContext()
+            : !isReceiptInput && hasPaymentAmount
+                ? ResolvePaymentTransactionKindForCurrentContext()
+                : null;
+        if (string.IsNullOrWhiteSpace(targetKind) ||
+            !TransactionKinds.Any(option => string.Equals(option.Value, targetKind, StringComparison.Ordinal)) ||
+            string.Equals(SelectedTransactionKind, targetKind, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _suppressTransactionKindChange = true;
+        try
+        {
+            SelectedTransactionKind = targetKind;
+        }
+        finally
+        {
+            _suppressTransactionKindChange = false;
+        }
+
+        NotifySettlementUiStateChanged();
+        RequestRefreshContext();
+    }
+
+    private string ResolveReceiptTransactionKindForCurrentContext()
+    {
+        if (_linkedRentalProfile is not null)
+            return PaymentFlowConstants.TransactionKindRentalReceipt;
+
+        if (_linkedInvoice is not null)
+            return _linkedInvoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement
+                ? PaymentFlowConstants.TransactionKindPayment
+                : PaymentFlowConstants.TransactionKindInvoiceReceipt;
+
+        return PaymentFlowConstants.TransactionKindReceipt;
+    }
+
+    private string ResolvePaymentTransactionKindForCurrentContext()
+    {
+        if (_linkedInvoice is not null)
+            return _linkedInvoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement
+                ? PaymentFlowConstants.TransactionKindInvoicePayment
+                : PaymentFlowConstants.TransactionKindPayment;
+
+        return PaymentFlowConstants.TransactionKindPayment;
     }
 
     private bool ShouldSyncSettlementAmountFromInput(bool isReceipt)
@@ -597,8 +684,6 @@ public sealed partial class PaymentViewModel : ObservableObject
             {
                 TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindReceipt, PaymentFlowConstants.GetTransactionKindDisplayName(PaymentFlowConstants.TransactionKindReceipt)));
                 TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindPayment, PaymentFlowConstants.GetTransactionKindDisplayName(PaymentFlowConstants.TransactionKindPayment)));
-                TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindAdvanceDeposit, PaymentFlowConstants.GetTransactionKindDisplayName(PaymentFlowConstants.TransactionKindAdvanceDeposit)));
-                TransactionKinds.Add(new(PaymentFlowConstants.TransactionKindAdvanceRefund, PaymentFlowConstants.GetTransactionKindDisplayName(PaymentFlowConstants.TransactionKindAdvanceRefund)));
             }
 
             if (TransactionKinds.Count == 0)

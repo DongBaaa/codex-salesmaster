@@ -579,7 +579,7 @@
                                     </DataGrid.RowStyle>
                                     <DataGrid.ContextMenu>
                                         <ContextMenu>
-                                            <MenuItem Header="선택한 전표 삭제" Click="DeleteSelectedInvoicesContextMenu_Click"/>
+                                            <MenuItem Header="선택한 내역 삭제" Click="DeleteSelectedInvoicesContextMenu_Click"/>
                                         </ContextMenu>
                                     </DataGrid.ContextMenu>
                                     <DataGrid.Columns>
@@ -615,12 +615,12 @@
                                         </DataGridTextColumn>
                                         <DataGridTextColumn Header="유형" Binding="{Binding VoucherTypeDisplay}" Width="100"/>
                                         <DataGridTextColumn Header="입고상태" Binding="{Binding PurchaseReceivingDisplay}" Width="110"/>
-                                        <DataGridTextColumn Header="공급가" Binding="{Binding SupplyAmount, StringFormat=N0}" Width="100"/>
-                                        <DataGridTextColumn Header="부가세" Binding="{Binding VatAmount, StringFormat=N0}" Width="90"/>
-                                        <DataGridTextColumn Header="합계" Binding="{Binding TotalAmount, StringFormat=N0}" Width="100"/>
-                                        <DataGridTextColumn Header="수금액" Binding="{Binding ReceiptAmount, StringFormat=N0}" Width="90"/>
-                                        <DataGridTextColumn Header="지급액" Binding="{Binding PaymentAmount, StringFormat=N0}" Width="90"/>
-                                        <DataGridTextColumn Header="잔액" Binding="{Binding BalanceAmount, StringFormat=N0}" Width="90"/>
+                                        <DataGridTextColumn Header="공급가" Binding="{Binding SupplyAmountDisplay}" Width="100"/>
+                                        <DataGridTextColumn Header="부가세" Binding="{Binding VatAmountDisplay}" Width="90"/>
+                                        <DataGridTextColumn Header="합계" Binding="{Binding TotalAmountDisplay}" Width="100"/>
+                                        <DataGridTextColumn Header="수금액" Binding="{Binding ReceiptAmountDisplay}" Width="90"/>
+                                        <DataGridTextColumn Header="지급액" Binding="{Binding PaymentAmountDisplay}" Width="90"/>
+                                        <DataGridTextColumn Header="잔액" Binding="{Binding BalanceAmountDisplay}" Width="90"/>
                                     </DataGrid.Columns>
                                 </DataGrid>
                             </Border>

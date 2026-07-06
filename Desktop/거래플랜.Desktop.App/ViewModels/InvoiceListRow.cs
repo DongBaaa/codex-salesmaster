@@ -1,4 +1,5 @@
 ﻿using 거래플랜.Desktop.App.Data;
+using System.Globalization;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
 
@@ -10,6 +11,8 @@ namespace 거래플랜.Desktop.App.ViewModels;
 public sealed class InvoiceListRow
 {
     public Guid Id { get; init; }
+    public Guid? TransactionId { get; init; }
+    public bool IsTransactionRow { get; init; }
     public Guid VersionGroupId { get; init; }
     public Guid CustomerId { get; init; }
     public string InvoiceNumber { get; init; } = string.Empty;
@@ -29,7 +32,10 @@ public sealed class InvoiceListRow
     public string VatMode { get; init; } = InvoiceVatModes.Included;
     public decimal ReceiptAmount { get; init; }
     public decimal PaymentAmount { get; init; }
-    public decimal BalanceAmount => TotalAmount - (VoucherType == VoucherType.Purchase ? PaymentAmount : ReceiptAmount);
+    public decimal? BalanceAmountOverride { get; init; }
+    public decimal BalanceAmount => BalanceAmountOverride ?? (TotalAmount - (VoucherType == VoucherType.Purchase ? PaymentAmount : ReceiptAmount));
+    public string? VoucherTypeDisplayOverride { get; init; }
+    public DateTime UpdatedAtUtc { get; init; }
     public bool IsRentalBillingInvoice =>
         LinkedRentalBillingProfileId is Guid profileId && profileId != Guid.Empty ||
         LinkedRentalBillingRunId is Guid runId && runId != Guid.Empty;
@@ -44,10 +50,16 @@ public sealed class InvoiceListRow
     public string DisplayNumber => string.IsNullOrEmpty(InvoiceNumber) ? LocalTempNumber : InvoiceNumber;
     public Guid EffectiveVersionGroupId => VersionGroupId == Guid.Empty ? Id : VersionGroupId;
     public string InvoiceDateDisplay => InvoiceDate.ToString("yyyy/MM/dd");
-    public string TaxInvoiceDisplay => !string.IsNullOrWhiteSpace(TaxInvoiceNumber)
-        ? TaxInvoiceNumber
-        : TaxInvoiceIssued ? "발행" : string.Empty;
-    public string PurchaseReceivingDisplay => VoucherType == VoucherType.Purchase
+    public string TaxInvoiceDisplay => TaxInvoiceIssued || !string.IsNullOrWhiteSpace(TaxInvoiceNumber)
+        ? "발행"
+        : string.Empty;
+    public string SupplyAmountDisplay => IsTransactionRow ? string.Empty : FormatAmount(SupplyAmount);
+    public string VatAmountDisplay => IsTransactionRow ? string.Empty : FormatAmount(VatAmount);
+    public string TotalAmountDisplay => IsTransactionRow ? string.Empty : FormatAmount(TotalAmount);
+    public string ReceiptAmountDisplay => IsTransactionRow && ReceiptAmount == 0m ? string.Empty : FormatAmount(ReceiptAmount);
+    public string PaymentAmountDisplay => IsTransactionRow && PaymentAmount == 0m ? string.Empty : FormatAmount(PaymentAmount);
+    public string BalanceAmountDisplay => IsTransactionRow && BalanceAmount == 0m ? string.Empty : FormatAmount(BalanceAmount);
+    public string PurchaseReceivingDisplay => !IsTransactionRow && VoucherType == VoucherType.Purchase
         ? InvoiceReceivingStatuses.Normalize(PurchaseReceivingStatus, true, PurchaseReceivingRequired)
         : string.Empty;
 
@@ -55,6 +67,9 @@ public sealed class InvoiceListRow
     {
         get
         {
+            if (!string.IsNullOrWhiteSpace(VoucherTypeDisplayOverride))
+                return VoucherTypeDisplayOverride;
+
             var display = VoucherType switch
             {
                 VoucherType.Sales       => "매출",
@@ -108,7 +123,8 @@ public sealed class InvoiceListRow
                  (InvoiceReceivingStatuses.IsConfirmed(inv.PurchaseReceivingStatus) ||
                   string.IsNullOrWhiteSpace(inv.PurchaseReceivingStatus)))),
             IsDirty = inv.IsDirty,
-            Revision = inv.Revision
+            Revision = inv.Revision,
+            UpdatedAtUtc = inv.UpdatedAtUtc
         };
     }
 
@@ -152,7 +168,48 @@ public sealed class InvoiceListRow
                  (InvoiceReceivingStatuses.IsConfirmed(summary.PurchaseReceivingStatus) ||
                   string.IsNullOrWhiteSpace(summary.PurchaseReceivingStatus)))),
             IsDirty = summary.IsDirty,
-            Revision = summary.Revision
+            Revision = summary.Revision,
+            UpdatedAtUtc = summary.UpdatedAtUtc
+        };
+    }
+
+    public static InvoiceListRow From(LocalTransaction transaction, string customerName, bool showCustomerName)
+    {
+        var isPayment = transaction.PaymentTotal > 0m && transaction.ReceiptTotal <= 0m;
+        var amount = isPayment ? transaction.PaymentTotal : transaction.ReceiptTotal;
+        var entryText = isPayment ? "지불 입력" : "수금 입력";
+        var primaryText = showCustomerName
+            ? (string.IsNullOrWhiteSpace(customerName) ? entryText : $"{customerName} · {entryText}")
+            : entryText;
+
+        return new InvoiceListRow
+        {
+            Id = transaction.Id,
+            TransactionId = transaction.Id,
+            IsTransactionRow = true,
+            VersionGroupId = transaction.Id,
+            CustomerId = transaction.CustomerId,
+            InvoiceNumber = string.Empty,
+            LocalTempNumber = string.Empty,
+            TaxInvoiceNumber = string.Empty,
+            InvoiceDate = transaction.TransactionDate,
+            CustomerName = customerName,
+            FirstItemSummary = entryText,
+            PrimaryColumnText = primaryText,
+            ResponsibleOfficeCode = transaction.ResponsibleOfficeCode,
+            LinkedRentalBillingProfileId = transaction.LinkedRentalBillingProfileId,
+            LinkedRentalBillingRunId = transaction.LinkedRentalBillingRunId,
+            VoucherType = VoucherType.Collection,
+            TotalAmount = 0m,
+            SupplyAmount = 0m,
+            VatAmount = 0m,
+            ReceiptAmount = isPayment ? 0m : transaction.ReceiptTotal,
+            PaymentAmount = isPayment ? transaction.PaymentTotal : 0m,
+            BalanceAmountOverride = amount,
+            VoucherTypeDisplayOverride = ResolveTransactionMethodDisplay(transaction, isPayment),
+            IsDirty = transaction.IsDirty,
+            Revision = transaction.Revision,
+            UpdatedAtUtc = transaction.UpdatedAtUtc
         };
     }
 
@@ -175,4 +232,43 @@ public sealed class InvoiceListRow
             ? firstLabel
             : $"{firstLabel} 외 {activeLines.Count - 1}건";
     }
+
+    private static string ResolveTransactionMethodDisplay(LocalTransaction transaction, bool isPayment)
+    {
+        if (isPayment)
+        {
+            var labels = new List<string>(3);
+            if (transaction.CashPayment > 0m)
+                labels.Add("현금지급");
+            if (transaction.CardPayment > 0m)
+                labels.Add("카드지급");
+            if (transaction.BankPayment > 0m)
+                labels.Add("통장지급");
+
+            return labels.Count switch
+            {
+                0 => "지급",
+                1 => labels[0],
+                _ => "혼합지급"
+            };
+        }
+
+        var receiptLabels = new List<string>(3);
+        if (transaction.CashReceipt > 0m)
+            receiptLabels.Add("현금수금");
+        if (transaction.CardReceipt > 0m)
+            receiptLabels.Add("카드수금");
+        if (transaction.BankReceipt > 0m)
+            receiptLabels.Add("통장수금");
+
+        return receiptLabels.Count switch
+        {
+            0 => "수금",
+            1 => receiptLabels[0],
+            _ => "혼합수금"
+        };
+    }
+
+    private static string FormatAmount(decimal amount)
+        => amount.ToString("N0", CultureInfo.CurrentCulture);
 }

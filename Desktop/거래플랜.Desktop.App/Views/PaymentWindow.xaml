@@ -628,7 +628,8 @@
                         <DataGrid Grid.Row="1"
                                   MinHeight="180"
                                   ItemsSource="{Binding History}"
-                                  SelectedItem="{Binding SelectedHistory}">
+                                  SelectedItem="{Binding SelectedHistory}"
+                                  MouseDoubleClick="HistoryDataGrid_MouseDoubleClick">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="일자" Binding="{Binding TransactionDate}" Width="82"/>
                                 <DataGridTextColumn Header="구분" Binding="{Binding TransactionKindDisplay}" Width="84"/>

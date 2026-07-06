@@ -9,7 +9,7 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class TaxInvoiceIssuedPersistenceTests
 {
     [Fact]
-    public void InvoiceListRow_TaxInvoiceDisplay_UsesIssuedLabelOrAssignedNumber()
+    public void InvoiceListRow_TaxInvoiceDisplay_ShowsIssuedLabelWithoutExposingAssignedNumber()
     {
         var issued = InvoiceListRow.From(
             new LocalInvoice
@@ -42,8 +42,24 @@ public sealed class TaxInvoiceIssuedPersistenceTests
             showCustomerName: true);
 
         Assert.Equal("발행", issued.TaxInvoiceDisplay);
-        Assert.Equal("TAX-202604-0003", assigned.TaxInvoiceDisplay);
+        Assert.Equal("발행", assigned.TaxInvoiceDisplay);
         Assert.Equal(string.Empty, notIssued.TaxInvoiceDisplay);
+    }
+
+    [Fact]
+    public void SalesViewModel_TaxInvoiceNumberDisplay_StillShowsAssignedNumberInInvoiceDetail()
+    {
+        var viewModel = new SalesViewModel(
+            local: null!,
+            print: null!,
+            invoicePrintService: null!,
+            session: new SessionState(),
+            newInvoiceVoucherType: VoucherType.Sales);
+
+        viewModel.TaxInvoiceIssued = true;
+        viewModel.TaxInvoiceNumber = "TAX-202604-0003";
+
+        Assert.Equal("TAX-202604-0003", viewModel.TaxInvoiceNumberDisplay);
     }
 
     [Fact]

@@ -4831,6 +4831,47 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return NormalizeLinkedPaymentTransactionsForDisplay(transactions);
 	}
 
+	public async Task<LocalTransaction?> GetTransactionAsync(Guid transactionId, SessionState session, CancellationToken ct = default(CancellationToken))
+	{
+		if (transactionId == Guid.Empty)
+		{
+			return null;
+		}
+
+		IQueryable<LocalTransaction> query = _db.Transactions.AsNoTracking()
+			.Where((LocalTransaction transaction) => transaction.Id == transactionId);
+		query = ApplyTransactionScope(query, session);
+		var transaction = await query.FirstOrDefaultAsync(ct);
+		return transaction == null
+			? null
+			: NormalizeLinkedPaymentTransactionsForDisplay(new List<LocalTransaction> { transaction }).FirstOrDefault();
+	}
+
+	public async Task<List<LocalTransaction>> GetStandaloneTransactionsForLedgerAsync(DateOnly? from, DateOnly? to, Guid? customerId, SessionState session, CancellationToken ct = default(CancellationToken))
+	{
+		IQueryable<LocalTransaction> query = from transaction in _db.Transactions.AsNoTracking()
+			where !transaction.LinkedInvoiceId.HasValue || transaction.LinkedInvoiceId.Value == Guid.Empty
+			select transaction;
+		query = ApplyTransactionScope(query, session);
+		if (from.HasValue)
+		{
+			query = query.Where((LocalTransaction transaction) => transaction.TransactionDate >= ((DateOnly?)from).Value);
+		}
+		if (to.HasValue)
+		{
+			query = query.Where((LocalTransaction transaction) => transaction.TransactionDate <= ((DateOnly?)to).Value);
+		}
+		if (customerId.HasValue)
+		{
+			query = query.Where((LocalTransaction transaction) => transaction.CustomerId == ((Guid?)customerId).Value);
+		}
+
+		var transactions = await (from transaction in query
+			orderby transaction.TransactionDate descending, transaction.UpdatedAtUtc descending, transaction.CreatedAtUtc descending
+			select transaction).ToListAsync(ct);
+		return NormalizeLinkedPaymentTransactionsForDisplay(transactions);
+	}
+
 	private static List<LocalTransaction> NormalizeLinkedPaymentTransactionsForDisplay(List<LocalTransaction> transactions)
 	{
 		foreach (var transaction in transactions)
