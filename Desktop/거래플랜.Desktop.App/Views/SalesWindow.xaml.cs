@@ -21,10 +21,12 @@ public partial class SalesWindow : Window
         InitializeComponent();
         _vm = vm;
         DataContext = vm;
+        _vm.ConfirmRentalLinkedInvoiceEdit = ConfirmRentalLinkedInvoiceEdit;
         Loaded += (_, _) => _editSessionMonitor?.Start();
         Closed += (_, _) =>
         {
             _editSessionMonitor?.Dispose();
+            _vm.ConfirmRentalLinkedInvoiceEdit = null;
             _vm.Dispose();
         };
 
@@ -40,6 +42,14 @@ public partial class SalesWindow : Window
                         ? "전표 편집"
                         : $"{vm.CustomerName} 전표"));
     }
+
+    private bool ConfirmRentalLinkedInvoiceEdit(string title, string message)
+        => MessageBox.Show(
+            this,
+            message,
+            title,
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning) == MessageBoxResult.Yes;
 
     private void Window_KeyDown(object sender, KeyEventArgs e)
     {

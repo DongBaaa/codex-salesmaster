@@ -81,6 +81,175 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task PushInvoiceNewVersion_NormalizesSingleLatestVersionPerVersionGroup()
+    {
+        var customerId = Guid.NewGuid();
+        var firstInvoiceId = Guid.NewGuid();
+        var secondInvoiceId = Guid.NewGuid();
+        var versionGroupId = firstInvoiceId;
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Sync Invoice Version Customer",
+            NameMatchKey = "SYNCINVOICEVERSIONCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = firstInvoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-VERSION-0001",
+            LocalTempNumber = "L-SYNC-VERSION-0001",
+            VersionGroupId = versionGroupId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 30),
+            TotalAmount = 99_000m,
+            SupplyAmount = 90_000m,
+            VatAmount = 9_000m
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "invoice-version-normalize-test",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = secondInvoiceId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    InvoiceNumber = "SYNC-VERSION-0002",
+                    LocalTempNumber = "L-SYNC-VERSION-0001",
+                    VersionGroupId = versionGroupId,
+                    VersionNumber = 2,
+                    PreviousVersionId = firstInvoiceId,
+                    IsLatestVersion = true,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = new DateOnly(2026, 6, 30),
+                    TotalAmount = 99_000m,
+                    SupplyAmount = 90_000m,
+                    VatAmount = 9_000m,
+                    TaxInvoiceIssued = true,
+                    UpdatedAtUtc = new DateTime(2026, 7, 6, 1, 0, 0, DateTimeKind.Utc),
+                    Lines =
+                    [
+                        new InvoiceLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            InvoiceId = secondInvoiceId,
+                            ItemNameOriginal = "Rental fee",
+                            Unit = "EA",
+                            Quantity = 1m,
+                            UnitPrice = 99_000m,
+                            LineAmount = 99_000m
+                        }
+                    ]
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        var versions = await _dbContext.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.VersionGroupId == versionGroupId || invoice.Id == versionGroupId)
+            .ToListAsync();
+        var latest = Assert.Single(versions, invoice => invoice.IsLatestVersion && !invoice.IsDeleted);
+        Assert.Equal(secondInvoiceId, latest.Id);
+        Assert.True(latest.TaxInvoiceIssued);
+        Assert.False(versions.Single(invoice => invoice.Id == firstInvoiceId).IsLatestVersion);
+    }
+
+    [Fact]
+    public async Task PushWithoutInvoicePayload_RepairsExistingDuplicateLatestInvoiceVersions()
+    {
+        var customerId = Guid.NewGuid();
+        var firstInvoiceId = Guid.NewGuid();
+        var secondInvoiceId = Guid.NewGuid();
+        var versionGroupId = firstInvoiceId;
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Existing Duplicate Invoice Customer",
+            NameMatchKey = "EXISTINGDUPLICATEINVOICECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        _dbContext.Invoices.AddRange(
+            new Invoice
+            {
+                Id = firstInvoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "SYNC-DUP-0001",
+                LocalTempNumber = "L-SYNC-DUP-0001",
+                VersionGroupId = versionGroupId,
+                VersionNumber = 1,
+                IsLatestVersion = true,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 30),
+                TotalAmount = 99_000m,
+                SupplyAmount = 90_000m,
+                VatAmount = 9_000m,
+                UpdatedAtUtc = new DateTime(2026, 7, 6, 0, 1, 0, DateTimeKind.Utc)
+            },
+            new Invoice
+            {
+                Id = secondInvoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "SYNC-DUP-0002",
+                LocalTempNumber = "L-SYNC-DUP-0001",
+                VersionGroupId = versionGroupId,
+                VersionNumber = 2,
+                PreviousVersionId = firstInvoiceId,
+                IsLatestVersion = true,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 6, 30),
+                TotalAmount = 99_000m,
+                SupplyAmount = 90_000m,
+                VatAmount = 9_000m,
+                TaxInvoiceIssued = true,
+                UpdatedAtUtc = new DateTime(2026, 7, 6, 0, 2, 0, DateTimeKind.Utc)
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "invoice-existing-duplicate-repair-test"
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        var versions = await _dbContext.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.VersionGroupId == versionGroupId || invoice.Id == versionGroupId)
+            .ToListAsync();
+        var latest = Assert.Single(versions, invoice => invoice.IsLatestVersion && !invoice.IsDeleted);
+        Assert.Equal(secondInvoiceId, latest.Id);
+        Assert.False(versions.Single(invoice => invoice.Id == firstInvoiceId).IsLatestVersion);
+    }
+
+    [Fact]
     public async Task PushCustomerAndRentalRows_SynchronizesLinkedCustomerSnapshotsWithoutBatchConflict()
     {
         var customerId = Guid.NewGuid();

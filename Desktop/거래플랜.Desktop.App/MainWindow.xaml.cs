@@ -1807,6 +1807,7 @@ public partial class MainWindow : Window
         var win = new RentalBillingWindow(
             vm,
             OpenInvoiceWindowAsync,
+            (assetId, owner) => OpenRentalAssetWindowAsync(assetId, owner),
             () => _vm.LoadInvoiceListCommand.ExecuteAsync(null))
         {
             Owner = ownerOverride ?? this

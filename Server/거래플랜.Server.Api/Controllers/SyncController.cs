@@ -653,6 +653,7 @@ public sealed class SyncController : ControllerBase
                 itemWarehouseStockResult.AcceptedStockKeys,
                 cancellationToken);
             var invoiceRentalSettlementTargets = invoiceUpsertResult.RentalSettlementTargets;
+            await NormalizeDuplicateLatestInvoiceVersionsAsync(cancellationToken);
             if (validInvoices.Count > 0)
             {
                 await _dbContext.SaveChangesAsync(cancellationToken);
@@ -1376,6 +1377,7 @@ public sealed class SyncController : ControllerBase
     {
         var rentalSettlementTargets = new List<(Guid ProfileId, Guid? RunId)>();
         var acceptedDeletedInvoiceIds = new List<Guid>();
+        var touchedVersionGroupIds = new HashSet<Guid>();
         var acceptedCount = 0;
         foreach (var dto in payload)
         {
@@ -1415,6 +1417,7 @@ public sealed class SyncController : ControllerBase
                     itemWarehouseStockKeysHandledByClient,
                     cancellationToken);
                 _dbContext.Invoices.Add(entity);
+                AddTouchedInvoiceVersionGroup(touchedVersionGroupIds, entity);
                 AddRentalSettlementTarget(rentalSettlementTargets, entity.LinkedRentalBillingProfileId, entity.LinkedRentalBillingRunId);
                 if (entity.IsDeleted)
                     acceptedDeletedInvoiceIds.Add(entity.Id);
@@ -1461,6 +1464,7 @@ public sealed class SyncController : ControllerBase
             var previousStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
             AddRentalSettlementTarget(rentalSettlementTargets, entity.LinkedRentalBillingProfileId, entity.LinkedRentalBillingRunId);
             entity.Apply(dto);
+            AddTouchedInvoiceVersionGroup(touchedVersionGroupIds, entity);
             if (string.IsNullOrWhiteSpace(entity.InvoiceNumber))
             {
                 entity.InvoiceNumber = await _invoiceNumberService.GenerateAsync(entity.CustomerId, entity.InvoiceDate, cancellationToken);
@@ -1488,6 +1492,8 @@ public sealed class SyncController : ControllerBase
             result.AcceptedCount++;
         }
 
+        await NormalizeLatestInvoiceVersionsAsync(touchedVersionGroupIds, cancellationToken);
+
         var distinctDeletedInvoiceIds = acceptedDeletedInvoiceIds
             .Where(id => id != Guid.Empty)
             .Distinct()
@@ -1501,6 +1507,72 @@ public sealed class SyncController : ControllerBase
         }
 
         return (rentalSettlementTargets.Distinct().ToList(), acceptedCount);
+    }
+
+    private static void AddTouchedInvoiceVersionGroup(HashSet<Guid> versionGroupIds, Invoice invoice)
+    {
+        var versionGroupId = invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId;
+        if (versionGroupId != Guid.Empty)
+            versionGroupIds.Add(versionGroupId);
+    }
+
+    private async Task NormalizeLatestInvoiceVersionsAsync(
+        IReadOnlyCollection<Guid> versionGroupIds,
+        CancellationToken cancellationToken)
+    {
+        if (versionGroupIds.Count == 0)
+            return;
+
+        foreach (var versionGroupId in versionGroupIds.Where(id => id != Guid.Empty).Distinct())
+        {
+            var invoices = await _dbContext.Invoices.IgnoreQueryFilters()
+                .Where(invoice => !invoice.IsDeleted &&
+                                  (invoice.VersionGroupId == versionGroupId ||
+                                   (invoice.VersionGroupId == Guid.Empty && invoice.Id == versionGroupId)))
+                .ToListAsync(cancellationToken);
+            foreach (var localInvoice in _dbContext.Invoices.Local
+                         .Where(invoice => invoice.Id != Guid.Empty &&
+                                           !invoice.IsDeleted &&
+                                           (invoice.VersionGroupId == versionGroupId ||
+                                            (invoice.VersionGroupId == Guid.Empty && invoice.Id == versionGroupId))))
+            {
+                if (invoices.All(invoice => invoice.Id != localInvoice.Id))
+                    invoices.Add(localInvoice);
+            }
+            if (invoices.Count <= 1)
+                continue;
+
+            var latest = invoices
+                .OrderByDescending(invoice => Math.Max(1, invoice.VersionNumber))
+                .ThenByDescending(invoice => invoice.UpdatedAtUtc)
+                .ThenByDescending(invoice => invoice.Id)
+                .First();
+
+            foreach (var invoice in invoices)
+            {
+                var shouldBeLatest = invoice.Id == latest.Id;
+                if (invoice.VersionGroupId == Guid.Empty)
+                    invoice.VersionGroupId = versionGroupId;
+                if (invoice.IsLatestVersion != shouldBeLatest)
+                    invoice.IsLatestVersion = shouldBeLatest;
+            }
+        }
+    }
+
+    private async Task NormalizeDuplicateLatestInvoiceVersionsAsync(CancellationToken cancellationToken)
+    {
+        var duplicateVersionGroupIds = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Where(invoice => !invoice.IsDeleted && invoice.IsLatestVersion)
+            .GroupBy(invoice => invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .ToListAsync(cancellationToken);
+
+        if (duplicateVersionGroupIds.Count == 0)
+            return;
+
+        await NormalizeLatestInvoiceVersionsAsync(duplicateVersionGroupIds, cancellationToken);
     }
 
     private async Task<Dictionary<Guid, List<(Guid ProfileId, Guid? RunId)>>> LoadExistingRentalSettlementTargetsByTransactionIdAsync(

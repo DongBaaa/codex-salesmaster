@@ -619,6 +619,20 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("IsReadOnly=\"True\"", columnTag, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void SalesWindow_RentalLinkedInvoice_ShowsSaveActionAndEditBoundaryNotice()
+    {
+        var root = FindRepositoryRoot();
+        var xamlPath = Path.Combine(root, "Desktop", "거래플랜.Desktop.App", "Views", "SalesWindow.xaml");
+        var xaml = File.ReadAllText(xamlPath);
+
+        Assert.Contains("Command=\"{Binding SaveCommand}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("IsRentalBillingLinkedInvoice", xaml, StringComparison.Ordinal);
+        Assert.Contains("RentalBillingLinkedNoticeText", xaml, StringComparison.Ordinal);
+        Assert.Contains("RentalBillingLinkedReferenceText", xaml, StringComparison.Ordinal);
+        Assert.Contains("렌탈 청구 전표", xaml, StringComparison.Ordinal);
+    }
+
     private static int GetLineNumber(string source, int index)
         => source[..index].Count(ch => ch == '\n') + 1;
 

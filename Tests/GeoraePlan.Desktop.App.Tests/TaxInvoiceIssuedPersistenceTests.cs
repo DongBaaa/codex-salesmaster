@@ -91,4 +91,56 @@ public sealed class TaxInvoiceIssuedPersistenceTests
         Assert.Equal("총미지급금", purchaseViewModel.CustomerBalanceLabelText);
         Assert.Equal("선지급금", purchaseViewModel.CustomerReserveLabelText);
     }
+
+    [Fact]
+    public void SalesViewModel_RentalLinkedInvoice_ExposesEditBoundaryNotice()
+    {
+        var viewModel = new SalesViewModel(
+            local: null!,
+            print: null!,
+            invoicePrintService: null!,
+            session: new SessionState(),
+            newInvoiceVoucherType: VoucherType.Sales);
+        var profileId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var runId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+
+        SetRentalBillingLinks(viewModel, profileId, runId);
+
+        Assert.True(viewModel.IsRentalBillingLinkedInvoice);
+        Assert.Contains("렌탈 청구관리에서 만든 전표", viewModel.RentalBillingLinkedNoticeText);
+        Assert.Contains("다음 청구 설정은 변경되지 않습니다", viewModel.RentalBillingLinkedNoticeText);
+        Assert.Contains("aaaaaaaa", viewModel.RentalBillingLinkedReferenceText);
+        Assert.Contains("bbbbbbbb", viewModel.RentalBillingLinkedReferenceText);
+    }
+
+    [Fact]
+    public async Task SalesViewModel_RentalLinkedInvoice_CloseAutoSaveIsBlockedUntilExplicitSave()
+    {
+        var viewModel = new SalesViewModel(
+            local: null!,
+            print: null!,
+            invoicePrintService: null!,
+            session: new SessionState(),
+            newInvoiceVoucherType: VoucherType.Sales);
+        SetRentalBillingLinks(viewModel, Guid.NewGuid(), Guid.NewGuid());
+        viewModel.MarkCurrentStateAsPristine();
+
+        viewModel.InvoiceMemo = "렌탈 전표 금액 수정";
+
+        var saved = await viewModel.TryAutoSaveOnCloseAsync();
+
+        Assert.False(saved);
+        Assert.Contains("자동저장하지 않습니다", viewModel.LastAutoSaveFailureMessage);
+        Assert.Equal(viewModel.LastAutoSaveFailureMessage, viewModel.StatusMessage);
+    }
+
+    private static void SetRentalBillingLinks(SalesViewModel viewModel, Guid profileId, Guid runId)
+    {
+        var method = typeof(SalesViewModel).GetMethod(
+            "SetRentalBillingLinks",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+        Assert.NotNull(method);
+        method!.Invoke(viewModel, [profileId, runId]);
+    }
 }

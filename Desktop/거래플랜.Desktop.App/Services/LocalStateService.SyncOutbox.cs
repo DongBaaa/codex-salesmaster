@@ -230,7 +230,7 @@ public sealed partial class LocalStateService
             return 0;
 
         var rows = await _db.SyncOutboxEntries
-            .Where(entry => ids.Contains(entry.MutationId))
+            .Where(entry => ids.Contains(entry.MutationId) && entry.Status != "Acknowledged")
             .ToListAsync(ct);
         if (rows.Count == 0)
             return 0;

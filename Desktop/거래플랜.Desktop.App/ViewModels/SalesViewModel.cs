@@ -135,6 +135,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     private bool _suppressInputAmountSync;
     private Guid? _linkedRentalBillingProfileId;
     private Guid? _linkedRentalBillingRunId;
+    public Func<string, string, bool>? ConfirmRentalLinkedInvoiceEdit { get; set; }
 
     // 라인 입력 (견적)
     [ObservableProperty] private string _inputItemName = string.Empty;
@@ -199,6 +200,14 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     public bool CanPrintTaxInvoice => IsSalesDocument;
     public bool ShowPaymentAction => IsSalesDocument || IsPurchaseDocument;
     public bool ShowTaxInvoiceIssuedOption => IsSalesDocument || IsPurchaseDocument;
+    public bool IsRentalBillingLinkedInvoice => HasRentalBillingLink(_linkedRentalBillingProfileId)
+        || HasRentalBillingLink(_linkedRentalBillingRunId);
+    public string RentalBillingLinkedNoticeText => IsRentalBillingLinkedInvoice
+        ? "렌탈 청구관리에서 만든 전표입니다. 이 화면에서 저장하면 현재 전표와 수금잔액만 수정되고, 렌탈 청구 프로필, 임대 자산, 다음 청구 설정은 변경되지 않습니다."
+        : string.Empty;
+    public string RentalBillingLinkedReferenceText => IsRentalBillingLinkedInvoice
+        ? $"렌탈 프로필 {FormatRentalBillingLink(_linkedRentalBillingProfileId)} / 청구건 {FormatRentalBillingLink(_linkedRentalBillingRunId)}"
+        : string.Empty;
     public string TaxInvoiceNumberDisplay => !string.IsNullOrWhiteSpace(TaxInvoiceNumber)
         ? TaxInvoiceNumber
         : TaxInvoiceIssued ? "서버 동기화 후 자동 채번" : "미발행";
@@ -508,8 +517,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         VoucherType = _newInvoiceVoucherType;
         ResetPurchaseReceivingState(VoucherType);
         SelectedProcurementDocumentTitle = "발주서";
-        _linkedRentalBillingProfileId = null;
-        _linkedRentalBillingRunId = null;
+        SetRentalBillingLinks(null, null);
         CurrentConcurrencyStamp = string.Empty;
         LastSavedBy = string.Empty;
         LastSavedAtDisplay = string.Empty;
@@ -785,6 +793,35 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         PaymentSummaryAdvanceText = $"{CustomerReserveLabelText} 잔액 0";
         OnPropertyChanged(nameof(PaymentSummaryTitleText));
     }
+
+    private void SetRentalBillingLinks(Guid? profileId, Guid? runId)
+    {
+        profileId = NormalizeRentalBillingLink(profileId);
+        runId = NormalizeRentalBillingLink(runId);
+
+        if (_linkedRentalBillingProfileId == profileId &&
+            _linkedRentalBillingRunId == runId)
+        {
+            return;
+        }
+
+        _linkedRentalBillingProfileId = profileId;
+        _linkedRentalBillingRunId = runId;
+        OnPropertyChanged(nameof(IsRentalBillingLinkedInvoice));
+        OnPropertyChanged(nameof(RentalBillingLinkedNoticeText));
+        OnPropertyChanged(nameof(RentalBillingLinkedReferenceText));
+    }
+
+    private static Guid? NormalizeRentalBillingLink(Guid? value)
+        => value.HasValue && value.Value != Guid.Empty ? value.Value : null;
+
+    private static bool HasRentalBillingLink(Guid? value)
+        => value.HasValue && value.Value != Guid.Empty;
+
+    private static string FormatRentalBillingLink(Guid? value)
+        => HasRentalBillingLink(value)
+            ? value!.Value.ToString("N")[..8]
+            : "미연결";
 
     public void MarkCurrentStateAsPristine()
         => CaptureBaselineState();
@@ -1325,6 +1362,8 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             .Append('|').Append(PurchaseReceivingOfficeCode ?? string.Empty)
             .Append('|').Append(PurchaseReceivingWarehouseCode ?? string.Empty)
             .Append('|').Append(PurchaseReceivingMemo ?? string.Empty)
+            .Append('|').Append(_linkedRentalBillingProfileId?.ToString("D") ?? string.Empty)
+            .Append('|').Append(_linkedRentalBillingRunId?.ToString("D") ?? string.Empty)
             .Append('|').Append(InputItemName ?? string.Empty)
             .Append('|').Append(InputSpec ?? string.Empty)
             .Append('|').Append(InputUnit ?? string.Empty)
@@ -1420,6 +1459,14 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         if (!HasPendingChanges || !HasMeaningfulDraftContent())
             return true;
 
+        if (IsRentalBillingLinkedInvoice)
+        {
+            LastAutoSaveFailureMessage =
+                "렌탈 청구 전표는 닫을 때 자동저장하지 않습니다. 상단의 저장 버튼으로 반영 범위를 확인한 뒤 저장하세요.";
+            StatusMessage = LastAutoSaveFailureMessage;
+            return false;
+        }
+
         var saved = await SaveCoreAsync(
             showValidationFeedback: false,
             statusPrefix: "자동저장",
@@ -1437,6 +1484,39 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             showFailureStatus: false,
             forceOverride: true,
             waitForServerWrite: false);
+    }
+
+    private bool ConfirmRentalLinkedInvoiceEditIfNeeded(bool showValidationFeedback)
+    {
+        if (!IsRentalBillingLinkedInvoice || !HasPendingChanges)
+            return true;
+
+        const string title = "렌탈 청구 전표 수정 확인";
+        var message = string.Join(
+            Environment.NewLine,
+            "이 전표는 렌탈 청구관리에서 생성된 청구 전표입니다.",
+            string.Empty,
+            "이 화면에서 저장하면 현재 전표 버전, 전표 금액, 수금/미수 잔액만 수정됩니다.",
+            "렌탈 청구 프로필, 거래처 임대 자산, 다음 달 청구 품목/단가는 변경되지 않습니다.",
+            string.Empty,
+            "이번 전표만 수정하시겠습니까?");
+
+        var confirmed = ConfirmRentalLinkedInvoiceEdit?.Invoke(title, message);
+        if (confirmed is null && showValidationFeedback)
+        {
+            confirmed = System.Windows.MessageBox.Show(
+                message,
+                title,
+                System.Windows.MessageBoxButton.YesNo,
+                System.Windows.MessageBoxImage.Warning) == System.Windows.MessageBoxResult.Yes;
+        }
+
+        if (confirmed == true)
+            return true;
+
+        LastAutoSaveFailureMessage = "렌탈 청구 전표 저장이 취소되었습니다.";
+        StatusMessage = LastAutoSaveFailureMessage;
+        return false;
     }
 
     private bool HasMeaningfulDraftContent()
@@ -1549,6 +1629,9 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             return false;
         }
 
+        if (!ConfirmRentalLinkedInvoiceEditIfNeeded(showValidationFeedback))
+            return false;
+
         var inv = new LocalInvoice
         {
             Id = InvoiceId,
@@ -1620,8 +1703,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         {
             InvoiceId = savedInvoice.Id;
             CurrentConcurrencyStamp = savedInvoice.ConcurrencyStamp;
-            _linkedRentalBillingProfileId = savedInvoice.LinkedRentalBillingProfileId;
-            _linkedRentalBillingRunId = savedInvoice.LinkedRentalBillingRunId;
+            SetRentalBillingLinks(savedInvoice.LinkedRentalBillingProfileId, savedInvoice.LinkedRentalBillingRunId);
             TaxInvoiceNumber = savedInvoice.TaxInvoiceNumber;
             LastSavedBy = savedInvoice.LastSavedByUsername;
             LastSavedAtDisplay = savedInvoice.LastSavedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
@@ -1682,8 +1764,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         PurchaseReceivingOfficeCode = inv.PurchaseReceivingOfficeCode;
         PurchaseReceivingWarehouseCode = inv.PurchaseReceivingWarehouseCode;
         PurchaseReceivingMemo = inv.PurchaseReceivingMemo;
-        _linkedRentalBillingProfileId = inv.LinkedRentalBillingProfileId;
-        _linkedRentalBillingRunId = inv.LinkedRentalBillingRunId;
+        SetRentalBillingLinks(inv.LinkedRentalBillingProfileId, inv.LinkedRentalBillingRunId);
         SelectedResponsibleOfficeCode = InvoiceOfficeWarehouseSelectionPolicy.ResolveSelectableOfficeCode(
             string.IsNullOrWhiteSpace(inv.ResponsibleOfficeCode) ? SelectedResponsibleOfficeCode : inv.ResponsibleOfficeCode,
             Offices,

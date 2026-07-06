@@ -95,6 +95,107 @@ public sealed class InvoiceSaveScopeTests
         }
     }
 
+    [Fact]
+    public async Task SaveInvoiceAsync_NormalizesDuplicateLatestVersionsInSameVersionGroup()
+    {
+        PrepareAppRoot("georaeplan-invoice-save-latest-version-normalize");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var firstInvoiceId = Guid.NewGuid();
+            var secondInvoiceId = Guid.NewGuid();
+            var versionGroupId = firstInvoiceId;
+            db.Customers.Add(CreateCustomer(customerId, OfficeCodeCatalog.Usenet, TenantScopeCatalog.UsenetGroup));
+            db.Invoices.AddRange(
+                CreateStoredInvoice(firstInvoiceId, customerId, versionGroupId, 1, isLatest: true, taxIssued: false),
+                CreateStoredInvoice(secondInvoiceId, customerId, versionGroupId, 2, isLatest: true, taxIssued: true, previousVersionId: firstInvoiceId));
+            await db.SaveChangesAsync();
+
+            var session = CreateInvoiceEditorSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var edit = CreateInvoice(customerId, OfficeCodeCatalog.Usenet);
+            edit.Id = secondInvoiceId;
+            edit.VersionGroupId = versionGroupId;
+            edit.TaxInvoiceIssued = true;
+            edit.TaxInvoiceNumber = "TAX-LOCAL-LATEST-ONLY";
+
+            var result = await service.SaveInvoiceAsync(
+                edit,
+                new InvoiceSaveContext
+                {
+                    Username = "usenet-invoice-editor",
+                    Role = DomainConstants.RoleUser,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ForceOverride = true
+                },
+                session);
+
+            Assert.True(result.Success, result.Message);
+            var versions = await db.Invoices.IgnoreQueryFilters()
+                .Where(invoice => invoice.VersionGroupId == versionGroupId || invoice.Id == versionGroupId)
+                .ToListAsync();
+            var latest = Assert.Single(versions, invoice => invoice.IsLatestVersion && !invoice.IsDeleted);
+            Assert.Equal(result.SavedInvoiceId, latest.Id);
+            Assert.True(latest.TaxInvoiceIssued);
+            Assert.All(versions.Where(invoice => invoice.Id != latest.Id), invoice => Assert.False(invoice.IsLatestVersion));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RepairDuplicateLatestInvoiceVersionGroupsForSyncAsync_DemotesOlderLatestAndMarksDirty()
+    {
+        PrepareAppRoot("georaeplan-invoice-sync-latest-version-repair");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var firstInvoiceId = Guid.NewGuid();
+            var secondInvoiceId = Guid.NewGuid();
+            var versionGroupId = firstInvoiceId;
+            db.Customers.Add(CreateCustomer(customerId, OfficeCodeCatalog.Usenet, TenantScopeCatalog.UsenetGroup));
+            db.Invoices.AddRange(
+                CreateStoredInvoice(firstInvoiceId, customerId, versionGroupId, 1, isLatest: true, taxIssued: false),
+                CreateStoredInvoice(secondInvoiceId, customerId, versionGroupId, 2, isLatest: true, taxIssued: true, previousVersionId: firstInvoiceId));
+            await db.SaveChangesAsync();
+
+            var session = CreateInvoiceEditorSession(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            var changed = await service.RepairDuplicateLatestInvoiceVersionGroupsForSyncAsync(session);
+
+            Assert.True(changed > 0);
+            var versions = await db.Invoices.IgnoreQueryFilters()
+                .Where(invoice => invoice.VersionGroupId == versionGroupId || invoice.Id == versionGroupId)
+                .ToListAsync();
+            var latest = Assert.Single(versions, invoice => invoice.IsLatestVersion && !invoice.IsDeleted);
+            Assert.Equal(secondInvoiceId, latest.Id);
+            Assert.False(latest.IsDirty);
+
+            var demoted = Assert.Single(versions, invoice => invoice.Id == firstInvoiceId);
+            Assert.False(demoted.IsLatestVersion);
+            Assert.True(demoted.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static LocalInvoice CreateInvoice(Guid customerId, string officeCode)
         => new()
         {
@@ -146,6 +247,45 @@ public sealed class InvoiceSaveScopeTests
             TrackingType = ItemTrackingTypes.Stock,
             Unit = "EA",
             IsDeleted = false
+        };
+
+    private static LocalInvoice CreateStoredInvoice(
+        Guid id,
+        Guid customerId,
+        Guid versionGroupId,
+        int versionNumber,
+        bool isLatest,
+        bool taxIssued,
+        Guid? previousVersionId = null)
+        => new()
+        {
+            Id = id,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            SourceWarehouseCode = OfficeCodeCatalog.GetMainWarehouseCode(OfficeCodeCatalog.Usenet),
+            InvoiceNumber = $"LOCAL-LATEST-{versionNumber:00}",
+            LocalTempNumber = $"L-LOCAL-LATEST-{versionNumber:00}",
+            TaxInvoiceIssued = taxIssued,
+            TaxInvoiceNumber = taxIssued ? $"TAX-LOCAL-{versionNumber:00}" : string.Empty,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 6, 30),
+            TotalAmount = 99_000m,
+            SupplyAmount = 90_000m,
+            VatAmount = 9_000m,
+            VersionGroupId = versionGroupId,
+            VersionNumber = versionNumber,
+            PreviousVersionId = previousVersionId,
+            IsLatestVersion = isLatest,
+            IsConfirmed = true,
+            CreatedByUsername = "seed",
+            LastSavedByUsername = "seed",
+            LastSavedAtUtc = new DateTime(2026, 7, 6, 0, versionNumber, 0, DateTimeKind.Utc),
+            ConcurrencyStamp = Guid.NewGuid().ToString("N"),
+            CreatedAtUtc = new DateTime(2026, 7, 6, 0, 0, 0, DateTimeKind.Utc),
+            UpdatedAtUtc = new DateTime(2026, 7, 6, 0, versionNumber, 0, DateTimeKind.Utc),
+            IsDirty = false
         };
 
     private static InvoiceSaveContext CreateSaveContext(string username, string officeCode)

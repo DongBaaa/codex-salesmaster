@@ -2900,6 +2900,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			latest.UpdatedAtUtc = now;
 			latest.LastSavedAtUtc = now;
 		}
+		await DemoteOtherLatestInvoiceVersionsAsync(versionGroupId, targetInvoiceId, now, markDirty: true, ct);
 		string beforeJson = ((latest == null) ? string.Empty : JsonSerializer.Serialize(BuildAuditInvoice(latest), AuditJsonOptions));
 		string afterJson = JsonSerializer.Serialize(BuildAuditInvoice(newInvoice), AuditJsonOptions);
 		_db.Invoices.Add(newInvoice);
@@ -7936,6 +7937,123 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return existingById;
 		}
 		return (await _db.Invoices.Include((LocalInvoice i) => i.Lines).Include((LocalInvoice i) => i.Payments).FirstOrDefaultAsync((LocalInvoice i) => i.VersionGroupId == ((Guid?)versionGroupId).Value && i.IsLatestVersion, ct)) ?? existingById;
+	}
+
+	public async Task<int> NormalizeLatestInvoiceVersionGroupsAsync(
+		IEnumerable<Guid> versionGroupIds,
+		bool markDirtyDemotions = false,
+		CancellationToken ct = default(CancellationToken))
+	{
+		List<Guid> groups = (versionGroupIds ?? Enumerable.Empty<Guid>())
+			.Where(id => id != Guid.Empty)
+			.Distinct()
+			.ToList();
+		if (groups.Count == 0)
+		{
+			return 0;
+		}
+		int changed = 0;
+		DateTime now = DateTime.UtcNow;
+		foreach (Guid groupId in groups)
+		{
+			List<LocalInvoice> invoices = await _db.Invoices.IgnoreQueryFilters()
+				.Where((LocalInvoice invoice) => !invoice.IsDeleted &&
+					(invoice.VersionGroupId == groupId || (invoice.VersionGroupId == Guid.Empty && invoice.Id == groupId)))
+				.ToListAsync(ct);
+			if (invoices.Count <= 1 || invoices.Any((LocalInvoice invoice) => invoice.IsDirty))
+			{
+				continue;
+			}
+			LocalInvoice latest = invoices
+				.OrderByDescending((LocalInvoice invoice) => Math.Max(1, invoice.VersionNumber))
+				.ThenByDescending((LocalInvoice invoice) => invoice.UpdatedAtUtc)
+				.ThenByDescending((LocalInvoice invoice) => invoice.LastSavedAtUtc)
+				.ThenByDescending((LocalInvoice invoice) => invoice.Id)
+				.First();
+			foreach (LocalInvoice invoice in invoices)
+			{
+				bool shouldBeLatest = invoice.Id == latest.Id;
+				if (invoice.VersionGroupId == Guid.Empty)
+				{
+					invoice.VersionGroupId = groupId;
+					if (markDirtyDemotions)
+					{
+						invoice.IsDirty = true;
+						invoice.UpdatedAtUtc = now;
+						invoice.LastSavedAtUtc = now;
+					}
+					changed++;
+				}
+				if (invoice.IsLatestVersion != shouldBeLatest)
+				{
+					invoice.IsLatestVersion = shouldBeLatest;
+					if (markDirtyDemotions)
+					{
+						invoice.IsDirty = true;
+						invoice.UpdatedAtUtc = now;
+						invoice.LastSavedAtUtc = now;
+					}
+					changed++;
+				}
+			}
+		}
+		if (changed > 0)
+		{
+			await _db.SaveChangesAsync(ct);
+		}
+		return changed;
+	}
+
+	public async Task<int> RepairDuplicateLatestInvoiceVersionGroupsForSyncAsync(
+		SessionState session,
+		CancellationToken ct = default(CancellationToken))
+	{
+		List<Guid> duplicateGroupIds = await ApplyInvoiceScope(_db.Invoices.IgnoreQueryFilters(), session)
+			.Where((LocalInvoice invoice) => !invoice.IsDeleted && invoice.IsLatestVersion)
+			.GroupBy((LocalInvoice invoice) => invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId)
+			.Where(group => group.Count() > 1)
+			.Select(group => group.Key)
+			.ToListAsync(ct);
+		if (duplicateGroupIds.Count == 0)
+		{
+			return 0;
+		}
+		return await NormalizeLatestInvoiceVersionGroupsAsync(duplicateGroupIds, markDirtyDemotions: true, ct);
+	}
+
+	private async Task<int> DemoteOtherLatestInvoiceVersionsAsync(
+		Guid versionGroupId,
+		Guid latestInvoiceId,
+		DateTime now,
+		bool markDirty,
+		CancellationToken ct)
+	{
+		if (versionGroupId == Guid.Empty || latestInvoiceId == Guid.Empty)
+		{
+			return 0;
+		}
+		List<LocalInvoice> staleLatestVersions = await _db.Invoices.IgnoreQueryFilters()
+			.Where((LocalInvoice invoice) => invoice.Id != latestInvoiceId &&
+				!invoice.IsDeleted &&
+				invoice.IsLatestVersion &&
+				(invoice.VersionGroupId == versionGroupId ||
+				 (invoice.VersionGroupId == Guid.Empty && invoice.Id == versionGroupId)))
+			.ToListAsync(ct);
+		foreach (LocalInvoice stale in staleLatestVersions)
+		{
+			if (stale.VersionGroupId == Guid.Empty)
+			{
+				stale.VersionGroupId = versionGroupId;
+			}
+			stale.IsLatestVersion = false;
+			stale.UpdatedAtUtc = now;
+			stale.LastSavedAtUtc = now;
+			if (markDirty)
+			{
+				stale.IsDirty = true;
+			}
+		}
+		return staleLatestVersions.Count;
 	}
 
 	private static List<LocalInvoiceLine> CloneLines(IEnumerable<LocalInvoiceLine> source, Guid invoiceId)

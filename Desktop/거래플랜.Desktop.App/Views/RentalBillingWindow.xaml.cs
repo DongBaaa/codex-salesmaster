@@ -18,6 +18,7 @@ public partial class RentalBillingWindow : Window
 {
     private readonly EntityEditSessionMonitor? _editSessionMonitor;
     private readonly Func<Guid, Window?, Task>? _openInvoiceWindowAsync;
+    private readonly Func<Guid, Window?, Task>? _openRentalAssetWindowAsync;
     private readonly Func<Task>? _refreshAfterBillingChangedAsync;
     private bool _allowClose;
     private bool _closeInProgress;
@@ -27,11 +28,13 @@ public partial class RentalBillingWindow : Window
     public RentalBillingWindow(
         RentalBillingViewModel viewModel,
         Func<Guid, Window?, Task>? openInvoiceWindowAsync = null,
+        Func<Guid, Window?, Task>? openRentalAssetWindowAsync = null,
         Func<Task>? refreshAfterBillingChangedAsync = null)
     {
         InitializeComponent();
         DataContext = viewModel;
         _openInvoiceWindowAsync = openInvoiceWindowAsync;
+        _openRentalAssetWindowAsync = openRentalAssetWindowAsync;
         _refreshAfterBillingChangedAsync = refreshAfterBillingChangedAsync;
         Closing += HandleClosing;
         Loaded += (_, _) => _editSessionMonitor?.Start();
@@ -193,6 +196,98 @@ public partial class RentalBillingWindow : Window
 
         dataGridRow.IsSelected = true;
         dataGrid.SelectedItem = historyRow;
+    }
+
+    private void IncludedAssetsDataGrid_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not DataGrid dataGrid || e.OriginalSource is not DependencyObject source)
+            return;
+
+        var dataGridRow = FindAncestor<DataGridRow>(source);
+        if (dataGridRow?.Item is not RentalBillingAssetOption includedAsset)
+            return;
+
+        dataGridRow.IsSelected = true;
+        dataGrid.SelectedItem = includedAsset;
+        if (DataContext is RentalBillingViewModel viewModel)
+            viewModel.SelectedIncludedAsset = includedAsset;
+    }
+
+    private void OpenIncludedAssetInRentalAssetWindowMenuItem_Click(object sender, RoutedEventArgs e)
+        => UiTaskHelper.Run(
+            this,
+            OpenSelectedIncludedAssetInRentalAssetWindowAsync,
+            "UI",
+            "거래처 임대 자산 설치현황 열기",
+            "선택한 거래처 임대 자산의 렌탈 자산/설치현황 창을 여는 중 오류가 발생했습니다.");
+
+    private async Task OpenSelectedIncludedAssetInRentalAssetWindowAsync()
+    {
+        if (DataContext is not RentalBillingViewModel viewModel ||
+            viewModel.SelectedIncludedAsset is not { AssetId: var assetId } ||
+            assetId == Guid.Empty)
+        {
+            MessageBox.Show(
+                this,
+                "렌탈 자산/설치현황에서 열 거래처 임대 자산을 먼저 선택하세요.",
+                "렌탈 자산/설치현황",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var existingTargetWindow = Application.Current?.Windows
+            .OfType<RentalAssetWindow>()
+            .FirstOrDefault(window => window.DataContext is RentalAssetViewModel rentalAssetViewModel &&
+                                      rentalAssetViewModel.SelectedRow?.Source.Id == assetId);
+        if (existingTargetWindow is not null)
+        {
+            if (existingTargetWindow.WindowState == WindowState.Minimized)
+                existingTargetWindow.WindowState = WindowState.Normal;
+
+            existingTargetWindow.Activate();
+            existingTargetWindow.Focus();
+            viewModel.StatusMessage = "이미 열려 있는 렌탈 자산/설치현황 창으로 이동했습니다.";
+            return;
+        }
+
+        if (_openRentalAssetWindowAsync is not null)
+        {
+            await _openRentalAssetWindowAsync(assetId, this);
+            viewModel.StatusMessage = "선택한 거래처 임대 자산을 렌탈 자산/설치현황 창에서 열었습니다.";
+            return;
+        }
+
+        var mainWindow = Application.Current?.Windows.OfType<MainWindow>().FirstOrDefault();
+        if (mainWindow is null)
+        {
+            MessageBox.Show(
+                this,
+                "메인 창 정보를 찾지 못해 렌탈 자산/설치현황 창을 열 수 없습니다.",
+                "렌탈 자산/설치현황",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        var rentalAssetViewModel = new RentalAssetViewModel(
+            mainWindow.RentalStateService,
+            mainWindow.LocalStateService,
+            mainWindow.RentalDocumentService,
+            mainWindow.InvoicePrintService,
+            mainWindow.SessionState);
+        var rentalAssetWindow = new RentalAssetWindow(rentalAssetViewModel)
+        {
+            Owner = this
+        };
+
+        WindowShowHelper.ShowModelessWithDeferredLoad(
+            rentalAssetWindow,
+            () => rentalAssetViewModel.LoadAndSelectAssetAsync(assetId),
+            "렌탈 자산 / 설치현황",
+            "선택한 거래처 임대 자산 정보를 불러오지 못했습니다.",
+            this);
+        viewModel.StatusMessage = "선택한 거래처 임대 자산을 렌탈 자산/설치현황 창에서 여는 중입니다.";
     }
 
     private void BillingHistoryDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)

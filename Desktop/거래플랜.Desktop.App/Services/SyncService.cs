@@ -1565,6 +1565,14 @@ public sealed class SyncService : IDisposable
                 $"resolvedCustomers={transactionRepair.ResolvedMissingCustomerCount}");
         }
 
+        var duplicateLatestInvoiceRepairCount = await _local.RepairDuplicateLatestInvoiceVersionGroupsForSyncAsync(session, ct);
+        if (duplicateLatestInvoiceRepairCount > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"동기화 전표 최신 버전 중복 보정: changed={duplicateLatestInvoiceRepairCount}");
+        }
+
         var invoiceRepair = await _local.RepairDirtyInvoicesForSyncAsync(session, ct);
         if (invoiceRepair.ResolvedMissingCustomerCount > 0 ||
             invoiceRepair.SkippedOutOfScopeCount > 0 ||
@@ -1892,6 +1900,44 @@ public sealed class SyncService : IDisposable
             }
 
             await MarkOutboxSentAsync(req, ct);
+            var acceptedSideEffectsApplied = false;
+            async Task ApplyAcceptedSideEffectsAsync()
+            {
+                if (acceptedSideEffectsApplied)
+                    return;
+
+                if (result.AcceptedRevisions.Count > 0)
+                    await ApplyAcceptedRevisionsAsync(result.AcceptedRevisions, ct);
+
+                foreach (var assigned in result.AssignedInvoiceNumbers)
+                {
+                    await _db.Invoices.IgnoreQueryFilters()
+                        .Where(invoice => invoice.Id == assigned.Key)
+                        .ExecuteUpdateAsync(
+                            setters => setters
+                                .SetProperty(invoice => invoice.InvoiceNumber, assigned.Value)
+                                .SetProperty(invoice => invoice.IsDirty, false),
+                            ct);
+
+                    SynchronizeTrackedInvoiceAssignment(assigned.Key, assigned.Value);
+                }
+
+                foreach (var assigned in result.AssignedTaxInvoiceNumbers)
+                {
+                    await _db.Invoices.IgnoreQueryFilters()
+                        .Where(invoice => invoice.Id == assigned.Key)
+                        .ExecuteUpdateAsync(
+                            setters => setters
+                                .SetProperty(invoice => invoice.TaxInvoiceNumber, assigned.Value)
+                                .SetProperty(invoice => invoice.IsDirty, false),
+                            ct);
+
+                    SynchronizeTrackedTaxInvoiceAssignment(assigned.Key, assigned.Value);
+                }
+
+                await MarkOutboxAcknowledgedAsync(req, result.AcceptedRevisions, ct);
+                acceptedSideEffectsApplied = true;
+            }
 
             if (result.Notices.Count > 0)
             {
@@ -2250,40 +2296,12 @@ public sealed class SyncService : IDisposable
                     AppLogger.Warn("SYNC", detail);
                     await AppendConflictSummaryAsync(detail);
                     await TryRecordDiagnosticAsync("push", detail, severity: "Error");
+                    await ApplyAcceptedSideEffectsAsync();
                     throw new InvalidOperationException(detail);
                 }
             }
 
-            if (result.AcceptedRevisions.Count > 0)
-                await ApplyAcceptedRevisionsAsync(result.AcceptedRevisions, ct);
-
-            foreach (var assigned in result.AssignedInvoiceNumbers)
-            {
-                await _db.Invoices.IgnoreQueryFilters()
-                    .Where(invoice => invoice.Id == assigned.Key)
-                    .ExecuteUpdateAsync(
-                        setters => setters
-                            .SetProperty(invoice => invoice.InvoiceNumber, assigned.Value)
-                            .SetProperty(invoice => invoice.IsDirty, false),
-                        ct);
-
-                SynchronizeTrackedInvoiceAssignment(assigned.Key, assigned.Value);
-            }
-
-            foreach (var assigned in result.AssignedTaxInvoiceNumbers)
-            {
-                await _db.Invoices.IgnoreQueryFilters()
-                    .Where(invoice => invoice.Id == assigned.Key)
-                    .ExecuteUpdateAsync(
-                        setters => setters
-                            .SetProperty(invoice => invoice.TaxInvoiceNumber, assigned.Value)
-                            .SetProperty(invoice => invoice.IsDirty, false),
-                        ct);
-
-                SynchronizeTrackedTaxInvoiceAssignment(assigned.Key, assigned.Value);
-            }
-
-            await MarkOutboxAcknowledgedAsync(req, result.AcceptedRevisions, ct);
+            await ApplyAcceptedSideEffectsAsync();
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
@@ -8934,11 +8952,15 @@ public sealed class SyncService : IDisposable
 
         var deletedInvoiceSideEffects = new List<(Guid InvoiceId, DateTime UpdatedAtUtc, long Revision)>();
         var rentalSettlementTargets = new List<(Guid ProfileId, Guid? RunId)>();
+        var touchedVersionGroupIds = new HashSet<Guid>();
 
         foreach (var dto in dtos)
         {
             var local = LocalMappings.ToLocal(dto);
             local.IsDirty = false;
+            var versionGroupId = local.VersionGroupId == Guid.Empty ? local.Id : local.VersionGroupId;
+            if (versionGroupId != Guid.Empty)
+                touchedVersionGroupIds.Add(versionGroupId);
 
             var existing = await _db.Invoices.IgnoreQueryFilters()
                 .Include(i => i.Lines)
@@ -8984,6 +9006,7 @@ public sealed class SyncService : IDisposable
             }
         }
         await _db.SaveChangesAsync(ct);
+        await _local.NormalizeLatestInvoiceVersionGroupsAsync(touchedVersionGroupIds, ct: ct);
 
         await _local.ApplyPulledInvoiceDeleteSideEffectsAsync(deletedInvoiceSideEffects, ct);
         await _local.RecalculateRentalSettlementsAsync(rentalSettlementTargets, ct, markDirty: false);
