@@ -8,6 +8,23 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class WpfGlobalUiGuardTests
 {
     [Fact]
+    public void MainWindow_InvoiceRows_ShowRentalBillTypeAndSettlementFontWeight()
+    {
+        var root = FindRepositoryRoot();
+        var xaml = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "MainWindow.xaml"));
+
+        Assert.Contains("Binding=\"{Binding VoucherTypeDisplay}\" Width=\"100\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("<DataGrid.RowStyle>", xaml, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"FontWeight\" Value=\"Normal\"/>", xaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding IsBalanceCleared}\" Value=\"True\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"FontWeight\" Value=\"Bold\"/>", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EveryViewDatePicker_KeepsCalendarPopupButtonStyleScopedToDatePickerButton()
     {
         var root = FindRepositoryRoot();

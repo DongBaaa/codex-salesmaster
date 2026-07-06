@@ -567,6 +567,16 @@
                                           MouseDoubleClick="InvoiceRowsDataGrid_MouseDoubleClick"
                                           SelectionMode="Extended"
                                           SelectionUnit="FullRow">
+                                    <DataGrid.RowStyle>
+                                        <Style TargetType="DataGridRow">
+                                            <Setter Property="FontWeight" Value="Normal"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsBalanceCleared}" Value="True">
+                                                    <Setter Property="FontWeight" Value="Bold"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </DataGrid.RowStyle>
                                     <DataGrid.ContextMenu>
                                         <ContextMenu>
                                             <MenuItem Header="선택한 전표 삭제" Click="DeleteSelectedInvoicesContextMenu_Click"/>
@@ -580,8 +590,10 @@
                                                     <Setter Property="HorizontalAlignment" Value="Center"/>
                                                     <Setter Property="TextAlignment" Value="Center"/>
                                                     <Setter Property="Foreground" Value="#A5D6A7"/>
-                                                    <Setter Property="FontWeight" Value="Bold"/>
                                                     <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsBalanceCleared}" Value="True">
+                                                            <Setter Property="FontWeight" Value="Bold"/>
+                                                        </DataTrigger>
                                                         <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=DataGridCell}, Path=IsSelected}" Value="True">
                                                             <Setter Property="Foreground" Value="Black"/>
                                                         </DataTrigger>
@@ -601,7 +613,7 @@
                                                 </DataTemplate>
                                             </DataGridTextColumn.HeaderTemplate>
                                         </DataGridTextColumn>
-                                        <DataGridTextColumn Header="유형" Binding="{Binding VoucherTypeDisplay}" Width="70"/>
+                                        <DataGridTextColumn Header="유형" Binding="{Binding VoucherTypeDisplay}" Width="100"/>
                                         <DataGridTextColumn Header="입고상태" Binding="{Binding PurchaseReceivingDisplay}" Width="110"/>
                                         <DataGridTextColumn Header="공급가" Binding="{Binding SupplyAmount, StringFormat=N0}" Width="100"/>
                                         <DataGridTextColumn Header="부가세" Binding="{Binding VatAmount, StringFormat=N0}" Width="90"/>

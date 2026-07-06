@@ -20,6 +20,8 @@ public sealed class InvoiceListRow
     public string FirstItemSummary { get; init; } = string.Empty;
     public string PrimaryColumnText { get; init; } = string.Empty;
     public string ResponsibleOfficeCode { get; init; } = string.Empty;
+    public Guid? LinkedRentalBillingProfileId { get; init; }
+    public Guid? LinkedRentalBillingRunId { get; init; }
     public VoucherType VoucherType { get; init; }
     public decimal TotalAmount { get; init; }
     public decimal SupplyAmount { get; init; }
@@ -28,6 +30,11 @@ public sealed class InvoiceListRow
     public decimal ReceiptAmount { get; init; }
     public decimal PaymentAmount { get; init; }
     public decimal BalanceAmount => TotalAmount - (VoucherType == VoucherType.Purchase ? PaymentAmount : ReceiptAmount);
+    public bool IsRentalBillingInvoice =>
+        LinkedRentalBillingProfileId is Guid profileId && profileId != Guid.Empty ||
+        LinkedRentalBillingRunId is Guid runId && runId != Guid.Empty;
+    public bool IsSettlementInvoice => VoucherType is VoucherType.Sales or VoucherType.Purchase;
+    public bool IsBalanceCleared => IsSettlementInvoice && BalanceAmount == 0m;
     public bool TaxInvoiceIssued { get; init; }
     public bool PurchaseReceivingRequired { get; init; }
     public string PurchaseReceivingStatus { get; init; } = InvoiceReceivingStatuses.NotApplicable;
@@ -44,15 +51,23 @@ public sealed class InvoiceListRow
         ? InvoiceReceivingStatuses.Normalize(PurchaseReceivingStatus, true, PurchaseReceivingRequired)
         : string.Empty;
 
-    public string VoucherTypeDisplay => VoucherType switch
+    public string VoucherTypeDisplay
     {
-        VoucherType.Sales       => "매출",
-        VoucherType.Purchase    => "매입",
-        VoucherType.Procurement => "발주",
-        VoucherType.Expense     => "경비",
-        VoucherType.Collection  => "수금",
-        _                       => VoucherType.ToString()
-    };
+        get
+        {
+            var display = VoucherType switch
+            {
+                VoucherType.Sales       => "매출",
+                VoucherType.Purchase    => "매입",
+                VoucherType.Procurement => "발주",
+                VoucherType.Expense     => "경비",
+                VoucherType.Collection  => "수금",
+                _                       => VoucherType.ToString()
+            };
+
+            return IsRentalBillingInvoice ? $"{display}(청구서)" : display;
+        }
+    }
 
     public static InvoiceListRow From(LocalInvoice inv, string customerName, bool showCustomerName)
     {
@@ -71,6 +86,8 @@ public sealed class InvoiceListRow
             FirstItemSummary = firstItemSummary,
             PrimaryColumnText = showCustomerName ? customerName : firstItemSummary,
             ResponsibleOfficeCode = inv.ResponsibleOfficeCode,
+            LinkedRentalBillingProfileId = inv.LinkedRentalBillingProfileId,
+            LinkedRentalBillingRunId = inv.LinkedRentalBillingRunId,
             VoucherType = inv.VoucherType,
             TotalAmount = inv.TotalAmount,
             SupplyAmount = inv.SupplyAmount,
@@ -113,6 +130,8 @@ public sealed class InvoiceListRow
             FirstItemSummary = firstItemSummary,
             PrimaryColumnText = showCustomerName ? customerName : firstItemSummary,
             ResponsibleOfficeCode = summary.ResponsibleOfficeCode,
+            LinkedRentalBillingProfileId = summary.LinkedRentalBillingProfileId,
+            LinkedRentalBillingRunId = summary.LinkedRentalBillingRunId,
             VoucherType = summary.VoucherType,
             TotalAmount = summary.TotalAmount,
             SupplyAmount = summary.SupplyAmount,
