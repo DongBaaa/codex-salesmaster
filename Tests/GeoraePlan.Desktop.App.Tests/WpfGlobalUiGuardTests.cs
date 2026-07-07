@@ -25,6 +25,21 @@ public sealed class WpfGlobalUiGuardTests
     }
 
     [Fact]
+    public void MainWindow_InvoiceRows_KeepTaxInvoiceColumnCompactAndCustomerColumnFlexible()
+    {
+        var root = FindRepositoryRoot();
+        var xaml = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "MainWindow.xaml"));
+
+        Assert.Contains("Header=\"세금계산서\" Binding=\"{Binding TaxInvoiceDisplay}\" Width=\"64\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding PrimaryColumnText}\" Width=\"2*\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Binding=\"{Binding TaxInvoiceDisplay}\" Width=\"132\"", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EveryViewDatePicker_KeepsCalendarPopupButtonStyleScopedToDatePickerButton()
     {
         var root = FindRepositoryRoot();
