@@ -40,6 +40,82 @@ public sealed class WpfGlobalUiGuardTests
     }
 
     [Fact]
+    public void CustomerInvoiceLookupWindow_ReusesMainLedgerLayoutAndEntryPoints()
+    {
+        var root = FindRepositoryRoot();
+        var lookupXaml = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "CustomerInvoiceLookupWindow.xaml"));
+        var lookupCode = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "CustomerInvoiceLookupWindow.xaml.cs"));
+        var mainXaml = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "MainWindow.xaml"));
+        var mainCode = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "MainWindow.xaml.cs"));
+
+        Assert.Contains("Content=\"거래내역 새창\"", mainXaml, StringComparison.Ordinal);
+        Assert.Contains("Header=\"거래내역 새창\"", mainXaml, StringComparison.Ordinal);
+        Assert.Contains("CustomerInvoiceLookupButton_Click", mainCode, StringComparison.Ordinal);
+        Assert.Contains("CustomerInvoiceLookupContextMenu_Click", mainCode, StringComparison.Ordinal);
+        Assert.Contains("ShowModelessWithDeferredLoad", mainCode, StringComparison.Ordinal);
+
+        Assert.Contains("ItemsSource=\"{Binding FilteredCustomers}\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("ItemsSource=\"{Binding InvoiceRows}\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("ItemsSource=\"{Binding PreviewLines}\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("ClipboardCopyMode\" Value=\"IncludeHeader\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Header=\"세금계산서\" Binding=\"{Binding TaxInvoiceDisplay}\" Width=\"64\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding PrimaryColumnText}\" Width=\"2*\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding VoucherTypeDisplay}\" Width=\"100\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding PurchaseReceivingDisplay}\" Width=\"110\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding ReceiptAmountDisplay}\" Width=\"90\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding PaymentAmountDisplay}\" Width=\"90\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding BalanceAmountDisplay}\" Width=\"90\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"거래처 정보\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"최근 렌탈 청구\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("MouseDoubleClick=\"InvoiceRowsDataGrid_MouseDoubleClick\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("MouseDoubleClick=\"CustomerListBox_MouseDoubleClick\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("SelectionMode=\"Single\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Func<InvoiceListRow, Task>", lookupCode, StringComparison.Ordinal);
+        Assert.Contains("Func<Guid, Task>", lookupCode, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CustomerInvoiceLookupViewModel_UsesScopedReadServicesWithoutSeparateStorage()
+    {
+        var root = FindRepositoryRoot();
+        var viewModel = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "ViewModels",
+            "CustomerInvoiceLookupViewModel.cs"));
+
+        Assert.Contains("GetCustomersAsync(_session)", viewModel, StringComparison.Ordinal);
+        Assert.Contains("GetInvoiceListSummariesAsync(from, to, selectedCustomerId, _session, ct)", viewModel, StringComparison.Ordinal);
+        Assert.Contains("GetStandaloneTransactionsForLedgerAsync(from, to, selectedCustomerId, _session, ct)", viewModel, StringComparison.Ordinal);
+        Assert.Contains("GetLatestInvoiceVersionAsync(row.Id, _session)", viewModel, StringComparison.Ordinal);
+        Assert.Contains("GetCustomerFinancialSummaryAsync(customer.Id, _session)", viewModel, StringComparison.Ordinal);
+        Assert.Contains("InvoiceListRow.From(invoice, customerName, showCustomerName)", viewModel, StringComparison.Ordinal);
+        Assert.Contains("InvoiceListRow.From(transaction, customerName, showCustomerName)", viewModel, StringComparison.Ordinal);
+        Assert.DoesNotContain("SaveInvoiceAsync", viewModel, StringComparison.Ordinal);
+        Assert.DoesNotContain("SaveTransactionAsync", viewModel, StringComparison.Ordinal);
+        Assert.DoesNotContain("new LocalDbContext", viewModel, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EveryViewDatePicker_KeepsCalendarPopupButtonStyleScopedToDatePickerButton()
     {
         var root = FindRepositoryRoot();

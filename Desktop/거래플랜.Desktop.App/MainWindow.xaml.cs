@@ -1176,6 +1176,43 @@ public partial class MainWindow : Window
         await OpenCustomerEditorAsync(customer);
     }
 
+    private void CustomerInvoiceLookupButton_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(OpenCustomerInvoiceLookupWindowAsync, "거래내역 조회 새창 열기");
+
+    private void CustomerInvoiceLookupContextMenu_Click(object sender, RoutedEventArgs e)
+        => RunUiAsync(OpenCustomerInvoiceLookupWindowAsync, "거래처 거래내역 조회 새창 열기");
+
+    private async Task OpenCustomerInvoiceLookupWindowAsync()
+    {
+        await FlushPendingChangesBeforeNavigationAsync("거래내역 조회");
+
+        var lookupViewModel = new CustomerInvoiceLookupViewModel(_local, _session);
+        CustomerInvoiceLookupWindow? lookupWindow = null;
+        Task OpenLookupInvoiceRowAsync(InvoiceListRow row)
+            => row.IsTransactionRow
+                ? OpenPaymentPopupForTransactionAsync(row.TransactionId ?? row.Id, lookupWindow)
+                : OpenInvoiceWindowAsync(row.Id, lookupWindow);
+        Task OpenLookupCustomerAsync(Guid customerId)
+            => OpenCustomerEditorAsync(customerId, lookupWindow);
+
+        lookupWindow = new CustomerInvoiceLookupWindow(
+            lookupViewModel,
+            OpenLookupInvoiceRowAsync,
+            OpenLookupCustomerAsync)
+        {
+            Owner = this
+        };
+
+        var selectedCustomerId = _vm.SelectedCustomerFilter?.Id;
+        var selectedCustomerSearch = _vm.CustomerFilterText;
+        ShowModelessWithDeferredLoad(
+            lookupWindow,
+            () => lookupViewModel.LoadAsync(selectedCustomerId, selectedCustomerSearch),
+            "거래내역 조회",
+            "거래내역 조회창 데이터를 불러오지 못했습니다.",
+            () => _vm.LoadInvoiceListCommand.ExecuteAsync(null));
+    }
+
     // 거래처 우클릭 -> 거래처 삭제
     private void CustomerDeleteContextMenu_Click(object sender, RoutedEventArgs e)
         => RunUiAsync(DeleteSelectedCustomerAsync, "거래처 삭제");

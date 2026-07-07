@@ -476,6 +476,7 @@
 
                             <Button Content="조회" Background="#37474F" Command="{Binding LoadInvoiceListCommand}" Margin="0,0,6,0"/>
                             <Button Content="필터초기화" Background="#455A64" Command="{Binding ResetInvoiceFiltersCommand}" Margin="0,0,6,0"/>
+                            <Button Content="거래내역 새창" Background="#455A64" Click="CustomerInvoiceLookupButton_Click" Margin="0,0,6,0"/>
                             <ComboBox ItemsSource="{Binding FavoriteInvoices}" SelectedItem="{Binding SelectedFavoriteInvoice}" DisplayMemberPath="DisplayText" Width="380" Margin="0,0,6,0"/>
                             <Button Content="즐겨찾기 이동" Background="#546E7A" Command="{Binding OpenFavoriteInvoiceCommand}" Margin="0,0,6,0"/>
                             <Button Content="즐겨찾기 추가/해제" Background="#6D4C41" Command="{Binding ToggleInvoiceFavoriteCommand}" Margin="0,0,6,0"/>
@@ -519,6 +520,7 @@
                                     <ListBox.ContextMenu>
                                         <ContextMenu>
                                             <MenuItem Header="거래처 수정" Click="CustomerEditContextMenu_Click"/>
+                                            <MenuItem Header="거래내역 새창" Click="CustomerInvoiceLookupContextMenu_Click"/>
                                             <MenuItem Header="거래처 삭제" Click="CustomerDeleteContextMenu_Click"/>
                                         </ContextMenu>
                                     </ListBox.ContextMenu>
