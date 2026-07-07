@@ -9193,6 +9193,91 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task ResetItemInventoryValuesAsync_ResetsMultipleItemsInSingleBatch()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-inventory-reset-batch-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var itemAId = Guid.Parse("81222222-2222-2222-2222-222222222222");
+            var itemBId = Guid.Parse("81222222-2222-2222-2222-222222222223");
+            db.Items.AddRange(
+                new LocalItem
+                {
+                    Id = itemAId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "Batch stock item A",
+                    NameMatchKey = "BATCHSTOCKITEMA",
+                    TrackingType = ItemTrackingTypes.Stock,
+                    CurrentStock = 8m,
+                    PurchasePrice = 1000m
+                },
+                new LocalItem
+                {
+                    Id = itemBId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "Batch stock item B",
+                    NameMatchKey = "BATCHSTOCKITEMB",
+                    TrackingType = ItemTrackingTypes.Stock,
+                    CurrentStock = 3m,
+                    PurchasePrice = 2000m
+                });
+            db.ItemWarehouseStocks.AddRange(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemAId,
+                    WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 8m
+                },
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemBId,
+                    WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 3m
+                });
+            await db.SaveChangesAsync();
+
+            var resetResult = await service.ResetItemInventoryValuesAsync([itemAId, itemBId], session);
+
+            Assert.True(resetResult.Success);
+            Assert.Contains("2", resetResult.Message, StringComparison.Ordinal);
+            Assert.Equal(0m, (await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == itemAId)).CurrentStock);
+            Assert.Equal(0m, (await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == itemBId)).CurrentStock);
+            Assert.True((await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == itemAId)).IsDirty);
+            Assert.True((await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == itemBId)).IsDirty);
+            Assert.Equal(0m, await db.ItemWarehouseStocks
+                .Where(stock => stock.ItemId == itemAId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleAsync());
+            Assert.Equal(0m, await db.ItemWarehouseStocks
+                .Where(stock => stock.ItemId == itemBId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleAsync());
+            Assert.Equal(2, await db.InventoryMovements
+                .CountAsync(movement =>
+                    movement.ItemId.HasValue &&
+                    (movement.ItemId.Value == itemAId || movement.ItemId.Value == itemBId) &&
+                    movement.MovementType == "StockResetToZero" &&
+                    movement.Note == "재고 초기화"));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SaveInvoiceAsync_SalesCreate_AllowsNegativeLocalStockWhenInventoryIsShort()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-local-stock-shortage-{Guid.NewGuid():N}");

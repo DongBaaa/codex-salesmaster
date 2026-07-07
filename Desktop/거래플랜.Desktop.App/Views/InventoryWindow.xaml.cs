@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Linq;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -93,23 +94,22 @@ public partial class InventoryWindow : Window
                 if (DataContext is not InventoryViewModel vm)
                     return;
 
-                if (vm.SelectedItem is null)
+                var selectedRows = GetSelectedInventoryRows(vm);
+                if (selectedRows.Count == 0)
                 {
                     MessageBox.Show(
                         this,
-                        "재고를 초기화할 품목을 먼저 선택하세요.",
+                        "재고를 초기화할 품목을 하나 이상 선택하세요.",
                         "재고 초기화",
                         MessageBoxButton.OK,
                         MessageBoxImage.Information);
                     return;
                 }
 
-                var selectedItemName = string.IsNullOrWhiteSpace(vm.SelectedItem.NameOriginal)
-                    ? "선택한 품목"
-                    : vm.SelectedItem.NameOriginal;
+                var selectedItemLabel = BuildSelectedInventoryResetLabel(selectedRows);
                 var confirmationMessage = vm.HasMeaningfulDraftContentForClose && vm.HasPendingChanges
-                    ? $"현재 편집 중인 품목의 저장되지 않은 내용은 새로고침 과정에서 사라질 수 있습니다.\n\n'{selectedItemName}' 품목의 재고를 0으로 초기화할까요?\n기존 전표/재고이동 이력은 유지되고 초기화 시점 이후 재고만 다시 계산됩니다."
-                    : $"'{selectedItemName}' 품목의 재고를 0으로 초기화할까요?\n기존 전표/재고이동 이력은 유지되고 초기화 시점 이후 재고만 다시 계산됩니다.";
+                    ? $"현재 편집 중인 품목의 저장되지 않은 내용은 새로고침 과정에서 사라질 수 있습니다.\n\n{selectedItemLabel}의 재고를 0으로 초기화할까요?\n기존 전표/재고이동 이력은 유지되고 초기화 시점 이후 재고만 다시 계산합니다."
+                    : $"{selectedItemLabel}의 재고를 0으로 초기화할까요?\n기존 전표/재고이동 이력은 유지되고 초기화 시점 이후 재고만 다시 계산합니다.";
 
                 var confirmation = MessageBox.Show(
                     this,
@@ -120,7 +120,7 @@ public partial class InventoryWindow : Window
                 if (confirmation != MessageBoxResult.Yes)
                     return;
 
-                var result = await vm.ResetSelectedInventoryValueAsync();
+                var result = await vm.ResetSelectedInventoryValuesAsync(selectedRows);
                 if (!result.Success)
                 {
                     MessageBox.Show(
@@ -142,6 +142,37 @@ public partial class InventoryWindow : Window
             "UI",
             "재고 초기화",
             "재고 초기화 중 오류가 발생했습니다.");
+
+    private IReadOnlyList<InventoryItemRow> GetSelectedInventoryRows(InventoryViewModel vm)
+    {
+        var rows = ItemsDataGrid.SelectedItems
+            .OfType<InventoryItemRow>()
+            .GroupBy(row => row.Id)
+            .Select(group => group.First())
+            .ToList();
+        if (rows.Count == 0 && vm.SelectedItem is not null)
+            rows.Add(vm.SelectedItem);
+
+        return rows;
+    }
+
+    private static string BuildSelectedInventoryResetLabel(IReadOnlyList<InventoryItemRow> rows)
+    {
+        if (rows.Count == 1)
+        {
+            var itemName = string.IsNullOrWhiteSpace(rows[0].NameOriginal)
+                ? "선택한 품목"
+                : rows[0].NameOriginal;
+            return $"'{itemName}' 품목";
+        }
+
+        var preview = string.Join(", ", rows
+            .Select(row => string.IsNullOrWhiteSpace(row.NameOriginal) ? "이름 없는 품목" : row.NameOriginal)
+            .Take(3));
+        return rows.Count > 3
+            ? $"선택한 {rows.Count:N0}개 품목({preview} 외)"
+            : $"선택한 {rows.Count:N0}개 품목({preview})";
+    }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e) => DialogWindowCloseHelper.Close(this);
 

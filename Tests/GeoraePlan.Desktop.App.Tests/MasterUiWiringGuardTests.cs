@@ -240,6 +240,9 @@ public sealed class MasterUiWiringGuardTests
             "Command=\"{Binding NewItemCommand}\"",
             "Command=\"{Binding SaveItemCommand}\"",
             "Command=\"{Binding DeleteItemCommand}\"",
+            "x:Name=\"ItemsDataGrid\"",
+            "SelectionMode=\"Extended\"",
+            "Content=\"선택 재고 초기화\"",
             "Command=\"{Binding ShowUsenetOfficeCommand}\"",
             "Command=\"{Binding ShowItworldOfficeCommand}\"",
             "Command=\"{Binding ShowYeonsuOfficeCommand}\"");
@@ -250,6 +253,8 @@ public sealed class MasterUiWiringGuardTests
             "_local.CanWriteItemScope(SelectedItem.Source, _session)",
             "[RelayCommand(CanExecute = nameof(CanDeleteSelectedItem))]",
             "var deleteResult = await _local.DeleteItemAsync(SelectedItem.Id, _session, SelectedItem.Source.Revision)",
+            "public async Task<OfficeMutationResult> ResetSelectedInventoryValuesAsync(IReadOnlyCollection<InventoryItemRow> selectedItems)",
+            "var result = await _local.ResetItemInventoryValuesAsync(selectedItemIds, _session)",
             "if (!CanSaveItems)",
             "catch (UnauthorizedAccessException ex)",
             "await _local.UpsertItemAsync(BuildItem(snapshot), _session, snapshot.PreferredOfficeCode)",

@@ -24,15 +24,16 @@ public static class TradePrintExecutor
 
     private static readonly EnumeratedPrintQueueTypes[][] InstalledPrinterQueueTypeGroups =
     [
-        [
-            EnumeratedPrintQueueTypes.Local,
-            EnumeratedPrintQueueTypes.Connections,
-            EnumeratedPrintQueueTypes.Shared
-        ],
+        [EnumeratedPrintQueueTypes.Local],
+        [EnumeratedPrintQueueTypes.Connections],
+        [EnumeratedPrintQueueTypes.Shared],
         [EnumeratedPrintQueueTypes.DirectPrinting],
         [EnumeratedPrintQueueTypes.PushedMachineConnection],
         [EnumeratedPrintQueueTypes.PushedUserConnection],
-        [EnumeratedPrintQueueTypes.WorkOffline]
+        [EnumeratedPrintQueueTypes.WorkOffline],
+        [EnumeratedPrintQueueTypes.Queued],
+        [EnumeratedPrintQueueTypes.PublishedInDirectoryServices],
+        [EnumeratedPrintQueueTypes.Fax]
     ];
 
     public static bool TryPrintDocument(
@@ -152,6 +153,16 @@ public static class TradePrintExecutor
     private static IReadOnlyList<PrintQueue> LoadInstalledPrintQueues(LocalPrintServer printServer)
     {
         var queuesByName = new Dictionary<string, PrintQueue>(StringComparer.OrdinalIgnoreCase);
+
+        try
+        {
+            foreach (var queue in printServer.GetPrintQueues())
+                AddQueue(queue);
+        }
+        catch (PrintSystemException ex)
+        {
+            AppLogger.Warn("PRINT", $"프린터 전체 목록 확인 실패: {ex.Message}");
+        }
 
         foreach (var queueTypes in InstalledPrinterQueueTypeGroups)
         {

@@ -459,6 +459,9 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     }
 
     public async Task<OfficeMutationResult> ResetSelectedInventoryValueAsync()
+        => await ResetSelectedInventoryValuesAsync(SelectedItem is null ? Array.Empty<InventoryItemRow>() : [SelectedItem]);
+
+    public async Task<OfficeMutationResult> ResetSelectedInventoryValuesAsync(IReadOnlyCollection<InventoryItemRow> selectedItems)
     {
         if (!_session.HasAdministrativePrivileges && !_session.HasPermission(AppPermissionNames.InventoryReset))
         {
@@ -467,18 +470,27 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             return OfficeMutationResult.Denied(deniedMessage);
         }
 
-        if (SelectedItem is null)
+        var selectedRows = selectedItems
+            .GroupBy(row => row.Id)
+            .Select(group => group.First())
+            .ToArray();
+        if (selectedRows.Length == 0)
         {
             const string missingMessage = "재고를 초기화할 품목을 먼저 선택하세요.";
             StatusMessage = missingMessage;
             return OfficeMutationResult.Missing(missingMessage);
         }
 
-        var selectedItemId = SelectedItem.Id;
+        var currentSelectedItemId = SelectedItem?.Id;
+        var preserveSelectionItemId = currentSelectedItemId.HasValue &&
+                                      selectedRows.Any(row => row.Id == currentSelectedItemId.Value)
+            ? currentSelectedItemId.Value
+            : selectedRows[0].Id;
+        var selectedItemIds = selectedRows.Select(row => row.Id).ToArray();
         _isInventoryRefreshInProgress = true;
         try
         {
-            var result = await _local.ResetItemInventoryValueAsync(selectedItemId, _session);
+            var result = await _local.ResetItemInventoryValuesAsync(selectedItemIds, _session);
             if (!result.Success)
             {
                 StatusMessage = result.Message;
@@ -486,7 +498,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             }
 
             await RefreshInventoryScreenAsync(reloadCategories: false);
-            SelectItemWithoutAutoSave(selectedItemId);
+            SelectItemWithoutAutoSave(preserveSelectionItemId);
 
             if (SelectedItem is null)
                 ResetForNewItem();

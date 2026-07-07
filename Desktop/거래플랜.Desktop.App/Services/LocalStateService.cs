@@ -1985,70 +1985,132 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	}
 
 	public async Task<OfficeMutationResult> ResetItemInventoryValueAsync(Guid itemId, SessionState session, CancellationToken ct = default(CancellationToken))
+		=> await ResetItemInventoryValuesAsync([itemId], session, ct);
+
+	public async Task<OfficeMutationResult> ResetItemInventoryValuesAsync(IReadOnlyCollection<Guid> itemIds, SessionState session, CancellationToken ct = default(CancellationToken))
 	{
 		if (!CanResetInventoryValue(session))
 		{
 			return OfficeMutationResult.Denied("현재 계정은 재고 초기화를 실행할 권한이 없습니다. 관리자 계정으로 로그인하거나 관리자에게 요청하세요.");
 		}
+
+		var distinctItemIds = itemIds
+			.Where(id => id != Guid.Empty)
+			.Distinct()
+			.ToArray();
+		if (distinctItemIds.Length == 0)
+		{
+			return OfficeMutationResult.Missing("초기화할 품목을 찾을 수 없습니다.");
+		}
+
 		DateTime now = DateTime.UtcNow;
 		OfficeMutationResult result;
 		await using (IDbContextTransaction transaction = await _db.Database.BeginTransactionAsync(ct))
 		{
-			var item = await _db.Items.IgnoreQueryFilters().FirstOrDefaultAsync((LocalItem current) => current.Id == itemId && !current.IsDeleted, ct);
-			if (item == null)
+			var items = await _db.Items.IgnoreQueryFilters()
+				.Where((LocalItem current) => distinctItemIds.Contains(current.Id) && !current.IsDeleted)
+				.ToListAsync(ct);
+			if (items.Count != distinctItemIds.Length)
 			{
-				result = OfficeMutationResult.Missing("초기화할 품목을 찾을 수 없습니다.");
-			}
-			else if (!CanWriteItemScope(item, session))
-			{
-				result = OfficeMutationResult.Denied("권한이 없어 해당 품목의 재고를 초기화할 수 없습니다.");
+				result = OfficeMutationResult.Missing("초기화할 품목 일부를 찾을 수 없습니다. 새로고침 후 다시 시도하세요.");
 			}
 			else
 			{
-				var warehouseCodes = await ResolveInventoryResetWarehouseCodesAsync(itemId, item, ct);
-				var occurredDate = await ResolveInventoryResetOccurredDateAsync(itemId, ct);
-				var username = session.User?.Username ?? "local-user";
-				var unitCost = Math.Max(0m, item.PurchasePrice);
-				foreach (var warehouseCode in warehouseCodes)
+				var deniedItems = items
+					.Where(item => !CanWriteItemScope(item, session))
+					.ToArray();
+				if (deniedItems.Length > 0)
 				{
-					_db.InventoryMovements.Add(new LocalInventoryMovement
-					{
-						Id = Guid.NewGuid(),
-						ItemId = itemId,
-						WarehouseCode = warehouseCode,
-						MovementType = InventoryResetToZeroMovementType,
-						QuantityDelta = 0m,
-						UnitCost = unitCost,
-						Amount = 0m,
-						OccurredDate = occurredDate,
-						IsSettledCost = true,
-						IsActive = true,
-						Note = "재고 초기화",
-						CreatedByUsername = username,
-						CreatedAtUtc = now
-					});
+					result = OfficeMutationResult.Denied($"권한이 없어 {FormatInventoryResetItemList(deniedItems)} 품목의 재고를 초기화할 수 없습니다.");
 				}
-
-				await _db.SaveChangesAsync(ct);
-				await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
+				else
 				{
-					Username = username,
-					Role = session.User?.Role ?? string.Empty,
-					OfficeCode = session.OfficeCode
-				}, ct);
+					var itemsById = items.ToDictionary(item => item.Id);
+					var username = session.User?.Username ?? "local-user";
+					foreach (var resetItemId in distinctItemIds)
+					{
+						var item = itemsById[resetItemId];
+						var warehouseCodes = await ResolveInventoryResetWarehouseCodesAsync(resetItemId, item, ct);
+						var occurredDate = await ResolveInventoryResetOccurredDateAsync(resetItemId, ct);
+						var unitCost = Math.Max(0m, item.PurchasePrice);
+						foreach (var warehouseCode in warehouseCodes)
+						{
+							_db.InventoryMovements.Add(new LocalInventoryMovement
+							{
+								Id = Guid.NewGuid(),
+								ItemId = resetItemId,
+								WarehouseCode = warehouseCode,
+								MovementType = InventoryResetToZeroMovementType,
+								QuantityDelta = 0m,
+								UnitCost = unitCost,
+								Amount = 0m,
+								OccurredDate = occurredDate,
+								IsSettledCost = true,
+								IsActive = true,
+								Note = "재고 초기화",
+								CreatedByUsername = username,
+								CreatedAtUtc = now
+							});
+						}
+					}
 
-				var refreshed = await _db.Items.IgnoreQueryFilters().FirstAsync((LocalItem current) => current.Id == itemId, ct);
-				refreshed.CurrentStock = 0m;
-				refreshed.IsDirty = true;
-				refreshed.UpdatedAtUtc = DateTime.UtcNow;
-				await _db.SaveChangesAsync(ct);
-				await transaction.CommitAsync(ct);
-				RaiseInventoryStateChanged();
-				result = OfficeMutationResult.Ok(itemId, "'" + item.NameOriginal + "' 품목의 재고를 초기화했습니다. 기존 전표/재고이동 이력은 유지되고, 초기화 시점 이후 재고만 다시 계산됩니다.");
+					await _db.SaveChangesAsync(ct);
+					await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
+					{
+						Username = username,
+						Role = session.User?.Role ?? string.Empty,
+						OfficeCode = session.OfficeCode
+					}, ct);
+
+					var refreshedItems = await _db.Items.IgnoreQueryFilters()
+						.Where((LocalItem current) => distinctItemIds.Contains(current.Id))
+						.ToListAsync(ct);
+					foreach (var refreshed in refreshedItems)
+					{
+						refreshed.CurrentStock = 0m;
+						refreshed.IsDirty = true;
+						refreshed.UpdatedAtUtc = DateTime.UtcNow;
+					}
+
+					await _db.SaveChangesAsync(ct);
+					await transaction.CommitAsync(ct);
+					RaiseInventoryStateChanged();
+					result = OfficeMutationResult.Ok(
+						distinctItemIds.Length == 1 ? distinctItemIds[0] : Guid.Empty,
+						BuildInventoryResetSuccessMessage(items, distinctItemIds.Length));
+				}
 			}
 		}
 		return result;
 	}
+
+	private static string BuildInventoryResetSuccessMessage(IReadOnlyCollection<LocalItem> items, int resetCount)
+	{
+		if (resetCount == 1)
+		{
+			var item = items.First();
+			return $"'{FormatInventoryResetItemName(item)}' 품목의 재고를 초기화했습니다. 기존 전표/재고이동 이력은 유지되고, 초기화 시점 이후 재고만 다시 계산됩니다.";
+		}
+
+		return $"선택한 품목 {resetCount:N0}개의 재고를 초기화했습니다. ({FormatInventoryResetItemList(items)}) 기존 전표/재고이동 이력은 유지되고, 초기화 시점 이후 재고만 다시 계산됩니다.";
+	}
+
+	private static string FormatInventoryResetItemList(IEnumerable<LocalItem> items)
+	{
+		var names = items
+			.Select(FormatInventoryResetItemName)
+			.Where(name => !string.IsNullOrWhiteSpace(name))
+			.Take(3)
+			.ToArray();
+		var totalCount = items.Count();
+		var preview = string.Join(", ", names);
+		return totalCount > names.Length
+			? $"{preview} 외 {totalCount - names.Length:N0}개"
+			: preview;
+	}
+
+	private static string FormatInventoryResetItemName(LocalItem item)
+		=> string.IsNullOrWhiteSpace(item.NameOriginal) ? "이름 없는 품목" : item.NameOriginal.Trim();
 
 	private async Task<List<string>> ResolveInventoryResetWarehouseCodesAsync(Guid itemId, LocalItem item, CancellationToken ct)
 	{

@@ -179,10 +179,10 @@
                             Background="#B71C1C"
                             Command="{Binding DeleteItemCommand}"/>
                     <Button Style="{StaticResource ToolbarButtonStyle}"
-                            Content="재고 초기화"
+                            Content="선택 재고 초기화"
                             Background="#E65100"
                             Visibility="{Binding IsAdmin, Converter={StaticResource BoolToVisibility}}"
-                            ToolTip="선택한 품목의 재고를 0으로 초기화합니다. 기존 전표/재고이동 이력은 유지됩니다."
+                            ToolTip="선택한 품목들의 재고를 0으로 초기화합니다. 목록에서 Ctrl 또는 Shift로 여러 품목을 선택할 수 있으며, 기존 전표/재고이동 이력은 유지됩니다."
                             Click="ResetInventoryButton_Click"/>
                     <Button Style="{StaticResource ToolbarButtonStyle}"
                             Content="재고이동"
@@ -272,9 +272,12 @@
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <DataGrid Grid.Column="0"
+            <DataGrid x:Name="ItemsDataGrid"
+                      Grid.Column="0"
                       ItemsSource="{Binding FilteredItems}"
                       SelectedItem="{Binding SelectedItem}"
+                      SelectionMode="Extended"
+                      SelectionUnit="FullRow"
                       IsReadOnly="True"
                       BorderThickness="0">
                 <DataGrid.Columns>

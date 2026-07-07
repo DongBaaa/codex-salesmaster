@@ -282,10 +282,18 @@ public sealed class TradePrintDialogSourceGuardTests
             "TradePrintExecutor.cs"));
 
         Assert.Contains("InstalledPrinterQueueTypeGroups", executor, StringComparison.Ordinal);
+        Assert.Contains("printServer.GetPrintQueues()", executor, StringComparison.Ordinal);
+        Assert.Contains("[EnumeratedPrintQueueTypes.Local]", executor, StringComparison.Ordinal);
+        Assert.Contains("[EnumeratedPrintQueueTypes.Connections]", executor, StringComparison.Ordinal);
+        Assert.Contains("[EnumeratedPrintQueueTypes.Shared]", executor, StringComparison.Ordinal);
         Assert.Contains("EnumeratedPrintQueueTypes.DirectPrinting", executor, StringComparison.Ordinal);
         Assert.Contains("EnumeratedPrintQueueTypes.PushedMachineConnection", executor, StringComparison.Ordinal);
         Assert.Contains("EnumeratedPrintQueueTypes.PushedUserConnection", executor, StringComparison.Ordinal);
         Assert.Contains("EnumeratedPrintQueueTypes.WorkOffline", executor, StringComparison.Ordinal);
+        Assert.Contains("EnumeratedPrintQueueTypes.Queued", executor, StringComparison.Ordinal);
+        Assert.Contains("EnumeratedPrintQueueTypes.PublishedInDirectoryServices", executor, StringComparison.Ordinal);
+        Assert.Contains("EnumeratedPrintQueueTypes.Fax", executor, StringComparison.Ordinal);
+        Assert.Contains("프린터 전체 목록 확인 실패", executor, StringComparison.Ordinal);
         Assert.Contains("프린터 목록 확인 실패({typeNames})", executor, StringComparison.Ordinal);
     }
 
