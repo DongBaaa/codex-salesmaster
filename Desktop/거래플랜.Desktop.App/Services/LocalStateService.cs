@@ -1944,10 +1944,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			{
 				throw new InvalidOperationException(conflictMessage);
 			}
+			var now = DateTime.UtcNow;
 			item.IsDeleted = true;
 			item.IsDirty = true;
 			item.CurrentStock = 0m;
-			item.UpdatedAtUtc = DateTime.UtcNow;
+			item.UpdatedAtUtc = now;
+			await MarkItemPriceGradesDeletedAsync(id, now, ct);
 			await SyncItemWarehouseStocksAsync(id, 0m, null, removeStocks: true, ct);
 			await _db.SaveChangesAsync(ct);
 			RaiseInventoryStateChanged();
@@ -1974,10 +1976,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Conflict(conflictMessage);
 		}
+		var now = DateTime.UtcNow;
 		item.IsDeleted = true;
 		item.IsDirty = true;
 		item.CurrentStock = 0m;
-		item.UpdatedAtUtc = DateTime.UtcNow;
+		item.UpdatedAtUtc = now;
+		await MarkItemPriceGradesDeletedAsync(id, now, ct);
 		await SyncItemWarehouseStocksAsync(id, 0m, null, removeStocks: true, ct);
 		await _db.SaveChangesAsync(ct);
 		RaiseInventoryStateChanged();
@@ -4151,6 +4155,14 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				customer.IsDirty = true;
 				customer.UpdatedAtUtc = now;
 			}
+			foreach (LocalItemPriceGrade grade in await (from itemPriceGrade in _db.ItemPriceGrades.IgnoreQueryFilters()
+				where itemPriceGrade.PriceGradeOptionId == existing.Id || itemPriceGrade.PriceGradeName == oldName
+				select itemPriceGrade).ToListAsync(ct))
+			{
+				grade.PriceGradeName = name;
+				grade.IsDirty = true;
+				grade.UpdatedAtUtc = now;
+			}
 		}
 		await _db.SaveChangesAsync(ct);
 		return LocalMutationResult.Ok(existing.Id, "가격등급을 수정했습니다.");
@@ -4171,6 +4183,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		if (await _db.Customers.IgnoreQueryFilters().AnyAsync((LocalCustomer customer) => customer.PriceGrade == option.Name, ct))
 		{
 			return LocalMutationResult.Denied("사용 중인 가격등급은 삭제할 수 없습니다.");
+		}
+		if (await _db.ItemPriceGrades.IgnoreQueryFilters().AnyAsync((LocalItemPriceGrade grade) => !grade.IsDeleted && grade.PriceGradeOptionId == option.Id, ct))
+		{
+			return LocalMutationResult.Denied("품목 커스텀 단가에 사용 중인 가격등급은 삭제할 수 없습니다.");
 		}
 		option.IsDeleted = true;
 		option.IsDirty = true;

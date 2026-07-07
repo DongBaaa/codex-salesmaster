@@ -226,6 +226,17 @@ public sealed class Item : TrackedEntity
     public string Notes { get; set; } = string.Empty;
 }
 
+public sealed class ItemPriceGrade : TrackedEntity
+{
+    public Guid ItemId { get; set; }
+    public Item? Item { get; set; }
+    public Guid PriceGradeOptionId { get; set; }
+    public PriceGradeOption? PriceGradeOption { get; set; }
+    public string PriceGradeName { get; set; } = string.Empty;
+    public decimal UnitPrice { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
 public sealed class Invoice : TrackedEntity
 {
     public Guid CustomerId { get; set; }

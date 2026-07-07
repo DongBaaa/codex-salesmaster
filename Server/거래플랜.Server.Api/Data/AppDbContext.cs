@@ -39,6 +39,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<CustomerContract> CustomerContracts => Set<CustomerContract>();
     public DbSet<Item> Items => Set<Item>();
+    public DbSet<ItemPriceGrade> ItemPriceGrades => Set<ItemPriceGrade>();
     public DbSet<ItemWarehouseStock> ItemWarehouseStocks => Set<ItemWarehouseStock>();
     public DbSet<TransactionRecord> Transactions => Set<TransactionRecord>();
     public DbSet<TransactionAttachment> TransactionAttachments => Set<TransactionAttachment>();
@@ -101,6 +102,12 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<ItemWarehouseStock>()
             .HasOne(x => x.Item).WithMany()
             .HasForeignKey(x => x.ItemId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<ItemPriceGrade>()
+            .HasOne(x => x.Item).WithMany()
+            .HasForeignKey(x => x.ItemId).OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<ItemPriceGrade>()
+            .HasOne(x => x.PriceGradeOption).WithMany()
+            .HasForeignKey(x => x.PriceGradeOptionId).OnDelete(DeleteBehavior.Restrict);
         modelBuilder.Entity<Payment>()
             .HasMany(x => x.Attachments).WithOne(x => x.Payment)
             .HasForeignKey(x => x.PaymentId).OnDelete(DeleteBehavior.Cascade);
@@ -127,6 +134,7 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<InvoiceLine>().Property(x => x.UnitPrice).HasPrecision(18, 2);
         modelBuilder.Entity<InvoiceLine>().Property(x => x.LineAmount).HasPrecision(18, 2);
         modelBuilder.Entity<Payment>().Property(x => x.Amount).HasPrecision(18, 2);
+        modelBuilder.Entity<ItemPriceGrade>().Property(x => x.UnitPrice).HasPrecision(18, 2);
         modelBuilder.Entity<ItemWarehouseStock>().Property(x => x.Quantity).HasPrecision(18, 2);
         modelBuilder.Entity<TransactionRecord>().Property(x => x.SettlementAmount).HasPrecision(18, 2);
         modelBuilder.Entity<TransactionRecord>().Property(x => x.AdvanceDelta).HasPrecision(18, 2);
@@ -169,6 +177,9 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<Item>().HasIndex(x => x.CategoryName);
         modelBuilder.Entity<Item>().HasIndex(x => x.TenantCode);
         modelBuilder.Entity<Item>().HasIndex(x => x.OfficeCode);
+        modelBuilder.Entity<ItemPriceGrade>().HasIndex(x => x.ItemId);
+        modelBuilder.Entity<ItemPriceGrade>().HasIndex(x => x.PriceGradeOptionId);
+        modelBuilder.Entity<ItemPriceGrade>().HasIndex(x => new { x.ItemId, x.PriceGradeOptionId }).IsUnique();
         modelBuilder.Entity<Invoice>().HasIndex(x => x.TenantCode);
         modelBuilder.Entity<Invoice>().HasIndex(x => x.OfficeCode);
         modelBuilder.Entity<Invoice>().HasIndex(x => x.ResponsibleOfficeCode);
@@ -222,6 +233,8 @@ public sealed class AppDbContext : DbContext
             .HasQueryFilter(x => !x.IsDeleted && x.Transfer != null && !x.Transfer.IsDeleted);
         modelBuilder.Entity<ItemWarehouseStock>()
             .HasQueryFilter(x => x.Item != null && !x.Item.IsDeleted);
+        modelBuilder.Entity<ItemPriceGrade>()
+            .HasQueryFilter(x => !x.IsDeleted && x.Item != null && !x.Item.IsDeleted);
 
         ApplySoftDeleteFilter<UserAccount>(modelBuilder);
         ApplySoftDeleteFilter<CompanyProfile>(modelBuilder);

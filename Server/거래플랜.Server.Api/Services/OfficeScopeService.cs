@@ -579,6 +579,20 @@ public sealed class OfficeScopeService
             (entity.Item.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.Item.OfficeCode)));
     }
 
+    public IQueryable<ItemPriceGrade> ApplyItemPriceGradeScope(IQueryable<ItemPriceGrade> query)
+    {
+        if (HasGlobalDataScope)
+            return query.Where(entity => entity.Item != null && !entity.Item.IsDeleted);
+
+        var tenantCode = CurrentTenantCode;
+        var readableOffices = ResolveReadableOfficeCodes(DataArea.Items);
+        return query.Where(entity =>
+            entity.Item != null &&
+            !entity.Item.IsDeleted &&
+            entity.Item.TenantCode == tenantCode &&
+            (entity.Item.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.Item.OfficeCode)));
+    }
+
     public bool CanReadOfficeForCustomers(string? officeCode, string? tenantCode = null, string? fallbackOfficeCode = null)
         => CanReadOffice(officeCode, tenantCode, DataArea.Customers, fallbackOfficeCode);
 

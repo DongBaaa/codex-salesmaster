@@ -445,6 +445,31 @@ public static class DtoMappings
             entity.OfficeCode = OfficeCodeCatalog.Shared;
     }
 
+    public static ItemPriceGradeDto ToDto(this ItemPriceGrade entity) =>
+        new()
+        {
+            Id = entity.Id,
+            IsDeleted = entity.IsDeleted,
+            CreatedAtUtc = entity.CreatedAtUtc,
+            UpdatedAtUtc = entity.UpdatedAtUtc,
+            Revision = entity.Revision,
+            ItemId = entity.ItemId,
+            PriceGradeOptionId = entity.PriceGradeOptionId,
+            PriceGradeName = entity.PriceGradeName,
+            UnitPrice = entity.UnitPrice,
+            IsActive = entity.IsActive
+        };
+
+    public static void Apply(this ItemPriceGrade entity, ItemPriceGradeDto dto)
+    {
+        entity.ItemId = dto.ItemId;
+        entity.PriceGradeOptionId = dto.PriceGradeOptionId;
+        entity.PriceGradeName = dto.PriceGradeName?.Trim() ?? string.Empty;
+        entity.UnitPrice = Math.Max(0m, dto.UnitPrice);
+        entity.IsActive = dto.IsActive;
+        entity.IsDeleted = dto.IsDeleted;
+    }
+
     public static TransactionDto ToDto(this TransactionRecord entity) =>
         new()
         {

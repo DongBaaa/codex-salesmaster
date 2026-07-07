@@ -1182,6 +1182,7 @@ public sealed class SyncService : IDisposable
                 clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomer, CustomerDto>(pull.Customers, ct);
                 clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomerContract, CustomerContractDto>(pull.CustomerContracts, ct);
                 clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalItem, ItemDto>(pull.Items, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalItemPriceGrade, ItemPriceGradeDto>(pull.ItemPriceGrades, ct);
                 clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalTransaction, TransactionDto>(pull.Transactions, ct);
                 clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalTransactionAttachment, TransactionAttachmentDto>(pull.TransactionAttachments, ct);
                 clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalInventoryTransfer, InventoryTransferDto>(pull.InventoryTransfers, ct);
@@ -1376,6 +1377,7 @@ public sealed class SyncService : IDisposable
             LocalCustomer value => LocalMappings.ToDto(value),
             LocalCustomerContract value => LocalMappings.ToDto(value),
             LocalItem value => LocalMappings.ToDto(value),
+            LocalItemPriceGrade value => LocalMappings.ToDto(value),
             LocalTransaction value => LocalMappings.ToDto(value),
             LocalTransactionAttachment value => LocalMappings.ToDto(value),
             LocalInventoryTransfer value => LocalMappings.ToDto(value),
@@ -1628,6 +1630,7 @@ public sealed class SyncService : IDisposable
 
         var canSyncCompanyProfiles = includeSharedDirty && session.HasPermission(AppPermissionNames.CompanyProfileEdit);
         var canSyncSettings = includeSharedDirty && session.HasPermission(AppPermissionNames.SettingsEdit);
+        var canSyncItemPriceGrades = session.HasPermission(AppPermissionNames.ItemEdit);
         var canSyncItemWarehouseStocks = includeSharedDirty && session.HasPermission(AppPermissionNames.ItemEdit);
         var canSyncRentalSettings = includeSharedDirty && session.HasPermission(AppPermissionNames.RentalSettingsEdit);
 
@@ -1671,6 +1674,9 @@ public sealed class SyncService : IDisposable
         var dirtyCustomers = await _local.GetDirtyCustomersForSyncAsync(session, ct);
         var dirtyCustomerContracts = await _local.GetDirtyCustomerContractsForSyncAsync(session, ct);
         var dirtyItems = await _local.GetDirtyItemsForSyncAsync(session, ct);
+        var dirtyItemPriceGrades = canSyncItemPriceGrades
+            ? await _local.GetDirtyItemPriceGradesForSyncAsync(session, ct)
+            : [];
         var dirtyItemWarehouseStocks = canSyncItemWarehouseStocks
             ? await LoadInventoryTrackedItemWarehouseStocksForPushAsync(ct)
             : [];
@@ -1700,6 +1706,7 @@ public sealed class SyncService : IDisposable
         var customers = dirtyCustomers.Select(LocalMappings.ToDto).ToList();
         var customerContracts = dirtyCustomerContracts.Select(LocalMappings.ToDto).ToList();
         var items = dirtyItems.Select(LocalMappings.ToDto).ToList();
+        var itemPriceGrades = dirtyItemPriceGrades.Select(LocalMappings.ToDto).ToList();
         var itemWarehouseStocks = dirtyItemWarehouseStocks.Select(LocalMappings.ToDto).ToList();
         var transactions = dirtyTransactions.Select(LocalMappings.ToDto).ToList();
         var transactionAttachments = dirtyTransactionAttachments
@@ -1780,6 +1787,7 @@ public sealed class SyncService : IDisposable
             Customers = customers,
             CustomerContracts = customerContracts,
             Items = items,
+            ItemPriceGrades = itemPriceGrades,
             ItemWarehouseStocks = itemWarehouseStocks,
             Transactions = transactions,
             TransactionAttachments = transactionAttachments,
@@ -1865,6 +1873,7 @@ public sealed class SyncService : IDisposable
            req.Customers.Count +
            req.CustomerContracts.Count +
            req.Items.Count +
+           req.ItemPriceGrades.Count +
            req.ItemWarehouseStocks.Count +
            req.Transactions.Count +
            req.TransactionAttachments.Count +
@@ -2532,6 +2541,9 @@ public sealed class SyncService : IDisposable
                     break;
                 case "ItemCategoryOption":
                     await MarkServerNewerConflictsCleanAsync<LocalItemCategoryOption>(ids, ct);
+                    break;
+                case "ItemPriceGrade":
+                    await MarkServerNewerConflictsCleanAsync<LocalItemPriceGrade>(ids, ct);
                     break;
                 case "PriceGradeOption":
                     await MarkServerNewerConflictsCleanAsync<LocalPriceGradeOption>(ids, ct);
@@ -5340,6 +5352,9 @@ public sealed class SyncService : IDisposable
                 case "ItemCategoryOption":
                     await MarkServerNewerConflictsCleanAsync<LocalItemCategoryOption>(ids, ct);
                     break;
+                case "ItemPriceGrade":
+                    await MarkServerNewerConflictsCleanAsync<LocalItemPriceGrade>(ids, ct);
+                    break;
                 case "PriceGradeOption":
                     await MarkServerNewerConflictsCleanAsync<LocalPriceGradeOption>(ids, ct);
                     break;
@@ -5422,6 +5437,7 @@ public sealed class SyncService : IDisposable
         await ApplyAcceptedRevisionsAsync<LocalCustomer>(acceptedRevisions, ct, nameof(LocalCustomer), "Customer");
         await ApplyAcceptedRevisionsAsync<LocalCustomerContract>(acceptedRevisions, ct, nameof(LocalCustomerContract), "CustomerContract");
         await ApplyAcceptedRevisionsAsync<LocalItem>(acceptedRevisions, ct, nameof(LocalItem), "Item");
+        await ApplyAcceptedRevisionsAsync<LocalItemPriceGrade>(acceptedRevisions, ct, nameof(LocalItemPriceGrade), "ItemPriceGrade");
         await ApplyAcceptedRevisionsAsync<LocalTransaction>(acceptedRevisions, ct, nameof(LocalTransaction), "TransactionRecord", "Transaction");
         await ApplyAcceptedRevisionsAsync<LocalTransactionAttachment>(acceptedRevisions, ct, nameof(LocalTransactionAttachment), "TransactionAttachment");
         await ApplyAcceptedRevisionsAsync<LocalInventoryTransfer>(acceptedRevisions, ct, nameof(LocalInventoryTransfer), "InventoryTransfer");
@@ -5756,6 +5772,8 @@ public sealed class SyncService : IDisposable
         await UpsertPulledCustomerContractsAsync(pull.CustomerContracts, ct);
         _db.ChangeTracker.Clear();
         await UpsertPulledItemsAsync(pull.Items, ct);
+        _db.ChangeTracker.Clear();
+        await UpsertPulledAsync(pull.ItemPriceGrades, _db.ItemPriceGrades, LocalMappings.ToLocal, ct);
         _db.ChangeTracker.Clear();
         await UpsertPulledItemWarehouseStocksAsync(pull.ItemWarehouseStocks, ct);
         _db.ChangeTracker.Clear();
@@ -8340,6 +8358,7 @@ public sealed class SyncService : IDisposable
         StampOutgoingMutations(request.Customers, nameof(LocalCustomer), deviceId);
         StampOutgoingMutations(request.CustomerContracts, nameof(LocalCustomerContract), deviceId);
         StampOutgoingMutations(request.Items, nameof(LocalItem), deviceId);
+        StampOutgoingMutations(request.ItemPriceGrades, nameof(LocalItemPriceGrade), deviceId);
         StampOutgoingMutations(request.Transactions, nameof(LocalTransaction), deviceId);
         StampOutgoingMutations(request.TransactionAttachments, nameof(LocalTransactionAttachment), deviceId);
         StampOutgoingMutations(request.InventoryTransfers, nameof(LocalInventoryTransfer), deviceId);
@@ -8387,6 +8406,8 @@ public sealed class SyncService : IDisposable
             yield return (nameof(LocalCustomerContract), entity);
         foreach (var entity in request.Items)
             yield return (nameof(LocalItem), entity);
+        foreach (var entity in request.ItemPriceGrades)
+            yield return (nameof(LocalItemPriceGrade), entity);
         foreach (var entity in request.Transactions)
             yield return (nameof(LocalTransaction), entity);
         foreach (var entity in request.TransactionAttachments)
@@ -8456,6 +8477,7 @@ public sealed class SyncService : IDisposable
     private sealed class PreparedMutationScopeLookup
     {
         public Dictionary<Guid, PreparedMutationScope> CustomerScopeById { get; } = new();
+        public Dictionary<Guid, PreparedMutationScope> ItemScopeById { get; } = new();
         public Dictionary<Guid, PreparedMutationScope> InvoiceScopeById { get; } = new();
         public Dictionary<Guid, PreparedMutationScope> TransactionScopeById { get; } = new();
     }
@@ -8492,6 +8514,32 @@ public sealed class SyncService : IDisposable
                     customer.ResponsibleOfficeCode,
                     session,
                     customer.OfficeCode);
+        }
+
+        var itemIds = request.ItemPriceGrades
+            .Where(price => price.ItemId != Guid.Empty)
+            .Select(price => price.ItemId)
+            .Distinct()
+            .ToList();
+        if (itemIds.Count > 0)
+        {
+            var items = await _db.Items.IgnoreQueryFilters()
+                .Where(item => itemIds.Contains(item.Id))
+                .Select(item => new
+                {
+                    item.Id,
+                    item.TenantCode,
+                    item.OfficeCode
+                })
+                .ToListAsync(ct);
+
+            foreach (var item in items)
+                lookup.ItemScopeById[item.Id] = NormalizePreparedMutationScope(
+                    item.TenantCode,
+                    item.OfficeCode,
+                    item.OfficeCode,
+                    session,
+                    item.OfficeCode);
         }
 
         var invoiceIds = request.Payments
@@ -8569,6 +8617,8 @@ public sealed class SyncService : IDisposable
             CustomerContractDto dto when lookup.CustomerScopeById.TryGetValue(dto.CustomerId, out var customerScope) => customerScope,
             CustomerContractDto => NormalizePreparedMutationScope(session.TenantCode, session.OfficeCode, session.OfficeCode, session, session.OfficeCode),
             ItemDto dto => NormalizePreparedMutationScope(dto.TenantCode, dto.OfficeCode, dto.OfficeCode, session, dto.OfficeCode),
+            ItemPriceGradeDto dto when lookup.ItemScopeById.TryGetValue(dto.ItemId, out var itemScope) => itemScope,
+            ItemPriceGradeDto => NormalizePreparedMutationScope(session.TenantCode, session.OfficeCode, session.OfficeCode, session, session.OfficeCode),
             TransactionDto dto => NormalizePreparedMutationScope(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode, session, dto.OfficeCode),
             TransactionAttachmentDto dto when lookup.TransactionScopeById.TryGetValue(dto.TransactionId, out var transactionScope) => transactionScope,
             TransactionAttachmentDto => NormalizePreparedMutationScope(session.TenantCode, session.OfficeCode, session.OfficeCode, session, session.OfficeCode),

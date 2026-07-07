@@ -233,6 +233,7 @@ public static partial class DbInitializer
 
         await EnsureCustomerContractsTableAsync(dbContext, cancellationToken);
         await EnsurePaymentAttachmentsTableAsync(dbContext, cancellationToken);
+        await EnsureItemPriceGradesTableAsync(dbContext, cancellationToken);
         await EnsureItemWarehouseStocksTableAsync(dbContext, cancellationToken);
         await EnsureTransactionsTableAsync(dbContext, logger, cancellationToken);
         await EnsureTransactionPrepaidDeltaColumnAsync(dbContext, cancellationToken);
@@ -1852,6 +1853,7 @@ public static partial class DbInitializer
               await dbContext.Units.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
               await dbContext.CustomerCategories.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
               await dbContext.PriceGradeOptions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
+              await dbContext.ItemPriceGrades.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
               await dbContext.TradeTypeOptions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
               await dbContext.ItemCategoryOptions.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
               await dbContext.CustomerMasters.IgnoreQueryFilters().Select(x => (long?)x.Revision).MaxAsync(cancellationToken) ?? 0,
@@ -3112,6 +3114,77 @@ public static partial class DbInitializer
         catch (Exception ignoredDbInitializerException)
         {
             TraceIgnoredDbInitializerException(ignoredDbInitializerException);
+        }
+    }
+
+    private static async Task EnsureItemPriceGradesTableAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var providerName = dbContext.Database.ProviderName ?? string.Empty;
+
+        try
+        {
+            if (providerName.Contains("Sqlite", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "ItemPriceGrades" (
+                        "Id" TEXT NOT NULL PRIMARY KEY,
+                        "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                        "CreatedAtUtc" TEXT NOT NULL,
+                        "UpdatedAtUtc" TEXT NOT NULL,
+                        "Revision" INTEGER NOT NULL DEFAULT 0,
+                        "ItemId" TEXT NOT NULL,
+                        "PriceGradeOptionId" TEXT NOT NULL,
+                        "PriceGradeName" TEXT NOT NULL DEFAULT '',
+                        "UnitPrice" REAL NOT NULL DEFAULT 0,
+                        "IsActive" INTEGER NOT NULL DEFAULT 1
+                    );
+                    """,
+                    cancellationToken);
+            }
+            else if (providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(
+                    """
+                    CREATE TABLE IF NOT EXISTS "ItemPriceGrades" (
+                        "Id" uuid NOT NULL PRIMARY KEY,
+                        "IsDeleted" boolean NOT NULL DEFAULT FALSE,
+                        "CreatedAtUtc" timestamptz NOT NULL,
+                        "UpdatedAtUtc" timestamptz NOT NULL,
+                        "Revision" bigint NOT NULL DEFAULT 0,
+                        "ItemId" uuid NOT NULL,
+                        "PriceGradeOptionId" uuid NOT NULL,
+                        "PriceGradeName" text NOT NULL DEFAULT '',
+                        "UnitPrice" numeric(18,2) NOT NULL DEFAULT 0,
+                        "IsActive" boolean NOT NULL DEFAULT TRUE
+                    );
+                    """,
+                    cancellationToken);
+            }
+        }
+        catch (Exception ignoredDbInitializerException)
+        {
+            TraceIgnoredDbInitializerException(ignoredDbInitializerException);
+        }
+
+        foreach (var sql in new[]
+        {
+            "CREATE INDEX IF NOT EXISTS \"IX_ItemPriceGrades_ItemId\" ON \"ItemPriceGrades\" (\"ItemId\");",
+            "CREATE INDEX IF NOT EXISTS \"IX_ItemPriceGrades_PriceGradeOptionId\" ON \"ItemPriceGrades\" (\"PriceGradeOptionId\");",
+            "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_ItemPriceGrades_ItemOption\" ON \"ItemPriceGrades\" (\"ItemId\", \"PriceGradeOptionId\");",
+            "CREATE INDEX IF NOT EXISTS \"IX_ItemPriceGrades_Revision\" ON \"ItemPriceGrades\" (\"Revision\");"
+        })
+        {
+            try
+            {
+                await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+            }
+            catch (Exception ignoredDbInitializerException)
+            {
+                TraceIgnoredDbInitializerException(ignoredDbInitializerException);
+            }
         }
     }
 

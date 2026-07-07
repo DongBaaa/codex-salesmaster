@@ -1,4 +1,5 @@
 ﻿using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -18,7 +19,9 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     private readonly Dictionary<Guid, Dictionary<string, decimal>> _itemOfficeQuantities = new();
     private readonly Dictionary<string, string> _warehouseOfficeCodes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _warehouseDisplayNames = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<Guid, List<LocalItemPriceGrade>> _itemPriceGradesByItemId = new();
     private List<LocalItem> _allItems = new();
+    private List<LocalPriceGradeOption> _priceGradeOptions = new();
     private bool _isInventoryRefreshInProgress;
     private bool _suppressSelectionAutoSave;
     private int _suppressInventoryStateRefresh;
@@ -34,6 +37,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     public ObservableCollection<InventoryMovementRow> SelectedItemMovements { get; } = new();
     public ObservableCollection<ItemVendorPurchasePriceRow> SelectedItemVendorPurchasePrices { get; } = new();
     public ObservableCollection<LocalItemCategoryOption> ItemCategoryOptions { get; } = new();
+    public ObservableCollection<ItemPriceGradeEditRow> PriceGradeRows { get; } = new();
     public IReadOnlyList<string> TrackingTypeFilterOptions { get; } = ["전체", ItemTrackingTypes.Stock, ItemTrackingTypes.Asset, ItemTrackingTypes.NonStock];
     public IReadOnlyList<string> ItemKindOptions { get; } = ItemKinds.All;
     public IReadOnlyList<string> TrackingTypeOptions { get; } = ItemTrackingTypes.All;
@@ -176,14 +180,41 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             ItemCategoryOptions.Add(option);
     }
 
+    private async Task ReloadPriceGradeOptionsAsync()
+    {
+        _priceGradeOptions = (await _local.GetPriceGradeOptionsAsync())
+            .Where(option => option.IsActive && !option.IsDeleted)
+            .OrderBy(option => option.SortOrder)
+            .ThenBy(option => option.Name)
+            .ToList();
+    }
+
+    private async Task ReloadItemPriceGradeCacheAsync()
+    {
+        _itemPriceGradesByItemId.Clear();
+        var rows = await _local.GetItemPriceGradesAsync(_session);
+        foreach (var group in rows
+                     .Where(row => !row.IsDeleted && row.IsActive)
+                     .GroupBy(row => row.ItemId))
+        {
+            _itemPriceGradesByItemId[group.Key] = group
+                .OrderBy(row => row.PriceGradeName)
+                .ToList();
+        }
+    }
+
     private async Task RefreshInventoryScreenAsync(bool reloadCategories)
     {
         var selectedItemId = SelectedItem?.Id;
 
         if (reloadCategories)
+        {
             await ReloadItemCategoryOptionsAsync();
+            await ReloadPriceGradeOptionsAsync();
+        }
 
         _allItems = await _local.GetItemsAsync(_session);
+        await ReloadItemPriceGradeCacheAsync();
         await LoadInventoryStateAsync();
         ApplyFilter();
 
@@ -195,6 +226,9 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 
         if (SelectedItem is null && string.IsNullOrWhiteSpace(EditCategoryName))
             EditCategoryName = ItemCategoryOptions.FirstOrDefault()?.Name ?? string.Empty;
+
+        if (SelectedItem is null && PriceGradeRows.Count == 0)
+            ResetPriceGradeRows();
     }
 
     private void HandleInventoryStateChanged(object? sender, EventArgs e)
@@ -686,7 +720,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         Interlocked.Increment(ref _suppressInventoryStateRefresh);
         try
         {
-            await _local.UpsertItemAsync(BuildItem(snapshot), _session, snapshot.PreferredOfficeCode);
+            await _local.UpsertItemAsync(BuildItem(snapshot), _session, snapshot.PreferredOfficeCode, BuildItemPriceGrades(snapshot));
         }
         finally
         {
@@ -856,6 +890,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         EditPriceA = item.PriceGradeA;
         EditPriceB = item.PriceGradeB;
         EditPriceC = item.PriceGradeC;
+        ApplyPriceGradeRows(BuildPriceGradeRowsForItem(item));
         EditLastPurchaseDate = item.LastPurchaseDate;
         EditLastSaleDate = item.LastSaleDate;
         EditSimpleMemo = item.SimpleMemo;
@@ -894,6 +929,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         EditPriceA = 0m;
         EditPriceB = 0m;
         EditPriceC = 0m;
+        ResetPriceGradeRows();
         EditLastPurchaseDate = null;
         EditLastSaleDate = null;
         EditSimpleMemo = string.Empty;
@@ -1006,7 +1042,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 
         if (snapshot.EditSafetyStock < 0 || snapshot.EditBoxQty < 0 ||
             snapshot.EditPurchasePrice < 0 || snapshot.EditSalePrice < 0 || snapshot.EditRetailPrice < 0 ||
-            snapshot.EditPriceA < 0 || snapshot.EditPriceB < 0 || snapshot.EditPriceC < 0)
+            snapshot.PriceGrades.Any(row => row.UnitPrice < 0m))
         {
             StatusMessage = "재고 기준값과 단가 값은 0 이상으로 입력하세요.";
             return false;
@@ -1251,6 +1287,14 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         EditPriceA = snapshot.EditPriceA;
         EditPriceB = snapshot.EditPriceB;
         EditPriceC = snapshot.EditPriceC;
+        ApplyPriceGradeRows(snapshot.PriceGrades.Select(row => new ItemPriceGradeEditRow(
+            row.Id,
+            row.PriceGradeOptionId,
+            row.PriceGradeName,
+            row.PriceSource,
+            row.SortOrder,
+            row.UnitPrice,
+            row.IsActive)));
         EditLastPurchaseDate = snapshot.EditLastPurchaseDate;
         EditLastSaleDate = snapshot.EditLastSaleDate;
         EditSimpleMemo = snapshot.EditSimpleMemo;
@@ -1291,6 +1335,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             EditPriceA,
             EditPriceB,
             EditPriceC,
+            CapturePriceGradeRows(),
             EditLastPurchaseDate,
             EditLastSaleDate,
             EditSimpleMemo,
@@ -1313,11 +1358,109 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
            || snapshot.EditPurchasePrice != 0m
            || snapshot.EditSalePrice != 0m
            || snapshot.EditRetailPrice != 0m
-           || snapshot.EditPriceA != 0m
-           || snapshot.EditPriceB != 0m
-           || snapshot.EditPriceC != 0m
+           || snapshot.PriceGrades.Any(row => row.UnitPrice != 0m)
            || snapshot.EditLastPurchaseDate.HasValue
            || snapshot.EditLastSaleDate.HasValue;
+
+    private void ResetPriceGradeRows()
+        => ApplyPriceGradeRows(BuildPriceGradeRowsForItem(null));
+
+    private List<ItemPriceGradeEditRow> BuildPriceGradeRowsForItem(LocalItem? item)
+    {
+        var existingRows = item is not null && _itemPriceGradesByItemId.TryGetValue(item.Id, out var rows)
+            ? rows.ToDictionary(row => row.PriceGradeOptionId)
+            : new Dictionary<Guid, LocalItemPriceGrade>();
+
+        return _priceGradeOptions
+            .OrderBy(option => option.SortOrder)
+            .ThenBy(option => option.Name)
+            .Select(option =>
+            {
+                existingRows.TryGetValue(option.Id, out var existing);
+                var source = SelectionOptionDefaults.NormalizePriceSource(option.PriceSource);
+                var fallback = item is null ? 0m : ResolveLegacyItemPrice(item, source);
+                return new ItemPriceGradeEditRow(
+                    existing?.Id ?? Guid.NewGuid(),
+                    option.Id,
+                    option.Name,
+                    source,
+                    option.SortOrder,
+                    existing?.UnitPrice ?? fallback,
+                    option.IsActive);
+            })
+            .ToList();
+    }
+
+    private void ApplyPriceGradeRows(IEnumerable<ItemPriceGradeEditRow> rows)
+    {
+        foreach (var row in PriceGradeRows)
+            row.PropertyChanged -= PriceGradeRow_PropertyChanged;
+
+        PriceGradeRows.Clear();
+        foreach (var row in rows)
+        {
+            row.PropertyChanged += PriceGradeRow_PropertyChanged;
+            PriceGradeRows.Add(row);
+        }
+
+        OnPropertyChanged(nameof(HasPendingChanges));
+        OnPropertyChanged(nameof(HasMeaningfulDraftContentForClose));
+    }
+
+    private void PriceGradeRow_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        OnPropertyChanged(nameof(HasPendingChanges));
+        OnPropertyChanged(nameof(HasMeaningfulDraftContentForClose));
+    }
+
+    private List<ItemPriceGradeSnapshot> CapturePriceGradeRows()
+        => PriceGradeRows
+            .OrderBy(row => row.SortOrder)
+            .ThenBy(row => row.PriceGradeName)
+            .Select(row => new ItemPriceGradeSnapshot(
+                row.Id,
+                row.PriceGradeOptionId,
+                row.PriceGradeName,
+                row.PriceSource,
+                row.SortOrder,
+                row.UnitPrice,
+                row.IsActive))
+            .ToList();
+
+    private static decimal ResolveLegacyItemPrice(LocalItem item, string priceSource)
+        => priceSource switch
+        {
+            SelectionOptionDefaults.PriceSourceA => item.PriceGradeA,
+            SelectionOptionDefaults.PriceSourceB => item.PriceGradeB,
+            SelectionOptionDefaults.PriceSourceC => item.PriceGradeC,
+            SelectionOptionDefaults.PriceSourceRetail => item.RetailPrice,
+            _ => item.SalePrice
+        };
+
+    private static decimal ResolveSnapshotLegacyPrice(InventoryEditSnapshot snapshot, string priceSource, decimal fallback)
+    {
+        var matched = snapshot.PriceGrades
+            .FirstOrDefault(row => string.Equals(
+                SelectionOptionDefaults.NormalizePriceSource(row.PriceSource),
+                SelectionOptionDefaults.NormalizePriceSource(priceSource),
+                StringComparison.OrdinalIgnoreCase));
+        return matched is null ? fallback : matched.UnitPrice;
+    }
+
+    private static IReadOnlyList<LocalItemPriceGrade> BuildItemPriceGrades(InventoryEditSnapshot snapshot)
+        => snapshot.PriceGrades
+            .Where(row => row.PriceGradeOptionId != Guid.Empty)
+            .Select(row => new LocalItemPriceGrade
+            {
+                Id = row.Id == Guid.Empty ? Guid.NewGuid() : row.Id,
+                ItemId = snapshot.EditId,
+                PriceGradeOptionId = row.PriceGradeOptionId,
+                PriceGradeName = row.PriceGradeName ?? string.Empty,
+                UnitPrice = row.UnitPrice,
+                IsActive = row.IsActive,
+                IsDeleted = false
+            })
+            .ToList();
 
     private LocalItem BuildItem(InventoryEditSnapshot snapshot)
     {
@@ -1344,9 +1487,9 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             PurchasePrice = snapshot.EditPurchasePrice,
             SalePrice = snapshot.EditSalePrice,
             RetailPrice = snapshot.EditRetailPrice,
-            PriceGradeA = snapshot.EditPriceA,
-            PriceGradeB = snapshot.EditPriceB,
-            PriceGradeC = snapshot.EditPriceC,
+            PriceGradeA = ResolveSnapshotLegacyPrice(snapshot, SelectionOptionDefaults.PriceSourceA, snapshot.EditPriceA),
+            PriceGradeB = ResolveSnapshotLegacyPrice(snapshot, SelectionOptionDefaults.PriceSourceB, snapshot.EditPriceB),
+            PriceGradeC = ResolveSnapshotLegacyPrice(snapshot, SelectionOptionDefaults.PriceSourceC, snapshot.EditPriceC),
             LastPurchaseDate = snapshot.EditLastPurchaseDate,
             LastSaleDate = snapshot.EditLastSaleDate,
             SimpleMemo = snapshot.EditSimpleMemo,
@@ -1380,11 +1523,17 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             .Append('|').Append(snapshot.EditSafetyStock)
             .Append('|').Append(snapshot.EditPurchasePrice)
             .Append('|').Append(snapshot.EditSalePrice)
-            .Append('|').Append(snapshot.EditRetailPrice)
-            .Append('|').Append(snapshot.EditPriceA)
-            .Append('|').Append(snapshot.EditPriceB)
-            .Append('|').Append(snapshot.EditPriceC)
-            .Append('|').Append(snapshot.EditLastPurchaseDate?.ToString("yyyy-MM-dd") ?? string.Empty)
+            .Append('|').Append(snapshot.EditRetailPrice);
+        foreach (var grade in snapshot.PriceGrades.OrderBy(row => row.SortOrder).ThenBy(row => row.PriceGradeName))
+        {
+            builder.Append("|PG:")
+                .Append(grade.PriceGradeOptionId.ToString("D"))
+                .Append(':')
+                .Append(grade.PriceGradeName ?? string.Empty)
+                .Append(':')
+                .Append(grade.UnitPrice);
+        }
+        builder.Append('|').Append(snapshot.EditLastPurchaseDate?.ToString("yyyy-MM-dd") ?? string.Empty)
             .Append('|').Append(snapshot.EditLastSaleDate?.ToString("yyyy-MM-dd") ?? string.Empty)
             .Append('|').Append(snapshot.EditSimpleMemo ?? string.Empty)
             .Append('|').Append(snapshot.EditIsSale)
@@ -1392,6 +1541,15 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             .Append('|').Append(snapshot.IsNew);
         return builder.ToString();
     }
+
+    private sealed record ItemPriceGradeSnapshot(
+        Guid Id,
+        Guid PriceGradeOptionId,
+        string PriceGradeName,
+        string PriceSource,
+        int SortOrder,
+        decimal UnitPrice,
+        bool IsActive);
 
     private sealed record InventoryEditSnapshot(
         Guid EditId,
@@ -1416,6 +1574,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         decimal EditPriceA,
         decimal EditPriceB,
         decimal EditPriceC,
+        IReadOnlyList<ItemPriceGradeSnapshot> PriceGrades,
         DateOnly? EditLastPurchaseDate,
         DateOnly? EditLastSaleDate,
         string EditSimpleMemo,

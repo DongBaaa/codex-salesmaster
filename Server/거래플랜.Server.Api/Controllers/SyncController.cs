@@ -135,6 +135,9 @@ public sealed class SyncController : ControllerBase
                 .Where(x => x.Revision > sinceRev).Select(x => x.ToDto(false)).ToListAsync(cancellationToken),
             Items = await _officeScopeService.ApplySyncItemScope(_dbContext.Items.IgnoreQueryFilters().AsNoTracking())
                 .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            ItemPriceGrades = await _officeScopeService.ApplyItemPriceGradeScope(_dbContext.ItemPriceGrades.IgnoreQueryFilters().AsNoTracking().Include(x => x.Item))
+                .Where(x => x.Revision > sinceRev).OrderBy(x => x.ItemId).ThenBy(x => x.PriceGradeName)
+                .Select(x => x.ToDto()).ToListAsync(cancellationToken),
             ItemWarehouseStocks = await _officeScopeService.ApplyItemWarehouseStockScope(_dbContext.ItemWarehouseStocks.AsNoTracking())
                 .OrderBy(x => x.ItemId).ThenBy(x => x.WarehouseCode)
                 .Select(x => x.ToDto()).ToListAsync(cancellationToken),
@@ -493,6 +496,7 @@ public sealed class SyncController : ControllerBase
             "거래처");
         Require(
             HasAny(request.Items) ||
+            HasAny(request.ItemPriceGrades) ||
             HasAny(request.ItemWarehouseStocks),
             PermissionNames.ItemEdit,
             "품목/재고");
@@ -539,6 +543,7 @@ public sealed class SyncController : ControllerBase
         request.Customers = RemoveNullEntries(request.Customers);
         request.CustomerContracts = RemoveNullEntries(request.CustomerContracts);
         request.Items = RemoveNullEntries(request.Items);
+        request.ItemPriceGrades = RemoveNullEntries(request.ItemPriceGrades);
         request.ItemWarehouseStocks = RemoveNullEntries(request.ItemWarehouseStocks);
         request.Transactions = RemoveNullEntries(request.Transactions);
         request.TransactionAttachments = RemoveNullEntries(request.TransactionAttachments);
@@ -635,9 +640,15 @@ public sealed class SyncController : ControllerBase
                     .Select(item => item.Id)
                     .Distinct()
                     .ToList();
+                await RemoveItemPriceGradesForDeletedItemsAsync(deletedItemIds, cancellationToken);
                 await RemoveWarehouseStocksForDeletedItemsAsync(deletedItemIds, cancellationToken);
                 await RemoveSupersededPurgeRecordsAsync("item", acceptedItems, cancellationToken);
             }
+            var validItemPriceGrades = await FilterValidItemPriceGradesAsync(request.ItemPriceGrades ?? [], result, cancellationToken);
+            await UpsertEntitiesAsync(validItemPriceGrades, _dbContext.ItemPriceGrades,
+                (e, d) => e.Apply(d), d => new ItemPriceGrade { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+            if (validItemPriceGrades.Count > 0)
+                await _dbContext.SaveChangesAsync(cancellationToken);
             var itemWarehouseStockResult = await UpsertItemWarehouseStocksAsync(request.ItemWarehouseStocks ?? [], result, cancellationToken);
             if (itemWarehouseStockResult.AffectedItemIds.Count > 0)
             {
@@ -787,6 +798,7 @@ public sealed class SyncController : ControllerBase
             await PopulateAcceptedRevisionsAsync(result, validCustomers, _dbContext.Customers, nameof(Customer), cancellationToken);
             await PopulateAcceptedRevisionsAsync(result, validCustomerContracts, _dbContext.CustomerContracts, nameof(CustomerContract), cancellationToken);
             await PopulateAcceptedRevisionsAsync(result, scopedItems, _dbContext.Items, nameof(Item), cancellationToken);
+            await PopulateAcceptedRevisionsAsync(result, validItemPriceGrades, _dbContext.ItemPriceGrades, nameof(ItemPriceGrade), cancellationToken);
             await PopulateAcceptedRevisionsAsync(result, validInvoices, _dbContext.Invoices, nameof(Invoice), cancellationToken);
             await PopulateAcceptedRevisionsAsync(result, validTransactions, _dbContext.Transactions, nameof(TransactionRecord), cancellationToken);
             await PopulateAcceptedRevisionsAsync(result, validTransactionAttachments, _dbContext.TransactionAttachments, nameof(TransactionAttachment), cancellationToken);
@@ -6494,6 +6506,104 @@ public sealed class SyncController : ControllerBase
         }
 
         return valid;
+    }
+
+    private async Task<List<ItemPriceGradeDto>> FilterValidItemPriceGradesAsync(
+        IEnumerable<ItemPriceGradeDto> payload,
+        SyncPushResult result,
+        CancellationToken cancellationToken)
+    {
+        var incomingRows = payload
+            .Where(dto => dto.ItemId != Guid.Empty && dto.PriceGradeOptionId != Guid.Empty)
+            .GroupBy(dto => new { dto.ItemId, dto.PriceGradeOptionId })
+            .Select(group => group.Last())
+            .ToList();
+        if (incomingRows.Count == 0)
+            return new List<ItemPriceGradeDto>();
+
+        var itemIds = incomingRows.Select(row => row.ItemId).Distinct().ToArray();
+        var optionIds = incomingRows.Select(row => row.PriceGradeOptionId).Distinct().ToArray();
+        var items = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item => itemIds.Contains(item.Id))
+            .ToDictionaryAsync(item => item.Id, cancellationToken);
+        var options = await _dbContext.PriceGradeOptions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(option => optionIds.Contains(option.Id))
+            .ToDictionaryAsync(option => option.Id, cancellationToken);
+        var existingRows = await _dbContext.ItemPriceGrades
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(row => itemIds.Contains(row.ItemId) && optionIds.Contains(row.PriceGradeOptionId))
+            .ToListAsync(cancellationToken);
+        var existingByKey = existingRows
+            .GroupBy(row => $"{row.ItemId:N}|{row.PriceGradeOptionId:N}", StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.OrderByDescending(row => row.UpdatedAtUtc).First(), StringComparer.OrdinalIgnoreCase);
+
+        var valid = new List<ItemPriceGradeDto>();
+        foreach (var dto in incomingRows)
+        {
+            if (dto.UnitPrice < 0m)
+            {
+                AddClientConflict(dto, nameof(ItemPriceGrade), "Item price grade cannot be negative.", result);
+                continue;
+            }
+
+            if (!items.TryGetValue(dto.ItemId, out var item) || item.IsDeleted)
+            {
+                AddClientConflict(dto, nameof(ItemPriceGrade), "Item price grade references a missing or deleted item.", result);
+                continue;
+            }
+
+            if (!_officeScopeService.CanWriteOfficeForItems(item.OfficeCode, item.TenantCode))
+            {
+                AddClientConflict(dto, nameof(ItemPriceGrade), "Item price grade item is outside the writable item scope.", result);
+                continue;
+            }
+
+            if (!options.TryGetValue(dto.PriceGradeOptionId, out var option) || option.IsDeleted || (!option.IsActive && !dto.IsDeleted))
+            {
+                AddClientConflict(dto, nameof(ItemPriceGrade), "Item price grade references a missing or inactive price grade option.", result);
+                continue;
+            }
+
+            var key = $"{dto.ItemId:N}|{dto.PriceGradeOptionId:N}";
+            if (existingByKey.TryGetValue(key, out var existing))
+            {
+                dto.Id = existing.Id;
+            }
+            else if (dto.Id == Guid.Empty)
+            {
+                dto.Id = Guid.NewGuid();
+            }
+
+            dto.PriceGradeName = option.Name?.Trim() ?? dto.PriceGradeName?.Trim() ?? string.Empty;
+            dto.UnitPrice = Math.Max(0m, dto.UnitPrice);
+            dto.IsActive = !dto.IsDeleted && dto.IsActive;
+            valid.Add(dto);
+        }
+
+        return valid;
+    }
+
+    private async Task RemoveItemPriceGradesForDeletedItemsAsync(
+        IReadOnlyCollection<Guid> deletedItemIds,
+        CancellationToken cancellationToken)
+    {
+        if (deletedItemIds.Count == 0)
+            return;
+
+        var rows = await _dbContext.ItemPriceGrades
+            .IgnoreQueryFilters()
+            .Where(row => deletedItemIds.Contains(row.ItemId) && !row.IsDeleted)
+            .ToListAsync(cancellationToken);
+        foreach (var row in rows)
+        {
+            row.IsDeleted = true;
+            row.IsActive = false;
+        }
     }
 
     private async Task<ItemWarehouseStockUpsertResult> UpsertItemWarehouseStocksAsync(

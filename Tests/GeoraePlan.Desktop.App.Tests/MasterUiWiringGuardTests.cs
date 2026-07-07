@@ -257,7 +257,7 @@ public sealed class MasterUiWiringGuardTests
             "var result = await _local.ResetItemInventoryValuesAsync(selectedItemIds, _session)",
             "if (!CanSaveItems)",
             "catch (UnauthorizedAccessException ex)",
-            "await _local.UpsertItemAsync(BuildItem(snapshot), _session, snapshot.PreferredOfficeCode)",
+            "await _local.UpsertItemAsync(BuildItem(snapshot), _session, snapshot.PreferredOfficeCode, BuildItemPriceGrades(snapshot))",
             "var allItems = await _local.GetItemsAsync(_session)");
     }
 

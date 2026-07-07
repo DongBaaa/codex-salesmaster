@@ -410,6 +410,36 @@ public static class LocalMappings
     };
 
     // ── Invoice ─────────────────────────────────────────────────────────────
+    public static LocalItemPriceGrade ToLocal(ItemPriceGradeDto dto) => new()
+    {
+        Id = dto.Id,
+        ItemId = dto.ItemId,
+        PriceGradeOptionId = dto.PriceGradeOptionId,
+        PriceGradeName = dto.PriceGradeName,
+        UnitPrice = dto.UnitPrice,
+        IsActive = dto.IsActive,
+        CreatedAtUtc = dto.CreatedAtUtc,
+        UpdatedAtUtc = dto.UpdatedAtUtc,
+        Revision = dto.Revision,
+        IsDeleted = dto.IsDeleted,
+        IsDirty = false
+    };
+
+    public static ItemPriceGradeDto ToDto(LocalItemPriceGrade e) => new()
+    {
+        Id = e.Id,
+        ItemId = e.ItemId,
+        PriceGradeOptionId = e.PriceGradeOptionId,
+        PriceGradeName = e.PriceGradeName,
+        UnitPrice = e.UnitPrice,
+        IsActive = e.IsActive,
+        CreatedAtUtc = e.CreatedAtUtc,
+        UpdatedAtUtc = e.UpdatedAtUtc,
+        Revision = e.Revision,
+        ExpectedRevision = e.Revision,
+        IsDeleted = e.IsDeleted
+    };
+
     public static LocalInvoice ToLocal(InvoiceDto dto) => new()
     {
         Id = dto.Id,

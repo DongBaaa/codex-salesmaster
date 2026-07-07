@@ -173,6 +173,15 @@ public sealed class LocalItem : LocalSyncEntity
     public string Notes { get; set; } = string.Empty;
 }
 
+public sealed class LocalItemPriceGrade : LocalSyncEntity
+{
+    public Guid ItemId { get; set; }
+    public Guid PriceGradeOptionId { get; set; }
+    public string PriceGradeName { get; set; } = string.Empty;
+    public decimal UnitPrice { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
 public sealed class LocalInvoice : LocalSyncEntity
 {
     public Guid CustomerId { get; set; }

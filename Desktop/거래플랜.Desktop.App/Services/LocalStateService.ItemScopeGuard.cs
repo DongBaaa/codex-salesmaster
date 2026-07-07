@@ -13,13 +13,24 @@ public sealed partial class LocalStateService
         SessionState session,
         string? preferredOfficeCode,
         CancellationToken ct = default)
+        => await UpsertItemAsync(item, session, preferredOfficeCode, itemPriceGrades: null, ct);
+
+    public async Task<LocalItem> UpsertItemAsync(
+        LocalItem item,
+        SessionState session,
+        string? preferredOfficeCode,
+        IEnumerable<LocalItemPriceGrade>? itemPriceGrades,
+        CancellationToken ct = default)
     {
         EnsureCanUpsertItem(item, session, preferredOfficeCode);
-        return await UpsertItemAsync(
+        var saved = await UpsertItemAsync(
             item,
             preferredOfficeCode,
             synchronizeLinkedRentalAssets: CanEditRentalAssets(session),
             ct);
+        if (itemPriceGrades is not null)
+            await SaveItemPriceGradesForItemAsync(saved.Id, itemPriceGrades, ct);
+        return saved;
     }
 
     public void EnsureCanUpsertItem(LocalItem item, SessionState session, string? preferredOfficeCode = null)

@@ -28,6 +28,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     private readonly List<LocalWarehouse> _allWritableWarehouses = new();
     private readonly Dictionary<Guid, string> _categoryNameMap = new();
     private readonly Dictionary<string, string> _priceGradeSourceMap = new(StringComparer.CurrentCultureIgnoreCase);
+    private readonly Dictionary<Guid, Dictionary<string, decimal>> _itemPriceGradeByItemId = new();
     private readonly Dictionary<string, (bool AllowsSales, bool AllowsPurchase)> _tradeTypeRuleMap = new(StringComparer.CurrentCultureIgnoreCase);
     private readonly Dictionary<Guid, decimal> _customerPurchasePriceByItem = new();
     private static readonly JsonSerializerOptions PrintModelJsonOptions = new(JsonSerializerDefaults.Web);
@@ -335,23 +336,25 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     private async Task RefreshItemsAfterInventoryChangedAsync(int version)
     {
         var refreshedItems = await _local.GetItemsAsync(_session);
+        var refreshedPriceGrades = await _local.GetItemPriceGradesAsync(_session);
         var dispatcher = System.Windows.Application.Current?.Dispatcher;
         if (dispatcher is null || dispatcher.CheckAccess())
         {
-            ApplyRefreshedItems(refreshedItems, version);
+            ApplyRefreshedItems(refreshedItems, refreshedPriceGrades, version);
             return;
         }
 
-        await dispatcher.InvokeAsync(() => ApplyRefreshedItems(refreshedItems, version));
+        await dispatcher.InvokeAsync(() => ApplyRefreshedItems(refreshedItems, refreshedPriceGrades, version));
     }
 
-    private void ApplyRefreshedItems(List<LocalItem> refreshedItems, int version)
+    private void ApplyRefreshedItems(List<LocalItem> refreshedItems, List<LocalItemPriceGrade> refreshedPriceGrades, int version)
     {
         if (_disposed || version != _inventoryReloadVersion)
             return;
 
         var selectedItemId = SelectedInputItem?.Id;
         _allItems = refreshedItems;
+        ApplyItemPriceGradeCache(refreshedPriceGrades);
         if (selectedItemId.HasValue)
         {
             var refreshedSelectedItem = FindItemById(selectedItemId.Value);
@@ -391,6 +394,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     {
         _allCustomers = await _local.GetCustomersForOperationalSelectionAsync(_session);
         _allItems = await _local.GetItemsAsync(_session);
+        await RefreshItemPriceGradeCacheAsync();
         await LoadMasterOptionsAsync();
         await LoadOfficeWarehouseAsync();
         RefreshItemSearch();
@@ -702,6 +706,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     public async Task ReloadItemsAsync()
     {
         _allItems = await _local.GetItemsAsync(_session);
+        await RefreshItemPriceGradeCacheAsync();
         RefreshItemSearch();
     }
 
@@ -1070,6 +1075,25 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             officeCode,
             _allWritableWarehouses);
 
+    private async Task RefreshItemPriceGradeCacheAsync()
+        => ApplyItemPriceGradeCache(await _local.GetItemPriceGradesAsync(_session));
+
+    private void ApplyItemPriceGradeCache(IEnumerable<LocalItemPriceGrade> priceGrades)
+    {
+        _itemPriceGradeByItemId.Clear();
+        foreach (var group in priceGrades
+                     .Where(row => !row.IsDeleted && row.IsActive && row.ItemId != Guid.Empty && !string.IsNullOrWhiteSpace(row.PriceGradeName))
+                     .GroupBy(row => row.ItemId))
+        {
+            _itemPriceGradeByItemId[group.Key] = group
+                .GroupBy(row => (row.PriceGradeName ?? string.Empty).Trim(), StringComparer.CurrentCultureIgnoreCase)
+                .ToDictionary(
+                    groupByName => groupByName.Key,
+                    groupByName => groupByName.Last().UnitPrice,
+                    StringComparer.CurrentCultureIgnoreCase);
+        }
+    }
+
     private decimal ResolveUnitPrice(LocalItem item)
     {
         if (IsPurchaseLikeDocument)
@@ -1089,6 +1113,14 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         }
 
         var grade = (CustomerPriceGrade ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(grade) &&
+            _itemPriceGradeByItemId.TryGetValue(item.Id, out var itemGradePrices) &&
+            itemGradePrices.TryGetValue(grade, out var customGradePrice) &&
+            customGradePrice > 0m)
+        {
+            return customGradePrice;
+        }
+
         var priceSource = _priceGradeSourceMap.TryGetValue(grade, out var configuredSource)
             ? configuredSource
             : ResolveLegacyPriceSource(grade);

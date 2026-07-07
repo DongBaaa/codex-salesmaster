@@ -39,6 +39,7 @@ public sealed partial class LocalStateService
                || await _db.Units.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
                || await _db.CustomerCategories.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
                || await _db.PriceGradeOptions.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
+               || await _db.ItemPriceGrades.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
                || await _db.TradeTypeOptions.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
                || await _db.ItemCategoryOptions.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
                || await _db.CustomerMasters.IgnoreQueryFilters().AnyAsync(entity => entity.IsDirty, ct)
@@ -162,6 +163,7 @@ public sealed partial class LocalStateService
         await _db.CustomerContracts.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
         await _db.InvoiceLines.ExecuteDeleteAsync(ct);
         await _db.Invoices.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.ItemPriceGrades.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
         await _db.ItemWarehouseStocks.ExecuteDeleteAsync(ct);
         await _db.RentalBillingLogs.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
         await _db.RentalAssets.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
@@ -205,6 +207,7 @@ public sealed partial class LocalStateService
         await _db.InventoryTransfers.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
         await _db.InvoiceLines.ExecuteDeleteAsync(ct);
         await _db.Invoices.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.ItemPriceGrades.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
         await _db.ItemWarehouseStocks.ExecuteDeleteAsync(ct);
         await _db.RentalBillingLogs.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
         await _db.RentalAssets.IgnoreQueryFilters().ExecuteDeleteAsync(ct);

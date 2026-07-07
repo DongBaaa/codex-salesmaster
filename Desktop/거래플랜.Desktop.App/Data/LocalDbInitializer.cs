@@ -260,6 +260,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         await TryCreateOfficeTableAsync(db);
         await TryCreateWarehouseTableAsync(db);
         await TryCreatePriceGradeOptionsTableAsync(db);
+        await TryCreateItemPriceGradesTableAsync(db);
         await TryCreateTradeTypeOptionsTableAsync(db);
         await TryCreateItemCategoryOptionsTableAsync(db);
         await TryCreateInvoiceLineSerialsTableAsync(db);
@@ -3225,6 +3226,37 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         catch (Exception ex)
         {
             LogSchemaStepFailure(nameof(TryCreatePriceGradeOptionsTableAsync), ex);
+        }
+    }
+
+    private static async Task TryCreateItemPriceGradesTableAsync(LocalDbContext db)
+    {
+        try
+        {
+            const string sql = """
+                               CREATE TABLE IF NOT EXISTS "ItemPriceGrades" (
+                                   "Id" TEXT NOT NULL CONSTRAINT "PK_ItemPriceGrades" PRIMARY KEY,
+                                   "ItemId" TEXT NOT NULL,
+                                   "PriceGradeOptionId" TEXT NOT NULL,
+                                   "PriceGradeName" TEXT NOT NULL DEFAULT '',
+                                   "UnitPrice" REAL NOT NULL DEFAULT 0,
+                                   "IsActive" INTEGER NOT NULL DEFAULT 1,
+                                   "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                                   "CreatedAtUtc" TEXT NOT NULL,
+                                   "UpdatedAtUtc" TEXT NOT NULL,
+                                   "Revision" INTEGER NOT NULL DEFAULT 0,
+                                   "IsDirty" INTEGER NOT NULL DEFAULT 1
+                               );
+                               """;
+            await db.Database.ExecuteSqlRawAsync(sql);
+            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_ItemPriceGrades_ItemId\" ON \"ItemPriceGrades\" (\"ItemId\");");
+            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_ItemPriceGrades_PriceGradeOptionId\" ON \"ItemPriceGrades\" (\"PriceGradeOptionId\");");
+            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_ItemPriceGrades_ItemOption\" ON \"ItemPriceGrades\" (\"ItemId\", \"PriceGradeOptionId\");");
+            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_ItemPriceGrades_Revision\" ON \"ItemPriceGrades\" (\"Revision\");");
+        }
+        catch (Exception ex)
+        {
+            LogSchemaStepFailure(nameof(TryCreateItemPriceGradesTableAsync), ex);
         }
     }
 

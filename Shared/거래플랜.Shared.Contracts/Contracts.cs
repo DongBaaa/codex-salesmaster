@@ -318,6 +318,15 @@ public sealed class ItemDto : SyncEntityDto
     public string Notes { get; set; } = string.Empty;
 }
 
+public sealed class ItemPriceGradeDto : SyncEntityDto
+{
+    public Guid ItemId { get; set; }
+    public Guid PriceGradeOptionId { get; set; }
+    public string PriceGradeName { get; set; } = string.Empty;
+    public decimal UnitPrice { get; set; }
+    public bool IsActive { get; set; } = true;
+}
+
 public sealed class InvoiceDto : SyncEntityDto
 {
     public Guid CustomerId { get; set; }
@@ -714,6 +723,7 @@ public sealed class SyncPullResponse
     public List<CustomerDto> Customers { get; set; } = new();
     public List<CustomerContractDto> CustomerContracts { get; set; } = new();
     public List<ItemDto> Items { get; set; } = new();
+    public List<ItemPriceGradeDto> ItemPriceGrades { get; set; } = new();
     public List<ItemWarehouseStockDto> ItemWarehouseStocks { get; set; } = new();
     public List<TransactionDto> Transactions { get; set; } = new();
     public List<TransactionAttachmentDto> TransactionAttachments { get; set; } = new();
@@ -741,6 +751,7 @@ public sealed class SyncPushRequest
     public List<CustomerDto> Customers { get; set; } = new();
     public List<CustomerContractDto> CustomerContracts { get; set; } = new();
     public List<ItemDto> Items { get; set; } = new();
+    public List<ItemPriceGradeDto> ItemPriceGrades { get; set; } = new();
     public List<ItemWarehouseStockDto> ItemWarehouseStocks { get; set; } = new();
     public List<TransactionDto> Transactions { get; set; } = new();
     public List<TransactionAttachmentDto> TransactionAttachments { get; set; } = new();

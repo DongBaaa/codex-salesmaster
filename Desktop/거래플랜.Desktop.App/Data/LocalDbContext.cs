@@ -25,6 +25,7 @@ public sealed class LocalDbContext : DbContext
     public DbSet<LocalCustomer> Customers => Set<LocalCustomer>();
     public DbSet<LocalCustomerContract> CustomerContracts => Set<LocalCustomerContract>();
     public DbSet<LocalItem> Items => Set<LocalItem>();
+    public DbSet<LocalItemPriceGrade> ItemPriceGrades => Set<LocalItemPriceGrade>();
     public DbSet<LocalInvoice> Invoices => Set<LocalInvoice>();
     public DbSet<LocalInvoiceLine> InvoiceLines => Set<LocalInvoiceLine>();
     public DbSet<LocalPayment> Payments => Set<LocalPayment>();
@@ -73,6 +74,7 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalCustomer>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalCustomerContract>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalItem>().HasQueryFilter(e => !e.IsDeleted);
+        model.Entity<LocalItemPriceGrade>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalInvoice>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalPayment>().HasQueryFilter(e => !e.IsDeleted);
         model.Entity<LocalOffice>().HasQueryFilter(e => !e.IsDeleted);
@@ -102,6 +104,7 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalCustomer>().HasIndex(e => e.Revision);
         model.Entity<LocalCustomerContract>().HasIndex(e => e.Revision);
         model.Entity<LocalItem>().HasIndex(e => e.Revision);
+        model.Entity<LocalItemPriceGrade>().HasIndex(e => e.Revision);
         model.Entity<LocalInvoice>().HasIndex(e => e.Revision);
         model.Entity<LocalPayment>().HasIndex(e => e.Revision);
         model.Entity<LocalRentalManagementCompany>().HasIndex(e => e.Revision);
@@ -203,6 +206,14 @@ public sealed class LocalDbContext : DbContext
         model.Entity<LocalItem>()
             .HasIndex(item => new { item.OfficeCode, item.IsDeleted })
             .HasDatabaseName("IX_Items_IntegrityOfficeActive");
+        model.Entity<LocalItemPriceGrade>()
+            .HasIndex(grade => grade.ItemId);
+        model.Entity<LocalItemPriceGrade>()
+            .HasIndex(grade => grade.PriceGradeOptionId);
+        model.Entity<LocalItemPriceGrade>()
+            .HasIndex(grade => new { grade.ItemId, grade.PriceGradeOptionId })
+            .HasDatabaseName("IX_ItemPriceGrades_ItemOption")
+            .IsUnique();
 
         model.Entity<LocalOffice>()
             .HasIndex(o => o.Code)
