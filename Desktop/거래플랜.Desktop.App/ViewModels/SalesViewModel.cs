@@ -688,7 +688,18 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         _allCustomers = await _local.GetCustomersForOperationalSelectionAsync(_session);
         await LoadMasterOptionsAsync();
         if (SelectedCustomer is not null)
-            CustomerCategoryName = ResolveCustomerCategoryName(SelectedCustomer);
+        {
+            var refreshedCustomer = _allCustomers.FirstOrDefault(customer => customer.Id == SelectedCustomer.Id);
+            if (refreshedCustomer is not null)
+            {
+                SetCustomer(refreshedCustomer, ignoreTradeType: true);
+            }
+            else
+            {
+                CustomerCategoryName = ResolveCustomerCategoryName(SelectedCustomer);
+                RepriceCurrentInputItemForCustomerGrade();
+            }
+        }
     }
 
     private string ResolveCustomerCategoryName(LocalCustomer customer)
@@ -1004,6 +1015,18 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         InputUnit = value.Unit;
         InputMaterialNo = value.MaterialNumber;
         InputUnitPrice = ResolveUnitPrice(value);
+        RecalcInputAmount();
+    }
+
+    partial void OnCustomerPriceGradeChanged(string value)
+        => RepriceCurrentInputItemForCustomerGrade();
+
+    private void RepriceCurrentInputItemForCustomerGrade()
+    {
+        if (IsPurchaseLikeDocument || SelectedInputItem is null)
+            return;
+
+        InputUnitPrice = ResolveUnitPrice(SelectedInputItem);
         RecalcInputAmount();
     }
 

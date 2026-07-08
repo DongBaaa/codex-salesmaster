@@ -202,6 +202,55 @@ public sealed class ItemPriceGradePersistenceTests
         Assert.Equal(77_000m, viewModel.InputLineAmount);
     }
 
+    [Fact]
+    public void SalesViewModel_CustomerGradeChange_RepricesCurrentInputItemWithCustomGradePrice()
+    {
+        var itemId = Guid.NewGuid();
+        var viewModel = new SalesViewModel(
+            local: null!,
+            print: null!,
+            invoicePrintService: null!,
+            session: new SessionState(),
+            newInvoiceVoucherType: VoucherType.Sales);
+        var applyCache = typeof(SalesViewModel).GetMethod(
+            "ApplyItemPriceGradeCache",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(applyCache);
+
+        applyCache!.Invoke(
+            viewModel,
+            [
+                new[]
+                {
+                    new LocalItemPriceGrade
+                    {
+                        ItemId = itemId,
+                        PriceGradeName = "관공서",
+                        UnitPrice = 77_000m,
+                        IsActive = true
+                    }
+                }
+            ]);
+
+        viewModel.ApplyInputItem(new LocalItem
+        {
+            Id = itemId,
+            NameOriginal = "복합기",
+            SpecificationOriginal = "A3",
+            Unit = "대",
+            SalePrice = 100_000m,
+            RetailPrice = 120_000m,
+            PriceGradeA = 90_000m
+        });
+
+        Assert.Equal(100_000m, viewModel.InputUnitPrice);
+
+        viewModel.CustomerPriceGrade = "관공서";
+
+        Assert.Equal(77_000m, viewModel.InputUnitPrice);
+        Assert.Equal(77_000m, viewModel.InputLineAmount);
+    }
+
     private static SessionState CreateAdminSession()
     {
         var session = new SessionState();
