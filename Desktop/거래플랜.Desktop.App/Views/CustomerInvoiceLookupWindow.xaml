@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:거래플랜.Desktop.App.Converters"
         Title="거래내역 조회"
-        Width="1440"
+        Width="1800"
         Height="860"
         MinWidth="1120"
         MinHeight="720"
@@ -285,8 +285,8 @@
                             </ContextMenu>
                         </DataGrid.ContextMenu>
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="일자" Binding="{Binding InvoiceDateDisplay}" Width="98"/>
-                            <DataGridTextColumn Header="세금계산서" Binding="{Binding TaxInvoiceDisplay}" Width="64">
+                            <DataGridTextColumn Header="일자" Binding="{Binding InvoiceDateDisplay}" Width="90"/>
+                            <DataGridTextColumn Header="세금계산서" Binding="{Binding TaxInvoiceDisplay}" Width="54">
                                 <DataGridTextColumn.ElementStyle>
                                     <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
                                         <Setter Property="HorizontalAlignment" Value="Center"/>
@@ -308,21 +308,21 @@
                                     </Style>
                                 </DataGridTextColumn.CellStyle>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Binding="{Binding PrimaryColumnText}" Width="2*">
+                            <DataGridTextColumn Binding="{Binding PrimaryColumnText}" Width="3*" MinWidth="320">
                                 <DataGridTextColumn.HeaderTemplate>
                                     <DataTemplate>
                                         <TextBlock Text="{Binding DataContext.InvoicePrimaryColumnHeader, RelativeSource={RelativeSource AncestorType=DataGrid}}"/>
                                     </DataTemplate>
                                 </DataGridTextColumn.HeaderTemplate>
                             </DataGridTextColumn>
-                            <DataGridTextColumn Header="유형" Binding="{Binding VoucherTypeDisplay}" Width="100"/>
-                            <DataGridTextColumn Header="입고상태" Binding="{Binding PurchaseReceivingDisplay}" Width="110"/>
-                            <DataGridTextColumn Header="공급가" Binding="{Binding SupplyAmountDisplay}" Width="100"/>
-                            <DataGridTextColumn Header="부가세" Binding="{Binding VatAmountDisplay}" Width="90"/>
-                            <DataGridTextColumn Header="합계" Binding="{Binding TotalAmountDisplay}" Width="100"/>
-                            <DataGridTextColumn Header="수금액" Binding="{Binding ReceiptAmountDisplay}" Width="90"/>
-                            <DataGridTextColumn Header="지급액" Binding="{Binding PaymentAmountDisplay}" Width="90"/>
-                            <DataGridTextColumn Header="잔액" Binding="{Binding BalanceAmountDisplay}" Width="90"/>
+                            <DataGridTextColumn Header="유형" Binding="{Binding VoucherTypeDisplay}" Width="86"/>
+                            <DataGridTextColumn Header="입고상태" Binding="{Binding PurchaseReceivingDisplay}" Width="90"/>
+                            <DataGridTextColumn Header="공급가" Binding="{Binding SupplyAmountDisplay}" Width="84"/>
+                            <DataGridTextColumn Header="부가세" Binding="{Binding VatAmountDisplay}" Width="76"/>
+                            <DataGridTextColumn Header="합계" Binding="{Binding TotalAmountDisplay}" Width="84"/>
+                            <DataGridTextColumn Header="수금액" Binding="{Binding ReceiptAmountDisplay}" Width="76"/>
+                            <DataGridTextColumn Header="지급액" Binding="{Binding PaymentAmountDisplay}" Width="76"/>
+                            <DataGridTextColumn Header="잔액" Binding="{Binding BalanceAmountDisplay}" Width="76"/>
                         </DataGrid.Columns>
                     </DataGrid>
                 </Border>

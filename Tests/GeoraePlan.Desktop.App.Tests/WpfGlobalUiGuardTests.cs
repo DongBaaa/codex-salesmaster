@@ -17,7 +17,7 @@ public sealed class WpfGlobalUiGuardTests
             "거래플랜.Desktop.App",
             "MainWindow.xaml"));
 
-        Assert.Contains("Binding=\"{Binding VoucherTypeDisplay}\" Width=\"100\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding VoucherTypeDisplay}\" Width=\"86\"", xaml, StringComparison.Ordinal);
         Assert.Contains("<DataGrid.RowStyle>", xaml, StringComparison.Ordinal);
         Assert.Contains("<Setter Property=\"FontWeight\" Value=\"Normal\"/>", xaml, StringComparison.Ordinal);
         Assert.Contains("Binding=\"{Binding IsBalanceCleared}\" Value=\"True\"", xaml, StringComparison.Ordinal);
@@ -34,8 +34,8 @@ public sealed class WpfGlobalUiGuardTests
             "거래플랜.Desktop.App",
             "MainWindow.xaml"));
 
-        Assert.Contains("Header=\"세금계산서\" Binding=\"{Binding TaxInvoiceDisplay}\" Width=\"64\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Binding=\"{Binding PrimaryColumnText}\" Width=\"2*\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Header=\"세금계산서\" Binding=\"{Binding TaxInvoiceDisplay}\" Width=\"54\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding PrimaryColumnText}\" Width=\"3*\" MinWidth=\"320\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Binding=\"{Binding TaxInvoiceDisplay}\" Width=\"132\"", xaml, StringComparison.Ordinal);
     }
 
@@ -76,13 +76,13 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("ItemsSource=\"{Binding InvoiceRows}\"", lookupXaml, StringComparison.Ordinal);
         Assert.Contains("ItemsSource=\"{Binding PreviewLines}\"", lookupXaml, StringComparison.Ordinal);
         Assert.Contains("ClipboardCopyMode\" Value=\"IncludeHeader\"", lookupXaml, StringComparison.Ordinal);
-        Assert.Contains("Header=\"세금계산서\" Binding=\"{Binding TaxInvoiceDisplay}\" Width=\"64\"", lookupXaml, StringComparison.Ordinal);
-        Assert.Contains("Binding=\"{Binding PrimaryColumnText}\" Width=\"2*\"", lookupXaml, StringComparison.Ordinal);
-        Assert.Contains("Binding=\"{Binding VoucherTypeDisplay}\" Width=\"100\"", lookupXaml, StringComparison.Ordinal);
-        Assert.Contains("Binding=\"{Binding PurchaseReceivingDisplay}\" Width=\"110\"", lookupXaml, StringComparison.Ordinal);
-        Assert.Contains("Binding=\"{Binding ReceiptAmountDisplay}\" Width=\"90\"", lookupXaml, StringComparison.Ordinal);
-        Assert.Contains("Binding=\"{Binding PaymentAmountDisplay}\" Width=\"90\"", lookupXaml, StringComparison.Ordinal);
-        Assert.Contains("Binding=\"{Binding BalanceAmountDisplay}\" Width=\"90\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Header=\"세금계산서\" Binding=\"{Binding TaxInvoiceDisplay}\" Width=\"54\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding PrimaryColumnText}\" Width=\"3*\" MinWidth=\"320\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding VoucherTypeDisplay}\" Width=\"86\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding PurchaseReceivingDisplay}\" Width=\"90\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding ReceiptAmountDisplay}\" Width=\"76\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding PaymentAmountDisplay}\" Width=\"76\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Binding=\"{Binding BalanceAmountDisplay}\" Width=\"76\"", lookupXaml, StringComparison.Ordinal);
         Assert.Contains("Text=\"거래처 정보\"", lookupXaml, StringComparison.Ordinal);
         Assert.Contains("Text=\"최근 렌탈 청구\"", lookupXaml, StringComparison.Ordinal);
         Assert.Contains("MouseDoubleClick=\"InvoiceRowsDataGrid_MouseDoubleClick\"", lookupXaml, StringComparison.Ordinal);
