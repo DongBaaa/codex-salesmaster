@@ -99,10 +99,25 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject
         await LoadInvoiceRowsAsync();
     }
 
+    public Task RefreshRowsAsync()
+        => LoadInvoiceRowsAsync();
+
+    public LocalCustomer? ResolveActionCustomer()
+    {
+        if (SelectedCustomer is not null)
+            return SelectedCustomer;
+
+        var customerId = SelectedInvoiceRow?.CustomerId;
+        if (!customerId.HasValue || customerId.Value == Guid.Empty)
+            return null;
+
+        return _allCustomers.FirstOrDefault(customer => customer.Id == customerId.Value);
+    }
+
     [RelayCommand]
     private async Task RefreshAsync()
     {
-        await LoadInvoiceRowsAsync();
+        await RefreshRowsAsync();
     }
 
     [RelayCommand]

@@ -71,11 +71,21 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("CustomerInvoiceLookupButton_Click", mainCode, StringComparison.Ordinal);
         Assert.Contains("CustomerInvoiceLookupContextMenu_Click", mainCode, StringComparison.Ordinal);
         Assert.Contains("ShowModelessWithDeferredLoad", mainCode, StringComparison.Ordinal);
+        Assert.Contains("OpenLookupInvoiceEntryAsync", mainCode, StringComparison.Ordinal);
+        Assert.Contains("OpenLookupPaymentEntryAsync", mainCode, StringComparison.Ordinal);
+        Assert.Contains("PrintInvoiceRowFromLookupAsync", mainCode, StringComparison.Ordinal);
+        Assert.Contains("preselectCustomerOverride", mainCode, StringComparison.Ordinal);
+        Assert.Contains("afterPaymentChangedAsync", mainCode, StringComparison.Ordinal);
 
         Assert.Contains("ItemsSource=\"{Binding FilteredCustomers}\"", lookupXaml, StringComparison.Ordinal);
         Assert.Contains("ItemsSource=\"{Binding InvoiceRows}\"", lookupXaml, StringComparison.Ordinal);
         Assert.Contains("ItemsSource=\"{Binding PreviewLines}\"", lookupXaml, StringComparison.Ordinal);
         Assert.Contains("ClipboardCopyMode\" Value=\"IncludeHeader\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Click=\"SalesEntryButton_Click\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Click=\"PurchaseEntryButton_Click\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Click=\"ProcurementEntryButton_Click\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Click=\"PaymentEntryButton_Click\"", lookupXaml, StringComparison.Ordinal);
+        Assert.Contains("Click=\"PrintStatementButton_Click\"", lookupXaml, StringComparison.Ordinal);
         Assert.Contains("Header=\"세금계산서\" Binding=\"{Binding TaxInvoiceDisplay}\" Width=\"54\"", lookupXaml, StringComparison.Ordinal);
         Assert.Contains("Binding=\"{Binding PrimaryColumnText}\" Width=\"3*\" MinWidth=\"320\"", lookupXaml, StringComparison.Ordinal);
         Assert.Contains("Binding=\"{Binding VoucherTypeDisplay}\" Width=\"86\"", lookupXaml, StringComparison.Ordinal);
@@ -90,6 +100,11 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("SelectionMode=\"Single\"", lookupXaml, StringComparison.Ordinal);
         Assert.Contains("Func<InvoiceListRow, Task>", lookupCode, StringComparison.Ordinal);
         Assert.Contains("Func<Guid, Task>", lookupCode, StringComparison.Ordinal);
+        Assert.Contains("Func<VoucherType, LocalCustomer?, Task>", lookupCode, StringComparison.Ordinal);
+        Assert.Contains("Func<InvoiceListRow?, LocalCustomer?, Task>", lookupCode, StringComparison.Ordinal);
+        Assert.Contains("Func<InvoiceListRow?, Task>", lookupCode, StringComparison.Ordinal);
+        Assert.Contains("e.Key == Key.F9", lookupCode, StringComparison.Ordinal);
+        Assert.Contains("ResolveActionCustomer()", lookupCode, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -108,6 +123,9 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("GetStandaloneTransactionsForLedgerAsync(from, to, selectedCustomerId, _session, ct)", viewModel, StringComparison.Ordinal);
         Assert.Contains("GetLatestInvoiceVersionAsync(row.Id, _session)", viewModel, StringComparison.Ordinal);
         Assert.Contains("GetCustomerFinancialSummaryAsync(customer.Id, _session)", viewModel, StringComparison.Ordinal);
+        Assert.Contains("public Task RefreshRowsAsync()", viewModel, StringComparison.Ordinal);
+        Assert.Contains("public LocalCustomer? ResolveActionCustomer()", viewModel, StringComparison.Ordinal);
+        Assert.Contains("SelectedInvoiceRow?.CustomerId", viewModel, StringComparison.Ordinal);
         Assert.Contains("InvoiceListRow.From(invoice, customerName, showCustomerName)", viewModel, StringComparison.Ordinal);
         Assert.Contains("InvoiceListRow.From(transaction, customerName, showCustomerName)", viewModel, StringComparison.Ordinal);
         Assert.DoesNotContain("SaveInvoiceAsync", viewModel, StringComparison.Ordinal);

@@ -1188,17 +1188,48 @@ public partial class MainWindow : Window
 
         var lookupViewModel = new CustomerInvoiceLookupViewModel(_local, _session);
         CustomerInvoiceLookupWindow? lookupWindow = null;
+        Task RefreshLookupRowsAsync()
+            => lookupViewModel.RefreshRowsAsync();
         Task OpenLookupInvoiceRowAsync(InvoiceListRow row)
             => row.IsTransactionRow
-                ? OpenPaymentPopupForTransactionAsync(row.TransactionId ?? row.Id, lookupWindow)
+                ? OpenPaymentPopupForTransactionAsync(row.TransactionId ?? row.Id, lookupWindow, RefreshLookupRowsAsync)
                 : OpenInvoiceWindowAsync(row.Id, lookupWindow);
         Task OpenLookupCustomerAsync(Guid customerId)
             => OpenCustomerEditorAsync(customerId, lookupWindow);
+        Task OpenLookupInvoiceEntryAsync(VoucherType voucherType, Data.LocalCustomer? customer)
+            => OpenNewInvoiceWindowAsync(
+                voucherType,
+                preselectSelectedCustomer: customer is not null,
+                preselectCustomerOverride: customer,
+                ownerOverride: lookupWindow,
+                afterClosedAsync: RefreshLookupRowsAsync);
+        Task OpenLookupPaymentEntryAsync(InvoiceListRow? row, Data.LocalCustomer? customer)
+        {
+            if (row is null)
+                return OpenPaymentPopupAsync(
+                    targetInvoiceId: null,
+                    ownerOverride: lookupWindow,
+                    preselectCustomerOverride: customer,
+                    afterPaymentChangedAsync: RefreshLookupRowsAsync);
+
+            return row.IsTransactionRow
+                ? OpenPaymentPopupForTransactionAsync(row.TransactionId ?? row.Id, lookupWindow, RefreshLookupRowsAsync)
+                : OpenPaymentPopupAsync(
+                    row.Id,
+                    lookupWindow,
+                    preselectCustomerOverride: customer,
+                    afterPaymentChangedAsync: RefreshLookupRowsAsync);
+        }
+        Task PrintLookupInvoiceRowAsync(InvoiceListRow? row)
+            => PrintInvoiceRowFromLookupAsync(row, lookupWindow);
 
         lookupWindow = new CustomerInvoiceLookupWindow(
             lookupViewModel,
             OpenLookupInvoiceRowAsync,
-            OpenLookupCustomerAsync)
+            OpenLookupCustomerAsync,
+            OpenLookupInvoiceEntryAsync,
+            OpenLookupPaymentEntryAsync,
+            PrintLookupInvoiceRowAsync)
         {
             Owner = this
         };
@@ -1214,6 +1245,44 @@ public partial class MainWindow : Window
     }
 
     // 거래처 우클릭 -> 거래처 삭제
+    private async Task PrintInvoiceRowFromLookupAsync(InvoiceListRow? row, Window? ownerOverride)
+    {
+        if (row is null)
+        {
+            MessageBox.Show(
+                ownerOverride ?? this,
+                "출력할 전표를 선택하세요.",
+                "알림",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        if (row.IsTransactionRow)
+        {
+            MessageBox.Show(
+                ownerOverride ?? this,
+                "수금/지급 입력 내역은 전표 인쇄 대상이 아닙니다. 연결된 전표 행을 선택하세요.",
+                "전표 인쇄",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var previousStatementInvoice = _vm.StatementInvoice;
+        var previousSelectedInvoiceRow = _vm.SelectedInvoiceRow;
+        try
+        {
+            _vm.StatementInvoice = row;
+            await _vm.PrintStatementCommand.ExecuteAsync(null);
+        }
+        finally
+        {
+            _vm.StatementInvoice = previousStatementInvoice;
+            _vm.SelectedInvoiceRow = previousSelectedInvoiceRow;
+        }
+    }
+
     private void CustomerDeleteContextMenu_Click(object sender, RoutedEventArgs e)
         => RunUiAsync(DeleteSelectedCustomerAsync, "거래처 삭제");
 
@@ -1465,8 +1534,11 @@ public partial class MainWindow : Window
     }
 
     private async Task OpenNewInvoiceWindowAsync(
-        거래플랜.Shared.Contracts.VoucherType voucherType,
-        bool preselectSelectedCustomer)
+        VoucherType voucherType,
+        bool preselectSelectedCustomer,
+        Data.LocalCustomer? preselectCustomerOverride = null,
+        Window? ownerOverride = null,
+        Func<Task>? afterClosedAsync = null)
     {
         var vm = new SalesViewModel(_local, _print, _invoicePrintService, _session, voucherType);
         await OperationTiming.MeasureAsync(
@@ -1476,16 +1548,25 @@ public partial class MainWindow : Window
             warningThreshold: TimeSpan.FromSeconds(2));
         vm.NewInvoice();
 
+        var preselectCustomer = preselectCustomerOverride ?? _vm.SelectedCustomerFilter;
         if (preselectSelectedCustomer &&
-            _vm.SelectedCustomerFilter is not null &&
-            vm.CanSelectCustomer(_vm.SelectedCustomerFilter))
+            preselectCustomer is not null &&
+            vm.CanSelectCustomer(preselectCustomer))
         {
-            vm.SetCustomer(_vm.SelectedCustomerFilter);
+            vm.SetCustomer(preselectCustomer);
             vm.MarkCurrentStateAsPristine();
         }
 
-        var win = new SalesWindow(vm) { Owner = this };
+        var win = new SalesWindow(vm) { Owner = ownerOverride ?? this };
         win.Closed += SalesWindow_Closed;
+        if (afterClosedAsync is not null)
+        {
+            win.Closed += (_, _) => RunUiAsync(
+                afterClosedAsync,
+                "거래내역 조회 새창 재조회",
+                "거래내역 조회 새창을 다시 불러오는 중 오류가 발생했습니다.");
+        }
+
         WindowShowHelper.ShowModeless(win);
     }
 
@@ -1647,7 +1728,10 @@ public partial class MainWindow : Window
     private Task OpenPaymentPopupAsync()
         => OpenPaymentPopupAsync(null, null);
 
-    private async Task OpenPaymentPopupForTransactionAsync(Guid transactionId, Window? ownerOverride)
+    private async Task OpenPaymentPopupForTransactionAsync(
+        Guid transactionId,
+        Window? ownerOverride,
+        Func<Task>? afterPaymentChangedAsync = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var transaction = await _local.GetTransactionAsync(transactionId, _session);
@@ -1672,29 +1756,38 @@ public partial class MainWindow : Window
         await vm.LoadTransactionForEditingAsync(transaction.Id);
 
         var win = new PaymentWindow(vm) { Owner = ownerOverride ?? this };
-        void RefreshMainAfterPaymentChange()
+        void RefreshAfterPaymentChange()
             => RunUiAsync(
-                () => _vm.RefreshAfterFinancialTransactionChangedAsync(transaction.CustomerId),
-                "수금/지급 후 메인 화면 새로고침",
-                "수금/지급 후 메인 화면을 다시 불러오는 중 오류가 발생했습니다.");
+                async () =>
+                {
+                    await _vm.RefreshAfterFinancialTransactionChangedAsync(transaction.CustomerId);
+                    if (afterPaymentChangedAsync is not null)
+                        await afterPaymentChangedAsync();
+                },
+                "수금/지급 후 거래내역 재조회",
+                "수금/지급 후 거래내역을 다시 불러오는 중 오류가 발생했습니다.");
 
-        EventHandler paymentTransactionsChanged = (_, _) => RefreshMainAfterPaymentChange();
+        EventHandler paymentTransactionsChanged = (_, _) => RefreshAfterPaymentChange();
         vm.TransactionsChanged += paymentTransactionsChanged;
         win.Closed += (_, _) =>
         {
             vm.TransactionsChanged -= paymentTransactionsChanged;
-            RefreshMainAfterPaymentChange();
+            RefreshAfterPaymentChange();
         };
         WindowShowHelper.ShowModeless(win);
     }
 
-    private async Task OpenPaymentPopupAsync(Guid? targetInvoiceId, Window? ownerOverride)
+    private async Task OpenPaymentPopupAsync(
+        Guid? targetInvoiceId,
+        Window? ownerOverride,
+        Data.LocalCustomer? preselectCustomerOverride = null,
+        Func<Task>? afterPaymentChangedAsync = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new PaymentViewModel(_local, _session);
 
         Data.LocalInvoice? targetInvoice = null;
-        Data.LocalCustomer? preselect = _vm.SelectedCustomerFilter;
+        Data.LocalCustomer? preselect = preselectCustomerOverride ?? _vm.SelectedCustomerFilter;
         if (targetInvoiceId.HasValue)
         {
             targetInvoice = await _local.GetLatestInvoiceVersionAsync(targetInvoiceId.Value, _session);
@@ -1735,18 +1828,23 @@ public partial class MainWindow : Window
             await vm.ConfigureForInvoiceAsync(targetInvoice);
 
         var win = new PaymentWindow(vm) { Owner = ownerOverride ?? this };
-        void RefreshMainAfterPaymentChange()
+        void RefreshAfterPaymentChange()
             => RunUiAsync(
-                () => _vm.RefreshAfterFinancialTransactionChangedAsync(refreshCustomerId),
-                "수금/지급 후 메인 화면 재조회",
-                "수금/지급 후 메인 화면을 다시 불러오는 중 오류가 발생했습니다.");
+                async () =>
+                {
+                    await _vm.RefreshAfterFinancialTransactionChangedAsync(refreshCustomerId);
+                    if (afterPaymentChangedAsync is not null)
+                        await afterPaymentChangedAsync();
+                },
+                "수금/지급 후 거래내역 재조회",
+                "수금/지급 후 거래내역을 다시 불러오는 중 오류가 발생했습니다.");
 
-        EventHandler paymentTransactionsChanged = (_, _) => RefreshMainAfterPaymentChange();
+        EventHandler paymentTransactionsChanged = (_, _) => RefreshAfterPaymentChange();
         vm.TransactionsChanged += paymentTransactionsChanged;
         win.Closed += (_, _) =>
         {
             vm.TransactionsChanged -= paymentTransactionsChanged;
-            RefreshMainAfterPaymentChange();
+            RefreshAfterPaymentChange();
         };
         WindowShowHelper.ShowModeless(win);
     }

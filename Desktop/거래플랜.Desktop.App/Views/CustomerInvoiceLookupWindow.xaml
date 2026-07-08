@@ -179,6 +179,27 @@
                         Background="#2E4158"
                         Command="{Binding ShowAllCommand}"
                         Margin="0,0,8,0"/>
+                <Rectangle Width="1" Height="22" Fill="#3E5875" Margin="4,0,12,0" VerticalAlignment="Center"/>
+                <Button Content="판매작성"
+                        Background="#1565C0"
+                        Click="SalesEntryButton_Click"
+                        Margin="0,0,6,0"/>
+                <Button Content="구매작성"
+                        Background="#0277BD"
+                        Click="PurchaseEntryButton_Click"
+                        Margin="0,0,6,0"/>
+                <Button Content="견적/발주"
+                        Background="#455A64"
+                        Click="ProcurementEntryButton_Click"
+                        Margin="0,0,6,0"/>
+                <Button Content="수금 입력"
+                        Background="#00897B"
+                        Click="PaymentEntryButton_Click"
+                        Margin="0,0,6,0"/>
+                <Button Content="전표 인쇄[F9]"
+                        Background="#1E88E5"
+                        Click="PrintStatementButton_Click"
+                        Margin="0,0,12,0"/>
                 <TextBlock Text="기간을 비우면 전체 기간으로 조회합니다."
                            Foreground="#9FB3C8"
                            VerticalAlignment="Center"/>

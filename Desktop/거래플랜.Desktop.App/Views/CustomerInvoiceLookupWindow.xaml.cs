@@ -5,6 +5,7 @@ using System.Windows.Media;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.ViewModels;
+using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Views;
 
@@ -13,21 +14,37 @@ public partial class CustomerInvoiceLookupWindow : Window
     private readonly CustomerInvoiceLookupViewModel _viewModel;
     private readonly Func<InvoiceListRow, Task> _openInvoiceRowAsync;
     private readonly Func<Guid, Task> _openCustomerAsync;
+    private readonly Func<VoucherType, LocalCustomer?, Task> _openInvoiceEntryAsync;
+    private readonly Func<InvoiceListRow?, LocalCustomer?, Task> _openPaymentEntryAsync;
+    private readonly Func<InvoiceListRow?, Task> _printInvoiceRowAsync;
 
     public CustomerInvoiceLookupWindow(
         CustomerInvoiceLookupViewModel viewModel,
         Func<InvoiceListRow, Task> openInvoiceRowAsync,
-        Func<Guid, Task> openCustomerAsync)
+        Func<Guid, Task> openCustomerAsync,
+        Func<VoucherType, LocalCustomer?, Task> openInvoiceEntryAsync,
+        Func<InvoiceListRow?, LocalCustomer?, Task> openPaymentEntryAsync,
+        Func<InvoiceListRow?, Task> printInvoiceRowAsync)
     {
         InitializeComponent();
         _viewModel = viewModel;
         _openInvoiceRowAsync = openInvoiceRowAsync;
         _openCustomerAsync = openCustomerAsync;
+        _openInvoiceEntryAsync = openInvoiceEntryAsync;
+        _openPaymentEntryAsync = openPaymentEntryAsync;
+        _printInvoiceRowAsync = printInvoiceRowAsync;
         DataContext = viewModel;
     }
 
     private void Window_KeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.F9)
+        {
+            PrintSelectedInvoiceRow();
+            e.Handled = true;
+            return;
+        }
+
         if (e.Key is Key.F12 or Key.Escape)
         {
             Close();
@@ -37,6 +54,42 @@ public partial class CustomerInvoiceLookupWindow : Window
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
         => DialogWindowCloseHelper.Close(this);
+
+    private void SalesEntryButton_Click(object sender, RoutedEventArgs e)
+        => OpenInvoiceEntry(VoucherType.Sales, "판매작성");
+
+    private void PurchaseEntryButton_Click(object sender, RoutedEventArgs e)
+        => OpenInvoiceEntry(VoucherType.Purchase, "구매작성");
+
+    private void ProcurementEntryButton_Click(object sender, RoutedEventArgs e)
+        => OpenInvoiceEntry(VoucherType.Procurement, "견적/발주");
+
+    private void PaymentEntryButton_Click(object sender, RoutedEventArgs e)
+        => UiTaskHelper.Run(
+            this,
+            () => _openPaymentEntryAsync(_viewModel.SelectedInvoiceRow, _viewModel.ResolveActionCustomer()),
+            "UI",
+            "거래내역 조회창 수금/지급 입력",
+            "수금/지급 입력 창을 여는 중 오류가 발생했습니다.");
+
+    private void PrintStatementButton_Click(object sender, RoutedEventArgs e)
+        => PrintSelectedInvoiceRow();
+
+    private void OpenInvoiceEntry(VoucherType voucherType, string actionName)
+        => UiTaskHelper.Run(
+            this,
+            () => _openInvoiceEntryAsync(voucherType, _viewModel.ResolveActionCustomer()),
+            "UI",
+            $"거래내역 조회창 {actionName}",
+            $"{actionName} 창을 여는 중 오류가 발생했습니다.");
+
+    private void PrintSelectedInvoiceRow()
+        => UiTaskHelper.Run(
+            this,
+            () => _printInvoiceRowAsync(_viewModel.SelectedInvoiceRow),
+            "UI",
+            "거래내역 조회창 전표 인쇄",
+            "전표 인쇄 창을 여는 중 오류가 발생했습니다.");
 
     private void InvoiceRowsDataGrid_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
     {
