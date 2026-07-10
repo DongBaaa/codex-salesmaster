@@ -576,6 +576,12 @@ public sealed class SyncController : ControllerBase
         return payload;
     }
 
+    private static bool RequiresSerializedInventoryMutation(SyncPushRequest request)
+        => request.Items.Count > 0 ||
+           request.ItemWarehouseStocks.Count > 0 ||
+           request.Invoices.Count > 0 ||
+           request.InventoryTransfers.Count > 0;
+
     [HttpPost("push")]
     [ProducesResponseType(typeof(SyncPushResult), StatusCodes.Status200OK)]
     public async Task<ActionResult<SyncPushResult>> Push([FromBody] SyncPushRequest request, CancellationToken cancellationToken)
@@ -595,7 +601,10 @@ public sealed class SyncController : ControllerBase
         var requiresRentalAssignmentRefresh = false;
         var savedStoragePaths = new List<string>();
         var replacedStoragePaths = new List<string>();
-        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            RequiresSerializedInventoryMutation(request),
+            cancellationToken);
         try
         {
             var scopedCompanyProfiles = await PrepareScopedCompanyProfilesAsync(request.CompanyProfiles ?? [], result, cancellationToken);

@@ -132,6 +132,11 @@ public sealed class InvoicesController : ControllerBase
         if (dto.IsDeleted)
             return SoftDeleteMutationGuard.RejectCreate("전표");
 
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
+
         var customer = await _dbContext.Customers
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(x => x.Id == dto.CustomerId, cancellationToken);
@@ -180,6 +185,7 @@ public sealed class InvoicesController : ControllerBase
         await RecalculateRentalSettlementsForInvoiceSaveAsync(null, entity, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _inventoryLedgerService.RebuildAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return Ok(entity.ToDto());
     }
 
@@ -189,6 +195,11 @@ public sealed class InvoicesController : ControllerBase
     {
         if (!_officeScopeService.CanEditInvoices())
             return Forbid();
+
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
 
         var entity = await _dbContext.Invoices.Include(x => x.Customer).Include(x => x.Lines)
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
@@ -270,6 +281,7 @@ public sealed class InvoicesController : ControllerBase
         await RecalculateRentalSettlementsForInvoiceSaveAsync(previousRentalTarget, entity, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _inventoryLedgerService.RebuildAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return Ok(entity.ToDto());
     }
 
@@ -279,6 +291,11 @@ public sealed class InvoicesController : ControllerBase
     {
         if (!_officeScopeService.CanEditInvoices())
             return Forbid();
+
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
 
         var entity = await _dbContext.Invoices.Include(x => x.Customer).Include(x => x.Lines).FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
@@ -316,6 +333,7 @@ public sealed class InvoicesController : ControllerBase
         await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(rentalSettlementTargets, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _inventoryLedgerService.RebuildAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return NoContent();
     }
 

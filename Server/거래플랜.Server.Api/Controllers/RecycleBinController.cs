@@ -551,7 +551,7 @@ public sealed class RecycleBinController : ControllerBase
         foreach (var target in targets)
         {
             var mutation = await TryRecycleBinMutationAsync(
-                () => RestoreCoreAsync(target, cancellationToken),
+                () => ExecuteSerializedRestoreAsync(target, cancellationToken),
                 "복원 처리 중 오류가 발생했습니다.");
             result.Messages.Add(mutation.Message);
             result.Results.Add(new RecycleBinMutationItemResultDto
@@ -607,6 +607,26 @@ public sealed class RecycleBinController : ControllerBase
         }
 
         return Ok(result);
+    }
+
+    private async Task<(bool Success, string Message)> ExecuteSerializedRestoreAsync(
+        RecycleBinMutationTargetDto target,
+        CancellationToken cancellationToken)
+    {
+        var requiresSerializedInventoryMutation = NormalizeKind(target.Kind) is
+            "invoice" or "payment" or "transaction";
+        if (!requiresSerializedInventoryMutation)
+            return await RestoreCoreAsync(target, cancellationToken);
+
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
+        var result = await RestoreCoreAsync(target, cancellationToken);
+        if (result.Success)
+            await transaction.CommitAsync(cancellationToken);
+
+        return result;
     }
 
     private static async Task<(bool Success, string Message)> TryRecycleBinMutationAsync(
@@ -1597,6 +1617,10 @@ public sealed class RecycleBinController : ControllerBase
 
     private async Task<(bool Success, string Message)> RestoreInventoryTransferAsync(RecycleBinMutationTargetDto target, CancellationToken cancellationToken)
     {
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
         var transferId = target.EntityId;
         var transfer = await _dbContext.InventoryTransfers
             .IgnoreQueryFilters()
@@ -1639,7 +1663,6 @@ public sealed class RecycleBinController : ControllerBase
             return (false, InvoiceStockSnapshotService.FormatStockShortageMessage(stockShortages));
         }
 
-        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
         await _invoiceStockSnapshotService.ApplyInvoiceStockDeltaDifferenceAsync(
             new Dictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal>(),
             stockDeltas,
@@ -2083,7 +2106,10 @@ public sealed class RecycleBinController : ControllerBase
             return CreatePurgeRecord("payment", payment.Id, paymentInvoice.TenantCode, paymentInvoice.ResponsibleOfficeCode, paymentInvoice.OfficeCode);
         }));
 
-        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
         await TouchPurgeRecordsAsync(purgeRecords, cancellationToken);
         _dbContext.PaymentAttachments.RemoveRange(paymentAttachments);
         _dbContext.Payments.RemoveRange(deletedPayments);
@@ -2370,7 +2396,10 @@ public sealed class RecycleBinController : ControllerBase
             return revisionCheck;
 
         var receiveEvidencePath = transfer.ReceiveEvidencePath;
-        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
         await TouchPurgeRecordsAsync(
         [
             CreatePurgeRecord(
