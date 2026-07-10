@@ -155,6 +155,48 @@ public sealed class DbInitializerRegressionTests : IDisposable
     }
 
     [Fact]
+    public async Task EnsureOperationalRuntimeSchemaAsync_AddsPayloadHash_ToLegacyMutationReceipts()
+    {
+        await _dbContext.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS \"ProcessedSyncMutations\";");
+        await _dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE "ProcessedSyncMutations" (
+                "Id" TEXT NOT NULL PRIMARY KEY,
+                "MutationId" TEXT NOT NULL DEFAULT '',
+                "DeviceId" TEXT NOT NULL DEFAULT '',
+                "EntityName" TEXT NOT NULL DEFAULT '',
+                "EntityId" TEXT NOT NULL DEFAULT '',
+                "ExpectedRevision" INTEGER NOT NULL DEFAULT 0,
+                "ProcessedAtUtc" TEXT NOT NULL
+            );
+            """);
+        await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+             INSERT INTO "ProcessedSyncMutations"
+                 ("Id", "MutationId", "DeviceId", "EntityName", "EntityId", "ExpectedRevision", "ProcessedAtUtc")
+             VALUES
+                 ({Guid.NewGuid().ToString()}, {"legacy-mutation"}, {"legacy-device"}, {nameof(Customer)},
+                  {Guid.NewGuid().ToString()}, {3L}, {new DateTime(2026, 7, 10, 0, 0, 0, DateTimeKind.Utc)});
+             """);
+
+        var method = typeof(DbInitializer).GetMethod(
+            "EnsureOperationalRuntimeSchemaAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
+
+        await using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT \"PayloadHash\" FROM \"ProcessedSyncMutations\" WHERE \"MutationId\" = 'legacy-mutation';";
+        var payloadHash = await command.ExecuteScalarAsync();
+        Assert.Equal(string.Empty, Assert.IsType<string>(payloadHash));
+
+        await _dbContext.Database.ExecuteSqlRawAsync("SELECT 1;");
+    }
+
+    [Fact]
     public async Task EnsureItemCategoryOptionsForExistingReferencesAsync_CreatesOrReactivatesReferencedCategories()
     {
         _dbContext.Items.Add(new Item

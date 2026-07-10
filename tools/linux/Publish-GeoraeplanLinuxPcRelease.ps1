@@ -20,6 +20,7 @@ param(
     [switch]$SkipPostDeployOperationalGate,
     [switch]$SkipPlatformHealthChecks,
     [switch]$FailOnOperationalWarnings,
+    [switch]$AcceptLegacyAndroidDebugSigningWarning,
     [switch]$AcceptRentalTemplateItemReferenceRisk,
     [switch]$SkipAndroidSigningContinuityCheck,
     [switch]$AcceptAndroidSigningCertificateChange,
@@ -473,6 +474,7 @@ function Invoke-ReleaseOperationalGate {
         [string[]]$AllowedIntegrityWarningCodes = @(),
         [string]$ReleaseId = '',
         [bool]$FailOnOperationalWarnings = $false,
+        [bool]$AcceptLegacyAndroidDebugSigningWarning = $false,
         [string]$LocalCacheAppDataRoot = '',
         [string]$LocalCacheEvidenceDirectory = '',
         [bool]$RequireLocalCacheConsistencyCheck = $false,
@@ -514,6 +516,9 @@ function Invoke-ReleaseOperationalGate {
     }
     if ($FailOnOperationalWarnings) {
         $gateArgs += '-FailOnOperationalWarnings'
+    }
+    if ($AcceptLegacyAndroidDebugSigningWarning) {
+        $gateArgs += '-AcceptLegacyAndroidDebugSigningWarning'
     }
     if (-not [string]::IsNullOrWhiteSpace($LocalCacheAppDataRoot)) {
         $gateArgs += @('-LocalCacheAppDataRoot', $LocalCacheAppDataRoot)
@@ -741,6 +746,7 @@ if ($MirrorToLive -and -not $SkipPreDeployOperationalGate.IsPresent) {
         -AllowedIntegrityWarningCodes $PreDeployAllowedIntegrityWarningCodes `
         -ReleaseId $ReleaseId `
         -FailOnOperationalWarnings ([bool]$FailOnOperationalWarnings) `
+        -AcceptLegacyAndroidDebugSigningWarning ([bool]$AcceptLegacyAndroidDebugSigningWarning) `
         -LocalCacheAppDataRoot $LocalCacheAppDataRoot `
         -LocalCacheEvidenceDirectory $LocalCacheEvidenceDirectory `
         -RequireLocalCacheConsistencyCheck ([bool]$RequireLocalCacheConsistencyCheck) `
@@ -858,6 +864,7 @@ try {
                 -AllowedIntegrityWarningCodes $PostDeployAllowedIntegrityWarningCodes `
                 -ReleaseId $ReleaseId `
                 -FailOnOperationalWarnings ([bool]$FailOnOperationalWarnings) `
+                -AcceptLegacyAndroidDebugSigningWarning ([bool]$AcceptLegacyAndroidDebugSigningWarning) `
                 -LocalCacheAppDataRoot $LocalCacheAppDataRoot `
                 -LocalCacheEvidenceDirectory $LocalCacheEvidenceDirectory `
                 -RequireLocalCacheConsistencyCheck ([bool]$RequireLocalCacheConsistencyCheck) `

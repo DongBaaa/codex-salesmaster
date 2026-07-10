@@ -365,6 +365,7 @@ public static partial class DbInitializer
         ("ItemWarehouseStocks", "Revision"),
         ("ProcessedSyncMutations", "MutationId"),
         ("ProcessedSyncMutations", "ExpectedRevision"),
+        ("ProcessedSyncMutations", "PayloadHash"),
         ("ConflictLogs", "Status"),
         ("ActiveEditSessions", "AppSessionId"),
         ("ActiveEditSessions", "Username"),

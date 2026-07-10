@@ -355,6 +355,9 @@ if ($DeployToLinuxPc) {
     if ($FailOnOperationalWarnings) {
         $linuxArgs += '-FailOnOperationalWarnings'
     }
+    if ($AllowLegacyAndroidDebugSigning) {
+        $linuxArgs += '-AcceptLegacyAndroidDebugSigningWarning'
+    }
     if ($AcceptRentalTemplateItemReferenceRisk) {
         $linuxArgs += '-AcceptRentalTemplateItemReferenceRisk'
     }

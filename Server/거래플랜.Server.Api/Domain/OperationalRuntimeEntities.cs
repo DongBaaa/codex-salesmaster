@@ -10,6 +10,7 @@ public sealed class ProcessedSyncMutation
     public string EntityName { get; set; } = string.Empty;
     public string EntityId { get; set; } = string.Empty;
     public long ExpectedRevision { get; set; }
+    public string PayloadHash { get; set; } = string.Empty;
     public DateTime ProcessedAtUtc { get; set; } = DateTime.UtcNow;
 }
 

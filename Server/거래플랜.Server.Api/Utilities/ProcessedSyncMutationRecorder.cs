@@ -36,6 +36,9 @@ public static class ProcessedSyncMutationRecorder
             EntityName = entityName,
             EntityId = dto.Id.ToString("D"),
             ExpectedRevision = dto.ExpectedRevision,
+            // Direct API writes can be normalized by the server before a later sync retry.
+            // Keep these receipts on metadata-only legacy matching; sync-push receipts store a payload hash.
+            PayloadHash = string.Empty,
             ProcessedAtUtc = NormalizeUtc(dto.MutationCreatedAtUtc)
         });
     }

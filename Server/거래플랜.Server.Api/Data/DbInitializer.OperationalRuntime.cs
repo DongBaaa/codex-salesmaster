@@ -51,6 +51,7 @@ public static partial class DbInitializer
                     "EntityName" TEXT NOT NULL DEFAULT '',
                     "EntityId" TEXT NOT NULL DEFAULT '',
                     "ExpectedRevision" INTEGER NOT NULL DEFAULT 0,
+                    "PayloadHash" TEXT NOT NULL DEFAULT '',
                     "ProcessedAtUtc" TEXT NOT NULL
                 );
                 """,
@@ -137,6 +138,7 @@ public static partial class DbInitializer
                     "EntityName" text NOT NULL DEFAULT '',
                     "EntityId" text NOT NULL DEFAULT '',
                     "ExpectedRevision" bigint NOT NULL DEFAULT 0,
+                    "PayloadHash" text NOT NULL DEFAULT '',
                     "ProcessedAtUtc" timestamp with time zone NOT NULL
                 );
                 """,
@@ -213,6 +215,7 @@ public static partial class DbInitializer
                 cancellationToken);
         }
 
+        await EnsureRuntimeColumnAsync(dbContext, "ProcessedSyncMutations", "PayloadHash", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
         await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "OfficeCode", "TEXT NOT NULL DEFAULT 'SHARED'", "text NOT NULL DEFAULT 'SHARED'", cancellationToken);
         await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "BillingProfileDisplay", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
         await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "ItemName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);

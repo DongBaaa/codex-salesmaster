@@ -12,6 +12,7 @@ param(
     [switch]$SkipPackageProbe,
     [switch]$SkipAndroidSigningProbe,
     [switch]$FailOnAndroidDebugSigning,
+    [switch]$AcceptLegacyAndroidDebugSigningWarning,
     [string]$LocalCacheAppDataRoot = "",
     [string]$LocalCacheEvidenceDirectory = "",
     [switch]$SkipLocalCacheConsistencyCheck,
@@ -21,6 +22,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($FailOnAndroidDebugSigning -and $AcceptLegacyAndroidDebugSigningWarning) {
+    throw "FailOnAndroidDebugSigning and AcceptLegacyAndroidDebugSigningWarning cannot be used together."
+}
 
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $scriptRoot = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
@@ -896,7 +901,7 @@ $warningMessages = New-Object System.Collections.Generic.List[string]
 if (-not $androidSigningResult.Skipped -and -not $androidSigningResult.Success) {
     $warningMessages.Add("Android APK signing 점검 실패: $($androidSigningResult.Message)") | Out-Null
 }
-if (-not $androidSigningResult.Skipped -and $androidSigningResult.IsDebugSigning) {
+if (-not $androidSigningResult.Skipped -and $androidSigningResult.IsDebugSigning -and -not $AcceptLegacyAndroidDebugSigningWarning) {
     $warningMessages.Add("Android APK가 debug signing 인증서로 서명되어 있습니다: $($androidSigningResult.CertificateDn)") | Out-Null
 }
 if (-not $localCacheResult.Skipped -and $localCacheResult.Success -and [string]::Equals([string]$localCacheResult.Message, 'WARN', [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -943,7 +948,12 @@ $androidSigningSummary = if ($androidSigningResult.Skipped) {
 }
 elseif ($androidSigningResult.Success) {
     if ($androidSigningResult.IsDebugSigning) {
-        "WARN - debug signing, DN=$($androidSigningResult.CertificateDn), SHA256=$($androidSigningResult.CertificateSha256)"
+        if ($AcceptLegacyAndroidDebugSigningWarning) {
+            "ACCEPTED - legacy debug signing update chain, DN=$($androidSigningResult.CertificateDn), SHA256=$($androidSigningResult.CertificateSha256)"
+        }
+        else {
+            "WARN - debug signing, DN=$($androidSigningResult.CertificateDn), SHA256=$($androidSigningResult.CertificateSha256)"
+        }
     }
     else {
         "OK - DN=$($androidSigningResult.CertificateDn), SHA256=$($androidSigningResult.CertificateSha256)"
@@ -953,6 +963,7 @@ else {
     "WARN - $($androidSigningResult.Message)"
 }
 $lines.Add("- Android APK signing 점검: $androidSigningSummary") | Out-Null
+$lines.Add("- Android legacy debug signing 경고 수용: $([bool]$AcceptLegacyAndroidDebugSigningWarning)") | Out-Null
 $lines.Add("- 로컬 캐시 필수 점검: $([bool]$RequireLocalCacheConsistencyCheck)") | Out-Null
 $lines.Add("- 로컬 캐시 Warning 실패 처리: $([bool]$FailOnLocalCacheWarning)") | Out-Null
 $localCacheSummary = if ($localCacheResult.Skipped) { "SKIP - $($localCacheResult.Message)" } elseif ($localCacheResult.Success) { "$($localCacheResult.Message) - $($localCacheResult.Report)" } else { "FAIL - $($localCacheResult.Message)" }

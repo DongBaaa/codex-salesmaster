@@ -1,6 +1,7 @@
 using 거래플랜.Server.Api.Controllers;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
+using 거래플랜.Server.Api.Mappings;
 using 거래플랜.Server.Api.Security;
 using 거래플랜.Server.Api.Services;
 using 거래플랜.Shared.Contracts;
@@ -1427,7 +1428,120 @@ public sealed class SyncControllerTests : IDisposable
 
         var storedCustomer = await _dbContext.Customers.IgnoreQueryFilters().FirstAsync(x => x.Id == customerId);
         Assert.Equal("수정 거래처", storedCustomer.NameOriginal);
-        Assert.Equal(1, await _dbContext.ProcessedSyncMutations.CountAsync());
+        var receipt = await _dbContext.ProcessedSyncMutations.SingleAsync();
+        Assert.Equal(64, receipt.PayloadHash.Length);
+    }
+
+    [Fact]
+    public async Task Push_AcceptsLegacyMutationReceiptWithoutPayloadHash_WhenMetadataMatches()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "LEGACY-RECEIPT-CUSTOMER",
+            NameMatchKey = "LEGACYRECEIPTCUSTOMER",
+            TradeType = "Sales"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var stored = await _dbContext.Customers.IgnoreQueryFilters().AsNoTracking().SingleAsync(row => row.Id == customer.Id);
+        var mutationId = $"legacy-receipt:Customer:{customer.Id:N}:{stored.Revision}";
+        _dbContext.ProcessedSyncMutations.Add(new ProcessedSyncMutation
+        {
+            MutationId = mutationId,
+            DeviceId = "legacy-device",
+            EntityName = nameof(Customer),
+            EntityId = customer.Id.ToString("D"),
+            ExpectedRevision = stored.Revision,
+            PayloadHash = string.Empty,
+            ProcessedAtUtc = DateTime.UtcNow.AddDays(-1)
+        });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var dto = stored.ToDto();
+        dto.MutationId = mutationId;
+        dto.ExpectedRevision = stored.Revision;
+        dto.NameOriginal = "LEGACY-REPLAY-MUST-NOT-WRITE";
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "legacy-device",
+            Customers = [dto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(1, result.DuplicateMutationCount);
+        Assert.Equal(0, result.ConflictCount);
+        var unchanged = await _dbContext.Customers.IgnoreQueryFilters().AsNoTracking().SingleAsync(row => row.Id == customer.Id);
+        Assert.Equal("LEGACY-RECEIPT-CUSTOMER", unchanged.NameOriginal);
+    }
+
+    [Fact]
+    public async Task Push_RejectsLegacyMutationIdReuse_WhenEntityMetadataDiffers()
+    {
+        var firstId = Guid.NewGuid();
+        var secondId = Guid.NewGuid();
+        _dbContext.Customers.AddRange(
+            new Customer
+            {
+                Id = firstId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "LEGACY-FIRST-CUSTOMER",
+                NameMatchKey = "LEGACYFIRSTCUSTOMER",
+                TradeType = "Sales"
+            },
+            new Customer
+            {
+                Id = secondId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "LEGACY-SECOND-CUSTOMER",
+                NameMatchKey = "LEGACYSECONDCUSTOMER",
+                TradeType = "Sales"
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var second = await _dbContext.Customers.IgnoreQueryFilters().AsNoTracking().SingleAsync(row => row.Id == secondId);
+        const string mutationId = "legacy-reused-mutation-id";
+        _dbContext.ProcessedSyncMutations.Add(new ProcessedSyncMutation
+        {
+            MutationId = mutationId,
+            DeviceId = "legacy-device",
+            EntityName = nameof(Customer),
+            EntityId = firstId.ToString("D"),
+            ExpectedRevision = second.Revision,
+            PayloadHash = string.Empty,
+            ProcessedAtUtc = DateTime.UtcNow.AddDays(-1)
+        });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var dto = second.ToDto();
+        dto.MutationId = mutationId;
+        dto.ExpectedRevision = second.Revision;
+        dto.NameOriginal = "REUSED-ID-MUST-NOT-WRITE";
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "legacy-device",
+            Customers = [dto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(0, result.DuplicateMutationCount);
+        Assert.Equal(1, result.ConflictCount);
+        var unchanged = await _dbContext.Customers.IgnoreQueryFilters().AsNoTracking().SingleAsync(row => row.Id == secondId);
+        Assert.Equal("LEGACY-SECOND-CUSTOMER", unchanged.NameOriginal);
     }
 
     [Fact]
@@ -8191,7 +8305,7 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task Push_DoesNotPersistCustomerContractFile_WhenMutationIsDuplicate()
+    public async Task Push_RejectsChangedCustomerContractPayload_WhenMutationIdIsReused()
     {
         var customer = new Customer
         {
@@ -8282,7 +8396,12 @@ public sealed class SyncControllerTests : IDisposable
         var replayOk = Assert.IsType<OkObjectResult>(replayResponse.Result);
         var replayResult = Assert.IsType<SyncPushResult>(replayOk.Value);
 
-        Assert.Equal(1, replayResult.DuplicateMutationCount);
+        Assert.Equal(0, replayResult.AcceptedCount);
+        Assert.Equal(0, replayResult.DuplicateMutationCount);
+        Assert.Equal(1, replayResult.ConflictCount);
+        Assert.Contains(replayResult.Conflicts, conflict =>
+            conflict.EntityName == nameof(CustomerContract) &&
+            conflict.Reason.Contains("Mutation id was already processed", StringComparison.Ordinal));
         Assert.Single(fileStorage.SaveCalls);
         _dbContext.ChangeTracker.Clear();
         var storedAfterReplay = await _dbContext.CustomerContracts.IgnoreQueryFilters().SingleAsync(current => current.Id == contractId);

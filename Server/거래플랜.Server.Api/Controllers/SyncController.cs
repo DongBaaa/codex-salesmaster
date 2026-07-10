@@ -23,6 +23,7 @@ public sealed class SyncController : ControllerBase
     private static readonly JsonSerializerOptions ConflictJsonOptions = new() { WriteIndented = false };
     private static readonly TimeZoneInfo KoreaTimeZone = ResolveKoreaTimeZone();
     private static readonly SemaphoreSlim RentalAssetSyncLock = new(1, 1);
+    private readonly Dictionary<string, string> _incomingMutationPayloadHashes = new(StringComparer.OrdinalIgnoreCase);
 
     private readonly AppDbContext _dbContext;
     private readonly ICurrentUserContext _currentUserContext;
@@ -4011,13 +4012,36 @@ public sealed class SyncController : ControllerBase
         if (string.IsNullOrWhiteSpace(mutationId))
             return false;
 
-        var alreadyProcessed = _dbContext.ProcessedSyncMutations.Local.Any(entity =>
-                                   string.Equals(entity.MutationId, mutationId, StringComparison.OrdinalIgnoreCase)) ||
-                               await _dbContext.ProcessedSyncMutations
-                                   .AsNoTracking()
-                                   .AnyAsync(entity => entity.MutationId == mutationId, cancellationToken);
-        if (!alreadyProcessed)
+        var incomingPayloadHash = SyncMutationPayloadHasher.Compute(dto);
+        var processedMutation = _dbContext.ProcessedSyncMutations.Local.FirstOrDefault(entity =>
+                                    string.Equals(entity.MutationId, mutationId, StringComparison.OrdinalIgnoreCase)) ??
+                                await _dbContext.ProcessedSyncMutations
+                                    .AsNoTracking()
+                                    .FirstOrDefaultAsync(entity => entity.MutationId == mutationId, cancellationToken);
+        if (processedMutation is null)
+        {
+            _incomingMutationPayloadHashes[mutationId] = incomingPayloadHash;
             return false;
+        }
+
+        var entityIdMatches = string.Equals(
+            processedMutation.EntityId,
+            dto.Id.ToString("D"),
+            StringComparison.OrdinalIgnoreCase);
+        var metadataMatches = string.Equals(processedMutation.EntityName, entityName, StringComparison.OrdinalIgnoreCase) &&
+                              entityIdMatches &&
+                              processedMutation.ExpectedRevision == dto.ExpectedRevision;
+        var payloadMatches = string.IsNullOrWhiteSpace(processedMutation.PayloadHash) ||
+                             string.Equals(processedMutation.PayloadHash, incomingPayloadHash, StringComparison.Ordinal);
+        if (!metadataMatches || !payloadMatches)
+        {
+            AddClientConflict(
+                dto,
+                entityName,
+                "Mutation id was already processed with a different entity, expected revision, or payload.",
+                result);
+            return true;
+        }
 
         if (dto.Id != Guid.Empty)
         {
@@ -4052,6 +4076,9 @@ public sealed class SyncController : ControllerBase
             EntityName = entityName,
             EntityId = dto.Id.ToString("D"),
             ExpectedRevision = dto.ExpectedRevision,
+            PayloadHash = _incomingMutationPayloadHashes.TryGetValue(mutationId, out var payloadHash)
+                ? payloadHash
+                : SyncMutationPayloadHasher.Compute(dto),
             ProcessedAtUtc = dto.MutationCreatedAtUtc.HasValue && dto.MutationCreatedAtUtc.Value != default
                 ? NormalizeUtc(dto.MutationCreatedAtUtc.Value)
                 : DateTime.UtcNow

@@ -62,6 +62,54 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task CustomersController_UpdateAndDelete_ForbidTenantOfficeMismatchedExistingCustomer()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-customer-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.CustomerEdit]
+        };
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "TENANT-MISMATCH-CUSTOMER",
+            NameMatchKey = "TENANTMISMATCHCUSTOMER",
+            TradeType = "Sales"
+        };
+        dbContext.Customers.Add(customer);
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Customers.IgnoreQueryFilters().SingleAsync(row => row.Id == customer.Id);
+        var dto = stored.ToDto();
+        dto.NameOriginal = "SHOULD-NOT-BE-SAVED";
+        dto.ExpectedRevision = stored.Revision;
+
+        var controller = new CustomersController(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext),
+            new StubCentralFileStorage());
+
+        var updateResponse = await controller.Update(stored.Id, dto, CancellationToken.None);
+        var deleteResponse = await controller.Delete(stored.Id, stored.Revision, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(updateResponse.Result);
+        Assert.IsType<ForbidResult>(deleteResponse);
+        dbContext.ChangeTracker.Clear();
+        var unchanged = await dbContext.Customers.IgnoreQueryFilters().SingleAsync(row => row.Id == customer.Id);
+        Assert.Equal(TenantScopeCatalog.Itworld, unchanged.TenantCode);
+        Assert.Equal("TENANT-MISMATCH-CUSTOMER", unchanged.NameOriginal);
+        Assert.False(unchanged.IsDeleted);
+    }
+
+    [Fact]
     public async Task CustomersController_Update_SynchronizesLinkedRentalCustomerSnapshots()
     {
         var currentUser = CreateAdminUser();
@@ -588,6 +636,49 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         var conflict = Assert.IsType<ConflictObjectResult>(response.Result);
         var payload = Assert.IsType<ExpectedRevisionConflictResponse>(conflict.Value);
         Assert.Equal(nameof(Item), payload.EntityName);
+    }
+
+    [Fact]
+    public async Task ItemsController_UpdateAndDelete_ForbidTenantOfficeMismatchedExistingItem()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-item-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.ItemEdit]
+        };
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "TENANT-MISMATCH-ITEM",
+            NameMatchKey = "TENANTMISMATCHITEM",
+            TrackingType = ItemTrackingTypes.Stock
+        };
+        dbContext.Items.Add(item);
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id);
+        var dto = stored.ToDto();
+        dto.NameOriginal = "SHOULD-NOT-BE-SAVED";
+        dto.ExpectedRevision = stored.Revision;
+
+        var controller = new ItemsController(dbContext, new OfficeScopeService(currentUser, dbContext));
+        var updateResponse = await controller.Update(stored.Id, dto, CancellationToken.None);
+        var deleteResponse = await controller.Delete(stored.Id, stored.Revision, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(updateResponse.Result);
+        Assert.IsType<ForbidResult>(deleteResponse);
+        dbContext.ChangeTracker.Clear();
+        var unchanged = await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id);
+        Assert.Equal(TenantScopeCatalog.Itworld, unchanged.TenantCode);
+        Assert.Equal("TENANT-MISMATCH-ITEM", unchanged.NameOriginal);
+        Assert.False(unchanged.IsDeleted);
     }
 
     [Fact]
@@ -1586,6 +1677,7 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         Assert.Equal(invoiceId.ToString("D"), receipt.EntityId);
         Assert.Equal(ProcessedSyncMutationRecorder.DirectApiDeviceId, receipt.DeviceId);
         Assert.Equal(mutationCreatedAtUtc, receipt.ProcessedAtUtc);
+        Assert.Empty(receipt.PayloadHash);
     }
 
     [Fact]
@@ -1645,6 +1737,7 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         Assert.Equal(storedInvoice.Revision, receipt.ExpectedRevision);
         Assert.Equal(ProcessedSyncMutationRecorder.DirectApiDeviceId, receipt.DeviceId);
         Assert.Equal(mutationCreatedAtUtc, receipt.ProcessedAtUtc);
+        Assert.Empty(receipt.PayloadHash);
     }
 
     [Fact]
