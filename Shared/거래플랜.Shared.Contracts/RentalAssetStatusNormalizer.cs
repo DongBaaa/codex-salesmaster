@@ -35,7 +35,12 @@ public static class RentalAssetStatusNormalizer
         => string.Equals(Normalize(assetStatus), Disposed, StringComparison.OrdinalIgnoreCase);
 
     public static bool IsNonOperating(string? assetStatus)
-        => IsWarehouse(assetStatus) || IsDisposed(assetStatus);
+    {
+        var normalized = Normalize(assetStatus);
+        return IsWarehouse(normalized) ||
+               IsDisposed(normalized) ||
+               string.Equals(normalized, Sold, StringComparison.OrdinalIgnoreCase);
+    }
 
     public static IReadOnlyList<string> ExpandForFilter(string? assetStatus)
     {

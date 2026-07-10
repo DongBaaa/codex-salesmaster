@@ -27,6 +27,42 @@ public sealed partial class RentalStateService
 
         var context = await BuildWorkbookAuditContextAsync(path, ct);
         var now = DateTime.UtcNow;
+        if (!TryValidateWorkbookBusinessDatabaseScope(
+                context.RowsByRowNumber.Values.Select(row => row.OfficeCode),
+                session,
+                out var databaseScopeBlockReason))
+        {
+            return new RentalWorkbookRebuildResult
+            {
+                WorkbookPath = path,
+                ProcessedAtUtc = now,
+                IsBlocked = true,
+                BlockReason = databaseScopeBlockReason,
+                MissingInWorkbookAssets = context.Result.MissingInWorkbookAssets,
+                MissingInWorkbookCount = context.Result.MissingInWorkbookCount
+            };
+        }
+
+        var blockedPlanRows = context.RowsByRowNumber.Values
+            .Where(row => row.IsBlocked)
+            .Select(row => row.RowNumber)
+            .OrderBy(rowNumber => rowNumber)
+            .ToList();
+        if (blockedPlanRows.Count > 0 || context.Result.UnresolvedCustomerCount > 0)
+        {
+            return new RentalWorkbookRebuildResult
+            {
+                WorkbookPath = path,
+                ProcessedAtUtc = now,
+                IsBlocked = true,
+                BlockReason = blockedPlanRows.Count > 0
+                    ? $"반영검증상태가 차단인 행 {blockedPlanRows.Count:N0}건이 있어 전체 반영을 중단했습니다: {string.Join(", ", blockedPlanRows.Take(20))}"
+                    : $"현재 렌탈 거래처를 안전하게 확인하지 못한 행 {context.Result.UnresolvedCustomerCount:N0}건이 있어 전체 반영을 중단했습니다.",
+                MissingInWorkbookAssets = context.Result.MissingInWorkbookAssets,
+                MissingInWorkbookCount = context.Result.MissingInWorkbookCount
+            };
+        }
+
         var scopeCheck = await ValidateWorkbookRebuildScopeAsync(context, session, ct);
         if (!scopeCheck.CanProceed)
         {
@@ -66,7 +102,9 @@ public sealed partial class RentalStateService
                 switch (entry.Action)
                 {
                     case "ExactMatch":
-                        continue;
+                        if (!row.HasAssignmentHistory && !row.HasExplicitCustomerId)
+                            continue;
+                        break;
                     case "Ambiguous":
                         rebuildResult.AmbiguousCount++;
                         rebuildResult.AmbiguousEntries.Add(CloneAuditEntry(entry));
@@ -112,11 +150,12 @@ public sealed partial class RentalStateService
                 .Where(current => !rebuildResult.AmbiguousEntries.Any(entry => entry.RowNumber == current.Entry.RowNumber))
                 .ToList();
 
-            await ReserveRentalAssetUniqueValuesAsync(executableOperations, now, ct);
-
             var touchedAssets = new List<LocalRentalAsset>();
+            await using var transaction = await _db.Database.BeginTransactionAsync(ct);
             try
             {
+                await ReserveRentalAssetUniqueValuesAsync(executableOperations, now, ct);
+
                 foreach (var operation in executableOperations.OrderBy(current => current.Entry.RowNumber))
                 {
                     if (operation.IsCreate)
@@ -129,13 +168,38 @@ public sealed partial class RentalStateService
                         rebuildResult.UpdatedCount++;
                     }
 
+                    var isCurrentRental = !RentalAssetStatusRules.IsNonOperating(operation.Row.AssetStatus);
+                    if (!isCurrentRental)
+                    {
+                        await ApplyAssignmentClearedSnapshotAsync(
+                            operation.Asset,
+                            operation.Asset.BillingProfileId,
+                            now,
+                            session,
+                            ct);
+                    }
+
                     ApplyWorkbookRowToAsset(operation.Asset, operation.Row, session, now);
-                    operation.Asset.CustomerId = await ResolveCustomerIdAsync(
-                        operation.Row.CustomerName,
-                        operation.Row.CustomerBusinessNumber,
-                        ct,
-                        allowWorkbookNameVariants: true,
-                        preferredOfficeCode: operation.Row.OfficeCode);
+                    if (isCurrentRental)
+                    {
+                        var customerLink = await ResolveWorkbookCustomerLinkAsync(
+                            operation.Row.CustomerName,
+                            operation.Row.CurrentCustomerId,
+                            operation.Row.OfficeCode,
+                            required: true,
+                            allowWorkbookNameVariants: true,
+                            ct);
+                        operation.Asset.CustomerId = customerLink!.Id;
+                        operation.Asset.CustomerName = customerLink.Name;
+                        operation.Asset.CurrentCustomerName = customerLink.Name;
+                        operation.Asset.InstallSiteName = customerLink.Name;
+                    }
+                    else
+                    {
+                        operation.Asset.CustomerId = null;
+                        operation.Asset.BillingProfileId = null;
+                    }
+
                     await EnrichAssetReferencesAsync(
                         operation.Asset,
                         ct,
@@ -144,7 +208,9 @@ public sealed partial class RentalStateService
                         allowCategoryRecovery: false,
                         allowDerivedAssetBackfill: false,
                         allowWorkbookNameVariants: true);
-                    operation.Asset.BillingProfileId = await FindMatchingBillingProfileIdAsync(operation.Asset, ct);
+                    operation.Asset.BillingProfileId = isCurrentRental
+                        ? await FindMatchingBillingProfileIdAsync(operation.Asset, ct)
+                        : null;
                     if (operation.Asset.BillingProfileId.HasValue && operation.Asset.BillingProfileId.Value != Guid.Empty)
                         rebuildResult.LinkedBillingProfileCount++;
 
@@ -167,10 +233,27 @@ public sealed partial class RentalStateService
                 AssignUniqueAssetKeysForRepair(repairAssets, assetBaseKeyById);
 
                 await _db.SaveChangesAsync(ct);
+                await RefreshLocalRentalAssetAssignmentHistoriesAsync(
+                    touchedAssets.Select(asset => asset.Id),
+                    now,
+                    "원장 자산 재구성",
+                    session,
+                    ct);
+                foreach (var operation in executableOperations.OrderBy(current => current.Entry.RowNumber))
+                {
+                    await UpsertWorkbookAssignmentHistoriesAsync(
+                        operation.Asset.Id,
+                        operation.Row,
+                        session,
+                        ct);
+                }
+
+                await transaction.CommitAsync(ct);
             }
             catch
             {
-                await RestoreReservedRentalAssetUniqueValuesAsync(executableOperations, ct);
+                await transaction.RollbackAsync(ct);
+                _db.ChangeTracker.Clear();
                 throw;
             }
 
@@ -276,6 +359,40 @@ public sealed partial class RentalStateService
         return result;
     }
 
+    private static bool TryValidateWorkbookBusinessDatabaseScope(
+        IEnumerable<string> officeCodes,
+        SessionState session,
+        out string blockReason)
+    {
+        var tenantCodes = officeCodes
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Select(code => TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, code))
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (tenantCodes.Count > 1)
+        {
+            blockReason = "서로 다른 업체 DB의 렌탈 자산이 한 workbook에 섞여 있습니다. " +
+                          "아이티월드와 유즈넷 파일을 분리하고 각 업체 DB를 선택한 뒤 따로 반영하세요.";
+            return false;
+        }
+
+        if (tenantCodes.Count == 1)
+        {
+            var selectedTenantCode = ResolveCurrentRentalTenantCode(session);
+            if (!string.Equals(tenantCodes[0], selectedTenantCode, StringComparison.OrdinalIgnoreCase))
+            {
+                blockReason = $"workbook 대상 업체 DB({TenantScopeCatalog.GetTenantDisplayName(tenantCodes[0])})와 " +
+                              $"현재 선택된 업체 DB({TenantScopeCatalog.GetTenantDisplayName(selectedTenantCode)})가 다릅니다. " +
+                              "환경설정에서 대상 업체 DB로 전환한 뒤 다시 실행하세요.";
+                return false;
+            }
+        }
+
+        blockReason = string.Empty;
+        return true;
+    }
+
     private bool CanEditWorkbookRebuildEntryScope(
         RentalWorkbookAuditEntry entry,
         WorkbookRentalAssetRow row,
@@ -329,16 +446,33 @@ public sealed partial class RentalStateService
             rowsByNumber[row.RowNumber] = row;
             var (matchedAsset, matchedBy, ambiguous, warnings) = MatchWorkbookRowToAsset(row, assets);
             var differences = matchedAsset is null ? new List<string>() : BuildWorkbookDifferences(row, matchedAsset);
-            var resolvedCustomerId = await ResolveCustomerIdAsync(
-                row.CustomerName,
-                row.CustomerBusinessNumber,
-                ct,
-                allowWorkbookNameVariants: true,
-                preferredOfficeCode: row.OfficeCode);
-            if (!string.IsNullOrWhiteSpace(row.CustomerName) && (!resolvedCustomerId.HasValue || resolvedCustomerId.Value == Guid.Empty))
+            if (row.IsBlocked)
+                warnings.Add("반영검증상태가 차단인 행입니다.");
+
+            var isCurrentRental = !RentalAssetStatusRules.IsNonOperating(row.AssetStatus);
+            WorkbookCustomerLink? resolvedCustomer = null;
+            if (isCurrentRental)
             {
-                warnings.Add($"고객 마스터를 찾지 못했습니다: {row.CustomerName}");
-                unresolvedCustomerCount++;
+                try
+                {
+                    resolvedCustomer = await ResolveWorkbookCustomerLinkAsync(
+                        row.CustomerName,
+                        row.CurrentCustomerId,
+                        row.OfficeCode,
+                        required: false,
+                        allowWorkbookNameVariants: true,
+                        ct);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    warnings.Add(ex.Message);
+                }
+
+                if (resolvedCustomer is null)
+                {
+                    warnings.Add($"현재 렌탈 고객 마스터를 찾지 못했습니다: {row.CustomerName}");
+                    unresolvedCustomerCount++;
+                }
             }
 
             var action = DetermineWorkbookAction(row, matchedAsset, ambiguous, differences);
@@ -407,7 +541,7 @@ public sealed partial class RentalStateService
         bool ambiguous,
         IReadOnlyCollection<string> differences)
     {
-        if (ambiguous)
+        if (ambiguous || row.IsBlocked)
             return "Ambiguous";
 
         if (matchedAsset is null)
@@ -499,6 +633,7 @@ public sealed partial class RentalStateService
                 ItemCategoryName = GetCellString(row, headerMap, "품목분류", "상품분류").Trim(),
                   Manufacturer = GetCellString(row, headerMap, "제조사").Trim(),
                   CustomerName = GetCellString(row, headerMap, "고객명").Trim(),
+                  CurrentCustomerId = GetCellString(row, headerMap, "현재거래처ID", "거래처ID", "고객ID").Trim(),
                   CustomerBusinessNumber = ResolveWorkbookCustomerBusinessNumber(customerBusinessNumberByName, GetCellString(row, headerMap, "고객명")),
                   ItemName = GetCellString(row, headerMap, "품명", "모델명").Trim(),
                 MachineNumber = GetCellString(row, headerMap, "기계번호").Trim(),
@@ -524,10 +659,14 @@ public sealed partial class RentalStateService
                 Remarks = GetCellString(row, headerMap, "기타사항", "비고").Trim(),
                 Recall1 = GetCellString(row, headerMap, "회수1").Trim(),
                 Rental1 = GetCellString(row, headerMap, "렌탈1").Trim(),
+                HistoryCustomerId1 = GetCellString(row, headerMap, "이력1거래처ID", "렌탈1거래처ID").Trim(),
                 Recall2 = GetCellString(row, headerMap, "회수2").Trim(),
                 Rental2 = GetCellString(row, headerMap, "렌탈2").Trim(),
+                HistoryCustomerId2 = GetCellString(row, headerMap, "이력2거래처ID", "렌탈2거래처ID").Trim(),
                 Recall3 = GetCellString(row, headerMap, "회수3").Trim(),
                 Rental3 = GetCellString(row, headerMap, "렌탈3").Trim(),
+                HistoryCustomerId3 = GetCellString(row, headerMap, "이력3거래처ID", "렌탈3거래처ID").Trim(),
+                ValidationStatus = GetCellString(row, headerMap, "반영검증상태", "검증상태").Trim(),
                 AssetStatus = assetStatus
             };
 
@@ -578,7 +717,9 @@ public sealed partial class RentalStateService
         var warnings = new List<string>();
         var normalizedManagementNumber = NormalizeProfileKeyPart(row.ManagementNumber);
         var normalizedManagementId = NormalizeProfileKeyPart(row.ManagementId);
-        var normalizedMachineNumber = NormalizeProfileKeyPart(row.MachineNumber);
+        var normalizedMachineNumber = IsMissingRentalIdentifier(row.MachineNumber)
+            ? string.Empty
+            : NormalizeProfileKeyPart(row.MachineNumber);
 
         var candidateSets = new List<(string Reason, List<LocalRentalAsset> Matches)>();
         AddCandidateSetIfValue(candidateSets, "ManagementNumber", normalizedManagementNumber, assets, asset => NormalizeProfileKeyPart(asset.ManagementNumber));
@@ -740,13 +881,17 @@ public sealed partial class RentalStateService
         asset.CurrentLocation = row.CurrentLocation;
         asset.ItemCategoryName = SelectionOptionDefaults.NormalizeItemCategoryName(row.ItemCategoryName);
         asset.Manufacturer = RentalCatalogValueNormalizer.NormalizeDisplayText(row.Manufacturer);
-        asset.CustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(row.CustomerName);
+        var resolvedAssetStatus = ResolveAssetStatus(row.AssetStatus, row.CurrentLocation, row.DisposalDate);
+        var isCurrentRental = !RentalAssetStatusRules.IsNonOperating(resolvedAssetStatus);
+        asset.CustomerName = isCurrentRental
+            ? RentalCatalogValueNormalizer.NormalizeDisplayText(row.CustomerName)
+            : string.Empty;
         asset.CurrentCustomerName = asset.CustomerName;
         asset.InstallSiteName = asset.CustomerName;
         asset.ItemName = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(row.ItemName);
         asset.MachineNumber = row.MachineNumber;
         var normalizedInstallLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(row.InstallLocation);
-        asset.InstallLocation = normalizedInstallLocation;
+        asset.InstallLocation = isCurrentRental ? normalizedInstallLocation : string.Empty;
         asset.PurchaseVendor = RentalCatalogValueNormalizer.NormalizeDisplayText(row.PurchaseVendor);
         asset.PurchaseDate = row.PurchaseDate;
         asset.DisposalDate = row.DisposalDate;
@@ -761,12 +906,14 @@ public sealed partial class RentalStateService
         asset.RentalEndDate = row.RentalEndDate;
         asset.FreeSupplyItems = row.FreeSupplyItems;
         asset.PaidSupplyItems = row.PaidSupplyItems;
-        asset.AssetStatus = ResolveAssetStatus(row.AssetStatus, row.CurrentLocation, row.DisposalDate);
+        asset.AssetStatus = resolvedAssetStatus;
         asset.BillingEligibilityStatus = string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus)
             ? GetDefaultBillingEligibilityStatus(asset)
             : asset.BillingEligibilityStatus;
         asset.BillingExclusionReason = (asset.BillingExclusionReason ?? string.Empty).Trim();
         asset.CustomerId = null;
+        if (!isCurrentRental)
+            asset.BillingProfileId = null;
         asset.ItemId = null;
         asset.AssetKey = string.Empty;
         asset.Notes = BuildWorkbookAssetNotes(row);
@@ -784,6 +931,8 @@ public sealed partial class RentalStateService
             lines.Add($"원본 관리ID: {row.ManagementId}");
         if (!string.IsNullOrWhiteSpace(row.ManagementNumber))
             lines.Add($"원본 관리번호: {row.ManagementNumber}");
+        if (!string.IsNullOrWhiteSpace(row.CustomerName))
+            lines.Add($"원본 고객명: {RentalCatalogValueNormalizer.NormalizeDisplayText(row.CustomerName)}");
         if (!string.IsNullOrWhiteSpace(row.KRestriction))
             lines.Add($"K제한: {row.KRestriction}");
         if (!string.IsNullOrWhiteSpace(row.CRestriction))
@@ -817,8 +966,10 @@ public sealed partial class RentalStateService
             throw new FileNotFoundException("로컬 DB 파일을 찾을 수 없습니다.", source);
 
         Directory.CreateDirectory(AppPaths.BackupDir);
-        var timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+        var timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture);
         var destination = Path.Combine(AppPaths.BackupDir, $"거래플랜-{prefix}-{timestamp}.db");
+        for (var sequence = 1; File.Exists(destination); sequence++)
+            destination = Path.Combine(AppPaths.BackupDir, $"거래플랜-{prefix}-{timestamp}-{sequence:D2}.db");
         File.Copy(source, destination, overwrite: false);
         BackupService.TrimManagedBackups();
         return destination;
@@ -1278,6 +1429,7 @@ public sealed partial class RentalStateService
         public string ItemCategoryName { get; init; } = string.Empty;
         public string Manufacturer { get; init; } = string.Empty;
         public string CustomerName { get; init; } = string.Empty;
+        public string CurrentCustomerId { get; init; } = string.Empty;
         public string CustomerBusinessNumber { get; init; } = string.Empty;
         public string ItemName { get; init; } = string.Empty;
         public string MachineNumber { get; init; } = string.Empty;
@@ -1303,15 +1455,27 @@ public sealed partial class RentalStateService
         public string Remarks { get; init; } = string.Empty;
         public string Recall1 { get; init; } = string.Empty;
         public string Rental1 { get; init; } = string.Empty;
+        public string HistoryCustomerId1 { get; init; } = string.Empty;
         public string Recall2 { get; init; } = string.Empty;
         public string Rental2 { get; init; } = string.Empty;
+        public string HistoryCustomerId2 { get; init; } = string.Empty;
         public string Recall3 { get; init; } = string.Empty;
         public string Rental3 { get; init; } = string.Empty;
+        public string HistoryCustomerId3 { get; init; } = string.Empty;
+        public string ValidationStatus { get; init; } = string.Empty;
         public string AssetStatus { get; init; } = string.Empty;
+        public bool IsBlocked =>
+            string.Equals(ValidationStatus, "blocked", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(ValidationStatus, "차단", StringComparison.OrdinalIgnoreCase);
         public bool HasStrongIdentifier =>
             !string.IsNullOrWhiteSpace(ManagementNumber) ||
             !string.IsNullOrWhiteSpace(ManagementId) ||
-            !string.IsNullOrWhiteSpace(MachineNumber);
+            !IsMissingRentalIdentifier(MachineNumber);
+        public bool HasExplicitCustomerId => !string.IsNullOrWhiteSpace(CurrentCustomerId);
+        public bool HasAssignmentHistory =>
+            !string.IsNullOrWhiteSpace(Rental1) ||
+            !string.IsNullOrWhiteSpace(Rental2) ||
+            !string.IsNullOrWhiteSpace(Rental3);
         public bool IsEmpty =>
             string.IsNullOrWhiteSpace(ManagementNumber) &&
             string.IsNullOrWhiteSpace(ManagementId) &&
