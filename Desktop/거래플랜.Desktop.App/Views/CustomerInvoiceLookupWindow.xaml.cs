@@ -67,7 +67,7 @@ public partial class CustomerInvoiceLookupWindow : Window
     private void PaymentEntryButton_Click(object sender, RoutedEventArgs e)
         => UiTaskHelper.Run(
             this,
-            () => _openPaymentEntryAsync(_viewModel.SelectedInvoiceRow, _viewModel.ResolveActionCustomer()),
+            OpenSelectedPaymentEntryAndRefreshAsync,
             "UI",
             "거래내역 조회창 수금/지급 입력",
             "수금/지급 입력 창을 여는 중 오류가 발생했습니다.");
@@ -78,7 +78,7 @@ public partial class CustomerInvoiceLookupWindow : Window
     private void OpenInvoiceEntry(VoucherType voucherType, string actionName)
         => UiTaskHelper.Run(
             this,
-            () => _openInvoiceEntryAsync(voucherType, _viewModel.ResolveActionCustomer()),
+            () => OpenInvoiceEntryAndRefreshAsync(voucherType),
             "UI",
             $"거래내역 조회창 {actionName}",
             $"{actionName} 창을 여는 중 오류가 발생했습니다.");
@@ -126,7 +126,7 @@ public partial class CustomerInvoiceLookupWindow : Window
     private void OpenInvoiceRow(InvoiceListRow invoiceRow)
         => UiTaskHelper.Run(
             this,
-            () => _openInvoiceRowAsync(invoiceRow),
+            () => OpenInvoiceRowAndRefreshAsync(invoiceRow),
             "UI",
             "거래내역 조회창 전표/내역 열기",
             "선택한 전표 또는 수금·지급 내역을 여는 중 오류가 발생했습니다.");
@@ -151,11 +151,23 @@ public partial class CustomerInvoiceLookupWindow : Window
 
         UiTaskHelper.Run(
             this,
-            () => _openCustomerAsync(customer.Id),
+            () => OpenCustomerAndRefreshAsync(customer.Id),
             "UI",
             "거래내역 조회창 거래처 열기",
             "거래처 수정창을 여는 중 오류가 발생했습니다.");
     }
+
+    private Task OpenSelectedPaymentEntryAndRefreshAsync()
+        => _openPaymentEntryAsync(_viewModel.SelectedInvoiceRow, _viewModel.ResolveActionCustomer());
+
+    private Task OpenInvoiceEntryAndRefreshAsync(VoucherType voucherType)
+        => _openInvoiceEntryAsync(voucherType, _viewModel.ResolveActionCustomer());
+
+    private Task OpenInvoiceRowAndRefreshAsync(InvoiceListRow invoiceRow)
+        => _openInvoiceRowAsync(invoiceRow);
+
+    private Task OpenCustomerAndRefreshAsync(Guid customerId)
+        => _openCustomerAsync(customerId);
 
     private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject
     {

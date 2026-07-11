@@ -9,6 +9,7 @@ public sealed class SettingsViewModel : ObservableObject
     private readonly SessionStore _sessionStore;
     private readonly MobileAppUpdateService _updateService;
     private readonly MobileConnectionTestService _connectionTestService;
+    private readonly MobileDiagnosticExportService _diagnosticExportService;
     private AppUpdatePackageDto? _pendingAndroidUpdate;
 
     private string _baseUrl = string.Empty;
@@ -32,12 +33,14 @@ public sealed class SettingsViewModel : ObservableObject
         SettingsService settings,
         SessionStore sessionStore,
         MobileAppUpdateService updateService,
-        MobileConnectionTestService connectionTestService)
+        MobileConnectionTestService connectionTestService,
+        MobileDiagnosticExportService diagnosticExportService)
     {
         _settings = settings;
         _sessionStore = sessionStore;
         _updateService = updateService;
         _connectionTestService = connectionTestService;
+        _diagnosticExportService = diagnosticExportService;
         SaveCommand = new AsyncCommand(SaveAsync);
         TestConnectionCommand = new AsyncCommand(TestConnectionAsync, () => !IsTestingConnection);
         ResetConnectionCommand = new AsyncCommand(ResetConnectionAsync);
@@ -45,6 +48,7 @@ public sealed class SettingsViewModel : ObservableObject
         LogoutCommand = new AsyncCommand(LogoutAsync);
         CheckForUpdatesCommand = new AsyncCommand(CheckForUpdatesAsync);
         InstallUpdateCommand = new AsyncCommand(InstallUpdateAsync);
+        ExportDiagnosticsCommand = new AsyncCommand(ExportDiagnosticsAsync);
     }
 
     public event Action? LoggedOut;
@@ -160,6 +164,7 @@ public sealed class SettingsViewModel : ObservableObject
     public AsyncCommand LogoutCommand { get; }
     public AsyncCommand CheckForUpdatesCommand { get; }
     public AsyncCommand InstallUpdateCommand { get; }
+    public AsyncCommand ExportDiagnosticsCommand { get; }
 
     public async Task LoadAsync()
     {
@@ -259,6 +264,24 @@ public sealed class SettingsViewModel : ObservableObject
         await _sessionStore.ClearAsync();
         StatusMessage = "로그아웃 완료";
         LoggedOut?.Invoke();
+    }
+
+    public async Task ExportDiagnosticsAsync()
+    {
+        try
+        {
+            StatusMessage = "진단 정보를 준비하는 중입니다...";
+            await _diagnosticExportService.ExportAndShareAsync();
+            StatusMessage = "진단 정보 공유 화면을 열었습니다. 고객지원 채널에 직접 공유해 주세요.";
+        }
+        catch (Exception ex)
+        {
+            MobileAppLogger.Error("DIAG", "진단 정보 내보내기 실패", ex);
+            StatusMessage = ex is InvalidOperationException
+                ? ex.Message
+                : "진단 정보 내보내기에 실패했습니다. 잠시 후 다시 시도해 주세요.";
+            await MobileErrorHandler.ShowAlertAsync("진단 정보 내보내기", StatusMessage);
+        }
     }
 
     public Task CheckForUpdatesAsync()

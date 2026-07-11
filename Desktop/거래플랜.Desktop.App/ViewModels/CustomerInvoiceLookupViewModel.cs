@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using 거래플랜.Desktop.App.Data;
@@ -15,12 +16,19 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject
     private readonly UiDebouncer _customerFilterDebouncer = new();
     private readonly UiDebouncer _invoiceReloadDebouncer = new();
     private readonly SemaphoreSlim _invoiceLoadGate = new(1, 1);
+    private readonly InvoiceLedgerScreenCache _invoiceLedgerCache = new();
+    private readonly Dictionary<InvoiceRowCacheKey, IReadOnlyList<InvoiceListRow>> _invoiceRowCache = new();
     private readonly Dictionary<Guid, string> _customerNameById = new();
     private List<LocalCustomer> _allCustomers = new();
     private CancellationTokenSource? _invoiceLoadCts;
     private int _previewVersion;
     private int _customerSummaryVersion;
     private bool _suppressInvoiceReload;
+
+    private static readonly TimeSpan DetailedInvoiceTimingInfoThreshold = TimeSpan.FromMilliseconds(120);
+    private static readonly TimeSpan DetailedInvoiceTimingWarningThreshold = TimeSpan.FromMilliseconds(700);
+
+    private readonly record struct InvoiceRowCacheKey(Guid? CustomerId, DateOnly? From, DateOnly? To);
 
     public CustomerInvoiceLookupViewModel(LocalStateService local, SessionState session)
     {
@@ -100,7 +108,36 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject
     }
 
     public Task RefreshRowsAsync()
-        => LoadInvoiceRowsAsync();
+    {
+        InvalidateInvoiceLedgerCaches();
+        return LoadInvoiceRowsCoreAsync(forceReload: true);
+    }
+
+    public async Task RefreshCustomersAndRowsAsync()
+    {
+        var previousCustomerId = SelectedCustomer?.Id;
+
+        _suppressInvoiceReload = true;
+        try
+        {
+            _allCustomers = await _local.GetCustomersAsync(_session);
+            _customerNameById.Clear();
+            foreach (var customer in _allCustomers.Where(customer => customer.Id != Guid.Empty))
+                _customerNameById[customer.Id] = customer.NameOriginal;
+
+            ApplyCustomerFilter();
+            SelectedCustomer = previousCustomerId.HasValue
+                ? FilteredCustomers.FirstOrDefault(customer => customer.Id == previousCustomerId.Value)
+                : null;
+            ApplyCustomerInfo(SelectedCustomer);
+        }
+        finally
+        {
+            _suppressInvoiceReload = false;
+        }
+
+        await RefreshRowsAsync();
+    }
 
     public LocalCustomer? ResolveActionCustomer()
     {
@@ -183,7 +220,10 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject
             ex => AppLogger.Warn("UI", $"거래내역 조회창 재조회 실패: {ex.Message}"));
     }
 
-    private async Task LoadInvoiceRowsAsync()
+    private Task LoadInvoiceRowsAsync()
+        => LoadInvoiceRowsCoreAsync();
+
+    private async Task LoadInvoiceRowsCoreAsync(bool forceReload = false)
     {
         _invoiceLoadCts?.Cancel();
         var loadCts = new CancellationTokenSource();
@@ -202,39 +242,81 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject
 
             IsBusy = true;
             StatusText = "거래내역을 조회하는 중입니다.";
+            var overallStopwatch = Stopwatch.StartNew();
 
             var (from, to) = ResolveDateRange();
             var selectedCustomerId = SelectedCustomer?.Id;
-            var invoiceList = await _local.GetInvoiceListSummariesAsync(from, to, selectedCustomerId, _session, ct);
-            var transactions = await _local.GetStandaloneTransactionsForLedgerAsync(from, to, selectedCustomerId, _session, ct);
+            var queryKey = new InvoiceLedgerCacheKey(selectedCustomerId, from, to);
+            var dataLoadStopwatch = Stopwatch.StartNew();
+            var (invoiceList, invoiceSummaryCacheHit) = await _invoiceLedgerCache.GetInvoiceSummariesAsync(
+                queryKey,
+                forceReload,
+                () => _local.GetInvoiceListSummariesAsync(from, to, selectedCustomerId, _session, ct));
+            var (transactions, transactionCacheHit) = await _invoiceLedgerCache.GetStandaloneTransactionsAsync(
+                queryKey,
+                forceReload,
+                () => _local.GetStandaloneTransactionsForLedgerAsync(from, to, selectedCustomerId, _session, ct));
+            dataLoadStopwatch.Stop();
+            OperationTiming.LogIfSlow(
+                "LOOKUP",
+                "Invoice list source load",
+                dataLoadStopwatch.Elapsed,
+                $"{queryKey.ToOperationDetail()}, force={forceReload}, invoiceCache={FormatCacheState(invoiceSummaryCacheHit)}, transactionCache={FormatCacheState(transactionCacheHit)}, invoices={invoiceList.Count:N0}, transactions={transactions.Count:N0}",
+                infoThreshold: DetailedInvoiceTimingInfoThreshold,
+                warningThreshold: DetailedInvoiceTimingWarningThreshold);
             if (!IsCurrentInvoiceLoad(loadCts))
                 return;
 
-            var customerMap = await BuildCustomerNameMapAsync(
-                invoiceList.Select(invoice => invoice.CustomerId)
-                    .Concat(transactions.Select(transaction => transaction.CustomerId)),
-                ct);
+            var rowCacheKey = new InvoiceRowCacheKey(selectedCustomerId, from, to);
+            var rowMaterializationStopwatch = Stopwatch.StartNew();
+            IReadOnlyList<InvoiceListRow>? cachedRows = null;
+            var rowCacheHit = !forceReload && _invoiceRowCache.TryGetValue(rowCacheKey, out cachedRows);
+            IReadOnlyList<InvoiceListRow> rows;
+
+            if (rowCacheHit && cachedRows is not null)
+            {
+                rows = cachedRows;
+            }
+            else
+            {
+                var customerMap = await BuildCustomerNameMapAsync(
+                    invoiceList.Select(invoice => invoice.CustomerId)
+                        .Concat(transactions.Select(transaction => transaction.CustomerId)),
+                    ct);
+                if (!IsCurrentInvoiceLoad(loadCts))
+                    return;
+
+                var showCustomerName = selectedCustomerId is null;
+                var invoiceRows = invoiceList.Select(invoice =>
+                {
+                    var customerName = customerMap.TryGetValue(invoice.CustomerId, out var name) ? name : "(미지정)";
+                    return InvoiceListRow.From(invoice, customerName, showCustomerName);
+                });
+                var transactionRows = transactions.Select(transaction =>
+                {
+                    var customerName = customerMap.TryGetValue(transaction.CustomerId, out var name) ? name : "(미지정)";
+                    return InvoiceListRow.From(transaction, customerName, showCustomerName);
+                });
+
+                rows = invoiceRows
+                    .Concat(transactionRows)
+                    .OrderByDescending(row => row.InvoiceDate)
+                    .ThenByDescending(row => row.UpdatedAtUtc)
+                    .ThenByDescending(row => row.DisplayNumber)
+                    .ToList();
+                InvoiceLedgerCacheStore.Set(_invoiceRowCache, rowCacheKey, rows);
+            }
+
+            rowMaterializationStopwatch.Stop();
+            OperationTiming.LogIfSlow(
+                "LOOKUP",
+                "Invoice row materialization",
+                rowMaterializationStopwatch.Elapsed,
+                $"{queryKey.ToOperationDetail()}, force={forceReload}, rowCache={FormatCacheState(rowCacheHit)}, rows={rows.Count:N0}",
+                infoThreshold: DetailedInvoiceTimingInfoThreshold,
+                warningThreshold: DetailedInvoiceTimingWarningThreshold);
             if (!IsCurrentInvoiceLoad(loadCts))
                 return;
-
-            var showCustomerName = selectedCustomerId is null;
-            var invoiceRows = invoiceList.Select(invoice =>
-            {
-                var customerName = customerMap.TryGetValue(invoice.CustomerId, out var name) ? name : "(미지정)";
-                return InvoiceListRow.From(invoice, customerName, showCustomerName);
-            });
-            var transactionRows = transactions.Select(transaction =>
-            {
-                var customerName = customerMap.TryGetValue(transaction.CustomerId, out var name) ? name : "(미지정)";
-                return InvoiceListRow.From(transaction, customerName, showCustomerName);
-            });
-
-            var rows = invoiceRows
-                .Concat(transactionRows)
-                .OrderByDescending(row => row.InvoiceDate)
-                .ThenByDescending(row => row.UpdatedAtUtc)
-                .ThenByDescending(row => row.DisplayNumber)
-                .ToList();
 
             InvoiceRows.ReplaceWith(rows);
             RestoreSelection(previousId, previousVersionGroupId);
@@ -245,6 +327,14 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject
                 await RefreshCustomerSummaryAsync(null);
 
             StatusText = BuildStatusText(rows.Count, from, to);
+            overallStopwatch.Stop();
+            OperationTiming.LogIfSlow(
+                "LOOKUP",
+                "Invoice list load",
+                overallStopwatch.Elapsed,
+                $"{queryKey.ToOperationDetail()}, force={forceReload}, invoiceCache={FormatCacheState(invoiceSummaryCacheHit)}, transactionCache={FormatCacheState(transactionCacheHit)}, rowCache={FormatCacheState(rowCacheHit)}, rows={rows.Count:N0}",
+                infoThreshold: DetailedInvoiceTimingInfoThreshold,
+                warningThreshold: DetailedInvoiceTimingWarningThreshold);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -265,6 +355,15 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject
 
     private bool IsCurrentInvoiceLoad(CancellationTokenSource loadCts)
         => ReferenceEquals(_invoiceLoadCts, loadCts) && !loadCts.IsCancellationRequested;
+
+    private void InvalidateInvoiceLedgerCaches()
+    {
+        _invoiceLedgerCache.Clear();
+        _invoiceRowCache.Clear();
+    }
+
+    private static string FormatCacheState(bool cacheHit)
+        => cacheHit ? "hit" : "miss";
 
     private (DateOnly? From, DateOnly? To) ResolveDateRange()
     {
@@ -477,8 +576,24 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject
             return;
         }
 
-        var summary = await _local.GetCustomerFinancialSummaryAsync(customer.Id, _session);
-        var invoices = await _local.GetInvoiceListSummariesAsync(from: null, to: null, customerId: customer.Id, session: _session);
+        var summaryKey = new InvoiceLedgerCacheKey(customer.Id, From: null, To: null);
+        var summaryLoadStopwatch = Stopwatch.StartNew();
+        var (summary, summaryCacheHit) = await _invoiceLedgerCache.GetCustomerFinancialSummaryAsync(
+            customer.Id,
+            forceReload: false,
+            () => _local.GetCustomerFinancialSummaryAsync(customer.Id, _session));
+        var (invoices, invoiceCacheHit) = await _invoiceLedgerCache.GetInvoiceSummariesAsync(
+            summaryKey,
+            forceReload: false,
+            () => _local.GetInvoiceListSummariesAsync(from: null, to: null, customerId: customer.Id, session: _session));
+        summaryLoadStopwatch.Stop();
+        OperationTiming.LogIfSlow(
+            "LOOKUP",
+            "Customer summary load",
+            summaryLoadStopwatch.Elapsed,
+            $"{summaryKey.ToOperationDetail()}, summaryCache={FormatCacheState(summaryCacheHit)}, invoiceCache={FormatCacheState(invoiceCacheHit)}, invoices={invoices.Count:N0}",
+            infoThreshold: DetailedInvoiceTimingInfoThreshold,
+            warningThreshold: DetailedInvoiceTimingWarningThreshold);
         if (version != Volatile.Read(ref _customerSummaryVersion))
             return;
 

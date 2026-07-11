@@ -81,6 +81,20 @@ public sealed class SettingsPage : ContentPage
             fontSize: 12);
         connectionHelpLabel.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.IsConnectionSettingsVisible));
 
+        var exportDiagnosticsButton = GeoraePlanTheme.CreateButton("진단 정보 내보내기", GeoraePlanTheme.Accent);
+        exportDiagnosticsButton.TextColor = Colors.Black;
+        exportDiagnosticsButton.SetBinding(Button.CommandProperty, nameof(SettingsViewModel.ExportDiagnosticsCommand));
+
+        var diagnosticsHelpLabel = GeoraePlanTheme.CreateBodyText(
+            "고객지원 요청 시 앱 버전, 기기/OS, 현재 계정 범위, 마지막 동기화 상태, 저장 대기 요약, 최근 오류 발생 시각/분류를 UTF-8 텍스트로 만들어 직접 공유합니다.",
+            muted: true,
+            fontSize: 12);
+
+        var diagnosticsPrivacyLabel = GeoraePlanTheme.CreateBodyText(
+            "공유 파일에는 토큰, 비밀번호, 개인 첨부 원문·파일명과 로그 메시지 원문을 포함하지 않습니다.",
+            muted: true,
+            fontSize: 12);
+
         var saveConnectionButton = GeoraePlanTheme.CreateButton("연결 URL 저장", GeoraePlanTheme.Accent);
         saveConnectionButton.TextColor = Colors.Black;
         saveConnectionButton.SetBinding(Button.CommandProperty, nameof(SettingsViewModel.SaveCommand));
@@ -123,6 +137,13 @@ public sealed class SettingsPage : ContentPage
                         statusLabel),
 
                     GeoraePlanTheme.CreateCard(
+                        GeoraePlanTheme.CreateSectionTitle("고객지원 / 모바일 기능 안내"),
+                        GeoraePlanTheme.CreateBodyText("모바일에서는 판매·구매·수금/지급 입력이 가능하지만, 재고이동·렌탈은 조회 전용입니다. 생성·수정·확정은 PC에서 처리하세요.", muted: true, fontSize: 12),
+                        diagnosticsHelpLabel,
+                        exportDiagnosticsButton,
+                        diagnosticsPrivacyLabel),
+
+                    GeoraePlanTheme.CreateCard(
                         GeoraePlanTheme.CreateSectionTitle("버전 / 업데이트"),
                         CreateInfoRow("현재 버전", nameof(SettingsViewModel.CurrentVersion)),
                         CreateInfoRow("최신 버전", nameof(SettingsViewModel.LatestVersion)),
@@ -142,7 +163,7 @@ public sealed class SettingsPage : ContentPage
         await MobileErrorHandler.RunGuardedAsync(
             async () =>
             {
-await _viewModel.LoadAsync();
+                await _viewModel.LoadAsync();
             },
             "설정 화면 초기화");
     }

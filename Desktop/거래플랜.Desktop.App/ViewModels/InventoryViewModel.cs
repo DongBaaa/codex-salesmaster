@@ -16,6 +16,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     private readonly SessionState _session;
     private readonly UiDebouncer _filterDebouncer = new();
     private readonly SemaphoreSlim _autoSaveGate = new(1, 1);
+    private readonly CancellationTokenSource _lifetimeCts = new();
     private readonly Dictionary<Guid, Dictionary<string, decimal>> _itemOfficeQuantities = new();
     private readonly Dictionary<string, string> _warehouseOfficeCodes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _warehouseDisplayNames = new(StringComparer.OrdinalIgnoreCase);
@@ -131,8 +132,14 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             return;
 
         _isDisposed = true;
+        Interlocked.Increment(ref _selectedItemMovementLoadVersion);
+        Interlocked.Increment(ref _selectedItemVendorPriceLoadVersion);
+        _lifetimeCts.Cancel();
         _local.InventoryStateChanged -= HandleInventoryStateChanged;
         _filterDebouncer.Dispose();
+        // 선택 품목 조회 작업은 창이 닫히는 순간에도 비동기 진입을 시작할 수 있습니다.
+        // 여기서 CTS까지 즉시 Dispose하면 Token 접근과 경합해 ObjectDisposedException이
+        // 발생할 수 있으므로 취소만 하고 ViewModel 수명과 함께 회수되도록 둡니다.
     }
 
     public async Task LoadAsync()
@@ -944,6 +951,9 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 
     private void RequestLoadSelectedItemMovements(Guid itemId)
     {
+        if (_isDisposed)
+            return;
+
         var version = Interlocked.Increment(ref _selectedItemMovementLoadVersion);
         UiTaskHelper.Forget(
             LoadSelectedItemMovementsAsync(itemId, version),
@@ -958,6 +968,8 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 
     private async Task LoadSelectedItemMovementsAsync(Guid itemId, int version)
     {
+        var ct = _lifetimeCts.Token;
+        ct.ThrowIfCancellationRequested();
         if (!IsCurrentSelectedItemMovementLoad(version))
             return;
 
@@ -965,7 +977,8 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         if (itemId == Guid.Empty)
             return;
 
-        var movements = await _local.GetInventoryMovementsAsync(itemId);
+        var movements = await _local.GetInventoryMovementsAsync(itemId, ct: ct);
+        ct.ThrowIfCancellationRequested();
         if (!IsCurrentSelectedItemMovementLoad(version))
             return;
 
@@ -996,10 +1009,13 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     }
 
     private bool IsCurrentSelectedItemMovementLoad(int version)
-        => version == Volatile.Read(ref _selectedItemMovementLoadVersion);
+        => !_isDisposed && version == Volatile.Read(ref _selectedItemMovementLoadVersion);
 
     private void RequestLoadSelectedItemVendorPurchasePrices(Guid itemId)
     {
+        if (_isDisposed)
+            return;
+
         var version = Interlocked.Increment(ref _selectedItemVendorPriceLoadVersion);
         UiTaskHelper.Forget(
             LoadSelectedItemVendorPurchasePricesAsync(itemId, version),
@@ -1014,6 +1030,8 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 
     private async Task LoadSelectedItemVendorPurchasePricesAsync(Guid itemId, int version)
     {
+        var ct = _lifetimeCts.Token;
+        ct.ThrowIfCancellationRequested();
         if (!IsCurrentSelectedItemVendorPriceLoad(version))
             return;
 
@@ -1021,7 +1039,8 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         if (itemId == Guid.Empty)
             return;
 
-        var rows = await _local.GetItemVendorPurchasePricesAsync(itemId, _session);
+        var rows = await _local.GetItemVendorPurchasePricesAsync(itemId, _session, ct);
+        ct.ThrowIfCancellationRequested();
         if (!IsCurrentSelectedItemVendorPriceLoad(version))
             return;
 
@@ -1030,7 +1049,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     }
 
     private bool IsCurrentSelectedItemVendorPriceLoad(int version)
-        => version == Volatile.Read(ref _selectedItemVendorPriceLoadVersion);
+        => !_isDisposed && version == Volatile.Read(ref _selectedItemVendorPriceLoadVersion);
 
     private async Task<bool> ValidateBeforeSaveAsync(InventoryEditSnapshot snapshot)
     {

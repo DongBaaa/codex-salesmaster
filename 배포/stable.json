@@ -1,28 +1,28 @@
-﻿{
+{
     "channel":  "stable",
-    "generatedAtUtc":  "2026-07-03T03:31:00.8761726Z",
+    "generatedAtUtc":  "2026-07-11T10:17:19.0979787Z",
     "desktop":  {
                     "platform":  "desktop",
-                    "version":  "1.1.653",
+                    "version":  "1.1.674",
                     "mandatory":  false,
                     "minimumSupportedVersion":  "",
-                    "packageUrl":  "/updates/download/desktop/tradeplan-pc-installer-v1.1.653.zip",
-                    "fileName":  "tradeplan-pc-installer-v1.1.653.zip",
-                    "sha256":  "BCBB2536DE00D5E85FA734EE4274B7731DFA016D966DC5861F80B62FE11755E5",
-                    "fileSize":  232926845,
-                    "notes":  "미수/미지급 상세창 수금·지급 바로 처리",
-                    "releasedAtUtc":  "2026-07-03T03:31:04.5776092Z"
+                    "packageUrl":  "/updates/download/desktop/tradeplan-pc-installer-v1.1.674.zip",
+                    "fileName":  "tradeplan-pc-installer-v1.1.674.zip",
+                    "sha256":  "3CD688D757E7D8258CE26FEBFB14E9F033757A1947F1F835B4B8A4A501B98E0E",
+                    "fileSize":  232210811,
+                    "notes":  "전역 기능 보강, 렌탈·거래내역 조회 캐시, 동기화 반복 실패 backoff, 관리자 작업 이력 및 업데이트 롤백 안정화",
+                    "releasedAtUtc":  "2026-07-11T10:17:25.1139881Z"
                 },
     "android":  {
                     "platform":  "android",
-                    "version":  "0.2.79",
+                    "version":  "0.2.80",
                     "mandatory":  false,
                     "minimumSupportedVersion":  "",
-                    "packageUrl":  "/updates/download/android/tradeplan-android-v0.2.79.apk",
-                    "fileName":  "tradeplan-android-v0.2.79.apk",
-                    "sha256":  "6240C5EEF2324CF7BF9015BAF90C9D3EBE72B1C3BEA78C674470ED4DDFDE588E",
-                    "fileSize":  26802876,
-                    "notes":  "모바일 상세탭/첨부 보기/내부 업데이트 확인 기능 반영",
-                    "releasedAtUtc":  "2026-07-03T03:31:04.6472963Z"
+                    "packageUrl":  "/updates/download/android/tradeplan-android-v0.2.80.apk",
+                    "fileName":  "tradeplan-android-v0.2.80.apk",
+                    "sha256":  "3DCB47D9D3DF0C5CE46FD58796BBE9B53A5C061CB78AA80D18E941543EF749CE",
+                    "fileSize":  26831548,
+                    "notes":  "고객지원 진단 내보내기와 민감정보 마스킹, 기존 설치본 업데이트 연속성 검증",
+                    "releasedAtUtc":  "2026-07-11T10:17:25.2109012Z"
                 }
 }

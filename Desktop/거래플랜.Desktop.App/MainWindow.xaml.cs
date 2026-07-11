@@ -40,6 +40,8 @@ public partial class MainWindow : Window
     private bool _runtimeServicesStarted;
     private DateTime _lastCentralRefreshUtc = DateTime.MinValue;
     private long _lastPassiveServerRevisionHint;
+    private int _passiveSyncFailureCount;
+    private long _nextPassiveSyncRetryUtcTicks;
     private bool _centralRefreshInProgress;
     private bool _deactivateFlushInProgress;
     private bool _updatePromptInProgress;
@@ -335,6 +337,13 @@ public partial class MainWindow : Window
                 if (_sync.HasActiveOrQueuedSync || _centralRefreshInProgress)
                 {
                     await Task.Delay(TimeSpan.FromSeconds(2), ct);
+                    continue;
+                }
+
+                var passiveRetryDelay = GetRemainingPassiveSyncRetryDelay();
+                if (passiveRetryDelay > TimeSpan.Zero)
+                {
+                    await Task.Delay(passiveRetryDelay, ct);
                     continue;
                 }
 
@@ -702,6 +711,8 @@ public partial class MainWindow : Window
     {
         if (_isClosingOrClosed || !_isInitialized || _session.IsOfflineMode || _centralRefreshInProgress || _vm.ForceSyncCommand.IsRunning)
             return;
+        if (GetRemainingPassiveSyncRetryDelay() > TimeSpan.Zero)
+            return;
 
         var startAtUtc = DateTime.UtcNow;
         _centralRefreshInProgress = true;
@@ -716,7 +727,12 @@ public partial class MainWindow : Window
 
             var syncOk = await RunIsolatedSyncAsync(sync => sync.TrySyncAsync());
             if (!syncOk)
+            {
+                RecordPassiveSyncFailure(reason);
                 return;
+            }
+
+            ResetPassiveSyncFailureBackoff();
 
             _lastCentralRefreshUtc = DateTime.UtcNow;
             if (pendingServerRevision.Value > 0)
@@ -732,6 +748,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            RecordPassiveSyncFailure(reason);
             AppLogger.Warn("SYNC", $"{reason} refresh failed: {ex.Message}");
         }
         finally
@@ -744,6 +761,41 @@ public partial class MainWindow : Window
             _centralRefreshInProgress = false;
         }
     }
+
+    private TimeSpan GetRemainingPassiveSyncRetryDelay()
+    {
+        var retryAtTicks = Interlocked.Read(ref _nextPassiveSyncRetryUtcTicks);
+        if (retryAtTicks <= 0)
+            return TimeSpan.Zero;
+
+        var remaining = new DateTime(retryAtTicks, DateTimeKind.Utc) - DateTime.UtcNow;
+        return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+    }
+
+    private void RecordPassiveSyncFailure(string reason)
+    {
+        var failureCount = Math.Min(Interlocked.Increment(ref _passiveSyncFailureCount), 8);
+        var retryDelay = ComputePassiveSyncRetryDelay(failureCount);
+        Interlocked.Exchange(ref _nextPassiveSyncRetryUtcTicks, DateTime.UtcNow.Add(retryDelay).Ticks);
+        AppLogger.Warn(
+            "SYNC",
+            $"{reason} 동기화 실패가 반복되어 {retryDelay.TotalSeconds:N0}초 뒤 다시 확인합니다. 업무 입력과 수동 동기화는 계속 사용할 수 있습니다.");
+    }
+
+    private void ResetPassiveSyncFailureBackoff()
+    {
+        Interlocked.Exchange(ref _passiveSyncFailureCount, 0);
+        Interlocked.Exchange(ref _nextPassiveSyncRetryUtcTicks, 0L);
+    }
+
+    private static TimeSpan ComputePassiveSyncRetryDelay(int consecutiveFailureCount)
+        => consecutiveFailureCount switch
+        {
+            <= 1 => TimeSpan.FromSeconds(30),
+            2 => TimeSpan.FromMinutes(1),
+            3 => TimeSpan.FromMinutes(2),
+            _ => TimeSpan.FromMinutes(5)
+        };
 
     public async Task RunDataIntegrityScanAndPromptAsync(string reason, bool forceShow = false, bool showPrompt = true)
     {
@@ -1190,12 +1242,14 @@ public partial class MainWindow : Window
         CustomerInvoiceLookupWindow? lookupWindow = null;
         Task RefreshLookupRowsAsync()
             => lookupViewModel.RefreshRowsAsync();
+        Task RefreshLookupCustomersAndRowsAsync()
+            => lookupViewModel.RefreshCustomersAndRowsAsync();
         Task OpenLookupInvoiceRowAsync(InvoiceListRow row)
             => row.IsTransactionRow
                 ? OpenPaymentPopupForTransactionAsync(row.TransactionId ?? row.Id, lookupWindow, RefreshLookupRowsAsync)
-                : OpenInvoiceWindowAsync(row.Id, lookupWindow);
+                : OpenInvoiceWindowAsync(row.Id, lookupWindow, RefreshLookupRowsAsync);
         Task OpenLookupCustomerAsync(Guid customerId)
-            => OpenCustomerEditorAsync(customerId, lookupWindow);
+            => OpenCustomerEditorAsync(customerId, lookupWindow, RefreshLookupCustomersAndRowsAsync);
         Task OpenLookupInvoiceEntryAsync(VoucherType voucherType, Data.LocalCustomer? customer)
             => OpenNewInvoiceWindowAsync(
                 voucherType,
@@ -1570,7 +1624,10 @@ public partial class MainWindow : Window
         WindowShowHelper.ShowModeless(win);
     }
 
-    private async Task OpenInvoiceWindowAsync(Guid invoiceId, Window? ownerOverride = null)
+    private async Task OpenInvoiceWindowAsync(
+        Guid invoiceId,
+        Window? ownerOverride = null,
+        Func<Task>? afterClosedAsync = null)
     {
         var invoice = await _local.GetLatestInvoiceVersionAsync(invoiceId, _session);
         if (invoice is null)
@@ -1584,7 +1641,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        await OpenInvoiceWindowAsync(invoice, ownerOverride);
+        await OpenInvoiceWindowAsync(invoice, ownerOverride, afterClosedAsync);
     }
 
     public Task OpenInvoiceFromChildWindowAsync(Guid invoiceId, Window? ownerOverride = null)
@@ -1646,7 +1703,10 @@ public partial class MainWindow : Window
         return true;
     }
 
-    private async Task OpenInvoiceWindowAsync(Data.LocalInvoice invoice, Window? ownerOverride = null)
+    private async Task OpenInvoiceWindowAsync(
+        Data.LocalInvoice invoice,
+        Window? ownerOverride = null,
+        Func<Task>? afterClosedAsync = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var latestInvoice = await _local.GetLatestInvoiceVersionAsync(invoice.Id, _session) ?? invoice;
@@ -1671,10 +1731,20 @@ public partial class MainWindow : Window
 
         var win = new SalesWindow(vm) { Owner = ownerOverride ?? this };
         win.Closed += SalesWindow_Closed;
+        if (afterClosedAsync is not null)
+        {
+            win.Closed += (_, _) => RunUiAsync(
+                afterClosedAsync,
+                "거래내역 조회 새창 재조회",
+                "전표 편집 후 거래내역 조회 새창을 다시 불러오는 중 오류가 발생했습니다.");
+        }
         WindowShowHelper.ShowModeless(win);
     }
 
-    private async Task OpenCustomerEditorAsync(Guid customerId, Window? ownerOverride = null)
+    private async Task OpenCustomerEditorAsync(
+        Guid customerId,
+        Window? ownerOverride = null,
+        Func<Task>? afterClosedAsync = null)
     {
         var customer = await _local.GetCustomerAsync(customerId, _session);
         if (customer is null)
@@ -1688,10 +1758,13 @@ public partial class MainWindow : Window
             return;
         }
 
-        await OpenCustomerEditorAsync(customer, ownerOverride);
+        await OpenCustomerEditorAsync(customer, ownerOverride, afterClosedAsync);
     }
 
-    private async Task OpenCustomerEditorAsync(Data.LocalCustomer? customer = null, Window? ownerOverride = null)
+    private async Task OpenCustomerEditorAsync(
+        Data.LocalCustomer? customer = null,
+        Window? ownerOverride = null,
+        Func<Task>? afterClosedAsync = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new CustomerEditViewModel(_local, _session, _api);
@@ -1703,7 +1776,12 @@ public partial class MainWindow : Window
 
         var win = new CustomerEditWindow(vm) { Owner = ownerOverride ?? this };
         win.Closed += (_, _) => RunUiAsync(
-            () => _vm.RefreshCustomersCommand.ExecuteAsync(null),
+            async () =>
+            {
+                await _vm.RefreshCustomersCommand.ExecuteAsync(null);
+                if (afterClosedAsync is not null)
+                    await afterClosedAsync();
+            },
             "거래처 등록/수정 후 거래처 목록 새로고침",
             "거래처 등록/수정 후 목록을 다시 불러오는 중 오류가 발생했습니다.");
         WindowShowHelper.ShowModeless(win);
@@ -2006,7 +2084,7 @@ public partial class MainWindow : Window
         var vm = new RentalBillingViewModel(_rental, _local, _session, _api);
         var win = new RentalBillingWindow(
             vm,
-            OpenInvoiceWindowAsync,
+            (invoiceId, owner) => OpenInvoiceWindowAsync(invoiceId, owner),
             (assetId, owner) => OpenRentalAssetWindowAsync(assetId, owner),
             () => _vm.LoadInvoiceListCommand.ExecuteAsync(null))
         {

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using CommunityToolkit.Mvvm.ComponentModel;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Infrastructure;
@@ -52,7 +53,7 @@ public sealed partial class MainViewModel
 
     public async Task RefreshAfterFinancialTransactionChangedAsync(Guid? fallbackCustomerId = null)
     {
-        await LoadInvoiceListAsync();
+        await ReloadInvoiceListAsync();
 
         if (SelectedCustomerFilter is not null || SelectedInvoiceRow is not null || !fallbackCustomerId.HasValue)
             return;
@@ -79,8 +80,24 @@ public sealed partial class MainViewModel
             return;
         }
 
-        var summary = await _local.GetCustomerFinancialSummaryAsync(customer.Id, _session);
-        var invoices = await _local.GetInvoiceListSummariesAsync(from: null, to: null, customerId: customer.Id, session: _session);
+        var previewKey = new InvoiceLedgerCacheKey(customer.Id, From: null, To: null);
+        var previewLoadStopwatch = Stopwatch.StartNew();
+        var (summary, summaryCacheHit) = await _invoiceLedgerCache.GetCustomerFinancialSummaryAsync(
+            customer.Id,
+            forceReload: false,
+            () => _local.GetCustomerFinancialSummaryAsync(customer.Id, _session));
+        var (invoices, invoiceCacheHit) = await _invoiceLedgerCache.GetInvoiceSummariesAsync(
+            previewKey,
+            forceReload: false,
+            () => _local.GetInvoiceListSummariesAsync(from: null, to: null, customerId: customer.Id, session: _session));
+        previewLoadStopwatch.Stop();
+        OperationTiming.LogIfSlow(
+            "MAIN",
+            "Customer financial preview load",
+            previewLoadStopwatch.Elapsed,
+            $"{previewKey.ToOperationDetail()}, summaryCache={FormatCacheState(summaryCacheHit)}, invoiceCache={FormatCacheState(invoiceCacheHit)}, invoices={invoices.Count:N0}",
+            infoThreshold: DetailedInvoiceTimingInfoThreshold,
+            warningThreshold: DetailedInvoiceTimingWarningThreshold);
         if (!IsCurrentCustomerFinancialPreview(version))
             return;
 

@@ -1,5 +1,7 @@
 using System.Windows;
 using System.Windows.Threading;
+using System.Net;
+using System.Net.Http;
 using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Shared.Contracts;
 
@@ -13,6 +15,7 @@ public sealed record EditSessionSubject(
 public sealed class EntityEditSessionMonitor : IDisposable
 {
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan UnavailableSubjectSuppressionDuration = TimeSpan.FromMinutes(2);
 
     private readonly Window _owner;
     private readonly ErpApiClient _api;
@@ -28,6 +31,8 @@ public sealed class EntityEditSessionMonitor : IDisposable
     private bool _heartbeatInProgress;
     private bool _hasRegisteredSession;
     private string _lastWarningSignature = string.Empty;
+    private string _suppressedSubjectKey = string.Empty;
+    private DateTime _suppressedUntilUtc;
 
     private EntityEditSessionMonitor(
         Window owner,
@@ -120,21 +125,44 @@ public sealed class EntityEditSessionMonitor : IDisposable
             {
                 RestoreWindowTitle();
                 _lastWarningSignature = string.Empty;
+                ClearUnavailableSubjectSuppression();
                 await ReleaseRegisteredSessionAsync(ct);
                 return;
             }
 
-            var response = await _api.HeartbeatEditSessionAsync(new EditSessionHeartbeatRequest
-            {
-                EditSessionId = _editSessionId,
-                AppSessionId = _session.SessionId,
-                ScreenName = _screenName,
-                EntityType = subject.EntityType,
-                EntityId = subject.EntityId,
-                EntityDisplayName = subject.DisplayName,
-                MachineName = Environment.MachineName
-            }, ct);
+            var subjectKey = $"{subject.EntityType.Trim()}|{subject.EntityId.Trim()}";
 
+            EditSessionHeartbeatResponse? response;
+            try
+            {
+                response = await _api.HeartbeatEditSessionAsync(new EditSessionHeartbeatRequest
+                {
+                    EditSessionId = _editSessionId,
+                    AppSessionId = _session.SessionId,
+                    ScreenName = _screenName,
+                    EntityType = subject.EntityType,
+                    EntityId = subject.EntityId,
+                    EntityDisplayName = subject.DisplayName,
+                    MachineName = Environment.MachineName
+                }, ct);
+            }
+            catch (HttpRequestException ex) when (IsUnavailableEditSessionStatus(ex))
+            {
+                await ForgetRegisteredSessionAfterUnavailableSubjectAsync(ct);
+                _lastWarningSignature = string.Empty;
+                RestoreWindowTitle();
+                if (!ShouldSuppressUnavailableSubjectNoise(subjectKey))
+                {
+                    AppLogger.Info(
+                        "EDIT-SESSION",
+                        $"{_screenName} 항목은 아직 서버에 반영되지 않았거나 현재 계정 범위 밖이어서 동시 편집 표시를 생략합니다.");
+                }
+
+                SuppressUnavailableSubjectNoise(subjectKey);
+                return;
+            }
+
+            ClearUnavailableSubjectSuppression();
             _hasRegisteredSession = true;
             ApplyParticipants(subject, response?.OtherEditors ?? []);
         }
@@ -142,6 +170,22 @@ public sealed class EntityEditSessionMonitor : IDisposable
         {
             _heartbeatInProgress = false;
         }
+    }
+
+    private bool ShouldSuppressUnavailableSubjectNoise(string subjectKey)
+        => string.Equals(_suppressedSubjectKey, subjectKey, StringComparison.OrdinalIgnoreCase)
+           && DateTime.UtcNow < _suppressedUntilUtc;
+
+    private void SuppressUnavailableSubjectNoise(string subjectKey)
+    {
+        _suppressedSubjectKey = subjectKey;
+        _suppressedUntilUtc = DateTime.UtcNow.Add(UnavailableSubjectSuppressionDuration);
+    }
+
+    private void ClearUnavailableSubjectSuppression()
+    {
+        _suppressedSubjectKey = string.Empty;
+        _suppressedUntilUtc = default;
     }
 
     private async Task ReleaseAsync(CancellationToken ct)
@@ -160,6 +204,30 @@ public sealed class EntityEditSessionMonitor : IDisposable
 
         await ReleaseAsync(ct);
         _hasRegisteredSession = false;
+    }
+
+    private async Task ForgetRegisteredSessionAfterUnavailableSubjectAsync(CancellationToken ct)
+    {
+        if (!_hasRegisteredSession)
+            return;
+
+        try
+        {
+            await ReleaseAsync(ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // 서버 레코드는 TTL로 정리되므로, 새 로컬 항목 편집을 반복 오류로 막지 않습니다.
+            AppLogger.Warn("EDIT-SESSION", $"이전 편집 세션 정리 실패(자동 만료 대기): {ex.Message}");
+        }
+        finally
+        {
+            _hasRegisteredSession = false;
+        }
     }
 
     private void ApplyParticipants(EditSessionSubject subject, IReadOnlyList<EditSessionParticipantDto> others)
@@ -235,11 +303,14 @@ public sealed class EntityEditSessionMonitor : IDisposable
     private static string NormalizeIdentityText(string? value)
         => (value ?? string.Empty).Trim();
 
+    private static bool IsUnavailableEditSessionStatus(HttpRequestException exception)
+        => exception.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.NotFound;
+
     private void RestoreWindowTitle()
     {
         if (!_owner.Dispatcher.CheckAccess())
         {
-            _owner.Dispatcher.Invoke(RestoreWindowTitle);
+            _owner.Dispatcher.BeginInvoke((Action)RestoreWindowTitle, DispatcherPriority.Background);
             return;
         }
 

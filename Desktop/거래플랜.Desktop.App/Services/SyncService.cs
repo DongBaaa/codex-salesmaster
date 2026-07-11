@@ -651,7 +651,7 @@ public sealed class SyncService : IDisposable
 
             if (IsTransient(ex, ct))
             {
-                var retryMessage = $"서버 응답 지연으로 동기화를 잠시 후 자동 재시도합니다. 업무는 계속 가능합니다. ({detail})";
+                var retryMessage = "서버 응답 지연으로 동기화를 잠시 후 자동 재시도합니다. 업무는 계속 가능하며, 상세 원인은 동기화 진단에서 확인하세요.";
                 await TrySetSettingSafeAsync(
                     "Sync.LastError",
                     string.Empty,
@@ -681,7 +681,7 @@ public sealed class SyncService : IDisposable
                 exception: ex,
                 severity: "Error");
 
-            SetStatus($"동기화 확인 필요: {detail}");
+            SetStatus(BuildUserFacingSyncAttentionStatus(detail));
             AppLogger.Error("SYNC", "동기화 확인 필요", ex);
             return false;
         }
@@ -918,6 +918,39 @@ public sealed class SyncService : IDisposable
     }
 
     private void SetStatus(string message) => SyncStatusChanged?.Invoke(message);
+
+    private static string BuildUserFacingSyncAttentionStatus(string? detail)
+    {
+        var normalized = (detail ?? string.Empty).Trim();
+        const string suffix = "업무는 계속 가능하며, 상세 내용과 복구 방법은 동기화 진단에서 확인하세요.";
+
+        if (normalized.Contains("Referenced customer was not found", StringComparison.OrdinalIgnoreCase))
+            return $"동기화 확인 필요. 연결된 거래처를 찾을 수 없는 변경이 있습니다. {suffix}";
+
+        if (normalized.Contains("outside the readable office scope", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("outside the writable office scope", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("403 Forbidden", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("현재 계정 권한", StringComparison.Ordinal))
+        {
+            return $"동기화 확인 필요. 현재 계정 권한 또는 담당지점 범위로 반영할 수 없는 변경이 있습니다. {suffix}";
+        }
+
+        if (normalized.StartsWith("동기화 충돌 ", StringComparison.Ordinal))
+        {
+            var separatorIndex = normalized.IndexOf(':');
+            var summary = separatorIndex > 0 ? normalized[..separatorIndex].Trim() : normalized;
+            if (summary.Length <= 80)
+                return $"동기화 확인 필요. {summary}이 남아 있습니다. {suffix}";
+        }
+
+        if (normalized.Contains("revision", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("동시 수정", StringComparison.Ordinal))
+        {
+            return $"동기화 확인 필요. 다른 PC에서 먼저 저장한 변경과 겹친 항목이 있습니다. {suffix}";
+        }
+
+        return $"동기화 확인 필요. 일부 변경을 서버에 반영하지 못했습니다. {suffix}";
+    }
 
     private async Task<IReadOnlyList<DirtyOfficeSummary>> GetPendingDirtyOfficeSummariesOutsideCurrentSessionAsync(CancellationToken ct)
     {

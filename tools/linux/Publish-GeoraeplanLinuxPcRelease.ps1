@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$ProjectRoot,
     [string]$Configuration = 'Release',
@@ -24,6 +24,7 @@ param(
     [switch]$AcceptRentalTemplateItemReferenceRisk,
     [switch]$SkipAndroidSigningContinuityCheck,
     [switch]$AcceptAndroidSigningCertificateChange,
+    [switch]$AllowMissingLiveUpdateBaseline,
     [string]$LocalCacheAppDataRoot = '',
     [string]$LocalCacheEvidenceDirectory = '',
     [switch]$RequireLocalCacheConsistencyCheck,
@@ -685,6 +686,481 @@ function Update-PublishedAppSettings {
     $publishedSettings | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $publishedAppSettingsPath -Encoding UTF8
 }
 
+function Resolve-LiveUpdateRollbackBaselineTempRoot {
+    foreach ($candidate in @($env:GEORAEPLAN_TEMP_ROOT, $env:TEMP, [System.IO.Path]::GetTempPath())) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+
+        try {
+            $resolved = [System.IO.Path]::GetFullPath($candidate)
+            if (-not $resolved.StartsWith('D:\', [StringComparison]::OrdinalIgnoreCase)) {
+                continue
+            }
+
+            New-Item -ItemType Directory -Force -Path $resolved | Out-Null
+            return $resolved
+        }
+        catch {
+            continue
+        }
+    }
+
+    throw 'live 업데이트 기준선 임시 경로는 D 드라이브의 안전한 temp 경로여야 합니다.'
+}
+
+function Assert-SafeUpdatePackageFileName {
+    param(
+        [Parameter(Mandatory = $true)][string]$FileName,
+        [Parameter(Mandatory = $true)][string]$Platform,
+        [Parameter(Mandatory = $true)][string]$BaselineLabel
+    )
+
+    if ([string]::IsNullOrWhiteSpace($FileName) -or
+        $FileName.IndexOf('/') -ge 0 -or
+        $FileName.IndexOf('\') -ge 0) {
+        throw "$BaselineLabel $Platform 패키지 fileName이 안전하지 않습니다: $FileName"
+    }
+}
+
+function Test-UpdatePackageFile {
+    param(
+        [Parameter(Mandatory = $true)]$Package,
+        [Parameter(Mandatory = $true)][string]$PackagePath,
+        [Parameter(Mandatory = $true)][string]$Platform,
+        [Parameter(Mandatory = $true)][string]$BaselineLabel,
+        [switch]$RequireFileSize,
+        [switch]$RequireSha256
+    )
+
+    if (-not (Test-Path -LiteralPath $PackagePath)) {
+        throw "$BaselineLabel manifest가 참조하는 $platform 패키지를 찾을 수 없습니다: $PackagePath"
+    }
+
+    $packageInfo = Get-Item -LiteralPath $PackagePath
+    $expectedSize = [int64]$Package.fileSize
+    if ($RequireFileSize -and $expectedSize -le 0) {
+        throw "$BaselineLabel $platform 패키지 fileSize가 없어 크기 검증을 할 수 없습니다: $PackagePath"
+    }
+    if ($expectedSize -gt 0 -and $packageInfo.Length -ne $expectedSize) {
+        throw "$BaselineLabel $platform 패키지 크기가 manifest와 다릅니다: $PackagePath"
+    }
+
+    $expectedHash = ([string]$Package.sha256).Trim()
+    if ($RequireSha256 -and [string]::IsNullOrWhiteSpace($expectedHash)) {
+        throw "$BaselineLabel $platform 패키지 sha256이 없어 무결성 검증을 할 수 없습니다: $PackagePath"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($expectedHash)) {
+        $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PackagePath).Hash
+        if (-not [string]::Equals($expectedHash, $actualHash, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "$BaselineLabel $platform 패키지 SHA256이 manifest와 다릅니다: $PackagePath"
+        }
+    }
+}
+
+function Resolve-UpdateBaseUri {
+    param(
+        [Parameter(Mandatory = $true)][string]$BaseUrl,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if ([string]::IsNullOrWhiteSpace($BaseUrl)) {
+        throw "$Label base URL이 비어 있습니다."
+    }
+
+    $absoluteUri = $null
+    if (-not [Uri]::TryCreate($BaseUrl.Trim(), [UriKind]::Absolute, [ref]$absoluteUri)) {
+        throw "$Label base URL 형식이 올바르지 않습니다: $BaseUrl"
+    }
+
+    $isLoopback = $absoluteUri.IsLoopback -or [string]::Equals($absoluteUri.Host, 'localhost', [StringComparison]::OrdinalIgnoreCase)
+    if (-not $isLoopback -and -not [string]::Equals($absoluteUri.Scheme, [Uri]::UriSchemeHttps, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Label base URL은 HTTPS만 허용됩니다: $BaseUrl"
+    }
+
+    return [Uri]($absoluteUri.AbsoluteUri.TrimEnd('/') + '/')
+}
+
+function Get-AllowedUpdateBaseUris {
+    param([string[]]$BaseUrls)
+
+    $seen = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+    $allowedUris = New-Object System.Collections.Generic.List[Uri]
+    foreach ($candidate in $BaseUrls) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+
+        $uri = Resolve-UpdateBaseUri -BaseUrl $candidate -Label '업데이트 기준선'
+        if ($seen.Add($uri.AbsoluteUri)) {
+            $allowedUris.Add($uri)
+        }
+    }
+
+    if ($allowedUris.Count -eq 0) {
+        throw '업데이트 기준선 허용 base URL을 하나 이상 제공해야 합니다.'
+    }
+
+    return $allowedUris.ToArray()
+}
+
+function Test-UpdateUriAllowedByBaseUrls {
+    param(
+        [Parameter(Mandatory = $true)][Uri]$CandidateUri,
+        [Parameter(Mandatory = $true)][Uri[]]$AllowedBaseUris
+    )
+
+    foreach ($allowedBaseUri in $AllowedBaseUris) {
+        if (-not [string]::Equals($CandidateUri.Scheme, $allowedBaseUri.Scheme, [StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+        if (-not [string]::Equals($CandidateUri.Authority, $allowedBaseUri.Authority, [StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+        if ([string]::IsNullOrWhiteSpace($allowedBaseUri.AbsolutePath) -or $allowedBaseUri.AbsolutePath -eq '/') {
+            return $true
+        }
+        if ($CandidateUri.AbsoluteUri.StartsWith($allowedBaseUri.AbsoluteUri, [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Resolve-VerifiedUpdatePackageUri {
+    param(
+        [Parameter(Mandatory = $true)][string]$PackageUrl,
+        [Parameter(Mandatory = $true)][Uri]$ManifestBaseUri,
+        [Parameter(Mandatory = $true)][Uri[]]$AllowedBaseUris,
+        [Parameter(Mandatory = $true)][string]$Platform,
+        [Parameter(Mandatory = $true)][string]$ExpectedFileName,
+        [Parameter(Mandatory = $true)][string]$BaselineLabel
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PackageUrl)) {
+        throw "$BaselineLabel $Platform 패키지 packageUrl이 비어 있습니다."
+    }
+
+    Assert-SafeUpdatePackageFileName -FileName $ExpectedFileName -Platform $Platform -BaselineLabel $BaselineLabel
+
+    $packageUri = $null
+    if (-not [Uri]::TryCreate($PackageUrl.Trim(), [UriKind]::Absolute, [ref]$packageUri)) {
+        $packageUri = [Uri]::new($ManifestBaseUri, $PackageUrl.TrimStart('/'))
+    }
+
+    $isLoopback = $packageUri.IsLoopback -or [string]::Equals($packageUri.Host, 'localhost', [StringComparison]::OrdinalIgnoreCase)
+    if (-not $isLoopback -and -not [string]::Equals($packageUri.Scheme, [Uri]::UriSchemeHttps, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$BaselineLabel $Platform 패키지 URL은 HTTPS만 허용됩니다: $packageUri"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($packageUri.Query) -or -not [string]::IsNullOrWhiteSpace($packageUri.Fragment)) {
+        throw "$BaselineLabel $Platform 패키지 URL은 query/fragment를 포함할 수 없습니다: $packageUri"
+    }
+    $isSameOrigin = [string]::Equals($packageUri.Scheme, $ManifestBaseUri.Scheme, [StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals($packageUri.Authority, $ManifestBaseUri.Authority, [StringComparison]::OrdinalIgnoreCase)
+    if (-not $isSameOrigin -and -not (Test-UpdateUriAllowedByBaseUrls -CandidateUri $packageUri -AllowedBaseUris $AllowedBaseUris)) {
+        throw "$BaselineLabel $Platform 패키지 URL은 same-origin 또는 허용된 base URL만 사용할 수 있습니다: $packageUri"
+    }
+
+    $expectedPathPrefix = "/updates/download/$Platform/"
+    if (-not $packageUri.AbsolutePath.StartsWith($expectedPathPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$BaselineLabel $Platform 패키지 URL 경로가 update download 규칙과 다릅니다: $packageUri"
+    }
+
+    $encodedFileName = $packageUri.AbsolutePath.Substring($expectedPathPrefix.Length)
+    if ([string]::IsNullOrWhiteSpace($encodedFileName) -or
+        $encodedFileName.IndexOf('/') -ge 0 -or
+        $encodedFileName.IndexOf('\') -ge 0) {
+        throw "$BaselineLabel $Platform 패키지 URL fileName이 안전하지 않습니다: $packageUri"
+    }
+
+    $resolvedFileName = [Uri]::UnescapeDataString($encodedFileName)
+    Assert-SafeUpdatePackageFileName -FileName $resolvedFileName -Platform $Platform -BaselineLabel $BaselineLabel
+    if (-not [string]::Equals($ExpectedFileName, $resolvedFileName, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$BaselineLabel $Platform 패키지 fileName과 URL이 다릅니다: expected=$ExpectedFileName actual=$resolvedFileName"
+    }
+
+    return $packageUri
+}
+
+function Copy-VerifiedLiveUpdateRollbackBaselineFromSourceUpdatesRoot {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceUpdatesRoot,
+        [Parameter(Mandatory = $true)][string]$BaseUrl,
+        [Parameter(Mandatory = $true)][string]$PublishRoot,
+        [string]$Channel = 'stable',
+        [string[]]$AllowedBaseUrls = @(),
+        [string]$BaselineLabel = '현재 live 업데이트 기준선'
+    )
+
+    $baseUri = Resolve-UpdateBaseUri -BaseUrl $BaseUrl -Label $baselineLabel
+    $allowedBaseUris = Get-AllowedUpdateBaseUris -BaseUrls (@($baseUri.AbsoluteUri) + @($AllowedBaseUrls))
+    $sourceManifestRoot = Join-Path $SourceUpdatesRoot 'manifest'
+    $sourceDownloadsRoot = Join-Path $SourceUpdatesRoot 'downloads'
+    $targetUpdatesRoot = Join-Path $PublishRoot 'updates'
+    $targetManifestRoot = Join-Path $targetUpdatesRoot 'manifest'
+    $targetDownloadsRoot = Join-Path $targetUpdatesRoot 'downloads'
+    $manifestFileName = $Channel + '.json'
+    $sourceManifestPath = Join-Path $sourceManifestRoot $manifestFileName
+    $targetManifestPath = Join-Path $targetManifestRoot $manifestFileName
+    $copiedPackageCount = 0
+
+    if (-not (Test-Path -LiteralPath $sourceManifestPath)) {
+        throw "$baselineLabel manifest 파일을 찾을 수 없습니다: $sourceManifestPath"
+    }
+
+    $manifestJson = Get-Content -LiteralPath $sourceManifestPath -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($manifestJson)) {
+        throw "$baselineLabel manifest 내용이 비어 있습니다: $sourceManifestPath"
+    }
+
+    $manifest = $manifestJson | ConvertFrom-Json
+    foreach ($platform in @('desktop', 'android')) {
+        $package = $manifest.$platform
+        if ($null -eq $package) {
+            continue
+        }
+
+        $fileName = ([string]$package.fileName).Trim()
+        Assert-SafeUpdatePackageFileName -FileName $fileName -Platform $platform -BaselineLabel $baselineLabel
+        [void](Resolve-VerifiedUpdatePackageUri `
+            -PackageUrl ([string]$package.packageUrl).Trim() `
+            -ManifestBaseUri $baseUri `
+            -AllowedBaseUris $allowedBaseUris `
+            -Platform $platform `
+            -ExpectedFileName $fileName `
+            -BaselineLabel $baselineLabel)
+
+        $sourcePackagePath = Join-Path (Join-Path $sourceDownloadsRoot $platform) $fileName
+        Test-UpdatePackageFile `
+            -Package $package `
+            -PackagePath $sourcePackagePath `
+            -Platform $platform `
+            -BaselineLabel $baselineLabel `
+            -RequireFileSize `
+            -RequireSha256
+    }
+
+    New-Item -ItemType Directory -Force -Path $targetManifestRoot | Out-Null
+    Copy-Item -LiteralPath $sourceManifestPath -Destination $targetManifestPath -Force
+
+    foreach ($platform in @('desktop', 'android')) {
+        $package = $manifest.$platform
+        if ($null -eq $package -or [string]::IsNullOrWhiteSpace([string]$package.fileName)) {
+            continue
+        }
+
+        $fileName = ([string]$package.fileName).Trim()
+        $sourcePackagePath = Join-Path (Join-Path $sourceDownloadsRoot $platform) $fileName
+        $targetPackageRoot = Join-Path $targetDownloadsRoot $platform
+        New-Item -ItemType Directory -Force -Path $targetPackageRoot | Out-Null
+        Copy-Item -LiteralPath $sourcePackagePath -Destination (Join-Path $targetPackageRoot $fileName) -Force
+        $copiedPackageCount++
+    }
+
+    Write-Host "live_update_rollback_baseline_seeded manifests=1 packages=$copiedPackageCount base_url=$($baseUri.AbsoluteUri.TrimEnd('/')) source=linux_pc_live"
+}
+
+function Invoke-SshFileDownload {
+    param(
+        [Parameter(Mandatory = $true)][string]$RemotePath,
+        [Parameter(Mandatory = $true)][string]$DestinationPath,
+        [Parameter(Mandatory = $true)]$Config
+    )
+
+    $sshExe = Resolve-SshExecutable
+    $quotedRemotePath = Convert-ToSingleQuotedShellLiteral -Value $RemotePath
+    $arguments = New-SshArgumentList -Config $Config -BatchMode
+    $arguments += "cat $quotedRemotePath"
+
+    $destinationDirectory = Split-Path -Parent $DestinationPath
+    if (-not [string]::IsNullOrWhiteSpace($destinationDirectory)) {
+        New-Item -ItemType Directory -Force -Path $destinationDirectory | Out-Null
+    }
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new($sshExe)
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.Arguments = ($arguments | ForEach-Object { Quote-ProcessArgument -Argument $_ }) -join ' '
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $destinationStream = $null
+    $downloadSucceeded = $false
+    try {
+        if (-not $process.Start()) {
+            throw 'Failed to start Linux PC ssh download process.'
+        }
+
+        $destinationStream = [System.IO.File]::Open($DestinationPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $copyTask = $process.StandardOutput.BaseStream.CopyToAsync($destinationStream)
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $copyTask.GetAwaiter().GetResult()
+        $destinationStream.Flush()
+        $destinationStream.Dispose()
+        $destinationStream = $null
+        $process.WaitForExit()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+
+        if ($process.ExitCode -ne 0) {
+            throw "Linux PC ssh file download failed with exit code $($process.ExitCode): $stderr"
+        }
+
+        $downloadSucceeded = $true
+    }
+    finally {
+        if ($null -ne $destinationStream) {
+            $destinationStream.Dispose()
+        }
+        if (-not $downloadSucceeded) {
+            Remove-Item -LiteralPath $DestinationPath -Force -ErrorAction SilentlyContinue
+        }
+        $process.Dispose()
+    }
+}
+
+function Copy-LiveUpdateRollbackBaseline {
+    param(
+        [Parameter(Mandatory = $true)][string]$BaseUrl,
+        [Parameter(Mandatory = $true)][string]$PublishRoot,
+        [Parameter(Mandatory = $true)]$Config,
+        [string]$Channel = 'stable',
+        [string[]]$AllowedBaseUrls = @(),
+        [switch]$AllowMissingManifest
+    )
+
+    $baselineLabel = '현재 live 업데이트 기준선'
+    $tempRoot = Resolve-LiveUpdateRollbackBaselineTempRoot
+    $stagingRoot = Join-Path $tempRoot ("linux-live-update-baseline-" + [Guid]::NewGuid().ToString('N'))
+    $stagingUpdatesRoot = Join-Path $stagingRoot 'updates'
+    $stagingManifestRoot = Join-Path $stagingUpdatesRoot 'manifest'
+    $stagingDownloadsRoot = Join-Path $stagingUpdatesRoot 'downloads'
+    $remoteUpdatesRoot = $Config.RemoteRoot + '/app/live/updates'
+    $remoteManifestPath = $remoteUpdatesRoot + '/manifest/' + $Channel + '.json'
+    $manifestFileName = $Channel + '.json'
+    $stagingManifestPath = Join-Path $stagingManifestRoot $manifestFileName
+    $manifestJson = ''
+
+    try {
+        New-Item -ItemType Directory -Force -Path $stagingManifestRoot | Out-Null
+        New-Item -ItemType Directory -Force -Path $stagingDownloadsRoot | Out-Null
+
+        $quotedRemoteManifestPath = Convert-ToSingleQuotedShellLiteral -Value $remoteManifestPath
+        $manifestResult = Invoke-SshCommand `
+            -Config $Config `
+            -Command "if [ -f $quotedRemoteManifestPath ]; then cat $quotedRemoteManifestPath; else exit 44; fi" `
+            -IgnoreExitCode `
+            -BatchMode
+
+        if ($manifestResult.ExitCode -eq 44) {
+            if ($AllowMissingManifest) {
+                Write-Host "live_update_rollback_baseline=initial_release manifest_status=missing channel=$Channel remote_path=$remoteManifestPath"
+                return
+            }
+
+            throw "$baselineLabel manifest가 Linux PC live 경로에 없습니다: $remoteManifestPath"
+        }
+
+        if ($manifestResult.ExitCode -ne 0) {
+            $message = if ([string]::IsNullOrWhiteSpace($manifestResult.StdErr)) { $manifestResult.StdOut } else { $manifestResult.StdErr }
+            throw "$baselineLabel manifest를 Linux PC에서 읽지 못했습니다: $remoteManifestPath / $message"
+        }
+
+        $manifestJson = [string]$manifestResult.StdOut
+        if ([string]::IsNullOrWhiteSpace($manifestJson)) {
+            throw "$baselineLabel manifest 응답이 비어 있습니다: $remoteManifestPath"
+        }
+
+        Set-Content -LiteralPath $stagingManifestPath -Value $manifestJson -Encoding UTF8
+        $manifest = $manifestJson | ConvertFrom-Json
+        foreach ($platform in @('desktop', 'android')) {
+            $package = $manifest.$platform
+            if ($null -eq $package -or [string]::IsNullOrWhiteSpace([string]$package.fileName)) {
+                continue
+            }
+
+            $fileName = ([string]$package.fileName).Trim()
+            Assert-SafeUpdatePackageFileName -FileName $fileName -Platform $platform -BaselineLabel $baselineLabel
+            $remotePackagePath = $remoteUpdatesRoot + '/downloads/' + $platform + '/' + $fileName
+            $localPackagePath = Join-Path (Join-Path $stagingDownloadsRoot $platform) $fileName
+            Invoke-SshFileDownload -RemotePath $remotePackagePath -DestinationPath $localPackagePath -Config $Config
+        }
+
+        Copy-VerifiedLiveUpdateRollbackBaselineFromSourceUpdatesRoot `
+            -SourceUpdatesRoot $stagingUpdatesRoot `
+            -BaseUrl $BaseUrl `
+            -PublishRoot $PublishRoot `
+            -Channel $Channel `
+            -AllowedBaseUrls $AllowedBaseUrls `
+            -BaselineLabel $baselineLabel
+    }
+    finally {
+        Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Copy-LocalUpdateRollbackBaseline {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$PublishRoot,
+        [string]$Channel = 'stable'
+    )
+
+    $sourceUpdatesRoot = Join-Path $Root '배포\업데이트'
+    $sourceManifestRoot = Join-Path $sourceUpdatesRoot 'manifest'
+    $targetUpdatesRoot = Join-Path $PublishRoot 'updates'
+    $targetManifestRoot = Join-Path $targetUpdatesRoot 'manifest'
+    $manifestNames = @(
+        ($Channel + '.json')
+        ($Channel + '.previous.json')
+    )
+    $copiedManifestCount = 0
+    $copiedPackageCount = 0
+
+    foreach ($manifestName in $manifestNames) {
+        $sourceManifestPath = Join-Path $sourceManifestRoot $manifestName
+        if (-not (Test-Path -LiteralPath $sourceManifestPath)) {
+            continue
+        }
+
+        try {
+            $manifest = Get-Content -LiteralPath $sourceManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            New-Item -ItemType Directory -Force -Path $targetManifestRoot | Out-Null
+            Copy-Item -LiteralPath $sourceManifestPath -Destination (Join-Path $targetManifestRoot $manifestName) -Force
+            $copiedManifestCount++
+
+            foreach ($platform in @('desktop', 'android')) {
+                $package = $manifest.$platform
+                if ($null -eq $package -or [string]::IsNullOrWhiteSpace([string]$package.fileName)) {
+                    continue
+                }
+
+                $fileName = ([string]$package.fileName).Trim()
+                Assert-SafeUpdatePackageFileName -FileName $fileName -Platform $platform -BaselineLabel '롤백 기준'
+                $sourcePackagePath = Join-Path (Join-Path (Join-Path $sourceUpdatesRoot 'downloads') $platform) $fileName
+                Test-UpdatePackageFile -Package $package -PackagePath $sourcePackagePath -Platform $platform -BaselineLabel '롤백 기준'
+
+                $targetPackageRoot = Join-Path (Join-Path $targetUpdatesRoot 'downloads') $platform
+                New-Item -ItemType Directory -Force -Path $targetPackageRoot | Out-Null
+                Copy-Item -LiteralPath $sourcePackagePath -Destination (Join-Path $targetPackageRoot $fileName) -Force
+                $copiedPackageCount++
+            }
+        }
+        catch {
+            throw "기존 업데이트 롤백 기준을 release staging에 복사하지 못했습니다: $sourceManifestPath / $($_.Exception.Message)"
+        }
+    }
+
+    if ($copiedManifestCount -eq 0) {
+        Write-Warning '기존 업데이트 manifest가 없어 이번 배포에는 이전 버전 롤백 기준이 생성되지 않을 수 있습니다.'
+        return
+    }
+
+    Write-Host "update_rollback_baseline_seeded manifests=$copiedManifestCount packages=$copiedPackageCount"
+}
+
 Assert-SafeReleaseId -Value $ReleaseId
 $ProjectRoot = Resolve-ProjectRoot -ExplicitProjectRoot $ProjectRoot
 $tempInitializer = Join-Path $ProjectRoot 'tools\common\Initialize-GeoraePlanTemp.ps1'
@@ -783,6 +1259,19 @@ try {
     & $dotnetExe publish $serverProject -c $Configuration -o $tempPublishRoot
     if ($LASTEXITCODE -ne 0) {
         throw 'dotnet publish failed.'
+    }
+
+    if ($MirrorToLive) {
+        Copy-LiveUpdateRollbackBaseline `
+            -BaseUrl $resolvedPreDeployBaseUrl `
+            -PublishRoot $tempPublishRoot `
+            -Config $linuxConfig `
+            -Channel 'stable' `
+            -AllowedBaseUrls @($resolvedPostDeployBaseUrl, $publicBaseUrl) `
+            -AllowMissingManifest:$AllowMissingLiveUpdateBaseline
+    }
+    else {
+        Copy-LocalUpdateRollbackBaseline -Root $ProjectRoot -PublishRoot $tempPublishRoot -Channel 'stable'
     }
 
     $updateAssetScript = Join-Path $ProjectRoot 'tools\release\Publish-GeoraePlanUpdateAssets.ps1'

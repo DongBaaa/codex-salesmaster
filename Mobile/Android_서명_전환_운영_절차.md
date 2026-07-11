@@ -47,4 +47,11 @@
 - keystore 또는 비밀번호를 Git에 커밋하지 않는다.
 - 인증서 변경을 단순 경고 수용 스위치로 우회하지 않는다.
 - 실제 기기 검증과 사용자 확인 전에 모바일 버전을 올리거나 stable APK를 교체하지 않는다.
+
+## 배포 설정 파일 분리
+
+- 유료 납품용 release signing 설정은 `Mobile\GeoraePlan.Mobile.App\android-signing.release.local.json`에 둔다.
+- 기존 debug 인증서 연속성 유지용 `android-signing.local.json`은 release 기본값으로 자동 선택하지 않는다.
+- release 설정이 없으면 full release는 중단된다. 기존 설치본 호환 때문에 debug 인증서를 계속 써야 하는 경우에만 `-AllowLegacyAndroidDebugSigning`을 명시한다.
+- 두 설정 파일과 keystore 원본은 Git에 커밋하지 않는다.
 - 전체 운영 경고 실패 처리를 끄는 방식으로 debug 서명 경고만 회피하지 않는다.

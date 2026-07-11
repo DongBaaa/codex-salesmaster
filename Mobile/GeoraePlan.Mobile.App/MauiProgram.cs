@@ -16,6 +16,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<SessionStore>();
         builder.Services.AddSingleton<MobileSessionRecoveryService>();
         builder.Services.AddSingleton<JsonSyncStateStore>();
+        builder.Services.AddSingleton<MobileDiagnosticExportService>();
         builder.Services.AddSingleton<CustomerContractCacheStore>();
         builder.Services.AddSingleton<RecentItemSelectionStore>();
         builder.Services.AddSingleton<MobileRefreshCoordinator>();

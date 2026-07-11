@@ -44,6 +44,7 @@ public sealed partial class MainViewModel
 
     private void ClearBusinessDatabaseScopedUiState()
     {
+        InvalidateInvoiceLedgerCaches();
         _allCustomers.Clear();
         _customerNameById.Clear();
         FilteredCustomers.ReplaceWith(Array.Empty<LocalCustomer>());

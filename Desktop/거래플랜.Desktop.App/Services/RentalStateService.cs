@@ -254,20 +254,31 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
     private async Task<bool> HasLegacyAssignedUsernameColumnAsync(string tableName, CancellationToken ct)
     {
-        await using var connection = _db.Database.GetDbConnection();
-        if (connection.State != ConnectionState.Open)
-            await connection.OpenAsync(ct);
-
-        await using var command = connection.CreateCommand();
-        command.CommandText = $"PRAGMA table_info(\"{tableName}\")";
-        await using var reader = await command.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct))
+        var connection = _db.Database.GetDbConnection();
+        var shouldClose = connection.State != ConnectionState.Open;
+        try
         {
-            if (string.Equals(reader[1]?.ToString(), "AssignedUsername", StringComparison.Ordinal))
-                return true;
-        }
+            if (shouldClose)
+                await connection.OpenAsync(ct);
 
-        return false;
+            await using var command = connection.CreateCommand();
+            command.CommandText = $"PRAGMA table_info(\"{tableName}\")";
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                if (string.Equals(reader[1]?.ToString(), "AssignedUsername", StringComparison.Ordinal))
+                    return true;
+            }
+
+            return false;
+        }
+        finally
+        {
+            // GetDbConnection()은 DbContext가 소유하므로 Dispose하지 않습니다.
+            // 이 메서드가 직접 연 경우에만 닫아 이후 EF 조회가 같은 연결을 안전하게 재사용하게 합니다.
+            if (shouldClose && connection.State != ConnectionState.Closed)
+                await connection.CloseAsync();
+        }
     }
 
     public async Task<string> GetAlertDaysTextAsync(CancellationToken ct = default)
@@ -9063,6 +9074,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         await UpsertSettingAsync(AssetWorkbookPathSettingKey, path, ct);
         var result = new RentalImportResult { SourcePath = path };
         var workbook = ReadWorkbook(path);
+        var customerBusinessNumberByName = ReadWorkbookCustomerBusinessNumberMap(workbook);
         var table = workbook.Tables.Cast<DataTable>()
             .FirstOrDefault(current => string.Equals(current.TableName, "렌탈재고관리", StringComparison.OrdinalIgnoreCase));
         if (table is null)
@@ -9134,6 +9146,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             var itemCategoryName = GetCellString(row, headerMap, "품목분류", "상품분류");
             var manufacturer = GetCellString(row, headerMap, "제조사");
             var customerName = GetCellString(row, headerMap, "고객명");
+            var customerBusinessNumber = ResolveWorkbookCustomerBusinessNumber(customerBusinessNumberByName, customerName);
             var itemName = GetCellString(row, headerMap, "품명", "모델명");
             var machineNumber = GetCellString(row, headerMap, "기계번호");
             var installLocation = GetCellString(row, headerMap, "설치위치");
@@ -9221,6 +9234,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     var customerLink = await ResolveWorkbookCustomerLinkAsync(
                         asset.CustomerName,
                         GetCellString(row, headerMap, "현재거래처ID", "거래처ID", "고객ID"),
+                        customerBusinessNumber,
                         officeCode,
                         required: true,
                         allowWorkbookNameVariants: true,
@@ -9249,6 +9263,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     saveResult.EntityId,
                     row,
                     headerMap,
+                    customerBusinessNumberByName,
                     session,
                     ct);
 
@@ -9281,6 +9296,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private async Task<WorkbookCustomerLink?> ResolveWorkbookCustomerLinkAsync(
         string? customerName,
         string? explicitCustomerIdText,
+        string? customerBusinessNumber,
         string officeCode,
         bool required,
         bool allowWorkbookNameVariants,
@@ -9289,6 +9305,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
     {
         var normalizedCustomerName = RentalCatalogValueNormalizer.NormalizeDisplayText(customerName);
         var normalizedExplicitId = (explicitCustomerIdText ?? string.Empty).Trim();
+        var normalizedCustomerBusinessNumber = NormalizeBusinessNumberDigits(customerBusinessNumber);
         Guid? customerId = null;
         if (!string.IsNullOrWhiteSpace(normalizedExplicitId))
         {
@@ -9301,7 +9318,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, officeCode);
             customerId = await ResolveCustomerIdAsync(
                 normalizedCustomerName,
-                null,
+                normalizedCustomerBusinessNumber,
                 ct,
                 allowWorkbookNameVariants,
                 officeCode,
@@ -9346,17 +9363,23 @@ WHERE ""AssignedUsername"" <> '';", ct);
         Guid assetId,
         DataRow row,
         IReadOnlyDictionary<string, int> headerMap,
+        IReadOnlyDictionary<string, string> customerBusinessNumberByName,
         SessionState session,
         CancellationToken ct)
         => UpsertWorkbookAssignmentHistoriesAsync(
             assetId,
             GetCellString(row, headerMap, "설치위치"),
             Enumerable.Range(1, 3)
-                .Select(sequence => new WorkbookAssignmentHistoryImportRow(
-                    sequence,
-                    GetCellString(row, headerMap, $"렌탈{sequence}"),
-                    GetCellString(row, headerMap, $"이력{sequence}거래처ID", $"렌탈{sequence}거래처ID"),
-                    ParseDateValue(GetCellValue(row, headerMap, $"회수{sequence}"))))
+                .Select(sequence =>
+                {
+                    var customerName = GetCellString(row, headerMap, $"렌탈{sequence}");
+                    return new WorkbookAssignmentHistoryImportRow(
+                        sequence,
+                        customerName,
+                        GetCellString(row, headerMap, $"이력{sequence}거래처ID", $"렌탈{sequence}거래처ID"),
+                        ResolveWorkbookCustomerBusinessNumber(customerBusinessNumberByName, customerName),
+                        ParseDateValue(GetCellValue(row, headerMap, $"회수{sequence}")));
+                })
                 .ToList(),
             session,
             ct);
@@ -9370,9 +9393,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
             assetId,
             row.InstallLocation,
             [
-                new(1, row.Rental1, row.HistoryCustomerId1, ParseDateValue(row.Recall1)),
-                new(2, row.Rental2, row.HistoryCustomerId2, ParseDateValue(row.Recall2)),
-                new(3, row.Rental3, row.HistoryCustomerId3, ParseDateValue(row.Recall3))
+                new(1, row.Rental1, row.HistoryCustomerId1, row.HistoryCustomerBusinessNumber1, ParseDateValue(row.Recall1)),
+                new(2, row.Rental2, row.HistoryCustomerId2, row.HistoryCustomerBusinessNumber2, ParseDateValue(row.Recall2)),
+                new(3, row.Rental3, row.HistoryCustomerId3, row.HistoryCustomerBusinessNumber3, ParseDateValue(row.Recall3))
             ],
             session,
             ct);
@@ -9413,6 +9436,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             var customerLink = await ResolveWorkbookCustomerLinkAsync(
                 sourceCustomerName,
                 importedRow.ExplicitCustomerId,
+                importedRow.CustomerBusinessNumber,
                 asset.ResponsibleOfficeCode,
                 required: false,
                 allowWorkbookNameVariants: true,
@@ -9542,6 +9566,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         int Sequence,
         string CustomerName,
         string ExplicitCustomerId,
+        string CustomerBusinessNumber,
         DateOnly? ReturnDate);
 
     private IQueryable<LocalRentalBillingProfile> ApplyBillingFilter(
@@ -13175,7 +13200,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         string? preferredTenantCode = null)
     {
         var normalizedName = (customerName ?? string.Empty).Trim();
-        var normalizedBusinessNumber = (businessNumber ?? string.Empty).Trim();
+        var normalizedBusinessNumber = NormalizeBusinessNumberDigits(businessNumber);
         var normalizedPreferredOfficeCode = ResolveCustomerRentalOfficeCode(preferredOfficeCode);
         var normalizedPreferredTenantCode = (preferredTenantCode ?? string.Empty).Trim();
         var nameCandidates = (allowWorkbookNameVariants
@@ -13186,83 +13211,64 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (!string.IsNullOrWhiteSpace(normalizedBusinessNumber))
         {
             var businessMatches = await _db.Customers.AsNoTracking()
-                .Where(customer => customer.BusinessNumber == normalizedBusinessNumber)
-                .Select(customer => new { customer.Id, customer.NameOriginal, customer.NameMatchKey, customer.UpdatedAtUtc, customer.ResponsibleOfficeCode, customer.OfficeCode, customer.TenantCode })
+                .Where(customer => customer.BusinessNumber != string.Empty)
+                .Select(customer => new
+                {
+                    customer.Id,
+                    customer.NameOriginal,
+                    customer.NameMatchKey,
+                    customer.BusinessNumber,
+                    customer.UpdatedAtUtc,
+                    customer.ResponsibleOfficeCode,
+                    customer.OfficeCode,
+                    customer.TenantCode
+                })
                 .ToListAsync(ct);
-            if (businessMatches.Count == 1 &&
-                MatchesPreferredCustomerTenant(
-                    businessMatches[0],
+            businessMatches = businessMatches
+                .Where(customer => string.Equals(
+                    NormalizeBusinessNumberDigits(customer.BusinessNumber),
+                    normalizedBusinessNumber,
+                    StringComparison.Ordinal))
+                .Where(customer => MatchesPreferredCustomerTenant(
+                    customer,
                     normalizedPreferredTenantCode,
-                    customer => customer.TenantCode) &&
-                MatchesPreferredCustomerOffice(
-                    businessMatches[0],
+                    current => current.TenantCode))
+                .Where(customer => MatchesPreferredCustomerOffice(
+                    customer,
                     normalizedPreferredOfficeCode,
-                    customer => customer.OfficeCode,
-                    customer => customer.ResponsibleOfficeCode) &&
-                (nameCandidates.Count == 0 ||
-                 CustomerMatchesAnyCandidateName(
-                     businessMatches[0],
-                     nameCandidates,
-                     customer => customer.NameOriginal,
-                     customer => customer.NameMatchKey)))
-            {
+                    current => current.OfficeCode,
+                    current => current.ResponsibleOfficeCode))
+                .ToList();
+
+            if (businessMatches.Count == 1)
                 return businessMatches[0].Id;
-            }
 
-            if (!string.IsNullOrWhiteSpace(normalizedPreferredTenantCode) && businessMatches.Count > 1)
+            if (businessMatches.Count > 1)
             {
-                var tenantBusinessMatches = PreferCustomerMatchesByTenant(
-                    businessMatches,
-                    normalizedPreferredTenantCode,
-                    customer => customer.TenantCode);
-                if (tenantBusinessMatches.Count == 1)
-                    return tenantBusinessMatches[0].Id;
-                businessMatches = tenantBusinessMatches;
+                var scopedBusinessMatches = businessMatches;
+                if (nameCandidates.Count > 0)
+                {
+                    var namedBusinessMatches = scopedBusinessMatches
+                        .Where(customer =>
+                            CustomerMatchesAnyCandidateName(
+                                customer,
+                                nameCandidates,
+                                current => current.NameOriginal,
+                                current => current.NameMatchKey))
+                        .ToList();
+                    if (namedBusinessMatches.Count == 1)
+                        return namedBusinessMatches[0].Id;
+                    if (namedBusinessMatches.Count > 1)
+                        scopedBusinessMatches = namedBusinessMatches;
+                }
+
+                if (scopedBusinessMatches.Count == 1)
+                    return scopedBusinessMatches[0].Id;
+
+                return null;
             }
 
-            if (!string.IsNullOrWhiteSpace(normalizedPreferredOfficeCode) && businessMatches.Count > 1)
-            {
-                var officeBusinessMatches = PreferCustomerMatchesByOffice(
-                    businessMatches,
-                    normalizedPreferredOfficeCode,
-                    customer => customer.OfficeCode,
-                    customer => customer.ResponsibleOfficeCode);
-                if (officeBusinessMatches.Count == 1)
-                    return officeBusinessMatches[0].Id;
-                if (officeBusinessMatches.Count > 1)
-                    businessMatches = officeBusinessMatches;
-            }
-
-            if (businessMatches.Count > 1 && nameCandidates.Count > 0)
-            {
-                var businessExactMatches = businessMatches
-                    .Where(customer => nameCandidates.Contains(customer.NameOriginal, StringComparer.CurrentCultureIgnoreCase))
-                    .Select(customer => customer.Id)
-                    .Distinct()
-                    .ToList();
-                if (businessExactMatches.Count == 1)
-                    return businessExactMatches[0];
-
-                var candidateKeys = nameCandidates
-                    .Select(RentalCatalogValueNormalizer.NormalizeLooseKey)
-                    .Where(key => !string.IsNullOrWhiteSpace(key))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-                var businessNormalizedMatches = businessMatches
-                    .Select(customer => new
-                    {
-                        customer.Id,
-                        MatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(
-                            string.IsNullOrWhiteSpace(customer.NameMatchKey) ? customer.NameOriginal : customer.NameMatchKey)
-                    })
-                    .Where(customer => candidateKeys.Any(key =>
-                        string.Equals(customer.MatchKey, key, StringComparison.OrdinalIgnoreCase)))
-                    .Select(customer => customer.Id)
-                    .Distinct()
-                    .ToList();
-                if (businessNormalizedMatches.Count == 1)
-                    return businessNormalizedMatches[0];
-            }
+            return null;
         }
 
         if (string.IsNullOrWhiteSpace(normalizedName))
@@ -14513,6 +14519,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Trim()
             .ToUpperInvariant()
             .Where(ch => !char.IsWhiteSpace(ch) && ch != '[' && ch != ']')
+            .ToArray());
+
+    private static string NormalizeBusinessNumberDigits(string? value)
+        => new string((value ?? string.Empty)
+            .Where(char.IsDigit)
             .ToArray());
 
     private static bool IsMissingRentalIdentifier(string? value)

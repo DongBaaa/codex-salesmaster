@@ -10,6 +10,7 @@ param(
     [switch]$AllowLegacyAndroidDebugSigning,
     [switch]$SkipAndroidSigningContinuityCheck,
     [switch]$AcceptAndroidSigningCertificateChange,
+    [switch]$RequireWindowsAuthenticode,
     [string]$LocalCacheAppDataRoot = '',
     [string]$LocalCacheEvidenceDirectory = '',
     [switch]$RequireLocalCacheConsistencyCheck,
@@ -218,7 +219,17 @@ if (Test-Path -LiteralPath $tempInitializer) {
 }
 
 if ([string]::IsNullOrWhiteSpace($SigningConfigPath)) {
-    $SigningConfigPath = Join-Path $ProjectRoot 'Mobile\GeoraePlan.Mobile.App\android-signing.local.json'
+    $releaseSigningConfigPath = Join-Path $ProjectRoot 'Mobile\GeoraePlan.Mobile.App\android-signing.release.local.json'
+    $legacySigningConfigPath = Join-Path $ProjectRoot 'Mobile\GeoraePlan.Mobile.App\android-signing.local.json'
+    if (Test-Path -LiteralPath $releaseSigningConfigPath) {
+        $SigningConfigPath = $releaseSigningConfigPath
+    }
+    elseif ($AllowLegacyAndroidDebugSigning -and (Test-Path -LiteralPath $legacySigningConfigPath)) {
+        $SigningConfigPath = $legacySigningConfigPath
+    }
+    else {
+        throw '유료 납품용 Android release signing 설정이 없습니다. android-signing.release.local.json을 준비하거나 기존 debug 서명 연속성을 유지해야 하는 경우에만 -AllowLegacyAndroidDebugSigning을 명시하세요.'
+    }
 }
 
 $dotnetExe = Resolve-DotnetCommand -ProjectRoot $ProjectRoot
@@ -250,6 +261,21 @@ $desktopScript = Join-Path $ProjectRoot 'tools\release\Build-GeoraePlanDesktopIn
 & powershell -NoProfile -ExecutionPolicy Bypass -File $desktopScript -ProjectRoot $ProjectRoot
 if ($LASTEXITCODE -ne 0) {
     throw 'desktop installer build failed.'
+}
+
+$windowsSigningCheckScript = Join-Path $ProjectRoot 'tools\release\Test-GeoraePlanWindowsSigning.ps1'
+$windowsSigningCheckArgs = @(
+    '-NoProfile',
+    '-ExecutionPolicy', 'Bypass',
+    '-File', $windowsSigningCheckScript,
+    '-ProjectRoot', $ProjectRoot
+)
+if ($RequireWindowsAuthenticode) {
+    $windowsSigningCheckArgs += '-RequireSigned'
+}
+& powershell @windowsSigningCheckArgs
+if ($LASTEXITCODE -ne 0) {
+    throw 'Windows Authenticode verification failed.'
 }
 
 $androidScript = Join-Path $ProjectRoot 'tools\mobile\Build-GeoraePlanAndroidApk.ps1'

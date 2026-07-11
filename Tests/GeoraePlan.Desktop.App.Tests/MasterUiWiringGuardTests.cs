@@ -187,7 +187,7 @@ public sealed class MasterUiWiringGuardTests
 
         AssertContainsAll(
             mainWindow,
-            "OpenInvoiceWindowAsync,",
+            "(invoiceId, owner) => OpenInvoiceWindowAsync(invoiceId, owner),",
             "() => _vm.LoadInvoiceListCommand.ExecuteAsync(null))");
         Assert.Contains(
             "public Guid? InvoiceId { get; init; }",
@@ -380,6 +380,7 @@ public sealed class MasterUiWiringGuardTests
                 ["Views", "EnvironmentSettingsWindow.xaml"],
                 [
                     ["ViewModels", "EnvironmentSettingsViewModel.cs"],
+                    ["ViewModels", "EnvironmentSettingsViewModel.AuditLogLookup.cs"],
                     ["ViewModels", "EnvironmentSettingsViewModel.Backup.cs"],
                     ["ViewModels", "EnvironmentSettingsViewModel.BusinessDatabase.cs"],
                     ["ViewModels", "EnvironmentSettingsViewModel.Masters.cs"],
@@ -648,7 +649,7 @@ public sealed class MasterUiWiringGuardTests
             "WindowShowHelper.ShowModelessWithDeferredLoad",
             "WindowShowHelper.ShowModeless(win);",
             "ShowModelessWithDeferredLoad(",
-            "OpenInvoiceWindowAsync,",
+            "(invoiceId, owner) => OpenInvoiceWindowAsync(invoiceId, owner),",
             "() => _vm.LoadInvoiceListCommand.ExecuteAsync(null))",
             "거래처 관리 닫기 후 거래처 목록 새로고침",
             "환경설정 닫기 후 전표 목록 새로고침");

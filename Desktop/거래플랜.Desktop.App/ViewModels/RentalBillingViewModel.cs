@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -55,6 +56,15 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private readonly Dictionary<Guid, RentalBillingAssetLinkEdit> _pendingAssetLinkEdits = new();
     private string _selectedRowBaselineSignature = string.Empty;
     private long _editRevision;
+    private readonly Dictionary<string, CandidateAssetLoadCacheEntry> _candidateAssetLoadCache = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateOnly?> _contractDateCache = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, IReadOnlyList<RentalBillingHistoryRow>> _billingHistoryLoadCache = new(StringComparer.Ordinal);
+
+    private const int SelectionLoadCacheLimit = 8;
+
+    private sealed record CandidateAssetLoadCacheEntry(
+        IReadOnlyList<RentalBillingAssetOption> IncludedAssets,
+        IReadOnlyList<RentalBillingAssetOption> CandidateAssets);
 
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private DisplayOption? _selectedOfficeFilter;
@@ -520,9 +530,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private void CancelIncludedAssetHistoryLoad()
     {
-        _includedAssetHistoryLoadCts?.Cancel();
-        _includedAssetHistoryLoadCts?.Dispose();
+        var cts = _includedAssetHistoryLoadCts;
         _includedAssetHistoryLoadCts = null;
+        cts?.Cancel();
     }
 
     private void ApplyIncludedAssetAssignmentHistoriesForDisplay(IReadOnlyList<RentalAssetAssignmentHistoryViewItem> histories)
@@ -543,9 +553,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     public async Task LoadAsync()
     {
+        var totalStopwatch = Stopwatch.StartNew();
+        var stepStopwatch = Stopwatch.StartNew();
+
         StatusMessage = "렌탈 청구관리 화면을 준비하는 중입니다. 필터와 임시 저장값을 먼저 불러옵니다.";
         await ReloadFiltersAsync();
+        LogRentalBillingViewModelLoadStep("Rental billing filters load", stepStopwatch);
 
+        stepStopwatch.Restart();
         BeginAutoSaveSuppression();
         try
         {
@@ -562,8 +577,19 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         {
             EndAutoSaveSuppression();
         }
+        LogRentalBillingViewModelLoadStep("Rental billing draft restore", stepStopwatch);
 
+        stepStopwatch.Restart();
         StartInitialRowsLoad();
+        LogRentalBillingViewModelLoadStep("Rental billing initial rows load queued", stepStopwatch);
+
+        OperationTiming.LogIfSlow(
+            "UI",
+            "Rental billing view model initial load",
+            totalStopwatch.Elapsed,
+            $"rows={Rows.Count:N0}, offices={OfficeOptions.Count:N0}, templates={TemplateItems.Count:N0}",
+            infoThreshold: TimeSpan.FromMilliseconds(600),
+            warningThreshold: TimeSpan.FromSeconds(2));
     }
 
     public void CancelPendingBackgroundWork()
@@ -573,16 +599,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         _isDisposed = true;
         CancelPendingFilterReload();
-        CancelBillingHistoryLoad();
-        CancelIncludedAssetHistoryLoad();
-        _candidateAssetsLoadCts?.Cancel();
-        _candidateAssetsLoadCts?.Dispose();
-        _candidateAssetsLoadCts = null;
-        _candidateAssetsLoadTask = null;
-        _activeCandidateAssetsLoadSignature = string.Empty;
-        _contractDateRefreshCts?.Cancel();
-        _contractDateRefreshCts?.Dispose();
-        _contractDateRefreshCts = null;
+        CancelPendingSelectionLoads();
+        InvalidateSelectionLoadCaches();
         _searchDebouncer.Dispose();
         UnsubscribeBillingRowSelectionHandlers();
     }
@@ -601,8 +619,23 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private async Task LoadInitialRowsThenDeferredMaintenanceAsync()
     {
+        var totalStopwatch = Stopwatch.StartNew();
+        var stepStopwatch = Stopwatch.StartNew();
+
         await ReloadAsync();
+        LogRentalBillingViewModelLoadStep("Rental billing initial rows load", stepStopwatch);
+
+        stepStopwatch.Restart();
         await RunDeferredInitialMaintenanceAsync();
+        LogRentalBillingViewModelLoadStep("Rental billing deferred maintenance", stepStopwatch);
+
+        OperationTiming.LogIfSlow(
+            "UI",
+            "Rental billing initial rows/deferred maintenance",
+            totalStopwatch.Elapsed,
+            $"rows={Rows.Count:N0}, selected={SelectedRow is not null}",
+            infoThreshold: TimeSpan.FromMilliseconds(600),
+            warningThreshold: TimeSpan.FromSeconds(2));
     }
 
     private async Task RunDeferredInitialMaintenanceAsync()
@@ -628,8 +661,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (_isDisposed)
             return;
 
-        var hasMaintenanceChanges = cleanedLegacyAssignments > 0 || repairResult is { HasChanges: true };
-        if (_pendingFilterReload || hasMaintenanceChanges)
+        if (_pendingFilterReload || repairResult is { HasChanges: true })
         {
             StatusMessage = repairResult is { HasChanges: true }
                 ? $"{repairResult.SummaryMessage} 보정 결과를 반영하기 위해 청구 목록을 다시 조회합니다."
@@ -640,23 +672,47 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return;
         }
 
-        StatusMessage = "렌탈 청구 목록과 전표/청구 연결 상태를 확인했습니다.";
+        StatusMessage = cleanedLegacyAssignments > 0
+            ? $"렌탈 청구 목록과 전표/청구 연결 상태를 확인했습니다. 이전 연결값 {cleanedLegacyAssignments:N0}건은 백그라운드에서 정리했습니다."
+            : "렌탈 청구 목록과 전표/청구 연결 상태를 확인했습니다.";
     }
 
     public async Task LoadAndSelectProfileAsync(Guid profileId)
     {
+        var totalStopwatch = Stopwatch.StartNew();
+        var stepStopwatch = Stopwatch.StartNew();
+
         CancelPendingFilterReload();
+        CancelPendingSelectionLoads();
+        InvalidateSelectionLoadCaches();
         StatusMessage = "운영 점검 항목의 청구 프로필을 여는 중입니다.";
         await _rental.RepairBillingInvoicePeriodLinksAsync(_session, ReferenceDate);
+        LogRentalBillingViewModelLoadStep("Rental billing target repair", stepStopwatch, $"profileId={profileId:D}");
+
+        stepStopwatch.Restart();
         await ReloadFiltersAsync();
+        LogRentalBillingViewModelLoadStep("Rental billing filters load", stepStopwatch, $"profileId={profileId:D}");
+
+        stepStopwatch.Restart();
         var row = await _rental.GetBillingRowAsync(profileId, _session, ReferenceDate);
+        LogRentalBillingViewModelLoadStep("Rental billing single row load", stepStopwatch, $"profileId={profileId:D}, found={row is not null}");
+
+        stepStopwatch.Restart();
         Rows.ReplaceWith(row is null ? Array.Empty<RentalBillingViewRow>() : new[] { row });
         RebindBillingRowSelectionHandlers();
         NotifyDeleteCheckedState();
         SelectRow(profileId);
+        LogRentalBillingViewModelLoadStep("Rental billing target selection restore", stepStopwatch, $"profileId={profileId:D}, selected={SelectedRow is not null}");
         StatusMessage = SelectedRow is null
             ? "점검 항목의 청구 프로필을 목록에서 찾지 못했습니다. 필터, 권한, 삭제 상태를 확인하세요."
             : "운영 점검 항목의 청구 프로필을 선택했습니다. 표시 품목, 월 기준금액, 연결 자산을 확인한 뒤 저장하세요.";
+        OperationTiming.LogIfSlow(
+            "UI",
+            "Rental billing view model target load",
+            totalStopwatch.Elapsed,
+            $"profileId={profileId:D}, selected={SelectedRow is not null}, rows={Rows.Count:N0}, offices={OfficeOptions.Count:N0}",
+            infoThreshold: TimeSpan.FromMilliseconds(600),
+            warningThreshold: TimeSpan.FromSeconds(2));
     }
 
     [RelayCommand]
@@ -690,6 +746,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     {
         if (_isDisposed)
             return;
+
+        CancelPendingSelectionLoads();
+        InvalidateSelectionLoadCaches();
 
         if (IsBusy)
         {
@@ -1499,7 +1558,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         TemplateSummary = "표시품목 1건 / 연결장비 0건";
         AssetCandidateSummary = "후보 장비가 없습니다.";
         LinkAssetsLater = false;
-        _contractDateRefreshCts?.Cancel();
+        CancelPendingContractDateRefresh();
         SelectedRow = null;
         InvoiceToOpenAfterClose = null;
         BillingCreatedSinceLastConsume = false;
@@ -2052,6 +2111,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [RelayCommand]
     private async Task RefreshCandidateAssetsAsync()
     {
+        CancelPendingCandidateAssetsLoad();
+        InvalidateSelectionLoadCaches();
         await LoadCandidateAssetsAsync(
             EditId == Guid.Empty ? null : EditId,
             EditCustomerId,
@@ -2293,11 +2354,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     partial void OnSelectedRowChanged(RentalBillingViewRow? value)
     {
         PersistDraftBeforeContextSwitch();
+        CancelPendingSelectionLoads();
 
         if (value is null)
         {
-            _contractDateRefreshCts?.Cancel();
-            CancelBillingHistoryLoad();
             RefreshBillingHistoryRows(null);
             OnPropertyChanged(nameof(IsContractDateMissing));
             OnPropertyChanged(nameof(ShouldShowContractDateWarning));
@@ -2425,6 +2485,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (profileIds.Count == 0)
             return;
 
+        if (TryApplyCachedBillingHistoryRows(row))
+            return;
+
         var cts = new CancellationTokenSource();
         var token = cts.Token;
         _billingHistoryLoadCts = cts;
@@ -2441,6 +2504,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         CancellationTokenSource cts,
         CancellationToken ct)
     {
+        var stopwatch = Stopwatch.StartNew();
         try
         {
             var histories = await _rental.GetBillingHistoryRowsAsync(profileIds, _session, ReferenceDate, BillingHistoryDisplayLimit, ct);
@@ -2448,6 +2512,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             if (!ReferenceEquals(SelectedRow, row))
                 return;
 
+            StoreBillingHistoryRows(row, histories);
+            StoreBillingHistoryLoadCache(BuildBillingHistoryLoadSignature(row), histories);
             ApplyBillingHistoryRowsForDisplay(histories);
             SelectedBillingHistory = null;
             OnPropertyChanged(nameof(SelectedRowHasPastUnresolved));
@@ -2458,6 +2524,13 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         }
         finally
         {
+            OperationTiming.LogIfSlow(
+                "UI",
+                "Rental billing history load",
+                stopwatch.Elapsed,
+                $"profiles={profileIds.Count:N0}, selected={ReferenceEquals(SelectedRow, row)}",
+                infoThreshold: TimeSpan.FromMilliseconds(300),
+                warningThreshold: TimeSpan.FromSeconds(2));
             if (ReferenceEquals(_billingHistoryLoadCts, cts))
                 _billingHistoryLoadCts = null;
             cts.Dispose();
@@ -2503,6 +2576,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return;
 
         CancelBillingHistoryLoad();
+        if (TryApplyCachedBillingHistoryRows(SelectedRow))
+            return;
+
+        var stopwatch = Stopwatch.StartNew();
         var histories = await _rental.GetBillingHistoryRowsAsync(
             profileIds,
             _session,
@@ -2512,10 +2589,19 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (SelectedRow is null || !ResolveBillingHistoryProfileIds(SelectedRow).Contains(profileId))
             return;
 
+        StoreBillingHistoryRows(SelectedRow, histories);
+        StoreBillingHistoryLoadCache(BuildBillingHistoryLoadSignature(SelectedRow), histories);
         ApplyBillingHistoryRowsForDisplay(histories);
         SelectedBillingHistory = null;
         OnPropertyChanged(nameof(SelectedRowHasPastUnresolved));
         OnPropertyChanged(nameof(SelectedPastUnresolvedSummaryText));
+        OperationTiming.LogIfSlow(
+            "UI",
+            "Rental billing history refresh",
+            stopwatch.Elapsed,
+            $"profiles={profileIds.Count:N0}, profileId={profileId:D}",
+            infoThreshold: TimeSpan.FromMilliseconds(300),
+            warningThreshold: TimeSpan.FromSeconds(2));
     }
 
     private static bool IsSameBillingHistoryRow(RentalBillingHistoryRow left, RentalBillingHistoryRow right)
@@ -2532,9 +2618,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private void CancelBillingHistoryLoad()
     {
-        _billingHistoryLoadCts?.Cancel();
-        _billingHistoryLoadCts?.Dispose();
+        var cts = _billingHistoryLoadCts;
         _billingHistoryLoadCts = null;
+        cts?.Cancel();
     }
 
     private static IReadOnlyList<Guid> ResolveBillingHistoryProfileIds(RentalBillingViewRow row)
@@ -2906,20 +2992,19 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (_isDisposed)
             return;
 
-        _contractDateRefreshCts?.Cancel();
-        _contractDateRefreshCts?.Dispose();
+        CancelPendingContractDateRefresh();
 
         var cts = new CancellationTokenSource();
         _contractDateRefreshCts = cts;
         var baselineSelectionId = updateSelectedRowBaselineIfUnchanged ? SelectedRow?.SelectionId : null;
         var baselineSignature = updateSelectedRowBaselineIfUnchanged ? BuildCurrentEditorSignature() : null;
         UiTaskHelper.Forget(
-            RefreshContractDateFromSourcesAsync(
+            RunScheduledContractDateRefreshAsync(
                 preserveCurrentValue,
                 updateSelectedRowBaselineIfUnchanged,
                 baselineSelectionId,
                 baselineSignature,
-                cts.Token),
+                cts),
             "RENTAL",
             "렌탈 계약 체결일 조회",
             ex =>
@@ -2929,6 +3014,30 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
                 StatusMessage = $"계약 체결일 정보를 불러오지 못했습니다. {ex.Message}";
             });
+    }
+
+    private async Task RunScheduledContractDateRefreshAsync(
+        bool preserveCurrentValue,
+        bool updateSelectedRowBaselineIfUnchanged,
+        Guid? baselineSelectionId,
+        string? baselineSignature,
+        CancellationTokenSource cts)
+    {
+        try
+        {
+            await RefreshContractDateFromSourcesAsync(
+                preserveCurrentValue,
+                updateSelectedRowBaselineIfUnchanged,
+                baselineSelectionId,
+                baselineSignature,
+                cts.Token);
+        }
+        finally
+        {
+            if (ReferenceEquals(_contractDateRefreshCts, cts))
+                _contractDateRefreshCts = null;
+            cts.Dispose();
+        }
     }
 
     private async Task RefreshContractDateFromSourcesAsync(
@@ -2944,7 +3053,16 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (preserveExistingValue && EditContractDate.HasValue)
             return;
 
-        var contractDate = await ResolveContractDateFromSourcesAsync(ct);
+        ct.ThrowIfCancellationRequested();
+        var stopwatch = Stopwatch.StartNew();
+        var contractSignature = BuildContractDateRefreshSignature();
+        DateOnly? contractDate;
+        if (!TryGetCachedContractDate(contractSignature, out contractDate))
+        {
+            contractDate = await ResolveContractDateFromSourcesAsync(ct);
+            StoreContractDateCache(contractSignature, contractDate);
+        }
+
         ct.ThrowIfCancellationRequested();
         if (_isDisposed)
             return;
@@ -2956,6 +3074,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         SetContractReferenceDates(ToDateTime(contractDate));
         if (shouldRefreshSelectedRowBaseline)
             _selectedRowBaselineSignature = BuildCurrentEditorSignature();
+
+        OperationTiming.LogIfSlow(
+            "UI",
+            "Rental billing contract date refresh",
+            stopwatch.Elapsed,
+            $"customer={(EditCustomerId.HasValue && EditCustomerId.Value != Guid.Empty ? EditCustomerId.Value.ToString("D") : "none")}, linkedAssets={CountDistinctEditorIncludedAssets():N0}",
+            infoThreshold: TimeSpan.FromMilliseconds(300),
+            warningThreshold: TimeSpan.FromSeconds(2));
     }
 
     private async Task<DateOnly?> ResolveContractDateFromSourcesAsync(CancellationToken ct = default)
@@ -3056,8 +3182,13 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return;
         }
 
-        _candidateAssetsLoadCts?.Cancel();
-        _candidateAssetsLoadCts?.Dispose();
+        CancelPendingCandidateAssetsLoad();
+
+        var previousSelections = preserveSelection
+            ? CandidateAssets.Where(asset => asset.IsSelected).Select(asset => asset.AssetId).ToHashSet()
+            : new HashSet<Guid>();
+        if (TryRestoreCandidateAssetsLoadCache(signature, previousSelections))
+            return;
 
         var cts = new CancellationTokenSource();
         _candidateAssetsLoadCts = cts;
@@ -3105,6 +3236,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             autoIncludeAllCandidates ? "AUTO" : "MANUAL",
             LinkAssetsLater ? "LATER" : "NOW",
             SelectedTemplateItem?.ItemId.ToString("N") ?? string.Empty,
+            BuildAssetLinkEditSignature(BuildPendingAssetLinkEdits()),
             string.Join(
                 ";",
                 TemplateItems
@@ -3133,6 +3265,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         CancellationTokenSource? cts = null,
         CancellationToken ct = default)
     {
+        var stopwatch = Stopwatch.StartNew();
         try
         {
             if (_isDisposed)
@@ -3194,24 +3327,213 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             if (autoIncludeAllCandidates && !LinkAssetsLater)
                 AutoIncludeCustomerRentalAssets();
 
-            RefreshBillingAssetCollections(previousSelections);
             SyncIndividualTemplateItemsFromIncludedAssets();
             NormalizeTemplateRepresentativeAssets();
             RefreshBillingAssetCollections(previousSelections);
             UpdateTemplateDerivedValues();
+            // 조회 전에는 자산 풀을 아직 읽지 못했으므로, 조회 완료 뒤 파생된 연결 편집
+            // 시그니처가 달라질 수 있습니다. 완성 상태 기준으로 저장해야 다음 선택에서
+            // 같은 내용을 실제로 재사용할 수 있습니다.
+            var completedSignature = BuildCandidateAssetsLoadSignature(
+                billingProfileId,
+                customerId,
+                customerName,
+                officeCode,
+                preserveSelection,
+                autoIncludeAllCandidates);
+            StoreCandidateAssetsLoadCache(completedSignature);
         }
         finally
         {
-            if (cts is not null &&
-                ReferenceEquals(_candidateAssetsLoadCts, cts) &&
-                string.Equals(_activeCandidateAssetsLoadSignature, activeSignature, StringComparison.Ordinal))
+            OperationTiming.LogIfSlow(
+                "UI",
+                "Rental billing candidate asset load",
+                stopwatch.Elapsed,
+                $"included={_includedAssetPool.Count:N0}, candidates={_candidateAssetPool.Count:N0}, auto={autoIncludeAllCandidates}, preserve={preserveSelection}",
+                infoThreshold: TimeSpan.FromMilliseconds(300),
+                warningThreshold: TimeSpan.FromSeconds(2));
+            if (cts is not null)
             {
-                _candidateAssetsLoadCts = null;
-                _candidateAssetsLoadTask = null;
-                _activeCandidateAssetsLoadSignature = string.Empty;
+                if (ReferenceEquals(_candidateAssetsLoadCts, cts) &&
+                    string.Equals(_activeCandidateAssetsLoadSignature, activeSignature, StringComparison.Ordinal))
+                {
+                    _candidateAssetsLoadCts = null;
+                    _candidateAssetsLoadTask = null;
+                    _activeCandidateAssetsLoadSignature = string.Empty;
+                }
+
                 cts.Dispose();
             }
         }
+    }
+
+    private void CancelPendingSelectionLoads()
+    {
+        CancelPendingCandidateAssetsLoad();
+        CancelPendingContractDateRefresh();
+        CancelBillingHistoryLoad();
+        CancelIncludedAssetHistoryLoad();
+    }
+
+    private void CancelPendingCandidateAssetsLoad()
+    {
+        var cts = _candidateAssetsLoadCts;
+        _candidateAssetsLoadCts = null;
+        _candidateAssetsLoadTask = null;
+        _activeCandidateAssetsLoadSignature = string.Empty;
+        cts?.Cancel();
+    }
+
+    private void CancelPendingContractDateRefresh()
+    {
+        var cts = _contractDateRefreshCts;
+        _contractDateRefreshCts = null;
+        cts?.Cancel();
+    }
+
+    private void InvalidateSelectionLoadCaches()
+    {
+        _candidateAssetLoadCache.Clear();
+        _contractDateCache.Clear();
+        _billingHistoryLoadCache.Clear();
+    }
+
+    private void StoreCandidateAssetsLoadCache(string signature)
+    {
+        if (string.IsNullOrWhiteSpace(signature))
+            return;
+
+        if (_candidateAssetLoadCache.Count >= SelectionLoadCacheLimit)
+            _candidateAssetLoadCache.Clear();
+
+        _candidateAssetLoadCache[signature] = new CandidateAssetLoadCacheEntry(
+            _includedAssetPool
+                .Select(asset => CloneBillingAssetOption(asset, asset.IsSelected))
+                .ToList(),
+            _candidateAssetPool
+                .Select(asset => CloneBillingAssetOption(asset, asset.IsSelected))
+                .ToList());
+    }
+
+    private bool TryRestoreCandidateAssetsLoadCache(string signature, ISet<Guid> candidateSelectionIds)
+    {
+        if (string.IsNullOrWhiteSpace(signature) ||
+            !_candidateAssetLoadCache.TryGetValue(signature, out var cached))
+        {
+            return false;
+        }
+
+        _includedAssetPool.Clear();
+        _includedAssetPool.AddRange(cached.IncludedAssets.Select(asset => CloneBillingAssetOption(asset, asset.IsSelected)));
+
+        _candidateAssetPool.Clear();
+        _candidateAssetPool.AddRange(cached.CandidateAssets.Select(asset => CloneBillingAssetOption(asset, asset.IsSelected)));
+
+        SyncIndividualTemplateItemsFromIncludedAssets();
+        NormalizeTemplateRepresentativeAssets();
+        RefreshBillingAssetCollections(candidateSelectionIds);
+        UpdateTemplateDerivedValues();
+        return true;
+    }
+
+    private void StoreContractDateCache(string signature, DateOnly? contractDate)
+    {
+        if (string.IsNullOrWhiteSpace(signature))
+            return;
+
+        if (_contractDateCache.Count >= SelectionLoadCacheLimit)
+            _contractDateCache.Clear();
+
+        _contractDateCache[signature] = contractDate;
+    }
+
+    private bool TryGetCachedContractDate(string signature, out DateOnly? contractDate)
+    {
+        if (string.IsNullOrWhiteSpace(signature))
+        {
+            contractDate = null;
+            return false;
+        }
+
+        return _contractDateCache.TryGetValue(signature, out contractDate);
+    }
+
+    private void StoreBillingHistoryLoadCache(string signature, IReadOnlyList<RentalBillingHistoryRow> histories)
+    {
+        if (string.IsNullOrWhiteSpace(signature))
+            return;
+
+        if (_billingHistoryLoadCache.Count >= SelectionLoadCacheLimit)
+            _billingHistoryLoadCache.Clear();
+
+        _billingHistoryLoadCache[signature] = CloneBillingHistoryRows(histories);
+    }
+
+    private bool TryApplyCachedBillingHistoryRows(RentalBillingViewRow row)
+    {
+        var signature = BuildBillingHistoryLoadSignature(row);
+        if (string.IsNullOrWhiteSpace(signature) ||
+            !_billingHistoryLoadCache.TryGetValue(signature, out var cachedHistories))
+        {
+            return false;
+        }
+
+        var restoredHistories = CloneBillingHistoryRows(cachedHistories);
+        StoreBillingHistoryRows(row, restoredHistories);
+        ApplyBillingHistoryRowsForDisplay(restoredHistories);
+        SelectedBillingHistory = null;
+        OnPropertyChanged(nameof(SelectedRowHasPastUnresolved));
+        OnPropertyChanged(nameof(SelectedPastUnresolvedSummaryText));
+        return true;
+    }
+
+    private string BuildContractDateRefreshSignature()
+        => string.Join(
+            "|",
+            EditCustomerId?.ToString("N") ?? string.Empty,
+            NormalizeFilterSignaturePart(OfficeCodeCatalog.TryNormalizeOfficeCode(EditOfficeCode, out var normalizedOfficeCode)
+                ? normalizedOfficeCode
+                : EditOfficeCode),
+            string.Join(
+                ",",
+                TemplateItems
+                    .SelectMany(item => item.IncludedAssetIds)
+                    .Where(assetId => assetId != Guid.Empty)
+                    .Distinct()
+                    .OrderBy(assetId => assetId)
+                    .Select(assetId => assetId.ToString("N"))));
+
+    private string BuildBillingHistoryLoadSignature(RentalBillingViewRow row)
+        => string.Join(
+            "|",
+            ReferenceDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            string.Join(
+                ",",
+                ResolveBillingHistoryProfileIds(row)
+                    .Where(profileId => profileId != Guid.Empty)
+                    .Distinct()
+                    .OrderBy(profileId => profileId)
+                    .Select(profileId => profileId.ToString("N"))));
+
+    private static List<RentalBillingHistoryRow> CloneBillingHistoryRows(IReadOnlyList<RentalBillingHistoryRow> histories)
+        => histories.ToList();
+
+    private static void StoreBillingHistoryRows(RentalBillingViewRow row, IReadOnlyList<RentalBillingHistoryRow> histories)
+    {
+        row.BillingHistoryRows.Clear();
+        row.BillingHistoryRows.AddRange(histories);
+    }
+
+    private static void LogRentalBillingViewModelLoadStep(string operation, Stopwatch stopwatch, string? detail = null)
+    {
+        stopwatch.Stop();
+        OperationTiming.LogIfSlow(
+            "UI",
+            operation,
+            stopwatch.Elapsed,
+            detail,
+            infoThreshold: TimeSpan.FromMilliseconds(300),
+            warningThreshold: TimeSpan.FromSeconds(2));
     }
 
     private void LoadTemplateItemsFromProfile(LocalRentalBillingProfile profile)
@@ -4879,7 +5201,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private void LoadAggregateSelectionSummary(RentalBillingViewRow value)
     {
-        _contractDateRefreshCts?.Cancel();
+        CancelPendingContractDateRefresh();
         _pendingAssetLinkEdits.Clear();
         TemplateItems.ReplaceWith(Array.Empty<RentalBillingTemplateEditorItem>());
         SelectedTemplateItem = null;
@@ -5373,19 +5695,11 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         }
 
         CancelPendingFilterReload();
-        var cts = new CancellationTokenSource();
-        _filterReloadCts = cts;
+        var requestVersion = Volatile.Read(ref _filterReloadVersion);
         _pendingFilterReloadSignature = signature;
         _searchDebouncer.DebounceAsync(
             ResolveFilterReloadDebounceDelay(),
-            async () =>
-            {
-                if (_isDisposed)
-                    return;
-
-                _pendingFilterReloadSignature = string.Empty;
-                await ReloadCoreAsync(cts.Token);
-            },
+            async () => await RunDebouncedFilterReloadAsync(signature, requestVersion),
             ex =>
             {
                 if (!_isDisposed)
@@ -5393,14 +5707,35 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             });
     }
 
+    private async Task RunDebouncedFilterReloadAsync(string signature, int requestVersion)
+    {
+        if (_isDisposed || requestVersion != Volatile.Read(ref _filterReloadVersion))
+            return;
+        if (!string.Equals(_pendingFilterReloadSignature, signature, StringComparison.Ordinal))
+            return;
+
+        using var cts = new CancellationTokenSource();
+        _filterReloadCts = cts;
+        try
+        {
+            _pendingFilterReloadSignature = string.Empty;
+            await ReloadCoreAsync(cts.Token);
+        }
+        finally
+        {
+            if (ReferenceEquals(_filterReloadCts, cts))
+                _filterReloadCts = null;
+        }
+    }
+
     private void CancelPendingFilterReload()
     {
         Interlocked.Increment(ref _filterReloadVersion);
         _pendingFilterReloadSignature = string.Empty;
         _activeFilterReloadSignature = string.Empty;
-        _filterReloadCts?.Cancel();
-        _filterReloadCts?.Dispose();
+        var cts = _filterReloadCts;
         _filterReloadCts = null;
+        cts?.Cancel();
     }
 
     private TimeSpan ResolveFilterReloadDebounceDelay()

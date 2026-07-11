@@ -1077,6 +1077,12 @@
                                         Background="#0277BD"
                                         Margin="0,0,8,0"
                                         Command="{Binding RunFullResyncCommand}"/>
+                                <Button Content="작업 이력 조회"
+                                        Background="#223754"
+                                        Margin="0,0,8,0"
+                                        Command="{Binding OpenAuditLogLookupCommand}"
+                                        IsEnabled="{Binding CanOpenAuditLogLookup}"
+                                        ToolTip="{Binding AuditLogLookupHint}"/>
                                 <Button Content="백업"
                                         Background="#455A64"
                                         Command="{Binding RunBackupCommand}"/>

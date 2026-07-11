@@ -7,6 +7,21 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class MobileReleaseConfigurationTests
 {
     [Fact]
+    public void FullRelease_PrefersDedicatedReleaseSigningAndRequiresExplicitLegacyOverride()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "release",
+            "Publish-GeoraePlanFullRelease.ps1"));
+
+        Assert.Contains("android-signing.release.local.json", source, StringComparison.Ordinal);
+        Assert.Contains("elseif ($AllowLegacyAndroidDebugSigning", source, StringComparison.Ordinal);
+        Assert.Contains("android-signing.local.json", source, StringComparison.Ordinal);
+        Assert.Contains("유료 납품용 Android release signing 설정이 없습니다", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ReleaseDefaultBaseUrl_UsesLinuxPcLiveEndpoint()
     {
         var source = File.ReadAllText(Path.Combine(
@@ -115,6 +130,104 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("public bool HasCustomBaseUrl", loginViewModelSource, StringComparison.Ordinal);
         Assert.Contains("await _settings.ResetBaseUrlAsync();", loginViewModelSource, StringComparison.Ordinal);
         Assert.Contains("ConnectionModeText = HasCustomBaseUrl", loginViewModelSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AndroidSettings_DiagnosticExport_UsesShareApiAndRedactsSecrets()
+    {
+        var root = FindRepositoryRoot();
+        var settingsSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "SettingsService.cs"));
+        var settingsPageSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Pages",
+            "SettingsPage.cs"));
+        var settingsViewModelSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "ViewModels",
+            "SettingsViewModel.cs"));
+        var diagnosticServiceSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "MobileDiagnosticExportService.cs"));
+        var mauiProgramSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "MauiProgram.cs"));
+
+        Assert.Contains("public string GetSanitizedBaseUrlForDiagnostics()", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("UserName = string.Empty", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("Password = string.Empty", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("Query = string.Empty", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("Fragment = string.Empty", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("SanitizePathSegment", settingsSource, StringComparison.Ordinal);
+
+        Assert.Contains("nameof(SettingsViewModel.ExportDiagnosticsCommand)", settingsPageSource, StringComparison.Ordinal);
+        Assert.Contains("진단 정보 내보내기", settingsPageSource, StringComparison.Ordinal);
+        Assert.Contains("재고이동·렌탈은 조회 전용입니다", settingsPageSource, StringComparison.Ordinal);
+        Assert.Contains("공유 파일에는 토큰, 비밀번호, 개인 첨부 원문·파일명과 로그 메시지 원문을 포함하지 않습니다.", settingsPageSource, StringComparison.Ordinal);
+
+        Assert.Contains("builder.Services.AddSingleton<MobileDiagnosticExportService>();", mauiProgramSource, StringComparison.Ordinal);
+        Assert.Contains("private readonly MobileDiagnosticExportService _diagnosticExportService;", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("ExportDiagnosticsCommand = new AsyncCommand(ExportDiagnosticsAsync);", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("MobileDiagnosticExportService diagnosticExportService", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("await _diagnosticExportService.ExportAndShareAsync();", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("MobileAppLogger.Error(\"DIAG\", \"진단 정보 내보내기 실패\", ex);", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("await MobileErrorHandler.ShowAlertAsync(\"진단 정보 내보내기\", StatusMessage);", settingsViewModelSource, StringComparison.Ordinal);
+
+        Assert.Contains("new ShareFileRequest(", diagnosticServiceSource, StringComparison.Ordinal);
+        Assert.Contains("new ReadOnlyFile(exportPath, \"text/plain\")", diagnosticServiceSource, StringComparison.Ordinal);
+        Assert.Contains("Share.Default.RequestAsync(request)", diagnosticServiceSource, StringComparison.Ordinal);
+        Assert.Contains("AppInfo.Current.VersionString", diagnosticServiceSource, StringComparison.Ordinal);
+        Assert.Contains("DeviceInfo.Current.Model", diagnosticServiceSource, StringComparison.Ordinal);
+        Assert.Contains("_settings.GetSanitizedBaseUrlForDiagnostics()", diagnosticServiceSource, StringComparison.Ordinal);
+        Assert.Contains("MobilePendingScopeFilter.CreateSummary(session, state)", diagnosticServiceSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("state.PendingTotalCount", diagnosticServiceSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("pendingSummary.ExcludedTotalCount", diagnosticServiceSource, StringComparison.Ordinal);
+        Assert.Contains("ReadRecentErrorLogMetadataAsync", diagnosticServiceSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("SanitizeFreeText(line)", diagnosticServiceSource, StringComparison.Ordinal);
+        Assert.Contains("MobileDiagnosticTextRedactor.SanitizeFreeText", diagnosticServiceSource, StringComparison.Ordinal);
+        Assert.Contains("georaeplan-mobile-diagnostics-*.txt", diagnosticServiceSource, StringComparison.Ordinal);
+        Assert.Contains("토큰, 비밀번호, 개인 첨부 원문·파일명, 로그 메시지 원문은 포함하지 않습니다.", diagnosticServiceSource, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("Authorization: Bearer opaque-secret-123", "opaque-secret-123")]
+    [InlineData("refresh_token=refresh-secret-456", "refresh-secret-456")]
+    [InlineData("Bearer standalone-secret-789", "standalone-secret-789")]
+    [InlineData("JWT eyJhbGciOiJIUzI1NiJ9.payload.signature", "eyJhbGciOiJIUzI1NiJ9.payload.signature")]
+    [InlineData("file C:\\private\\customer\\statement.pdf", "statement.pdf")]
+    [InlineData("file /data/user/0/customer-contract.xlsx", "customer-contract.xlsx")]
+    public void MobileDiagnosticTextRedactor_RemovesSecretsAndPrivateFileDetails(string source, string forbidden)
+    {
+        var sanitized = MobileDiagnosticTextRedactor.SanitizeFreeText(source);
+
+        Assert.DoesNotContain(forbidden, sanitized, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void MobileDiagnosticTextRedactor_KeepsOnlyUrlOrigin()
+    {
+        var sanitized = MobileDiagnosticTextRedactor.SanitizeFreeText(
+            "GET https://user:password@example.com:8443/api/customers/secret-id?access_token=opaque#fragment failed");
+
+        Assert.Contains("https://example.com:8443", sanitized, StringComparison.Ordinal);
+        Assert.DoesNotContain("user", sanitized, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("password", sanitized, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("secret-id", sanitized, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("opaque", sanitized, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("fragment", sanitized, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

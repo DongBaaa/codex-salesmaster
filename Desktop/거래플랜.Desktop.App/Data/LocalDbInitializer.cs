@@ -2256,12 +2256,19 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
 
     private static async Task<bool> HasColumnAsync(LocalDbContext db, string tableName, string columnName)
     {
-        await db.Database.OpenConnectionAsync();
+        if (!IsSafeSqlIdentifier(tableName) || !IsSafeSqlIdentifier(columnName))
+            return false;
+
+        var connection = db.Database.GetDbConnection();
+        var shouldClose = connection.State != System.Data.ConnectionState.Open;
+
+        if (shouldClose)
+            await connection.OpenAsync();
 
         try
         {
-            await using var command = db.Database.GetDbConnection().CreateCommand();
-            command.CommandText = $"PRAGMA table_info(\"{tableName}\")";
+            await using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA table_info(" + QuoteSqlIdentifier(tableName) + ");";
             await using var reader = await command.ExecuteReaderAsync();
             while (await reader.ReadAsync())
             {
@@ -2273,7 +2280,8 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         }
         finally
         {
-            await db.Database.CloseConnectionAsync();
+            if (shouldClose)
+                await connection.CloseAsync();
         }
     }
 
@@ -2303,15 +2311,37 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             return;
         }
 
+        if (await HasColumnAsync(db, table, column))
+            return;
+
         try
         {
-            var sql = "ALTER TABLE \"" + table + "\" ADD COLUMN \"" + column + "\" " + definition;
+            var sql = "ALTER TABLE " + QuoteSqlIdentifier(table) + " ADD COLUMN " + QuoteSqlIdentifier(column) + " " + definition;
             await db.Database.ExecuteSqlRawAsync(sql);
         }
         catch (Exception ex)
         {
+            if (await WaitForColumnAvailabilityAsync(db, table, column))
+                return;
+
             LogSchemaStepFailure($"{nameof(TryAddColumnAsync)}:{table}.{column}", ex);
         }
+    }
+
+    private static async Task<bool> WaitForColumnAvailabilityAsync(LocalDbContext db, string tableName, string columnName)
+    {
+        const int maxAttempts = 3;
+
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            if (await HasColumnAsync(db, tableName, columnName))
+                return true;
+
+            if (attempt < maxAttempts - 1)
+                await Task.Delay(50);
+        }
+
+        return false;
     }
 
     private static bool IsSafeSqlIdentifier(string value)

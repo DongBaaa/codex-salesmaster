@@ -3,8 +3,8 @@ param(
     [string]$ProjectRoot,
     [string]$OutputRoot,
     [string]$Channel = 'stable',
-    [int]$KeepDesktopPackageCount = 1,
-    [int]$KeepAndroidPackageCount = 1,
+    [int]$KeepDesktopPackageCount = 2,
+    [int]$KeepAndroidPackageCount = 2,
     [switch]$SkipPackagePrune,
     [string]$DesktopPackagePath,
     [string]$AndroidPackagePath,
@@ -266,6 +266,24 @@ function Write-JsonFileAtomically {
     }
 }
 
+function Get-ManifestPlatformVersion {
+    param(
+        $Manifest,
+        [Parameter(Mandatory = $true)][string]$Platform
+    )
+
+    if ($null -eq $Manifest) {
+        return ''
+    }
+
+    $platformNode = $Manifest.$Platform
+    if ($null -eq $platformNode) {
+        return ''
+    }
+
+    return ([string]$platformNode.version).Trim()
+}
+
 $ErrorActionPreference = 'Stop'
 
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
@@ -345,7 +363,28 @@ if (-not [string]::IsNullOrWhiteSpace($AndroidPackagePath) -and (Test-Path -Lite
 }
 
 $manifestPath = Join-Path $manifestRoot ($Channel + '.json')
+$previousManifestPath = Join-Path $manifestRoot ($Channel + '.previous.json')
+if (Test-Path -LiteralPath $manifestPath) {
+    try {
+        $previousManifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $previousDesktopVersion = Get-ManifestPlatformVersion -Manifest $previousManifest -Platform 'desktop'
+        $previousAndroidVersion = Get-ManifestPlatformVersion -Manifest $previousManifest -Platform 'android'
+        $nextDesktopVersion = Get-ManifestPlatformVersion -Manifest $manifest -Platform 'desktop'
+        $nextAndroidVersion = Get-ManifestPlatformVersion -Manifest $manifest -Platform 'android'
+        if (-not [string]::Equals($previousDesktopVersion, $nextDesktopVersion, [StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals($previousAndroidVersion, $nextAndroidVersion, [StringComparison]::OrdinalIgnoreCase)) {
+            Write-JsonFileAtomically -TargetPath $previousManifestPath -InputObject $previousManifest
+        }
+    }
+    catch {
+        Write-Warning "기존 manifest를 이전 정상 버전으로 보관하지 못했습니다: $($_.Exception.Message)"
+    }
+}
+
 Write-JsonFileAtomically -TargetPath $manifestPath -InputObject $manifest
+
+$deliveryManifestPath = Join-Path $ProjectRoot ("배포\" + $Channel + '.json')
+Write-JsonFileAtomically -TargetPath $deliveryManifestPath -InputObject $manifest
 
 $removedDesktopPackages = @()
 $removedAndroidPackages = @()
@@ -357,6 +396,8 @@ if (-not $SkipPackagePrune) {
 }
 
 Write-Host "update_manifest=$manifestPath"
+Write-Host "delivery_manifest=$deliveryManifestPath"
+if (Test-Path -LiteralPath $previousManifestPath) { Write-Host "previous_manifest=$previousManifestPath" }
 if ($manifest.desktop) { Write-Host "desktop_package=$($manifest.desktop.fileName)" }
 if ($manifest.android) { Write-Host "android_package=$($manifest.android.fileName)" }
 if ($removedDesktopPackages.Count -gt 0) { Write-Host "desktop_packages_pruned=$($removedDesktopPackages.Count)" }

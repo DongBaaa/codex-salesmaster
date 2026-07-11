@@ -1,5 +1,10 @@
 using System.Reflection;
 using System.Diagnostics;
+using System.Linq;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Text.Json;
 using 거래플랜.Desktop.App.Services;
 using Xunit;
 
@@ -91,6 +96,12 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("[System.IO.File]::Replace($tempPath, $TargetPath, $backupPath, $true)", source, StringComparison.Ordinal);
         Assert.Contains("Move-Item -LiteralPath $tempPath -Destination $TargetPath -Force", source, StringComparison.Ordinal);
         Assert.Contains("Write-JsonFileAtomically -TargetPath $manifestPath -InputObject $manifest", source, StringComparison.Ordinal);
+        Assert.Contains("[int]$KeepDesktopPackageCount = 2", source, StringComparison.Ordinal);
+        Assert.Contains("[int]$KeepAndroidPackageCount = 2", source, StringComparison.Ordinal);
+        Assert.Contains("$previousManifestPath = Join-Path $manifestRoot ($Channel + '.previous.json')", source, StringComparison.Ordinal);
+        Assert.Contains("Write-JsonFileAtomically -TargetPath $previousManifestPath -InputObject $previousManifest", source, StringComparison.Ordinal);
+        Assert.Contains("$deliveryManifestPath = Join-Path $ProjectRoot (\"배포\\\" + $Channel + '.json')", source, StringComparison.Ordinal);
+        Assert.Contains("Write-JsonFileAtomically -TargetPath $deliveryManifestPath -InputObject $manifest", source, StringComparison.Ordinal);
 
         Assert.Contains("Test-DesktopUpdatePackage -PackagePath $SourcePath -ExpectedVersion $Version", source, StringComparison.Ordinal);
         Assert.Contains("'App/Updater/거래플랜.Updater.exe'", source, StringComparison.Ordinal);
@@ -104,9 +115,346 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("-PreserveFileNames $preservedAndroidFiles", source, StringComparison.Ordinal);
         AssertInOrder(
             source,
+            "Write-JsonFileAtomically -TargetPath $previousManifestPath -InputObject $previousManifest",
             "Write-JsonFileAtomically -TargetPath $manifestPath -InputObject $manifest",
+            "Write-JsonFileAtomically -TargetPath $deliveryManifestPath -InputObject $manifest",
             "$preservedDesktopFiles = Get-ManifestReferencedFileNames -ManifestRoot $manifestRoot -Platform 'desktop'",
             "$removedDesktopPackages = Remove-OldPackages");
+    }
+
+    [Fact]
+    public void LinuxPcRelease_UsesVerifiedLiveBaselineForMirrorToLiveAndKeepsLocalFallbackForStaging()
+    {
+        var source = ReadRepositoryFile(
+            "tools",
+            "linux",
+            "Publish-GeoraeplanLinuxPcRelease.ps1");
+
+        Assert.Contains("[switch]$AllowMissingLiveUpdateBaseline", source, StringComparison.Ordinal);
+        Assert.Contains("function Copy-VerifiedLiveUpdateRollbackBaselineFromSourceUpdatesRoot", source, StringComparison.Ordinal);
+        Assert.Contains("function Invoke-SshFileDownload", source, StringComparison.Ordinal);
+        Assert.Contains("function Copy-LiveUpdateRollbackBaseline", source, StringComparison.Ordinal);
+        Assert.Contains("$remoteUpdatesRoot = $Config.RemoteRoot + '/app/live/updates'", source, StringComparison.Ordinal);
+        Assert.Contains("exit 44", source, StringComparison.Ordinal);
+        Assert.Contains("Invoke-SshFileDownload -RemotePath $remotePackagePath -DestinationPath $localPackagePath -Config $Config", source, StringComparison.Ordinal);
+        Assert.Contains("same-origin", source, StringComparison.Ordinal);
+        Assert.Contains("live_update_rollback_baseline_seeded", source, StringComparison.Ordinal);
+        Assert.Contains("live_update_rollback_baseline=initial_release manifest_status=missing channel=$Channel", source, StringComparison.Ordinal);
+        Assert.Contains("$Channel + '.previous.json'", source, StringComparison.Ordinal);
+        AssertInOrder(
+            source,
+            "if ($MirrorToLive) {",
+            "Copy-LiveUpdateRollbackBaseline `",
+            "Copy-LocalUpdateRollbackBaseline -Root $ProjectRoot -PublishRoot $tempPublishRoot -Channel 'stable'",
+            "$updateAssetScript = Join-Path $ProjectRoot 'tools\\release\\Publish-GeoraePlanUpdateAssets.ps1'",
+            "& $updateAssetScript @updateAssetArgs");
+    }
+    [Fact]
+    public async Task LinuxPcRelease_RollbackBaselineFunction_CopiesBothVerifiedManifestsAndPackages()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var testRoot = Path.Combine(
+            repositoryRoot,
+            "temp",
+            "linux-update-baseline-tests",
+            Guid.NewGuid().ToString("N"));
+        var projectRoot = Path.Combine(testRoot, "project");
+        var publishRoot = Path.Combine(testRoot, "publish");
+        var sourceManifestRoot = Path.Combine(projectRoot, "배포", "업데이트", "manifest");
+        var sourceDesktopRoot = Path.Combine(projectRoot, "배포", "업데이트", "downloads", "desktop");
+
+        try
+        {
+            Directory.CreateDirectory(sourceManifestRoot);
+            Directory.CreateDirectory(sourceDesktopRoot);
+            Directory.CreateDirectory(publishRoot);
+
+            var currentPackage = WriteRollbackTestPackage(sourceDesktopRoot, "desktop-current.zip", "current baseline");
+            var previousPackage = WriteRollbackTestPackage(sourceDesktopRoot, "desktop-previous.zip", "previous baseline");
+            File.WriteAllText(
+                Path.Combine(sourceManifestRoot, "stable.json"),
+                CreateRollbackTestManifestJson("1.2.0", currentPackage));
+            File.WriteAllText(
+                Path.Combine(sourceManifestRoot, "stable.previous.json"),
+                CreateRollbackTestManifestJson("1.1.0", previousPackage));
+
+            var linuxReleaseSource = ReadRepositoryFile(
+                "tools",
+                "linux",
+                "Publish-GeoraeplanLinuxPcRelease.ps1");
+            var functionStart = linuxReleaseSource.IndexOf(
+                "function Assert-SafeUpdatePackageFileName",
+                StringComparison.Ordinal);
+            var functionEnd = linuxReleaseSource.IndexOf(
+                "Assert-SafeReleaseId -Value $ReleaseId",
+                functionStart,
+                StringComparison.Ordinal);
+            Assert.True(functionStart >= 0 && functionEnd > functionStart);
+
+            var testScriptPath = Path.Combine(testRoot, "run-baseline-copy.ps1");
+            var script = linuxReleaseSource[functionStart..functionEnd] + Environment.NewLine +
+                         $"Copy-LocalUpdateRollbackBaseline -Root '{EscapePowerShellSingleQuotedLiteral(projectRoot)}' -PublishRoot '{EscapePowerShellSingleQuotedLiteral(publishRoot)}' -Channel 'stable'" +
+                         Environment.NewLine;
+            File.WriteAllText(testScriptPath, script, new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+
+            var result = await RunPowerShellAsync(testScriptPath);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("update_rollback_baseline_seeded manifests=2 packages=2", result.StdOut, StringComparison.Ordinal);
+            Assert.True(File.Exists(Path.Combine(publishRoot, "updates", "manifest", "stable.json")));
+            Assert.True(File.Exists(Path.Combine(publishRoot, "updates", "manifest", "stable.previous.json")));
+            Assert.True(File.Exists(Path.Combine(publishRoot, "updates", "downloads", "desktop", currentPackage.Name)));
+            Assert.True(File.Exists(Path.Combine(publishRoot, "updates", "downloads", "desktop", previousPackage.Name)));
+        }
+        finally
+        {
+            if (Directory.Exists(testRoot))
+                Directory.Delete(testRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task LinuxPcRelease_VerifiedLiveRollbackBaselineHelper_CopiesVerifiedManifestAndPackages()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var testRoot = Path.Combine(
+            repositoryRoot,
+            "temp",
+            "linux-live-update-baseline-helper-tests",
+            Guid.NewGuid().ToString("N"));
+        var sourceUpdatesRoot = Path.Combine(testRoot, "source", "updates");
+        var sourceManifestRoot = Path.Combine(sourceUpdatesRoot, "manifest");
+        var sourceDesktopRoot = Path.Combine(sourceUpdatesRoot, "downloads", "desktop");
+        var sourceAndroidRoot = Path.Combine(sourceUpdatesRoot, "downloads", "android");
+        var publishRoot = Path.Combine(testRoot, "publish");
+
+        try
+        {
+            Directory.CreateDirectory(sourceManifestRoot);
+            Directory.CreateDirectory(sourceDesktopRoot);
+            Directory.CreateDirectory(sourceAndroidRoot);
+            Directory.CreateDirectory(publishRoot);
+
+            var desktopPackage = WriteRollbackTestPackage(sourceDesktopRoot, "desktop-live.zip", "desktop live baseline");
+            var androidPackage = WriteRollbackTestPackage(sourceAndroidRoot, "android-live.apk", "android live baseline");
+            File.WriteAllText(
+                Path.Combine(sourceManifestRoot, "stable.json"),
+                CreateRollbackTestManifestJson(
+                    new RollbackManifestPackage(
+                        "desktop",
+                        "1.2.0",
+                        desktopPackage,
+                        $"/updates/download/desktop/{Uri.EscapeDataString(desktopPackage.Name)}"),
+                    new RollbackManifestPackage(
+                        "android",
+                        "0.2.59",
+                        androidPackage,
+                        $"/updates/download/android/{Uri.EscapeDataString(androidPackage.Name)}")));
+
+            var linuxReleaseSource = ReadRepositoryFile(
+                "tools",
+                "linux",
+                "Publish-GeoraeplanLinuxPcRelease.ps1");
+            var testScriptPath = Path.Combine(testRoot, "run-verified-live-baseline-copy.ps1");
+            var script = ExtractPowerShellScriptSection(
+                             linuxReleaseSource,
+                             "function Assert-SafeUpdatePackageFileName",
+                             "Assert-SafeReleaseId -Value $ReleaseId") + Environment.NewLine +
+                         $"Copy-VerifiedLiveUpdateRollbackBaselineFromSourceUpdatesRoot -SourceUpdatesRoot '{EscapePowerShellSingleQuotedLiteral(sourceUpdatesRoot)}' -BaseUrl 'https://trade.2884.kr' -PublishRoot '{EscapePowerShellSingleQuotedLiteral(publishRoot)}' -Channel 'stable'" +
+                         Environment.NewLine;
+            File.WriteAllText(testScriptPath, script, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+
+            var result = await RunPowerShellAsync(testScriptPath);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("live_update_rollback_baseline_seeded manifests=1 packages=2", result.StdOut, StringComparison.Ordinal);
+            var publishedManifestPath = Path.Combine(publishRoot, "updates", "manifest", "stable.json");
+            var publishedDesktopPath = Path.Combine(publishRoot, "updates", "downloads", "desktop", desktopPackage.Name);
+            var publishedAndroidPath = Path.Combine(publishRoot, "updates", "downloads", "android", androidPackage.Name);
+            Assert.True(File.Exists(publishedManifestPath));
+            Assert.True(File.Exists(publishedDesktopPath));
+            Assert.True(File.Exists(publishedAndroidPath));
+            Assert.Equal("1.2.0", ReadManifestPlatformVersion(publishedManifestPath, "desktop"));
+            Assert.Equal("0.2.59", ReadManifestPlatformVersion(publishedManifestPath, "android"));
+            Assert.Equal(ComputeSha256(desktopPackage.FullName), ComputeSha256(publishedDesktopPath));
+            Assert.Equal(ComputeSha256(androidPackage.FullName), ComputeSha256(publishedAndroidPath));
+        }
+        finally
+        {
+            if (Directory.Exists(testRoot))
+                Directory.Delete(testRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task LinuxPcRelease_VerifiedLiveRollbackBaselineHelper_RejectsPackageUrlOutsideSameOriginOrAllowedBaseUrls()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var testRoot = Path.Combine(
+            repositoryRoot,
+            "temp",
+            "linux-live-update-baseline-helper-block-tests",
+            Guid.NewGuid().ToString("N"));
+        var sourceUpdatesRoot = Path.Combine(testRoot, "source", "updates");
+        var sourceManifestRoot = Path.Combine(sourceUpdatesRoot, "manifest");
+        var sourceDesktopRoot = Path.Combine(sourceUpdatesRoot, "downloads", "desktop");
+        var publishRoot = Path.Combine(testRoot, "publish");
+
+        try
+        {
+            Directory.CreateDirectory(sourceManifestRoot);
+            Directory.CreateDirectory(sourceDesktopRoot);
+            Directory.CreateDirectory(publishRoot);
+
+            var desktopPackage = WriteRollbackTestPackage(sourceDesktopRoot, "desktop-cross-origin.zip", "desktop cross origin baseline");
+            File.WriteAllText(
+                Path.Combine(sourceManifestRoot, "stable.json"),
+                CreateRollbackTestManifestJson(
+                    new RollbackManifestPackage(
+                        "desktop",
+                        "1.2.0",
+                        desktopPackage,
+                        $"https://updates.evil.example.com/updates/download/desktop/{Uri.EscapeDataString(desktopPackage.Name)}")));
+
+            var linuxReleaseSource = ReadRepositoryFile(
+                "tools",
+                "linux",
+                "Publish-GeoraeplanLinuxPcRelease.ps1");
+            var testScriptPath = Path.Combine(testRoot, "run-verified-live-baseline-block.ps1");
+            var script = ExtractPowerShellScriptSection(
+                             linuxReleaseSource,
+                             "function Assert-SafeUpdatePackageFileName",
+                             "Assert-SafeReleaseId -Value $ReleaseId") + Environment.NewLine +
+                         $"Copy-VerifiedLiveUpdateRollbackBaselineFromSourceUpdatesRoot -SourceUpdatesRoot '{EscapePowerShellSingleQuotedLiteral(sourceUpdatesRoot)}' -BaseUrl 'https://trade.2884.kr' -PublishRoot '{EscapePowerShellSingleQuotedLiteral(publishRoot)}' -Channel 'stable'" +
+                         Environment.NewLine;
+            File.WriteAllText(testScriptPath, script, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+
+            var result = await RunPowerShellAsync(testScriptPath);
+
+            Assert.NotEqual(0, result.ExitCode);
+            Assert.Contains(
+                "same-origin",
+                result.StdOut + Environment.NewLine + result.StdErr,
+                StringComparison.Ordinal);
+            Assert.False(File.Exists(Path.Combine(publishRoot, "updates", "manifest", "stable.json")));
+        }
+        finally
+        {
+            if (Directory.Exists(testRoot))
+                Directory.Delete(testRoot, recursive: true);
+        }
+    }
+    [Fact]
+    public void UpdateRollbackScript_VerifiesPackagesAndRequiresExplicitApplyBeforeAtomicSwap()
+    {
+        var source = ReadRepositoryFile(
+            "tools",
+            "release",
+            "Restore-GeoraePlanPreviousUpdateManifest.ps1");
+
+        Assert.Contains("[switch]$Apply", source, StringComparison.Ordinal);
+        Assert.Contains("Test-ManifestPackage -Package $package", source, StringComparison.Ordinal);
+        Assert.Contains("Get-FileHash -Algorithm SHA256", source, StringComparison.Ordinal);
+        Assert.Contains("if (-not $Apply)", source, StringComparison.Ordinal);
+        Assert.Contains("rollback_manifest=PREVIEW_OK", source, StringComparison.Ordinal);
+        AssertInOrder(
+            source,
+            "if (-not $Apply)",
+            "Write-JsonFileAtomically -TargetPath $currentPath -InputObject $previous",
+            "Write-JsonFileAtomically -TargetPath $previousPath -InputObject $current",
+            "Write-JsonFileAtomically -TargetPath $deliveryPath -InputObject $previous");
+    }
+
+    [Fact]
+    public async Task UpdateRollbackScript_PreviewDoesNotMutateAndApplySwapsVerifiedManifest()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var scriptPath = Path.Combine(
+            repositoryRoot,
+            "tools",
+            "release",
+            "Restore-GeoraePlanPreviousUpdateManifest.ps1");
+        var testRoot = Path.Combine(
+            repositoryRoot,
+            "temp",
+            "manifest-rollback-tests",
+            Guid.NewGuid().ToString("N"));
+        var outputRoot = Path.Combine(testRoot, "updates");
+        var manifestRoot = Path.Combine(outputRoot, "manifest");
+        var desktopRoot = Path.Combine(outputRoot, "downloads", "desktop");
+        var deliveryRoot = Path.Combine(testRoot, "배포");
+
+        try
+        {
+            Directory.CreateDirectory(manifestRoot);
+            Directory.CreateDirectory(desktopRoot);
+            Directory.CreateDirectory(deliveryRoot);
+
+            var currentPackage = WriteRollbackTestPackage(desktopRoot, "desktop-current.zip", "current package");
+            var previousPackage = WriteRollbackTestPackage(desktopRoot, "desktop-previous.zip", "previous package");
+            var currentJson = CreateRollbackTestManifestJson("1.2.0", currentPackage);
+            var previousJson = CreateRollbackTestManifestJson("1.1.0", previousPackage);
+            var currentManifestPath = Path.Combine(manifestRoot, "stable.json");
+            var previousManifestPath = Path.Combine(manifestRoot, "stable.previous.json");
+            var deliveryManifestPath = Path.Combine(deliveryRoot, "stable.json");
+            File.WriteAllText(currentManifestPath, currentJson);
+            File.WriteAllText(previousManifestPath, previousJson);
+            File.WriteAllText(deliveryManifestPath, currentJson);
+
+            var preview = await RunPowerShellAsync(
+                scriptPath,
+                ("-ProjectRoot", testRoot),
+                ("-OutputRoot", outputRoot));
+
+            Assert.Equal(0, preview.ExitCode);
+            Assert.Contains("rollback_manifest=PREVIEW_OK", preview.StdOut, StringComparison.Ordinal);
+            Assert.Equal("1.2.0", ReadDesktopManifestVersion(currentManifestPath));
+            Assert.Equal("1.1.0", ReadDesktopManifestVersion(previousManifestPath));
+
+            var apply = await RunPowerShellAsync(
+                scriptPath,
+                ("-ProjectRoot", testRoot),
+                ("-OutputRoot", outputRoot),
+                ("-Apply", null));
+
+            Assert.Equal(0, apply.ExitCode);
+            Assert.Contains("rollback_manifest=SWAPPED", apply.StdOut, StringComparison.Ordinal);
+            Assert.Equal("1.1.0", ReadDesktopManifestVersion(currentManifestPath));
+            Assert.Equal("1.2.0", ReadDesktopManifestVersion(previousManifestPath));
+            Assert.Equal("1.1.0", ReadDesktopManifestVersion(deliveryManifestPath));
+        }
+        finally
+        {
+            if (Directory.Exists(testRoot))
+                Directory.Delete(testRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void PaidDeliveryPackaging_RemovesSymbolsAndProvidesOptionalAuthenticodeGate()
+    {
+        var installerSource = ReadRepositoryFile(
+            "tools",
+            "release",
+            "Build-GeoraePlanDesktopInstaller.ps1");
+        var signingSource = ReadRepositoryFile(
+            "tools",
+            "release",
+            "Test-GeoraePlanWindowsSigning.ps1");
+        var fullReleaseSource = ReadRepositoryFile(
+            "tools",
+            "release",
+            "Publish-GeoraePlanFullRelease.ps1");
+
+        Assert.Contains("Get-ChildItem -LiteralPath $appRoot -Recurse -File -Filter '*.pdb'", installerSource, StringComparison.Ordinal);
+        Assert.Contains("Remove-Item -Force -ErrorAction Stop", installerSource, StringComparison.Ordinal);
+        Assert.Contains("Get-AuthenticodeSignature -LiteralPath $path", signingSource, StringComparison.Ordinal);
+        Assert.Contains("[switch]$RequireSigned", signingSource, StringComparison.Ordinal);
+        Assert.Contains("windows_authenticode=PASS", signingSource, StringComparison.Ordinal);
+        Assert.Contains("windows_authenticode=WARNING_UNSIGNED", signingSource, StringComparison.Ordinal);
+        Assert.Contains("[switch]$RequireWindowsAuthenticode", fullReleaseSource, StringComparison.Ordinal);
+        Assert.Contains("Test-GeoraePlanWindowsSigning.ps1", fullReleaseSource, StringComparison.Ordinal);
+        Assert.Contains("$windowsSigningCheckArgs += '-RequireSigned'", fullReleaseSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1556,6 +1904,76 @@ public sealed class ReleaseTempPathGuardTests
         => File.ReadAllText(Path.Combine([FindRepositoryRoot(), .. pathParts]));
 
     private sealed record ProcessResult(int ExitCode, string StdOut, string StdErr);
+    private sealed record RollbackManifestPackage(string Platform, string Version, FileInfo Package, string PackageUrl);
+
+    private static FileInfo WriteRollbackTestPackage(string directory, string fileName, string content)
+    {
+        var path = Path.Combine(directory, fileName);
+        File.WriteAllText(path, content);
+        return new FileInfo(path);
+    }
+
+    private static string CreateRollbackTestManifestJson(string version, FileInfo package)
+        => CreateRollbackTestManifestJson(
+            new RollbackManifestPackage(
+                "desktop",
+                version,
+                package,
+                $"/updates/download/desktop/{Uri.EscapeDataString(package.Name)}"));
+
+    private static string CreateRollbackTestManifestJson(params RollbackManifestPackage[] packages)
+    {
+        var desktop = packages.FirstOrDefault(static package => string.Equals(package.Platform, "desktop", StringComparison.OrdinalIgnoreCase));
+        var android = packages.FirstOrDefault(static package => string.Equals(package.Platform, "android", StringComparison.OrdinalIgnoreCase));
+
+        return JsonSerializer.Serialize(new
+        {
+            channel = "stable",
+            generatedAtUtc = DateTimeOffset.UtcNow,
+            desktop = CreateRollbackManifestPlatformNode(desktop),
+            android = CreateRollbackManifestPlatformNode(android)
+        });
+    }
+
+    private static string ReadDesktopManifestVersion(string path)
+        => ReadManifestPlatformVersion(path, "desktop");
+
+    private static string ReadManifestPlatformVersion(string path, string platform)
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        return document.RootElement.GetProperty(platform).GetProperty("version").GetString() ?? string.Empty;
+    }
+
+    private static object? CreateRollbackManifestPlatformNode(RollbackManifestPackage? package)
+    {
+        if (package is null)
+            return null;
+
+        return new
+        {
+            platform = package.Platform,
+            version = package.Version,
+            packageUrl = package.PackageUrl,
+            fileName = package.Package.Name,
+            fileSize = package.Package.Length,
+            sha256 = ComputeSha256(package.Package.FullName)
+        };
+    }
+
+    private static string ComputeSha256(string path)
+        => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)));
+
+    private static string ExtractPowerShellScriptSection(string source, string startToken, string endToken)
+    {
+        var start = source.IndexOf(startToken, StringComparison.Ordinal);
+        var end = source.IndexOf(endToken, start, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"Start token was not found: {startToken}");
+        Assert.True(end > start, $"End token was not found after start token: {endToken}");
+        return source[start..end];
+    }
+
+    private static string EscapePowerShellSingleQuotedLiteral(string value)
+        => value.Replace("'", "''", StringComparison.Ordinal);
 
     private static void AssertInOrder(string source, params string[] tokens)
     {

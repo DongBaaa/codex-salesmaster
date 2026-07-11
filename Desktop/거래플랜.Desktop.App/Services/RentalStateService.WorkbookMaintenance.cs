@@ -43,20 +43,22 @@ public sealed partial class RentalStateService
             };
         }
 
-        var blockedPlanRows = context.RowsByRowNumber.Values
+        var blockedRows = context.RowsByRowNumber.Values
             .Where(row => row.IsBlocked)
+            .ToList();
+        var blockedPlanRows = blockedRows
             .Select(row => row.RowNumber)
             .OrderBy(rowNumber => rowNumber)
             .ToList();
-        if (blockedPlanRows.Count > 0 || context.Result.UnresolvedCustomerCount > 0)
+        if (blockedRows.Count > 0 || context.Result.UnresolvedCustomerCount > 0)
         {
             return new RentalWorkbookRebuildResult
             {
                 WorkbookPath = path,
                 ProcessedAtUtc = now,
                 IsBlocked = true,
-                BlockReason = blockedPlanRows.Count > 0
-                    ? $"반영검증상태가 차단인 행 {blockedPlanRows.Count:N0}건이 있어 전체 반영을 중단했습니다: {string.Join(", ", blockedPlanRows.Take(20))}"
+                BlockReason = blockedRows.Count > 0
+                    ? BuildWorkbookBlockedReason(blockedRows)
                     : $"현재 렌탈 거래처를 안전하게 확인하지 못한 행 {context.Result.UnresolvedCustomerCount:N0}건이 있어 전체 반영을 중단했습니다.",
                 MissingInWorkbookAssets = context.Result.MissingInWorkbookAssets,
                 MissingInWorkbookCount = context.Result.MissingInWorkbookCount
@@ -185,6 +187,7 @@ public sealed partial class RentalStateService
                         var customerLink = await ResolveWorkbookCustomerLinkAsync(
                             operation.Row.CustomerName,
                             operation.Row.CurrentCustomerId,
+                            operation.Row.CustomerBusinessNumber,
                             operation.Row.OfficeCode,
                             required: true,
                             allowWorkbookNameVariants: true,
@@ -447,17 +450,20 @@ public sealed partial class RentalStateService
             var (matchedAsset, matchedBy, ambiguous, warnings) = MatchWorkbookRowToAsset(row, assets);
             var differences = matchedAsset is null ? new List<string>() : BuildWorkbookDifferences(row, matchedAsset);
             if (row.IsBlocked)
-                warnings.Add("반영검증상태가 차단인 행입니다.");
+                warnings.Add(string.IsNullOrWhiteSpace(row.BlockReason)
+                    ? "반영검증상태가 차단인 행입니다."
+                    : row.BlockReason);
 
             var isCurrentRental = !RentalAssetStatusRules.IsNonOperating(row.AssetStatus);
             WorkbookCustomerLink? resolvedCustomer = null;
-            if (isCurrentRental)
+            if (isCurrentRental && !row.IsBlocked)
             {
                 try
                 {
                     resolvedCustomer = await ResolveWorkbookCustomerLinkAsync(
                         row.CustomerName,
                         row.CurrentCustomerId,
+                        row.CustomerBusinessNumber,
                         row.OfficeCode,
                         required: false,
                         allowWorkbookNameVariants: true,
@@ -586,7 +592,7 @@ public sealed partial class RentalStateService
         {
             var row = table.Rows[rowIndex];
             var name = RentalCatalogValueNormalizer.NormalizeDisplayText(GetCellString(row, headerMap, "상호명"));
-            var businessNumber = RentalCatalogValueNormalizer.NormalizeDisplayText(GetCellString(row, headerMap, "사업자번호"));
+            var businessNumber = NormalizeBusinessNumberDigits(GetCellString(row, headerMap, "사업자번호"));
             if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(businessNumber))
                 continue;
 
@@ -615,8 +621,9 @@ public sealed partial class RentalStateService
         {
             var row = table.Rows[rowIndex];
             var officeValue = GetCellString(row, headerMap, "관리업체", "담당지점");
-            if (!TryResolveImportManagementOfficeCode(officeValue, out var officeCode, out _))
-                officeCode = DomainConstants.OfficeUsenet;
+            var officeResolved = TryResolveImportManagementOfficeCode(officeValue, out var officeCode, out var officeError);
+            if (!officeResolved)
+                officeCode = string.Empty;
 
             var currentLocation = GetCellString(row, headerMap, "현재위치").Trim();
             var disposalDate = ParseDateValue(GetCellValue(row, headerMap, "폐기일"));
@@ -629,13 +636,14 @@ public sealed partial class RentalStateService
                 ManagementId = GetCellString(row, headerMap, "관리ID").Trim(),
                 ManagementNumber = GetCellString(row, headerMap, "관리번호").Trim(),
                 OfficeCode = officeCode,
+                BlockReason = officeResolved ? string.Empty : officeError,
                 CurrentLocation = currentLocation,
                 ItemCategoryName = GetCellString(row, headerMap, "품목분류", "상품분류").Trim(),
-                  Manufacturer = GetCellString(row, headerMap, "제조사").Trim(),
-                  CustomerName = GetCellString(row, headerMap, "고객명").Trim(),
-                  CurrentCustomerId = GetCellString(row, headerMap, "현재거래처ID", "거래처ID", "고객ID").Trim(),
-                  CustomerBusinessNumber = ResolveWorkbookCustomerBusinessNumber(customerBusinessNumberByName, GetCellString(row, headerMap, "고객명")),
-                  ItemName = GetCellString(row, headerMap, "품명", "모델명").Trim(),
+                Manufacturer = GetCellString(row, headerMap, "제조사").Trim(),
+                CustomerName = GetCellString(row, headerMap, "고객명").Trim(),
+                CurrentCustomerId = GetCellString(row, headerMap, "현재거래처ID", "거래처ID", "고객ID").Trim(),
+                CustomerBusinessNumber = ResolveWorkbookCustomerBusinessNumber(customerBusinessNumberByName, GetCellString(row, headerMap, "고객명")),
+                ItemName = GetCellString(row, headerMap, "품명", "모델명").Trim(),
                 MachineNumber = GetCellString(row, headerMap, "기계번호").Trim(),
                 InstallLocation = GetCellString(row, headerMap, "설치위치").Trim(),
                 PurchaseVendor = GetCellString(row, headerMap, "매입처").Trim(),
@@ -660,12 +668,15 @@ public sealed partial class RentalStateService
                 Recall1 = GetCellString(row, headerMap, "회수1").Trim(),
                 Rental1 = GetCellString(row, headerMap, "렌탈1").Trim(),
                 HistoryCustomerId1 = GetCellString(row, headerMap, "이력1거래처ID", "렌탈1거래처ID").Trim(),
+                HistoryCustomerBusinessNumber1 = ResolveWorkbookCustomerBusinessNumber(customerBusinessNumberByName, GetCellString(row, headerMap, "렌탈1")),
                 Recall2 = GetCellString(row, headerMap, "회수2").Trim(),
                 Rental2 = GetCellString(row, headerMap, "렌탈2").Trim(),
                 HistoryCustomerId2 = GetCellString(row, headerMap, "이력2거래처ID", "렌탈2거래처ID").Trim(),
+                HistoryCustomerBusinessNumber2 = ResolveWorkbookCustomerBusinessNumber(customerBusinessNumberByName, GetCellString(row, headerMap, "렌탈2")),
                 Recall3 = GetCellString(row, headerMap, "회수3").Trim(),
                 Rental3 = GetCellString(row, headerMap, "렌탈3").Trim(),
                 HistoryCustomerId3 = GetCellString(row, headerMap, "이력3거래처ID", "렌탈3거래처ID").Trim(),
+                HistoryCustomerBusinessNumber3 = ResolveWorkbookCustomerBusinessNumber(customerBusinessNumberByName, GetCellString(row, headerMap, "렌탈3")),
                 ValidationStatus = GetCellString(row, headerMap, "반영검증상태", "검증상태").Trim(),
                 AssetStatus = assetStatus
             };
@@ -1027,7 +1038,41 @@ public sealed partial class RentalStateService
         string businessNumber)
     {
         foreach (var candidate in BuildWorkbookCustomerNameCandidates(customerName))
-            map[candidate] = businessNumber;
+        {
+            if (!map.TryGetValue(candidate, out var existing))
+            {
+                map[candidate] = businessNumber;
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(existing))
+                continue;
+
+            if (!string.Equals(existing, businessNumber, StringComparison.Ordinal))
+                map[candidate] = string.Empty;
+        }
+    }
+
+    private static string BuildWorkbookBlockedReason(IReadOnlyCollection<WorkbookRentalAssetRow> blockedRows)
+    {
+        var rowNumbers = blockedRows
+            .Select(row => row.RowNumber)
+            .OrderBy(rowNumber => rowNumber)
+            .ToList();
+        var details = blockedRows
+            .Where(row => !string.IsNullOrWhiteSpace(row.BlockReason))
+            .OrderBy(row => row.RowNumber)
+            .Take(5)
+            .Select(row => $"{row.RowNumber}행 {row.BlockReason}")
+            .ToList();
+
+        var reason = $"차단 또는 데이터 오류 행 {blockedRows.Count:N0}건이 있어 전체 반영을 중단했습니다: {string.Join(", ", rowNumbers.Take(20))}";
+        if (rowNumbers.Count > 20)
+            reason += " 외";
+        if (details.Count > 0)
+            reason += " / " + string.Join(" / ", details);
+
+        return reason;
     }
 
     private static IEnumerable<string> BuildWorkbookCustomerNameCandidates(string? customerName)
@@ -1431,6 +1476,7 @@ public sealed partial class RentalStateService
         public string CustomerName { get; init; } = string.Empty;
         public string CurrentCustomerId { get; init; } = string.Empty;
         public string CustomerBusinessNumber { get; init; } = string.Empty;
+        public string BlockReason { get; init; } = string.Empty;
         public string ItemName { get; init; } = string.Empty;
         public string MachineNumber { get; init; } = string.Empty;
         public string InstallLocation { get; init; } = string.Empty;
@@ -1456,15 +1502,19 @@ public sealed partial class RentalStateService
         public string Recall1 { get; init; } = string.Empty;
         public string Rental1 { get; init; } = string.Empty;
         public string HistoryCustomerId1 { get; init; } = string.Empty;
+        public string HistoryCustomerBusinessNumber1 { get; init; } = string.Empty;
         public string Recall2 { get; init; } = string.Empty;
         public string Rental2 { get; init; } = string.Empty;
         public string HistoryCustomerId2 { get; init; } = string.Empty;
+        public string HistoryCustomerBusinessNumber2 { get; init; } = string.Empty;
         public string Recall3 { get; init; } = string.Empty;
         public string Rental3 { get; init; } = string.Empty;
         public string HistoryCustomerId3 { get; init; } = string.Empty;
+        public string HistoryCustomerBusinessNumber3 { get; init; } = string.Empty;
         public string ValidationStatus { get; init; } = string.Empty;
         public string AssetStatus { get; init; } = string.Empty;
         public bool IsBlocked =>
+            !string.IsNullOrWhiteSpace(BlockReason) ||
             string.Equals(ValidationStatus, "blocked", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(ValidationStatus, "차단", StringComparison.OrdinalIgnoreCase);
         public bool HasStrongIdentifier =>

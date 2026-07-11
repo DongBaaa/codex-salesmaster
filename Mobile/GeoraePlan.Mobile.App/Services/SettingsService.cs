@@ -51,6 +51,9 @@ public sealed class SettingsService
     public string NormalizeBaseUrlForConnectionTest(string? baseUrl)
         => NormalizeBaseUrl(baseUrl);
 
+    public string GetSanitizedBaseUrlForDiagnostics()
+        => SanitizeBaseUrlForDiagnostics(GetBaseUrl());
+
     public string GetLastUsername()
         => Preferences.Default.Get(LastUsernameKey, string.Empty);
 
@@ -150,5 +153,51 @@ public sealed class SettingsService
 
         normalized = uri.ToString().TrimEnd('/');
         return true;
+    }
+
+    private static string SanitizeBaseUrlForDiagnostics(string? raw)
+    {
+        var normalized = NormalizeBaseUrl(raw);
+        var uri = new Uri(normalized, UriKind.Absolute);
+        var builder = new UriBuilder(uri)
+        {
+            UserName = string.Empty,
+            Password = string.Empty,
+            Query = string.Empty,
+            Fragment = string.Empty
+        };
+
+        var sanitizedSegments = uri.AbsolutePath
+            .Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .Select(SanitizePathSegment)
+            .ToArray();
+
+        builder.Path = sanitizedSegments.Length == 0
+            ? "/"
+            : "/" + string.Join('/', sanitizedSegments);
+
+        return builder.Uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
+    }
+
+    private static string SanitizePathSegment(string segment)
+    {
+        var trimmed = segment.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+            return string.Empty;
+
+        if (trimmed.Contains("token", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Contains("password", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Contains("secret", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Contains("key", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Contains("auth", StringComparison.OrdinalIgnoreCase))
+        {
+            return "[redacted]";
+        }
+
+        var alphaNumericLength = trimmed.Count(char.IsLetterOrDigit);
+        if (trimmed.Length >= 32 && alphaNumericLength >= trimmed.Length - 2)
+            return "[redacted]";
+
+        return trimmed;
     }
 }

@@ -133,7 +133,7 @@
         </Style>
         <Style x:Key="RentalAssetSingleSelectionCellStyle" TargetType="{x:Type DataGridCell}">
             <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="FocusVisualStyle" Value="{StaticResource GeoraePlanDataGridCellFocusVisualStyle}"/>
             <Style.Triggers>
                 <Trigger Property="IsSelected" Value="True">
                     <Setter Property="Background" Value="Transparent"/>
@@ -162,8 +162,8 @@
                     <Button Content="신규 자산" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,6,0" Command="{Binding NewAssetCommand}" IsEnabled="{Binding CanCreateAsset}"/>
                     <Button Content="자산 저장" Background="#1B5E20" BorderBrush="#1B5E20" Margin="0,0,6,0" Command="{Binding SaveCommand}" IsEnabled="{Binding CanSave}"/>
                     <Button Content="렌탈 장비 교체" Background="#00897B" BorderBrush="#00897B" Margin="0,0,6,0" Command="{Binding ReplaceRentalEquipmentCommand}" IsEnabled="{Binding CanReplaceSelected}"/>
-                    <Button Content="자산 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,6,0" Command="{Binding DeleteCommand}" IsEnabled="{Binding CanDeleteSelected}"/>
-                    <Button Content="선택 자산 삭제" Background="#8E24AA" BorderBrush="#8E24AA" Margin="0,0,6,0" Command="{Binding DeleteCheckedCommand}" IsEnabled="{Binding CanDeleteChecked}"/>
+                    <Button Content="현재 자산 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,6,0" Command="{Binding DeleteCommand}" IsEnabled="{Binding CanDeleteSelected}"/>
+                    <Button Content="체크 자산 일괄삭제" Background="#8E24AA" BorderBrush="#8E24AA" Margin="0,0,6,0" Command="{Binding DeleteCheckedCommand}" IsEnabled="{Binding CanDeleteChecked}"/>
                     <Button Content="회수장비내역서" Background="#5D4037" BorderBrush="#5D4037" Margin="0,0,6,0" Command="{Binding OpenReturnReportCommand}"/>
                     <Button Content="렌탈장비내역서" Background="#00897B" BorderBrush="#00897B" Margin="0,0,6,0" Command="{Binding OpenEquipmentDetailCommand}"/>
                     <Button Content="계약서 작성" Background="#6A1B9A" BorderBrush="#6A1B9A" Margin="0,0,6,0" Command="{Binding OpenContractWriterCommand}"/>
@@ -174,7 +174,7 @@
 
         <Border Grid.Row="1" Margin="0,10,0,0" Background="#1A2B4A" Padding="12" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
             <WrapPanel VerticalAlignment="Center">
-                <TextBlock Text="품목분류" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <TextBlock Text="검색어" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <TextBox Width="240" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,12,0"/>
                 <TextBlock Text="품목분류" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <Grid Margin="0,0,12,0">
@@ -222,7 +222,7 @@
                         </Border>
                     </Popup>
                 </Grid>
-                <TextBlock Text="품목분류" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <TextBlock Text="상태" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <Grid Margin="0,0,12,0">
                     <primitives:ToggleButton x:Name="StatusFilterButton" Style="{StaticResource FilterToggleButtonStyle}" IsChecked="{Binding IsStatusFilterPopupOpen}" Content="{Binding SelectedStatusFilterSummary}"/>
                     <Popup IsOpen="{Binding IsStatusFilterPopupOpen}" PlacementTarget="{Binding ElementName=StatusFilterButton}" Placement="Bottom" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade">
@@ -256,35 +256,65 @@
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
-                <DataGrid ItemsSource="{Binding Rows}" SelectedItem="{Binding SelectedRow}" BorderThickness="0" IsReadOnly="False"
-                          SelectionMode="Single" SelectionUnit="FullRow"
-                          RowStyle="{StaticResource RentalAssetSingleSelectionRowStyle}"
-                          CellStyle="{StaticResource RentalAssetSingleSelectionCellStyle}">
-                    <DataGrid.Columns>
-                        <DataGridTemplateColumn Width="46">
-                            <DataGridTemplateColumn.HeaderTemplate>
-                                <DataTemplate><TextBlock Text="선택" HorizontalAlignment="Center"/></DataTemplate>
-                            </DataGridTemplateColumn.HeaderTemplate>
-                            <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate>
-                                    <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                </DataTemplate>
-                            </DataGridTemplateColumn.CellTemplate>
-                        </DataGridTemplateColumn>
-                        <DataGridTextColumn Header="관리번호" Binding="{Binding Source.ManagementNumber}" Width="110"/>
-                        <DataGridTextColumn Header="담당지점" Binding="{Binding ResponsibleOfficeName}" Width="110"/>
-                        <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocationDisplay}" Width="170"/>
-                        <DataGridTextColumn Header="품목분류" Binding="{Binding Source.ItemCategoryName}" Width="120"/>
-                        <DataGridTextColumn Header="품명" Binding="{Binding Source.ItemName}" Width="150"/>
-                        <DataGridTextColumn Header="시리얼번호" Binding="{Binding Source.MachineNumber}" Width="140"/>
-                        <DataGridTextColumn Header="상태" Binding="{Binding Source.AssetStatus}" Width="90"/>
-                        <DataGridTextColumn Header="청구상태" Binding="{Binding BillingEligibilityStatus}" Width="100"/>
-                        <DataGridTextColumn Header="월요금" Binding="{Binding Source.MonthlyFee, StringFormat=N0}" Width="100"/>
-                        <DataGridTextColumn Header="만료일" Binding="{Binding Source.RentalEndDate}" Width="100"/>
-                        <DataGridTextColumn Header="남은일수" Binding="{Binding DaysRemaining}" Width="76"/>
-                        <DataGridCheckBoxColumn Header="이상" Binding="{Binding HasDataIssue}" Width="60" IsReadOnly="True"/>
-                    </DataGrid.Columns>
-                </DataGrid>
+                <Grid>
+                    <DataGrid x:Name="RentalAssetDataGrid" ItemsSource="{Binding Rows}" SelectedItem="{Binding SelectedRow}" BorderThickness="0" IsReadOnly="False"
+                              SelectionMode="Single" SelectionUnit="FullRow"
+                              RowStyle="{StaticResource RentalAssetSingleSelectionRowStyle}"
+                              CellStyle="{StaticResource RentalAssetSingleSelectionCellStyle}">
+                        <DataGrid.Columns>
+                            <DataGridTemplateColumn Width="46">
+                                <DataGridTemplateColumn.HeaderTemplate>
+                                    <DataTemplate><TextBlock Text="선택" HorizontalAlignment="Center"/></DataTemplate>
+                                </DataGridTemplateColumn.HeaderTemplate>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="관리번호" Binding="{Binding Source.ManagementNumber}" Width="110"/>
+                            <DataGridTextColumn Header="담당지점" Binding="{Binding ResponsibleOfficeName}" Width="110"/>
+                            <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocationDisplay}" Width="170"/>
+                            <DataGridTextColumn Header="품목분류" Binding="{Binding Source.ItemCategoryName}" Width="120"/>
+                            <DataGridTextColumn Header="품명" Binding="{Binding Source.ItemName}" Width="150"/>
+                            <DataGridTextColumn Header="시리얼번호" Binding="{Binding Source.MachineNumber}" Width="140"/>
+                            <DataGridTextColumn Header="상태" Binding="{Binding Source.AssetStatus}" Width="90"/>
+                            <DataGridTextColumn Header="청구상태" Binding="{Binding BillingEligibilityStatus}" Width="100"/>
+                            <DataGridTextColumn Header="월요금" Binding="{Binding Source.MonthlyFee, StringFormat=N0}" Width="100"/>
+                            <DataGridTextColumn Header="만료일" Binding="{Binding Source.RentalEndDate}" Width="100"/>
+                            <DataGridTextColumn Header="남은일수" Binding="{Binding DaysRemaining}" Width="76"/>
+                            <DataGridCheckBoxColumn Header="이상" Binding="{Binding HasDataIssue}" Width="60" IsReadOnly="True"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+
+                    <Border Background="#1A2B4A" Padding="16">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <MultiDataTrigger>
+                                        <MultiDataTrigger.Conditions>
+                                            <Condition Binding="{Binding ElementName=RentalAssetDataGrid, Path=HasItems}" Value="False"/>
+                                            <Condition Binding="{Binding IsBusy}" Value="False"/>
+                                        </MultiDataTrigger.Conditions>
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </MultiDataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <TextBlock Text="조건에 맞는 렌탈 자산이 없습니다." Foreground="#4FC3F7" FontSize="15" FontWeight="Bold" TextAlignment="Center"/>
+                            <TextBlock Text="{Binding StatusMessage}" Foreground="#DDEBFF" Margin="0,8,0,0" TextAlignment="Center" TextWrapping="Wrap"/>
+                            <TextBlock Text="검색어를 지우거나 아래 필터를 초기화한 뒤 다시 확인하세요." Foreground="#9FB3C8" Margin="0,8,0,0" TextAlignment="Center" TextWrapping="Wrap"/>
+                            <WrapPanel HorizontalAlignment="Center" Margin="0,12,0,0">
+                                <Button Content="품목분류 초기화" Margin="0,0,8,8" Command="{Binding ClearItemCategoryFiltersCommand}"/>
+                                <Button Content="담당지점 초기화" Margin="0,0,8,8" Command="{Binding ClearOfficeFiltersCommand}"/>
+                                <Button Content="상태 초기화" Margin="0,0,8,8" Command="{Binding ClearStatusFiltersCommand}"/>
+                                <Button Content="신규 자산" Margin="0,0,0,8" Command="{Binding NewAssetCommand}" IsEnabled="{Binding CanCreateAsset}"/>
+                            </WrapPanel>
+                        </StackPanel>
+                    </Border>
+                </Grid>
             </Border>
 
             <Border Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="12">
@@ -318,7 +348,21 @@
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
-                        <TextBlock Grid.Row="0" Grid.ColumnSpan="5" Text="렌탈 자산 상세" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,10"/>
+                        <StackPanel Grid.Row="0" Grid.ColumnSpan="5" Margin="0,0,0,10">
+                            <TextBlock Text="렌탈 자산 상세" Foreground="#4FC3F7" FontWeight="Bold"/>
+                            <Border Background="#223754"
+                                    BorderBrush="#2E4060"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="10,8"
+                                    Margin="0,10,0,0"
+                                    Visibility="{Binding IsNewAsset, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <StackPanel>
+                                    <TextBlock Text="신규 자산 작성 상태" Foreground="#4FC3F7" FontWeight="SemiBold"/>
+                                    <TextBlock Text="현재 선택된 자산이 없습니다. 아래 입력칸은 신규 자산을 등록하는 편집 영역입니다." Foreground="#9FB3C8" Margin="0,8,0,0" TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
 
                         <TextBlock Grid.Row="1" Grid.Column="0" Text="관리ID" VerticalAlignment="Center" Margin="0,0,4,8"/>
                         <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding EditManagementId}" IsReadOnly="True" Background="#24364F" BorderBrush="#324A69" Margin="0,0,0,8"/>
@@ -501,7 +545,11 @@
 
         <Border Grid.Row="3" Margin="0,10,0,0" Background="#122038" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="10">
             <DockPanel LastChildFill="False">
-                <ProgressBar Width="220" Height="12" IsIndeterminate="{Binding IsBusy}" Margin="0,0,12,0"/>
+                <ProgressBar Width="220"
+                             Height="12"
+                             IsIndeterminate="{Binding IsBusy}"
+                             Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}"
+                             Margin="0,0,12,0"/>
                 <TextBlock Text="{Binding StatusMessage}" Foreground="#90CAF9" VerticalAlignment="Center"/>
             </DockPanel>
         </Border>

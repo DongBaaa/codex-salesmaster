@@ -632,6 +632,41 @@ public sealed class WpfGlobalUiGuardTests
     }
 
     [Fact]
+    public void RentalAssetWindow_ClarifiesFocusFiltersAndEmptyNewStates()
+    {
+        var root = FindRepositoryRoot();
+        var appXaml = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "App.xaml"));
+        var windowXaml = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "RentalAssetWindow.xaml"));
+
+        Assert.Contains("x:Key=\"GeoraePlanDataGridCellFocusVisualStyle\"", appXaml, StringComparison.Ordinal);
+        Assert.Contains("<Border BorderBrush=\"#4FC3F7\" BorderThickness=\"1\" Background=\"Transparent\" SnapsToDevicePixels=\"True\"/>", appXaml, StringComparison.Ordinal);
+        Assert.Contains("FocusVisualStyle\" Value=\"{StaticResource GeoraePlanDataGridCellFocusVisualStyle}\"", appXaml, StringComparison.Ordinal);
+        Assert.Contains("FocusVisualStyle\" Value=\"{StaticResource GeoraePlanDataGridCellFocusVisualStyle}\"", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"검색어\"", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"품목분류\"", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"담당지점\"", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"상태\"", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("Content=\"현재 자산 삭제\"", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("Content=\"체크 자산 일괄삭제\"", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("Visibility=\"{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}\"", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("조건에 맞는 렌탈 자산이 없습니다.", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("ClearItemCategoryFiltersCommand", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("ClearOfficeFiltersCommand", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("ClearStatusFiltersCommand", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("신규 자산 작성 상태", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("현재 선택된 자산이 없습니다. 아래 입력칸은 신규 자산을 등록하는 편집 영역입니다.", windowXaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PaymentTransferVerifier_CapturesRuntimeWindowScreenshotsAndDatePickerMetrics()
     {
         var root = FindRepositoryRoot();

@@ -336,6 +336,8 @@ New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 
 Invoke-RobocopyMirror -Source $SourceFolder -Destination $appRoot
 Set-DesktopPackageApiBaseUrl -AppRoot $appRoot -BaseUrl $ApiBaseUrl
+Get-ChildItem -LiteralPath $appRoot -Recurse -File -Filter '*.pdb' -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction Stop
 
 $updaterProject = Join-Path $ProjectRoot 'Updater\거래플랜.Updater\거래플랜.Updater.csproj'
 if (Test-Path -LiteralPath $updaterProject) {
@@ -352,6 +354,8 @@ if (Test-Path -LiteralPath $updaterProject) {
     }
 
     Invoke-RobocopyMirror -Source $updaterPublishRoot -Destination (Join-Path $appRoot 'Updater')
+    Get-ChildItem -LiteralPath (Join-Path $appRoot 'Updater') -Recurse -File -Filter '*.pdb' -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction Stop
 }
 
 $serverUrl = ''
