@@ -1,10 +1,15 @@
 using System.Reflection;
+using System.Printing;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Markup;
 using System.Windows.Media;
 using 거래플랜.Desktop.App.Services;
+using 거래플랜.Desktop.App.Views;
 using Xunit;
 
 namespace GeoraePlan.Desktop.App.Tests;
@@ -114,8 +119,8 @@ public sealed class TradePrintDialogSourceGuardTests
         Assert.Contains("Click=\"OnPrinterPropertiesClick\"", xaml, StringComparison.Ordinal);
         Assert.Contains("FileName = \"rundll32.exe\"", codeBehind, StringComparison.Ordinal);
         Assert.Contains("printui.dll,PrintUIEntry /p /n", codeBehind, StringComparison.Ordinal);
-        Assert.Contains("StatusTextBlock.Text = \"프린터 속성 창을 열었습니다.", codeBehind, StringComparison.Ordinal);
-        Assert.Contains("StatusTextBlock.Text = \"프린터 속성 창을 열 수 없습니다.", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("SetStatus(\"프린터 속성 창을 열었습니다.", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("SetStatus(\"프린터 속성 창을 열 수 없습니다.", codeBehind, StringComparison.Ordinal);
         Assert.Contains("MessageBox.Show(", codeBehind, StringComparison.Ordinal);
         Assert.Contains("$\"프린터 속성 창을 열 수 없습니다.", codeBehind, StringComparison.Ordinal);
         Assert.DoesNotContain("new PrintDialog", codeBehind, StringComparison.Ordinal);
@@ -206,6 +211,51 @@ public sealed class TradePrintDialogSourceGuardTests
         Assert.Contains("LoadPrinterSnapshotSafely", executor, StringComparison.Ordinal);
         Assert.Contains("LoadPrinterSnapshotSafely,", executor, StringComparison.Ordinal);
         Assert.Contains("currentPageNumber", executor, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TradePrintWindow_ProvidesDiagnosticCopyAndExplicitOnePageTestPrintStates()
+    {
+        var repoRoot = FindRepositoryRoot();
+        var xaml = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "TradePrintWindow.xaml"));
+        var codeBehind = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "TradePrintWindow.xaml.cs"));
+        var executor = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Services",
+            "TradePrintExecutor.cs"));
+
+        Assert.Contains("x:Name=\"CopyDiagnosticButton\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Content=\"진단 복사\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"PrintDiagnosticButton\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Content=\"1쪽 테스트\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Click=\"OnCopyDiagnosticClick\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Click=\"OnPrintDiagnosticClick\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("OnCopyDiagnosticClick", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("OnPrintDiagnosticClick", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("BuildPrinterDiagnosticReport", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("SetClipboardTextWithRetry", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("Clipboard.SetDataObject(text, copy: true)", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("const int maxAttempts = 5", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("const int retryDelayMilliseconds = 80", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("프린터 진단 정보를 클립보드에 복사하지 못했습니다", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("오프라인이라 1쪽 테스트 인쇄를 보내지 않았습니다", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("1쪽 테스트 인쇄를 보내지 못했습니다", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("PDF/XPS fallback", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("TryPrintDiagnosticPage", executor, StringComparison.Ordinal);
+        Assert.Contains("거래플랜 프린터 진단 페이지", executor, StringComparison.Ordinal);
+        Assert.Contains("1쪽 테스트 인쇄 출력 오류", executor, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -369,6 +419,38 @@ public sealed class TradePrintDialogSourceGuardTests
     }
 
     [Fact]
+    public void TradePrintWindow_KeepsDiagnosticButtonsInExistingPrinterRowAt780MinWidth()
+    {
+        RunOnSta(() =>
+        {
+            var window = new TradePrintWindow(Array.Empty<PrintQueue>(), null, pageCount: 1);
+            try
+            {
+                var root = Assert.IsAssignableFrom<FrameworkElement>(window.Content);
+                root.Measure(new Size(window.MinWidth, window.MinHeight));
+                root.Arrange(new Rect(0, 0, window.MinWidth, window.MinHeight));
+                root.UpdateLayout();
+
+                var printerCombo = Assert.IsAssignableFrom<FrameworkElement>(window.FindName("PrinterComboBox"));
+                var copyDiagnosticButton = Assert.IsAssignableFrom<FrameworkElement>(window.FindName("CopyDiagnosticButton"));
+                var printDiagnosticButton = Assert.IsAssignableFrom<FrameworkElement>(window.FindName("PrintDiagnosticButton"));
+
+                var comboOrigin = printerCombo.TranslatePoint(new Point(0, 0), root);
+                var copyOrigin = copyDiagnosticButton.TranslatePoint(new Point(0, 0), root);
+                var printRight = printDiagnosticButton.TranslatePoint(new Point(printDiagnosticButton.ActualWidth, 0), root).X;
+
+                Assert.True(Math.Abs(comboOrigin.Y - copyOrigin.Y) < 1, "진단 버튼은 기존 프린터 선택 행 안에 있어야 합니다.");
+                Assert.True(printerCombo.ActualWidth >= 220, $"780px 최소폭에서도 프린터 콤보박스가 너무 좁아지면 안 됩니다. ActualWidth={printerCombo.ActualWidth}");
+                Assert.True(printRight <= root.ActualWidth + 1, $"780px 최소폭에서 1쪽 테스트 버튼이 잘리면 안 됩니다. Right={printRight}, RootWidth={root.ActualWidth}");
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+    }
+
+    [Fact]
     public void TradePrintExecutor_SavesPdfFileFromFixedDocument()
     {
         RunOnSta(() =>
@@ -390,6 +472,67 @@ public sealed class TradePrintDialogSourceGuardTests
                 if (File.Exists(outputPath))
                     File.Delete(outputPath);
             }
+        });
+    }
+
+    [Fact]
+    public void TradePrintExecutor_BuildsSinglePageDiagnosticDocument()
+    {
+        RunOnSta(() =>
+        {
+            var document = InvokeBuildDiagnosticDocument(
+                "테스트 복합기",
+                null,
+                new DateTimeOffset(2026, 7, 11, 9, 30, 0, TimeSpan.FromHours(9)));
+
+            document.DocumentPaginator.ComputePageCount();
+            Assert.Equal(1, document.DocumentPaginator.PageCount);
+
+            var text = NormalizeText(ReadFixedDocumentText(document));
+            Assert.Contains("거래플랜 프린터 진단 페이지", text);
+            Assert.Contains("테스트 복합기", text);
+            Assert.Contains("이 페이지가 정상적으로 출력되면", text);
+            Assert.Contains("fallback: PDF 저장 / 파일 저장(XPS)", text);
+        });
+    }
+
+    [Fact]
+    public void TradePrintExecutor_ReturnsSpecificMessageWhenDiagnosticPrinterIsMissing()
+    {
+        var result = TradePrintExecutor.TryPrintDiagnosticPage(null, out var errorMessage);
+
+        Assert.False(result);
+        Assert.Contains("1쪽 테스트 인쇄를 보낼 프린터를 선택하세요.", errorMessage);
+    }
+
+    [Fact]
+    public void TradePrintExecutor_UsesInjectedWriterForDiagnosticTestPrintWithoutSendingPaper()
+    {
+        RunOnSta(() =>
+        {
+            var queue = (PrintQueue)RuntimeHelpers.GetUninitializedObject(typeof(PrintQueue));
+            GC.SuppressFinalize(queue);
+            FixedDocument? capturedDocument = null;
+            PrintTicket? capturedTicket = null;
+
+            var result = InvokeTryPrintDiagnosticPage(
+                queue,
+                new DateTimeOffset(2026, 7, 11, 9, 45, 0, TimeSpan.FromHours(9)),
+                (_, document, printTicket) =>
+                {
+                    capturedDocument = document;
+                    capturedTicket = printTicket;
+                },
+                out var errorMessage);
+
+            Assert.True(result, errorMessage);
+            Assert.NotNull(capturedDocument);
+            Assert.NotNull(capturedTicket);
+
+            capturedDocument!.DocumentPaginator.ComputePageCount();
+            Assert.Equal(1, capturedDocument.DocumentPaginator.PageCount);
+            Assert.Equal(1, capturedTicket!.CopyCount);
+            Assert.Equal(Collation.Collated, capturedTicket.Collation);
         });
     }
 
@@ -478,6 +621,45 @@ public sealed class TradePrintDialogSourceGuardTests
         method!.Invoke(null, [paginator, outputPath]);
     }
 
+    private static FixedDocument InvokeBuildDiagnosticDocument(
+        string printerName,
+        PrintQueue? printQueue,
+        DateTimeOffset generatedAt)
+    {
+        var method = typeof(TradePrintExecutor).GetMethod(
+            "BuildDiagnosticDocument",
+            BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, [printerName, printQueue, generatedAt]);
+        return Assert.IsAssignableFrom<FixedDocument>(result);
+    }
+
+    private static bool InvokeTryPrintDiagnosticPage(
+        PrintQueue printQueue,
+        DateTimeOffset generatedAt,
+        Action<PrintQueue, FixedDocument, PrintTicket> sendDocument,
+        out string? errorMessage)
+    {
+        var method = typeof(TradePrintExecutor)
+            .GetMethods(BindingFlags.Static | BindingFlags.NonPublic)
+            .Single(method =>
+            {
+                if (!string.Equals(method.Name, "TryPrintDiagnosticPage", StringComparison.Ordinal))
+                    return false;
+
+                var parameters = method.GetParameters();
+                return parameters.Length == 4 &&
+                       parameters[0].ParameterType == typeof(PrintQueue) &&
+                       parameters[1].ParameterType == typeof(DateTimeOffset);
+            });
+
+        object?[] arguments = [printQueue, generatedAt, sendDocument, null];
+        var result = method.Invoke(null, arguments);
+        errorMessage = arguments[3] as string;
+        return Assert.IsType<bool>(result);
+    }
+
     private static FixedDocument BuildSimpleFixedDocument()
     {
         var document = new FixedDocument();
@@ -501,6 +683,65 @@ public sealed class TradePrintDialogSourceGuardTests
         document.Pages.Add(content);
         return document;
     }
+
+    private static string ReadFixedDocumentText(FixedDocument document)
+    {
+        var builder = new StringBuilder();
+        foreach (PageContent pageContent in document.Pages)
+        {
+            if (pageContent.Child is null)
+                continue;
+
+            AppendText(pageContent.Child, builder);
+        }
+
+        return builder.ToString();
+    }
+
+    private static void AppendText(DependencyObject node, StringBuilder builder)
+    {
+        if (node is TextBlock textBlock)
+        {
+            var text = ReadTextBlockText(textBlock);
+            if (!string.IsNullOrWhiteSpace(text))
+                builder.AppendLine(text);
+        }
+        else if (node is TextElement textElement)
+        {
+            var text = new TextRange(textElement.ContentStart, textElement.ContentEnd).Text;
+            if (!string.IsNullOrWhiteSpace(text))
+                builder.AppendLine(text);
+        }
+        else if (node is ContentControl { Content: string content } && !string.IsNullOrWhiteSpace(content))
+        {
+            builder.AppendLine(content);
+        }
+
+        var childCount = VisualTreeHelper.GetChildrenCount(node);
+        for (var i = 0; i < childCount; i++)
+            AppendText(VisualTreeHelper.GetChild(node, i), builder);
+    }
+
+    private static string ReadTextBlockText(TextBlock textBlock)
+    {
+        if (!string.IsNullOrWhiteSpace(textBlock.Text))
+            return textBlock.Text;
+
+        var builder = new StringBuilder();
+        foreach (var inline in textBlock.Inlines)
+        {
+            if (inline is Run run)
+                builder.Append(run.Text);
+        }
+
+        return builder.ToString();
+    }
+
+    private static string NormalizeText(string text)
+        => string.Join(" ", text
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Split([' '], StringSplitOptions.RemoveEmptyEntries));
 
     private static void RunOnSta(Action action)
     {

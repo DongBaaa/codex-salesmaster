@@ -71,6 +71,8 @@ Mobile/**/signing/*.jks
 Mobile/**/signing/*.p12
 Mobile/**/signing/*.pem
 Mobile/**/android-signing.local.json
+Mobile/**/android-signing.*.local.json
+tools/release/windows-signing.local.json
 
 # Root-level generated distribution artifacts
 배포/*.exe

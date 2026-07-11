@@ -90,6 +90,242 @@ function Resolve-PathIfRelative {
     return (Join-Path $BaseDirectory $PathValue)
 }
 
+function Test-PathContainsNonAscii {
+    param(
+        [Parameter(Mandatory = $true)][string]$PathValue
+    )
+
+    foreach ($character in $PathValue.ToCharArray()) {
+        if ([int][char]$character -gt 127) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Test-AndroidAotStagingSecretFileName {
+    param(
+        [Parameter(Mandatory = $true)][string]$FileName
+    )
+
+    if ($FileName -in @(
+        'android-signing.local.json',
+        'android-signing.release.local.json'
+    )) {
+        return $true
+    }
+
+    return [System.IO.Path]::GetExtension($FileName) -in @(
+        '.keystore',
+        '.jks',
+        '.p12',
+        '.pfx',
+        '.pem',
+        '.key',
+        '.snk'
+    )
+}
+
+function Copy-AndroidAotStagingTree {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceRoot,
+        [Parameter(Mandatory = $true)][string]$DestinationRoot
+    )
+
+    New-Item -ItemType Directory -Force -Path $DestinationRoot | Out-Null
+
+    foreach ($item in Get-ChildItem -LiteralPath $SourceRoot -Force -ErrorAction Stop) {
+        if ($item.PSIsContainer) {
+            if ($item.Name -in @('bin', 'obj', 'signing', 'artifacts')) {
+                continue
+            }
+
+            Copy-AndroidAotStagingTree `
+                -SourceRoot $item.FullName `
+                -DestinationRoot (Join-Path $DestinationRoot $item.Name)
+            continue
+        }
+
+        if (Test-AndroidAotStagingSecretFileName -FileName $item.Name) {
+            continue
+        }
+
+        Copy-Item `
+            -LiteralPath $item.FullName `
+            -Destination (Join-Path $DestinationRoot $item.Name) `
+            -Force
+    }
+}
+
+function Remove-AndroidAotStagingDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$StagingRoot,
+        [Parameter(Mandatory = $true)][string]$StagingBaseRoot
+    )
+
+    if (-not (Test-Path -LiteralPath $StagingRoot)) {
+        return
+    }
+
+    $resolvedBaseRoot = [System.IO.Path]::GetFullPath($StagingBaseRoot).TrimEnd('\') + '\'
+    $resolvedStagingRoot = (Resolve-Path -LiteralPath $StagingRoot).Path
+    $stagingRootWithSeparator = $resolvedStagingRoot.TrimEnd('\') + '\'
+    if (-not $stagingRootWithSeparator.StartsWith($resolvedBaseRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Android AOT staging cleanup target is outside staging base root: $resolvedStagingRoot"
+    }
+
+    $lastError = $null
+    for ($attempt = 1; $attempt -le 8; $attempt++) {
+        try {
+            Get-ChildItem -LiteralPath $resolvedStagingRoot -Recurse -Force -File -ErrorAction SilentlyContinue |
+                ForEach-Object { $_.IsReadOnly = $false }
+            Remove-Item -LiteralPath $resolvedStagingRoot -Recurse -Force -ErrorAction Stop
+            return
+        }
+        catch {
+            $lastError = $_.Exception
+            if ($attempt -lt 8) {
+                [GC]::Collect()
+                [GC]::WaitForPendingFinalizers()
+                Start-Sleep -Milliseconds (250 * $attempt)
+            }
+        }
+    }
+
+    throw "Android AOT staging cleanup failed after retries: $($lastError.Message)"
+}
+
+function New-AndroidAotStagingContext {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$ProjectFile,
+        [Parameter(Mandatory = $true)][bool]$ShouldEnableAot,
+        [Parameter(Mandatory = $true)][bool]$NoRestoreRequested
+    )
+
+    $resolvedProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
+    $resolvedProjectFile = (Resolve-Path -LiteralPath $ProjectFile).Path
+    $defaultContext = [pscustomobject]@{
+        Enabled = $false
+        ProjectFile = $resolvedProjectFile
+        WorkingDirectory = $resolvedProjectRoot
+        TemporaryDirectory = $null
+        StagingRoot = $null
+        StagingBaseRoot = $null
+    }
+
+    if (-not $ShouldEnableAot) {
+        return $defaultContext
+    }
+
+    if (-not (Test-PathContainsNonAscii -PathValue $resolvedProjectRoot)) {
+        return $defaultContext
+    }
+
+    Write-Host 'android_aot_staging_reason=non_ascii_project_root'
+
+    if ($NoRestoreRequested) {
+        Write-Warning 'Android Release AOT staging was skipped because --no-restore cannot be combined with a filtered staging copy.'
+        Write-Host 'android_aot_staging=skipped_no_restore'
+        return $defaultContext
+    }
+
+    $projectRootWithSeparator = $resolvedProjectRoot.TrimEnd('\') + '\'
+    if (-not $resolvedProjectFile.StartsWith($projectRootWithSeparator, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Write-Warning "Android Release AOT staging was skipped because the project file is outside the declared project root: $resolvedProjectFile"
+        Write-Host 'android_aot_staging=skipped_project_outside_root'
+        return $defaultContext
+    }
+    $relativeProjectFile = $resolvedProjectFile.Substring($projectRootWithSeparator.Length).Replace('/', '\')
+
+    $stagingBaseRoot = 'D:\gpaot'
+    $stagingRoot = $null
+    try {
+        $stagingDriveRoot = [System.IO.Path]::GetPathRoot($stagingBaseRoot)
+        if ([string]::IsNullOrWhiteSpace($stagingDriveRoot) -or -not (Test-Path -LiteralPath $stagingDriveRoot)) {
+            throw "Android AOT staging drive root not found: $stagingDriveRoot"
+        }
+
+        New-Item -ItemType Directory -Force -Path $stagingBaseRoot | Out-Null
+        $stagingLeaf = 's' + (Get-Date -Format 'yyyyMMddHHmmss') + '_' + $PID + '_' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
+        $stagingRoot = Join-Path $stagingBaseRoot $stagingLeaf
+        New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
+        $stagingTempDirectory = Join-Path $stagingRoot 'tmp'
+        New-Item -ItemType Directory -Force -Path $stagingTempDirectory | Out-Null
+
+        foreach ($topLevelDirectoryName in @('Mobile', 'Shared', 'AppIcons')) {
+            $sourcePath = Join-Path $resolvedProjectRoot $topLevelDirectoryName
+            if (-not (Test-Path -LiteralPath $sourcePath)) {
+                throw "Required Android AOT staging source directory not found: $sourcePath"
+            }
+
+            Copy-AndroidAotStagingTree `
+                -SourceRoot $sourcePath `
+                -DestinationRoot (Join-Path $stagingRoot $topLevelDirectoryName)
+        }
+
+        $stagedProjectFile = Join-Path $stagingRoot $relativeProjectFile
+        if (-not (Test-Path -LiteralPath $stagedProjectFile)) {
+            throw "Staged project file not found: $stagedProjectFile"
+        }
+
+        Write-Host 'android_aot_staging=enabled'
+        Write-Host "android_aot_staging_root=$stagingRoot"
+
+        return [pscustomobject]@{
+            Enabled = $true
+            ProjectFile = (Resolve-Path -LiteralPath $stagedProjectFile).Path
+            WorkingDirectory = $stagingRoot
+            TemporaryDirectory = $stagingTempDirectory
+            StagingRoot = $stagingRoot
+            StagingBaseRoot = $stagingBaseRoot
+        }
+    }
+    catch {
+        $message = $_.Exception.Message
+        Write-Warning "Android Release AOT staging prepare failed: $message"
+        Write-Host 'android_aot_staging=failed_prepare'
+        Write-Host "android_aot_staging_error=$message"
+
+        if (-not [string]::IsNullOrWhiteSpace($stagingRoot) -and (Test-Path -LiteralPath $stagingRoot)) {
+            try {
+                Remove-AndroidAotStagingDirectory -StagingRoot $stagingRoot -StagingBaseRoot $stagingBaseRoot
+            }
+            catch {
+                Write-Warning "Android Release AOT staging prepare cleanup failed: $($_.Exception.Message)"
+                Write-Host 'android_aot_staging_cleanup=failed'
+                Write-Host "android_aot_staging_cleanup_root=$stagingRoot"
+            }
+        }
+
+        return $defaultContext
+    }
+}
+
+function Remove-AndroidAotStagingContext {
+    param(
+        [Parameter(Mandatory = $true)]$Context
+    )
+
+    if ($null -eq $Context -or -not $Context.Enabled -or [string]::IsNullOrWhiteSpace([string]$Context.StagingRoot)) {
+        return
+    }
+
+    try {
+        Remove-AndroidAotStagingDirectory `
+            -StagingRoot ([string]$Context.StagingRoot) `
+            -StagingBaseRoot ([string]$Context.StagingBaseRoot)
+        Write-Host 'android_aot_staging_cleanup=success'
+    }
+    catch {
+        Write-Warning "Android Release AOT staging cleanup failed: $($_.Exception.Message)"
+        Write-Host 'android_aot_staging_cleanup=failed'
+        Write-Host "android_aot_staging_cleanup_root=$($Context.StagingRoot)"
+        throw
+    }
+}
+
 function Get-ResolvedDotNetPath {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
@@ -320,9 +556,16 @@ $artifactPrefix = switch ($PackageFormat) {
 $publishDirectory = Join-Path $OutputRoot ($artifactPrefix + $timestamp)
 New-Item -ItemType Directory -Force -Path $publishDirectory | Out-Null
 
+$shouldEnableAot = $isReleaseBuild -and -not $DisableAot.IsPresent
+$stagingContext = New-AndroidAotStagingContext `
+    -ProjectRoot $ProjectRoot `
+    -ProjectFile $ProjectFile `
+    -ShouldEnableAot ([bool]$shouldEnableAot) `
+    -NoRestoreRequested ([bool]$NoRestore.IsPresent)
+
 $arguments = @(
     'publish'
-    $ProjectFile
+    $stagingContext.ProjectFile
     '-c', $Configuration
     '-f', $Framework
     '--output', $publishDirectory
@@ -336,7 +579,6 @@ $arguments = @(
     '-p:ArchiveOnBuild=true'
 )
 
-$shouldEnableAot = $isReleaseBuild -and -not $DisableAot.IsPresent
 if ($shouldEnableAot) {
     $arguments += '-p:RunAOTCompilation=true'
     $arguments += '-p:AndroidEnableProfiledAot=true'
@@ -375,6 +617,12 @@ if ($NoRestore) {
     $arguments += '--no-restore'
 }
 
+if ($stagingContext.Enabled) {
+    $arguments += '-p:UseSharedCompilation=false'
+    $arguments += '-nodeReuse:false'
+    Write-Host 'android_aot_staging_compiler_reuse=false'
+}
+
 if (-not [string]::IsNullOrWhiteSpace($VersionName)) {
     $arguments += "-p:ApplicationDisplayVersion=$VersionName"
 }
@@ -386,16 +634,38 @@ if ($VersionCode -gt 0) {
 function Invoke-DotnetPublishAndRelay {
     param(
         [Parameter(Mandatory = $true)][string]$DotNetPath,
-        [Parameter(Mandatory = $true)][string[]]$Arguments
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [string]$WorkingDirectory,
+        [string]$TemporaryDirectory
     )
 
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
+    $pushedLocation = $false
+    $previousTemp = $env:TEMP
+    $previousTmp = $env:TMP
     try {
+        if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) {
+            Push-Location -LiteralPath $WorkingDirectory
+            $pushedLocation = $true
+        }
+        if (-not [string]::IsNullOrWhiteSpace($TemporaryDirectory)) {
+            New-Item -ItemType Directory -Force -Path $TemporaryDirectory | Out-Null
+            $env:TEMP = $TemporaryDirectory
+            $env:TMP = $TemporaryDirectory
+            Write-Host "android_aot_staging_temp=$TemporaryDirectory"
+        }
+
         $output = & $DotNetPath @Arguments 2>&1
         $exitCode = $LASTEXITCODE
     }
     finally {
+        if ($pushedLocation) {
+            Pop-Location
+        }
+        $env:TEMP = $previousTemp
+        $env:TMP = $previousTmp
+
         $ErrorActionPreference = $previousErrorActionPreference
     }
 
@@ -434,18 +704,34 @@ function Get-AndroidPublishArgumentsWithoutAot {
     return [string[]]$retryArguments
 }
 
-$publishResult = Invoke-DotnetPublishAndRelay -DotNetPath $resolvedDotNetPath -Arguments $arguments
-if ($publishResult.ExitCode -ne 0 -and $shouldEnableAot -and (Test-KnownAndroidAotResponseFileFailure -OutputText $publishResult.OutputText)) {
-    Write-Warning 'Android AOT publish failed with a known response-file path issue. Retrying once with AOT disabled so the signed release package can still be produced.'
-    Write-Host 'android_profiled_aot_fallback=known_response_file_failure'
+$publishWorkingDirectory = [string]$stagingContext.WorkingDirectory
+$publishTemporaryDirectory = [string]$stagingContext.TemporaryDirectory
+try {
+    $publishResult = Invoke-DotnetPublishAndRelay `
+        -DotNetPath $resolvedDotNetPath `
+        -Arguments $arguments `
+        -WorkingDirectory $publishWorkingDirectory `
+        -TemporaryDirectory $publishTemporaryDirectory
 
-    if (Test-Path -LiteralPath $publishDirectory) {
-        Remove-Item -LiteralPath $publishDirectory -Recurse -Force -ErrorAction Stop
+    if ($publishResult.ExitCode -ne 0 -and $shouldEnableAot -and (Test-KnownAndroidAotResponseFileFailure -OutputText $publishResult.OutputText)) {
+        Write-Warning 'Android AOT publish failed with a known response-file path issue. Retrying once with AOT disabled so the signed release package can still be produced.'
+        Write-Host 'android_profiled_aot_fallback=known_response_file_failure'
+
+        if (Test-Path -LiteralPath $publishDirectory) {
+            Remove-Item -LiteralPath $publishDirectory -Recurse -Force -ErrorAction Stop
+        }
+        New-Item -ItemType Directory -Force -Path $publishDirectory | Out-Null
+
+        $arguments = Get-AndroidPublishArgumentsWithoutAot -Arguments $arguments
+        $publishResult = Invoke-DotnetPublishAndRelay `
+            -DotNetPath $resolvedDotNetPath `
+            -Arguments $arguments `
+            -WorkingDirectory $publishWorkingDirectory `
+            -TemporaryDirectory $publishTemporaryDirectory
     }
-    New-Item -ItemType Directory -Force -Path $publishDirectory | Out-Null
-
-    $arguments = Get-AndroidPublishArgumentsWithoutAot -Arguments $arguments
-    $publishResult = Invoke-DotnetPublishAndRelay -DotNetPath $resolvedDotNetPath -Arguments $arguments
+}
+finally {
+    Remove-AndroidAotStagingContext -Context $stagingContext
 }
 
 if ($publishResult.ExitCode -ne 0) {

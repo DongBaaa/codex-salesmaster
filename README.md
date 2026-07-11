@@ -124,6 +124,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\linux
 - 사용자 PC 로컬 캐시까지 납품 증거에 포함할 때는 `-LocalCacheAppDataRoot "<사용자 AppData 루트>" -RequireLocalCacheConsistencyCheck`를 추가합니다. 이 옵션이 켜진 상태에서 로컬 캐시 점검이 skip되면 live 관찰/운영 게이트가 실패합니다.
 - Android 기존 설치본 업데이트 검증이 필요하면 실기기/에뮬레이터에 기존 앱을 설치한 뒤 `D:\거래플랜\tools\mobile\Invoke-GeoraePlanAndroidSmoke.ps1 -ApkPath <새 APK> -RequireUpdateInPlace`를 실행합니다. 이 모드는 서명 불일치/버전 다운그레이드/업데이트 실패 시 삭제 후 재설치로 우회하지 않습니다.
 - 납품 직전에는 `D:\거래플랜\tools\verification\Invoke-GeoraePlanPaidDeliveryGate.ps1 -Strict -LocalCacheAppDataRoot "<사용자 AppData 루트>" -AndroidApkPath "<새 APK>"`로 live 관찰, 로컬 캐시, 프린터, Android update-in-place 증거를 한 리포트로 묶어 확인합니다. `-Strict`는 하위 점검의 WARN도 전체 실패로 올려 숨은 경고가 PASS로 보이지 않게 합니다. Includes API visibility smoke for login/scope/core list/integrity evidence.
+- 24시간 장시간 관찰은 `D:\거래플랜\tools\verification\Invoke-GeoraePlanSoakObservation.ps1 -ProjectRoot D:\거래플랜 -SampleCount 1440 -IntervalSeconds 60`으로 수행합니다. 이 도구는 `healthz`, update manifest, 로컬 거래플랜 프로세스 응답/메모리만 읽고 운영 데이터 생성·수정·삭제 API는 호출하지 않습니다.
+- 장시간 관찰 PASS를 최종 납품 게이트에서 필수로 만들려면 `Invoke-GeoraePlanPaidDeliveryGate.ps1`에 `-RequireSoakPass -SoakEvidencePath "<soak-observation.md>"`를 추가합니다. 기본 허용 증거 나이는 168시간이며 `-MaxSoakEvidenceAgeHours`로 조정할 수 있습니다.
 
 ## 인쇄 기본 동작
 - `[완료]` 판매(매출) 창에서 `출력물 편집` 후 데이터 저장

@@ -1,7 +1,10 @@
 using System.Diagnostics;
 using System.IO;
 using System.Printing;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows;
+using System.Windows.Media;
 using Microsoft.Win32;
 using 거래플랜.Desktop.App.Printing;
 using 거래플랜.Desktop.App.Services;
@@ -10,6 +13,11 @@ namespace 거래플랜.Desktop.App.Views;
 
 public partial class TradePrintWindow : Window
 {
+    private static readonly Brush InfoStatusBrush = CreateFrozenBrush("#90CAF9");
+    private static readonly Brush SuccessStatusBrush = CreateFrozenBrush("#A5D6A7");
+    private static readonly Brush WarningStatusBrush = CreateFrozenBrush("#FFCC80");
+    private static readonly Brush ErrorStatusBrush = CreateFrozenBrush("#EF9A9A");
+
     private readonly int _pageCount;
     private readonly int? _currentPageNumber;
     private readonly string _defaultFileBaseName;
@@ -77,24 +85,26 @@ public partial class TradePrintWindow : Window
             preferredItem ??
             items.FirstOrDefault(static item => item.IsDefault) ??
             items.FirstOrDefault();
-        UpdatePrinterActionState();
-
-        if (items.Count == 0)
-        {
-            StatusTextBlock.Text = "등록된 프린터를 찾지 못했습니다. PDF 저장 또는 파일 저장(XPS)으로 문서를 저장한 뒤 복합기에서 출력하세요.";
-        }
+        UpdateSelectedPrinterState();
 
         return items.Count;
     }
 
     private void OnPrinterSelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+        => UpdateSelectedPrinterState();
+
+    private void UpdateSelectedPrinterState()
     {
-        if (PrinterComboBox.SelectedItem is not PrinterListItem item)
+        if (GetSelectedPrinterItem() is not PrinterListItem item)
         {
             PrinterTypeTextBlock.Text = string.Empty;
             PrinterLocationTextBlock.Text = string.Empty;
             PrinterStatusTextBlock.Text = string.Empty;
-            StatusTextBlock.Text = "프린터가 선택되지 않았습니다. PDF 저장 또는 파일 저장(XPS)을 사용할 수 있습니다.";
+            SetStatus(
+                PrinterComboBox.Items.Count == 0
+                    ? "등록된 프린터를 찾지 못했습니다. PDF 저장 또는 파일 저장(XPS)으로 문서를 저장한 뒤 복합기에서 출력하세요."
+                    : "프린터가 선택되지 않았습니다. PDF 저장 또는 파일 저장(XPS)을 사용할 수 있습니다.",
+                StatusTone.Warning);
             UpdatePrinterActionState();
             return;
         }
@@ -102,9 +112,11 @@ public partial class TradePrintWindow : Window
         PrinterTypeTextBlock.Text = item.TypeText;
         PrinterLocationTextBlock.Text = item.LocationText;
         PrinterStatusTextBlock.Text = item.StatusText;
-        StatusTextBlock.Text = item.IsOffline
-            ? "선택한 프린터가 오프라인입니다. 프린터 상태를 확인하거나 PDF 저장으로 대체 출력하세요."
-            : "프린터와 인쇄 옵션을 확인한 뒤 인쇄를 누르세요.";
+        SetStatus(
+            item.IsOffline
+                ? "선택한 프린터가 오프라인입니다. 프린터 상태를 확인하거나 PDF 저장으로 대체 출력하세요."
+                : "프린터와 인쇄 옵션을 확인한 뒤 인쇄를 누르세요.",
+            item.IsOffline ? StatusTone.Warning : StatusTone.Info);
         UpdatePrinterActionState();
     }
 
@@ -120,7 +132,7 @@ public partial class TradePrintWindow : Window
                 printerName = SafeRead(item.Queue, static q => q.Name);
             if (string.IsNullOrWhiteSpace(printerName))
             {
-                StatusTextBlock.Text = "프린터 이름을 확인할 수 없어 속성 창을 열 수 없습니다.";
+                SetStatus("프린터 이름을 확인할 수 없어 속성 창을 열 수 없습니다.", StatusTone.Error);
                 return;
             }
 
@@ -132,11 +144,11 @@ public partial class TradePrintWindow : Window
                 UseShellExecute = false,
                 CreateNoWindow = true
             });
-            StatusTextBlock.Text = "프린터 속성 창을 열었습니다. 설정을 변경한 뒤 인쇄 옵션을 다시 확인하세요.";
+            SetStatus("프린터 속성 창을 열었습니다. 설정을 변경한 뒤 인쇄 옵션을 다시 확인하세요.", StatusTone.Success);
         }
         catch (Exception ex)
         {
-            StatusTextBlock.Text = "프린터 속성 창을 열 수 없습니다.";
+            SetStatus("프린터 속성 창을 열 수 없습니다.", StatusTone.Error);
             MessageBox.Show(
                 this,
                 $"프린터 속성 창을 열 수 없습니다.{Environment.NewLine}{ex.Message}",
@@ -150,11 +162,11 @@ public partial class TradePrintWindow : Window
     {
         if (TryOpenPrinterManagement())
         {
-            StatusTextBlock.Text = "Windows 프린터 관리 화면을 열었습니다. 복합기를 추가하거나 연결을 확인한 뒤 새로고침을 누르세요.";
+            SetStatus("Windows 프린터 관리 화면을 열었습니다. 복합기를 추가하거나 연결을 확인한 뒤 새로고침을 누르세요.", StatusTone.Info);
             return;
         }
 
-        StatusTextBlock.Text = "Windows 프린터 관리 화면을 열 수 없습니다. 제어판 > 장치 및 프린터에서 복합기 연결을 확인하세요.";
+        SetStatus("Windows 프린터 관리 화면을 열 수 없습니다. 제어판 > 장치 및 프린터에서 복합기 연결을 확인하세요.", StatusTone.Error);
         MessageBox.Show(
             this,
             "Windows 프린터 관리 화면을 열 수 없습니다.\n제어판 > 장치 및 프린터에서 복합기 연결을 확인한 뒤 거래플랜 인쇄창에서 새로고침을 누르세요.",
@@ -192,27 +204,29 @@ public partial class TradePrintWindow : Window
     {
         if (_printerRefreshProvider is null)
         {
-            StatusTextBlock.Text = "현재 화면에서는 프린터 목록을 다시 불러올 수 없습니다. 인쇄창을 다시 열어 확인하세요.";
+            SetStatus("현재 화면에서는 프린터 목록을 다시 불러올 수 없습니다. 인쇄창을 다시 열어 확인하세요.", StatusTone.Warning);
             return;
         }
 
         var selectedQueueName = GetSelectedQueueName();
         _isRefreshingPrinters = true;
         UpdatePrinterActionState();
-        StatusTextBlock.Text = "프린터 목록을 다시 불러오는 중입니다...";
+        SetStatus("프린터 목록을 다시 불러오는 중입니다...", StatusTone.Info);
 
         try
         {
             var snapshot = _printerRefreshProvider();
             var printQueues = snapshot.PrintQueues ?? Array.Empty<PrintQueue>();
             var printerCount = PopulatePrinters(printQueues, snapshot.DefaultPrintQueue, selectedQueueName);
-            StatusTextBlock.Text = printerCount == 0
-                ? "새로고침 후에도 등록된 프린터를 찾지 못했습니다. PDF 저장 또는 파일 저장(XPS)으로 문서를 저장한 뒤 복합기에서 출력하세요."
-                : $"프린터 목록을 새로고침했습니다. {printerCount:N0}대 중 사용할 프린터를 선택하세요.";
+            SetStatus(
+                printerCount == 0
+                    ? "새로고침 후에도 등록된 프린터를 찾지 못했습니다. PDF 저장 또는 파일 저장(XPS)으로 문서를 저장한 뒤 복합기에서 출력하세요."
+                    : $"프린터 목록을 새로고침했습니다. {printerCount:N0}대 중 사용할 프린터를 선택하세요.",
+                printerCount == 0 ? StatusTone.Warning : StatusTone.Success);
         }
         catch (Exception ex) when (ex is PrintSystemException or InvalidOperationException or UnauthorizedAccessException)
         {
-            StatusTextBlock.Text = $"프린터 목록을 새로고침하지 못했습니다. PDF 저장 또는 파일 저장(XPS)을 사용하세요. ({ex.Message})";
+            SetStatus($"프린터 목록을 새로고침하지 못했습니다. PDF 저장 또는 파일 저장(XPS)을 사용하세요. ({ex.Message})", StatusTone.Error);
         }
         finally
         {
@@ -251,6 +265,86 @@ public partial class TradePrintWindow : Window
 
     private void OnSavePdfClick(object sender, RoutedEventArgs e)
         => SaveToFile(TradePrintFileFormat.Pdf);
+
+    private void OnCopyDiagnosticClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            SetClipboardTextWithRetry(BuildPrinterDiagnosticReport());
+            if (GetSelectedPrinterItem() is not PrinterListItem item)
+            {
+                SetStatus(
+                    PrinterComboBox.Items.Count == 0
+                        ? "프린터 진단 정보를 복사했습니다. 현재 PC에 등록된 프린터가 없어 PDF/XPS fallback 안내도 함께 포함했습니다."
+                        : "프린터 진단 정보를 복사했습니다. 프린터를 아직 선택하지 않은 상태도 함께 기록했습니다.",
+                    StatusTone.Warning);
+                return;
+            }
+
+            SetStatus(
+                item.IsOffline
+                    ? $"프린터 진단 정보를 복사했습니다. '{item.DisplayName}'은(는) 오프라인으로 기록되었습니다."
+                    : $"프린터 진단 정보를 클립보드에 복사했습니다. '{item.DisplayName}' 상태를 문의에 그대로 붙여넣으세요.",
+                item.IsOffline ? StatusTone.Warning : StatusTone.Success);
+        }
+        catch (Exception ex) when (ex is COMException or ExternalException or InvalidOperationException)
+        {
+            AppLogger.Warn("PRINT", $"프린터 진단 복사 실패: {ex.Message}");
+            SetStatus($"프린터 진단 정보를 클립보드에 복사하지 못했습니다: {ex.Message}", StatusTone.Error);
+            MessageBox.Show(
+                this,
+                $"프린터 진단 정보를 클립보드에 복사하지 못했습니다.{Environment.NewLine}{ex.Message}",
+                "프린터 진단 복사",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+    }
+
+    private static void SetClipboardTextWithRetry(string text)
+    {
+        const int maxAttempts = 5;
+        const int retryDelayMilliseconds = 80;
+
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                Clipboard.SetDataObject(text, copy: true);
+                return;
+            }
+            catch (Exception ex) when (
+                (ex is COMException or ExternalException or InvalidOperationException) &&
+                attempt < maxAttempts)
+            {
+                Thread.Sleep(retryDelayMilliseconds);
+            }
+        }
+    }
+
+    private void OnPrintDiagnosticClick(object sender, RoutedEventArgs e)
+    {
+        var item = GetSelectedPrinterItem();
+        if (item is null)
+        {
+            SetStatus("1쪽 테스트 인쇄를 보낼 프린터가 없습니다. 프린터 연결 후 새로고침하거나 PDF 저장/파일 저장(XPS)을 사용하세요.", StatusTone.Warning);
+            return;
+        }
+
+        if (item.IsOffline)
+        {
+            SetStatus($"선택한 프린터 '{item.DisplayName}'이(가) 오프라인이라 1쪽 테스트 인쇄를 보내지 않았습니다. 프린터 전원/네트워크/드라이버를 확인하세요.", StatusTone.Warning);
+            return;
+        }
+
+        SetStatus($"'{item.DisplayName}'으로 1쪽 테스트 인쇄를 보내는 중입니다...", StatusTone.Info);
+        if (TradePrintExecutor.TryPrintDiagnosticPage(item.Queue, out var errorMessage))
+        {
+            SetStatus($"'{item.DisplayName}'으로 1쪽 테스트 인쇄를 보냈습니다. 출력이 없으면 진단 복사 결과를 공유하거나 PDF/XPS fallback을 사용하세요.", StatusTone.Success);
+            return;
+        }
+
+        SetStatus($"1쪽 테스트 인쇄를 보내지 못했습니다. {errorMessage}", StatusTone.Error);
+    }
 
     private void SaveToFile(TradePrintFileFormat fileFormat)
     {
@@ -370,7 +464,7 @@ public partial class TradePrintWindow : Window
 
     private void ShowValidationError(string message)
     {
-        StatusTextBlock.Text = message;
+        SetStatus(message, StatusTone.Error);
         MessageBox.Show(
             this,
             message,
@@ -388,15 +482,20 @@ public partial class TradePrintWindow : Window
     private void UpdatePrinterActionState()
     {
         // 속성/직접 인쇄 버튼은 선택된 프린터가 있을 때만 동작하도록 유지한다.
-        var hasPrinter = PrinterComboBox.SelectedItem is PrinterListItem;
+        var hasPrinter = GetSelectedPrinterItem() is not null;
         PropertiesButton.IsEnabled = hasPrinter;
         PrintButton.IsEnabled = hasPrinter;
+        PrintDiagnosticButton.IsEnabled = hasPrinter;
+        CopyDiagnosticButton.IsEnabled = !_isRefreshingPrinters;
         RefreshPrintersButton.IsEnabled = _printerRefreshProvider is not null && !_isRefreshingPrinters;
     }
 
+    private PrinterListItem? GetSelectedPrinterItem()
+        => PrinterComboBox.SelectedItem as PrinterListItem;
+
     private string GetSelectedQueueName()
     {
-        if (PrinterComboBox.SelectedItem is not PrinterListItem item)
+        if (GetSelectedPrinterItem() is not PrinterListItem item)
             return string.Empty;
 
         var queueName = SafeRead(item.Queue, static q => q.FullName);
@@ -467,6 +566,65 @@ public partial class TradePrintWindow : Window
         return fileName;
     }
 
+    private string BuildPrinterDiagnosticReport()
+    {
+        var selectedItem = GetSelectedPrinterItem();
+        var pageMode = GetPageModeSummary();
+        var report = new StringBuilder();
+        report.AppendLine("거래플랜 인쇄 진단");
+        report.AppendLine($"생성 시각: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        report.AppendLine($"PC 이름: {Environment.MachineName}");
+        report.AppendLine($"사용자: {Environment.UserName}");
+        report.AppendLine($"등록 프린터 수: {PrinterComboBox.Items.Count:N0}");
+        report.AppendLine($"선택 프린터: {selectedItem?.DisplayName ?? (PrinterComboBox.Items.Count == 0 ? "등록된 프린터 없음" : "선택 안 함")}");
+        report.AppendLine($"선택 프린터 상태: {selectedItem?.StatusText ?? (PrinterComboBox.Items.Count == 0 ? "등록된 프린터 없음" : "선택 안 함")}");
+        report.AppendLine($"선택 프린터 위치: {selectedItem?.LocationText ?? "-"}");
+        report.AppendLine($"선택 프린터 종류: {selectedItem?.TypeText ?? "-"}");
+        report.AppendLine($"선택 프린터 오프라인: {(selectedItem?.IsOffline == true ? "예" : "아니오")}");
+        report.AppendLine($"문서 페이지 수: {(_pageCount > 0 ? $"{_pageCount:N0}쪽" : "확인 불가")}");
+        report.AppendLine($"현재 페이지: {(_currentPageNumber.HasValue ? $"{_currentPageNumber.Value:N0}쪽" : "확인 불가")}");
+        report.AppendLine($"페이지 선택: {pageMode}");
+        report.AppendLine($"인쇄 매수: {ReadCopyCountOrDefault():N0}");
+        report.AppendLine($"한 부씩 인쇄: {(CollateCheckBox.IsChecked == true ? "예" : "아니오")}");
+        report.AppendLine($"역방향 인쇄: {(ReverseOrderCheckBox.IsChecked == true ? "예" : "아니오")}");
+        report.AppendLine($"현재 안내 메시지: {StatusTextBlock.Text}");
+        report.AppendLine("fallback: PDF 저장 / 파일 저장(XPS)");
+        return report.ToString().TrimEnd();
+    }
+
+    private string GetPageModeSummary()
+    {
+        if (CurrentPageRadioButton.IsChecked == true)
+            return _currentPageNumber.HasValue ? $"현재 페이지 {_currentPageNumber.Value:N0}쪽" : "현재 페이지 (확인 불가)";
+
+        if (PageRangeRadioButton.IsChecked == true)
+        {
+            var pageRange = PageRangeTextBox.Text.Trim();
+            return string.IsNullOrWhiteSpace(pageRange) ? "페이지 범위 (입력 없음)" : $"페이지 범위 {pageRange}";
+        }
+
+        return "모든 페이지";
+    }
+
+    private void SetStatus(string message, StatusTone tone)
+    {
+        StatusTextBlock.Text = message;
+        StatusTextBlock.Foreground = tone switch
+        {
+            StatusTone.Success => SuccessStatusBrush,
+            StatusTone.Warning => WarningStatusBrush,
+            StatusTone.Error => ErrorStatusBrush,
+            _ => InfoStatusBrush
+        };
+    }
+
+    private static Brush CreateFrozenBrush(string colorCode)
+    {
+        var brush = (SolidColorBrush)new BrushConverter().ConvertFromString(colorCode)!;
+        brush.Freeze();
+        return brush;
+    }
+
     private sealed class PrinterListItem
     {
         public PrinterListItem(PrintQueue queue, bool isDefault)
@@ -505,5 +663,13 @@ public partial class TradePrintWindow : Window
         public string LocationText { get; }
         public string StatusText { get; }
         public bool IsOffline { get; }
+    }
+
+    private enum StatusTone
+    {
+        Info = 0,
+        Success = 1,
+        Warning = 2,
+        Error = 3
     }
 }

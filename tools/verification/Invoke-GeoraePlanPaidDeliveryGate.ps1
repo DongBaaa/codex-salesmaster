@@ -28,6 +28,9 @@ param(
     [string]$AndroidPackageName = "kr.georaeplan.mobile",
     [string]$AndroidUsername = "usenet",
     [string]$AndroidPassword = "1234",
+    [string]$SoakEvidencePath = "",
+    [int]$MaxSoakEvidenceAgeHours = 168,
+    [switch]$RequireSoakPass,
     [switch]$SkipApiVisibilitySmoke,
     [switch]$SkipLiveObservation,
     [switch]$SkipPrintEnvironment,
@@ -387,6 +390,36 @@ else {
     Add-StepResult -Results $results -Name 'android-update-in-place-smoke' -Status 'SKIP' -Detail 'Android update-in-place smoke is optional unless Strict or RequireAndroidUpdateInPlaceSmoke is specified.'
 }
 
+if ([string]::IsNullOrWhiteSpace($SoakEvidencePath)) {
+    if ($RequireSoakPass) {
+        Add-StepResult -Results $results -Name 'soak-observation-evidence' -Status 'FAIL' -Detail 'RequireSoakPass was specified, but SoakEvidencePath is empty.'
+    }
+    else {
+        Add-StepResult -Results $results -Name 'soak-observation-evidence' -Status 'N/A' -Detail '장시간 관찰 증거는 요청되지 않았습니다. 유료 납품 최종 승인 시 -RequireSoakPass와 -SoakEvidencePath를 지정하세요.'
+    }
+}
+elseif (-not (Test-Path -LiteralPath $SoakEvidencePath)) {
+    Add-StepResult -Results $results -Name 'soak-observation-evidence' -Status 'FAIL' -Detail "장시간 관찰 리포트를 찾지 못했습니다: $SoakEvidencePath" -Report $SoakEvidencePath
+}
+else {
+    $resolvedSoakEvidencePath = (Resolve-Path -LiteralPath $SoakEvidencePath).Path
+    $soakText = Get-Content -LiteralPath $resolvedSoakEvidencePath -Raw -Encoding UTF8
+    $soakStatusMatch = [regex]::Match($soakText, '(?im)^\s*-\s*(?:결과|Result)\s*:\s*\*\*(?<status>PASS|WARN|FAIL)\*\*\s*$')
+    $soakStatus = if ($soakStatusMatch.Success) { $soakStatusMatch.Groups['status'].Value.ToUpperInvariant() } else { 'UNKNOWN' }
+    $soakAge = (Get-Date).ToUniversalTime() - (Get-Item -LiteralPath $resolvedSoakEvidencePath).LastWriteTimeUtc
+    $soakAgeHours = [Math]::Round($soakAge.TotalHours, 2)
+
+    if ($soakStatus -ne 'PASS') {
+        Add-StepResult -Results $results -Name 'soak-observation-evidence' -Status 'FAIL' -Detail "장시간 관찰 결과가 PASS가 아닙니다(status=$soakStatus)." -Report $resolvedSoakEvidencePath
+    }
+    elseif ($MaxSoakEvidenceAgeHours -gt 0 -and $soakAge.TotalHours -gt $MaxSoakEvidenceAgeHours) {
+        Add-StepResult -Results $results -Name 'soak-observation-evidence' -Status 'FAIL' -Detail "장시간 관찰 증거가 너무 오래되었습니다(ageHours=$soakAgeHours, max=$MaxSoakEvidenceAgeHours)." -Report $resolvedSoakEvidencePath
+    }
+    else {
+        Add-StepResult -Results $results -Name 'soak-observation-evidence' -Status 'PASS' -Detail "장시간 관찰 PASS 증거를 확인했습니다(ageHours=$soakAgeHours)." -Report $resolvedSoakEvidencePath
+    }
+}
+
 $failed = @($results | Where-Object { $_.Status -eq 'FAIL' })
 $warnings = @($results | Where-Object { $_.Status -eq 'WARN' })
 $skipped = @($results | Where-Object { $_.Status -eq 'SKIP' })
@@ -426,6 +459,8 @@ $lines.Add("- RequirePrinter: $effectiveRequirePrinter") | Out-Null
 $lines.Add("- RequireOnlinePrinter: $effectiveRequireOnlinePrinter") | Out-Null
 $lines.Add("- FailOnAndroidDebugSigning: $effectiveFailOnAndroidDebugSigning") | Out-Null
 $lines.Add("- RequireAndroidUpdateInPlaceSmoke: $effectiveRequireAndroidUpdateInPlaceSmoke") | Out-Null
+$lines.Add("- RequireSoakPass: $([bool]$RequireSoakPass)") | Out-Null
+$lines.Add("- MaxSoakEvidenceAgeHours: $MaxSoakEvidenceAgeHours") | Out-Null
 $lines.Add('') | Out-Null
 $lines.Add('## Step results') | Out-Null
 $lines.Add('') | Out-Null

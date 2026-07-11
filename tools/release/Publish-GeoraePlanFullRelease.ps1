@@ -2,6 +2,7 @@
 param(
     [string]$ProjectRoot,
     [string]$SigningConfigPath,
+    [string]$WindowsSigningConfigPath,
     [string]$Channel = 'stable',
     [switch]$DeployToLinuxPc,
     [switch]$NoRestore,
@@ -258,7 +259,19 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $desktopScript = Join-Path $ProjectRoot 'tools\release\Build-GeoraePlanDesktopInstaller.ps1'
-& powershell -NoProfile -ExecutionPolicy Bypass -File $desktopScript -ProjectRoot $ProjectRoot
+$desktopArgs = @(
+    '-NoProfile',
+    '-ExecutionPolicy', 'Bypass',
+    '-File', $desktopScript,
+    '-ProjectRoot', $ProjectRoot
+)
+if (-not [string]::IsNullOrWhiteSpace($WindowsSigningConfigPath)) {
+    $desktopArgs += @('-WindowsSigningConfigPath', $WindowsSigningConfigPath)
+}
+if ($RequireWindowsAuthenticode) {
+    $desktopArgs += '-RequireWindowsAuthenticode'
+}
+& powershell @desktopArgs
 if ($LASTEXITCODE -ne 0) {
     throw 'desktop installer build failed.'
 }
@@ -272,6 +285,7 @@ $windowsSigningCheckArgs = @(
 )
 if ($RequireWindowsAuthenticode) {
     $windowsSigningCheckArgs += '-RequireSigned'
+    $windowsSigningCheckArgs += '-RequireTimestamp'
 }
 & powershell @windowsSigningCheckArgs
 if ($LASTEXITCODE -ne 0) {

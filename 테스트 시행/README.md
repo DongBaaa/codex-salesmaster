@@ -89,6 +89,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\테스트 �
 - 현장 PC 프린터/복합기까지 납품 증거로 남길 때는 `D:\거래플랜\tools\verification\Test-GeoraePlanPrintEnvironment.ps1 -ProjectRoot D:\거래플랜 -RequirePrinter -RequireOnlinePrinter -FailOnWarnings`를 실행해 기본 프린터, 온라인 프린터, 전용 인쇄창 PDF/XPS 대체 저장 source guard를 함께 확인합니다.
 - Android 실기기/에뮬레이터 업데이트 증거가 필요하면 기존 설치본이 있는 상태에서 `D:\거래플랜\tools\mobile\Invoke-GeoraePlanAndroidSmoke.ps1 -ApkPath <새 APK> -RequireUpdateInPlace`를 실행합니다. 이 옵션은 update-in-place 실패를 uninstall fallback으로 숨기지 않습니다.
 - 위 항목을 한 번에 묶어 납품 리포트로 남길 때는 `D:\거래플랜\tools\verification\Invoke-GeoraePlanPaidDeliveryGate.ps1 -Strict -LocalCacheAppDataRoot "<사용자 AppData 루트>" -AndroidApkPath "<새 APK>"`를 사용합니다. `-Strict`에서는 하위 경고도 실패로 전파되어 경고가 상위 PASS로 숨지 않습니다. Includes API visibility smoke for login/scope/core list/integrity evidence.
+- 장시간 실행 안정성은 `D:\거래플랜\tools\verification\Invoke-GeoraePlanSoakObservation.ps1 -ProjectRoot D:\거래플랜 -SampleCount 1440 -IntervalSeconds 60`으로 24시간 읽기 전용 관찰 증거를 남깁니다. 최종 납품 게이트에는 `-RequireSoakPass -SoakEvidencePath "<soak-observation.md>"`를 전달해 PASS 및 증거 유효기간을 검증합니다.
 
 ### 드라이런 확인
 ```powershell

@@ -2,6 +2,7 @@ using System.IO;
 using System.IO.Packaging;
 using System.Printing;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -41,6 +42,19 @@ public static class TradePrintExecutor
         string jobName,
         out string? errorMessage)
         => TryPrintDocument(document, jobName, new WpfSize(A4Width, A4Height), out errorMessage);
+
+    public static bool TryPrintDiagnosticPage(
+        PrintQueue? printQueue,
+        out string? errorMessage)
+        => TryPrintDiagnosticPage(
+            printQueue,
+            DateTimeOffset.Now,
+            static (queue, document, printTicket) =>
+            {
+                var writer = PrintQueue.CreateXpsDocumentWriter(queue);
+                writer.Write(document.DocumentPaginator, printTicket);
+            },
+            out errorMessage);
 
     public static bool TryPrintDocument(
         IDocumentPaginatorSource document,
@@ -147,6 +161,58 @@ public static class TradePrintExecutor
         finally
         {
             printServer?.Dispose();
+        }
+    }
+
+    private static bool TryPrintDiagnosticPage(
+        PrintQueue? printQueue,
+        DateTimeOffset generatedAt,
+        Action<PrintQueue, FixedDocument, PrintTicket> sendDocument,
+        out string? errorMessage)
+    {
+        errorMessage = null;
+        if (printQueue is null)
+        {
+            errorMessage = "1쪽 테스트 인쇄를 보낼 프린터를 선택하세요.";
+            return false;
+        }
+
+        var printerName = ResolveQueueName(printQueue);
+        if (string.IsNullOrWhiteSpace(printerName))
+            printerName = "선택 프린터";
+
+        if (SafeReadBool(printQueue, static queue => queue.IsOffline))
+        {
+            errorMessage = $"선택한 프린터 '{printerName}'이(가) 오프라인입니다. 프린터 전원/네트워크/드라이버를 확인하세요.";
+            return false;
+        }
+
+        try
+        {
+            var document = BuildDiagnosticDocument(printerName, printQueue, generatedAt);
+            var printTicket = BuildPrintTicket(printQueue, 1, true);
+            sendDocument(printQueue, document, printTicket);
+            return true;
+        }
+        catch (PrintQueueException ex)
+        {
+            errorMessage = $"1쪽 테스트 인쇄 출력 오류: {ex.Message}";
+            return false;
+        }
+        catch (PrintSystemException ex)
+        {
+            errorMessage = $"1쪽 테스트 인쇄 시스템 오류: {ex.Message}";
+            return false;
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            errorMessage = $"1쪽 테스트 인쇄 권한 오류: {ex.Message}";
+            return false;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"1쪽 테스트 인쇄를 보내지 못했습니다: {ex.Message}";
+            return false;
         }
     }
 
@@ -299,9 +365,9 @@ public static class TradePrintExecutor
         return new PageSelectionDocumentPaginator(source, pages);
     }
 
-    private static PrintTicket BuildPrintTicket(PrintQueue printQueue, int copyCount, bool collate)
+    private static PrintTicket BuildPrintTicket(PrintQueue? printQueue, int copyCount, bool collate)
     {
-        var printTicket = printQueue.UserPrintTicket ?? printQueue.DefaultPrintTicket ?? new PrintTicket();
+        var printTicket = TryGetPrintTicket(printQueue) ?? new PrintTicket();
 
         try
         {
@@ -322,6 +388,22 @@ public static class TradePrintExecutor
         }
 
         return printTicket;
+    }
+
+    private static PrintTicket? TryGetPrintTicket(PrintQueue? printQueue)
+    {
+        if (printQueue is null)
+            return null;
+
+        try
+        {
+            return printQueue.UserPrintTicket ?? printQueue.DefaultPrintTicket;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("PRINT", $"프린터 PrintTicket 확인 실패: {ex.Message}");
+            return null;
+        }
     }
 
     private static void SaveDocumentAsXps(DocumentPaginator paginator, string? outputFilePath)
@@ -434,8 +516,103 @@ public static class TradePrintExecutor
                current.MainWindow;
     }
 
-    private static string SafeRead(PrintQueue queue, Func<PrintQueue, string?> reader)
+    private static FixedDocument BuildDiagnosticDocument(
+        string printerName,
+        PrintQueue? printQueue,
+        DateTimeOffset generatedAt)
     {
+        var document = new FixedDocument();
+        document.DocumentPaginator.PageSize = new WpfSize(A4Width, A4Height);
+
+        var statusText = SafeRead(printQueue, static queue => queue.QueueStatus.ToString());
+        if (string.IsNullOrWhiteSpace(statusText) || statusText == "None")
+            statusText = "준비";
+
+        var locationText = SafeRead(printQueue, static queue => queue.Location);
+        if (string.IsNullOrWhiteSpace(locationText))
+            locationText = "-";
+
+        var shareName = SafeRead(printQueue, static queue => queue.ShareName);
+        var printerTypeText = string.IsNullOrWhiteSpace(shareName)
+            ? printerName
+            : $"{printerName} / 공유명: {shareName}";
+
+        var panel = new StackPanel
+        {
+            Margin = new Thickness(56, 56, 56, 40)
+        };
+        panel.Children.Add(new TextBlock
+        {
+            Text = "거래플랜 프린터 진단 페이지",
+            FontFamily = new FontFamily("맑은 고딕"),
+            FontSize = 28,
+            FontWeight = FontWeights.Bold,
+            Foreground = Brushes.Black
+        });
+        panel.Children.Add(new TextBlock
+        {
+            Text = "이 페이지가 정상적으로 출력되면 선택 프린터와 거래플랜의 기본 인쇄 연결은 동작 중입니다.",
+            FontFamily = new FontFamily("맑은 고딕"),
+            FontSize = 14,
+            Margin = new Thickness(0, 10, 0, 20),
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Brushes.Black
+        });
+
+        foreach (var line in new[]
+                 {
+                     $"생성 시각: {generatedAt:yyyy-MM-dd HH:mm:ss zzz}",
+                     $"PC 이름: {Environment.MachineName}",
+                     $"사용자: {Environment.UserName}",
+                     $"프린터: {printerName}",
+                     $"프린터 상태: {statusText}",
+                     $"프린터 위치: {locationText}",
+                     $"프린터 종류: {printerTypeText}",
+                     $"오프라인 여부: {(SafeReadBool(printQueue, static queue => queue.IsOffline) ? "예" : "아니오")}",
+                     "안내: 출력이 없거나 지연되면 거래플랜 인쇄창에서 진단 복사를 눌러 상태를 공유하세요.",
+                     "fallback: PDF 저장 / 파일 저장(XPS)"
+                 })
+        {
+            panel.Children.Add(new TextBlock
+            {
+                Text = line,
+                FontFamily = new FontFamily("맑은 고딕"),
+                FontSize = 15,
+                Margin = new Thickness(0, 0, 0, 10),
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = Brushes.Black
+            });
+        }
+
+        var page = new FixedPage
+        {
+            Width = A4Width,
+            Height = A4Height,
+            Background = Brushes.White
+        };
+        page.Children.Add(panel);
+
+        var content = new PageContent();
+        ((System.Windows.Markup.IAddChild)content).AddChild(page);
+        document.Pages.Add(content);
+        document.DocumentPaginator.PageSize = new WpfSize(A4Width, A4Height);
+        return document;
+    }
+
+    private static string ResolveQueueName(PrintQueue? printQueue)
+    {
+        var queueName = SafeRead(printQueue, static queue => queue.FullName);
+        if (string.IsNullOrWhiteSpace(queueName))
+            queueName = SafeRead(printQueue, static queue => queue.Name);
+
+        return queueName;
+    }
+
+    private static string SafeRead(PrintQueue? queue, Func<PrintQueue, string?> reader)
+    {
+        if (queue is null)
+            return string.Empty;
+
         try
         {
             return reader(queue) ?? string.Empty;
@@ -443,6 +620,21 @@ public static class TradePrintExecutor
         catch (Exception)
         {
             return string.Empty;
+        }
+    }
+
+    private static bool SafeReadBool(PrintQueue? queue, Func<PrintQueue, bool> reader)
+    {
+        if (queue is null)
+            return false;
+
+        try
+        {
+            return reader(queue);
+        }
+        catch (Exception)
+        {
+            return false;
         }
     }
 

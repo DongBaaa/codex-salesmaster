@@ -9,6 +9,8 @@ param(
     [string]$LaunchExeName,
     [string]$Version,
     [string]$WixToolPath,
+    [string]$WindowsSigningConfigPath,
+    [switch]$RequireWindowsAuthenticode,
     [int]$KeepVersionedInstallerCount = 2
 )
 
@@ -790,6 +792,70 @@ function Write-Sha256File {
     ("{0} *{1}" -f $hash.Hash, (Split-Path -Leaf $Path)) | Set-Content -LiteralPath ($Path + '.sha256.txt') -Encoding UTF8
 }
 
+function Resolve-WindowsSigningConfigPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [string]$ConfigPath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
+        if (-not (Test-Path -LiteralPath $ConfigPath)) {
+            throw "Windows signing config not found: $ConfigPath"
+        }
+
+        return (Resolve-Path -LiteralPath $ConfigPath).Path
+    }
+
+    $defaultPath = Join-Path $ProjectRoot 'tools\release\windows-signing.local.json'
+    if (Test-Path -LiteralPath $defaultPath) {
+        return (Resolve-Path -LiteralPath $defaultPath).Path
+    }
+
+    return ''
+}
+
+function Invoke-WindowsArtifactSigning {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [string]$WindowsSigningConfigPath,
+        [string[]]$Paths = @(),
+        [switch]$RequireSigning
+    )
+
+    if ([string]::IsNullOrWhiteSpace($WindowsSigningConfigPath) -and -not $RequireSigning) {
+        Write-Host 'windows_authenticode_signing=SKIPPED_NO_CONFIG'
+        return
+    }
+
+    $signingScript = Join-Path $ProjectRoot 'tools\release\Sign-GeoraePlanWindowsArtifacts.ps1'
+    if (-not (Test-Path -LiteralPath $signingScript)) {
+        throw "Windows Authenticode signing script not found: $signingScript"
+    }
+
+    $arguments = @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $signingScript,
+        '-ProjectRoot', $ProjectRoot
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($WindowsSigningConfigPath)) {
+        $arguments += @('-WindowsSigningConfigPath', $WindowsSigningConfigPath)
+    }
+    if ($Paths.Count -gt 0) {
+        $arguments += '-Paths'
+        $arguments += $Paths
+    }
+    if ($RequireSigning) {
+        $arguments += '-RequireSigning'
+    }
+
+    & powershell @arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Windows Authenticode signing failed.'
+    }
+}
+
 function Remove-OldVersionedInstallerArchives {
     param(
         [Parameter(Mandatory = $true)][string]$ArchiveRoot,
@@ -869,6 +935,8 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = Get-ProjectVersion -ProjectRoot $ProjectRoot
 }
 
+$WindowsSigningConfigPath = Resolve-WindowsSigningConfigPath -ProjectRoot $ProjectRoot -ConfigPath $WindowsSigningConfigPath
+
 $deploymentRoot = Get-DeploymentRoot -ProjectRoot $ProjectRoot
 if ([string]::IsNullOrWhiteSpace($SourceFolder)) {
     $SourceFolder = Get-DefaultClientSourceFolder -DeploymentRoot $deploymentRoot
@@ -917,6 +985,12 @@ $preparedSource = Prepare-InstallerSourceFolder -ProjectRoot $ProjectRoot -Origi
 $sourceForPackaging = $preparedSource.SourceRoot
 $appIconForPackage = Join-Path $sourceForPackaging $preparedSource.ShortcutIconFileName
 
+Invoke-WindowsArtifactSigning -ProjectRoot $ProjectRoot -WindowsSigningConfigPath $WindowsSigningConfigPath -Paths @(
+    (Join-Path $sourceForPackaging '거래플랜.Desktop.App.exe'),
+    (Join-Path $sourceForPackaging $LaunchExeName),
+    (Join-Path $sourceForPackaging 'Updater\거래플랜.Updater.exe')
+) -RequireSigning:$RequireWindowsAuthenticode
+
 $productWxsPath = Join-Path $stagingRoot 'Product.wxs'
 $generatedWxsPath = Join-Path $stagingRoot 'GeneratedFiles.wxs'
 $productWxs = New-ProductWxsContent -AppDisplayName $AppDisplayName -Manufacturer $Manufacturer -LaunchExeName $LaunchExeName -UpgradeCode '{0E5C8E78-44C0-4585-A2E9-5E74071A3A11}'
@@ -947,10 +1021,12 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $tempMsiPath)) {
 
 $versionedMsiPath = Join-Path $archiveOutputRoot ("{0}-v{1}.msi" -f $PackageName, $Version)
 $stableMsiPath = Join-Path $adminOutputRoot ($PackageName + '.msi')
+
+# Bootstrapper에 포함될 MSI 자체를 먼저 서명해야 최종 EXE 내부 체인도 서명 상태를 유지한다.
+Invoke-WindowsArtifactSigning -ProjectRoot $ProjectRoot -WindowsSigningConfigPath $WindowsSigningConfigPath -Paths @($tempMsiPath) -RequireSigning:$RequireWindowsAuthenticode
+
 Copy-Item -LiteralPath $tempMsiPath -Destination $versionedMsiPath -Force
 Copy-Item -LiteralPath $tempMsiPath -Destination $stableMsiPath -Force
-Write-Sha256File -Path $versionedMsiPath
-Write-Sha256File -Path $stableMsiPath
 
 $bootstrapperRoot = Join-Path $stagingRoot 'bootstrapper'
 $bootstrapperProject = New-BootstrapperProjectFiles -BootstrapperRoot $bootstrapperRoot -MsiPath $tempMsiPath -IconPath $shortcutIconPath -Version $Version -AppDisplayName $AppDisplayName
@@ -960,6 +1036,11 @@ $versionedExePath = Join-Path $archiveOutputRoot ("{0}-v{1}.exe" -f $PackageName
 $stableExePath = Join-Path $OutputRoot ($PackageName + '.exe')
 Copy-Item -LiteralPath $tempExePath -Destination $versionedExePath -Force
 Copy-Item -LiteralPath $tempExePath -Destination $stableExePath -Force
+
+Invoke-WindowsArtifactSigning -ProjectRoot $ProjectRoot -WindowsSigningConfigPath $WindowsSigningConfigPath -Paths @($versionedExePath, $stableExePath) -RequireSigning:$RequireWindowsAuthenticode
+
+Write-Sha256File -Path $versionedMsiPath
+Write-Sha256File -Path $stableMsiPath
 Write-Sha256File -Path $versionedExePath
 Write-Sha256File -Path $stableExePath
 

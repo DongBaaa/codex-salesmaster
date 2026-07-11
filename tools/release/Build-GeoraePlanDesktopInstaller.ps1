@@ -6,6 +6,8 @@ param(
     [string]$PackageName,
     [string]$AppDisplayName,
     [string]$ApiBaseUrl = 'https://trade.2884.kr',
+    [string]$WindowsSigningConfigPath,
+    [switch]$RequireWindowsAuthenticode,
     [switch]$SkipNativeInstallers
 )
 
@@ -139,6 +141,74 @@ function Get-DefaultOutputRoot {
     )
 
     return $DeploymentRoot
+}
+
+function Resolve-WindowsSigningConfigPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [string]$ConfigPath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
+        if (-not (Test-Path -LiteralPath $ConfigPath)) {
+            throw "Windows signing config not found: $ConfigPath"
+        }
+
+        return (Resolve-Path -LiteralPath $ConfigPath).Path
+    }
+
+    $defaultPath = Join-Path $ProjectRoot 'tools\release\windows-signing.local.json'
+    if (Test-Path -LiteralPath $defaultPath) {
+        return (Resolve-Path -LiteralPath $defaultPath).Path
+    }
+
+    return ''
+}
+
+function Invoke-WindowsArtifactSigning {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [string]$WindowsSigningConfigPath,
+        [string]$PackageRoot,
+        [string[]]$Paths = @(),
+        [switch]$RequireSigning
+    )
+
+    if ([string]::IsNullOrWhiteSpace($WindowsSigningConfigPath) -and -not $RequireSigning) {
+        Write-Host 'windows_authenticode_signing=SKIPPED_NO_CONFIG'
+        return
+    }
+
+    $signingScript = Join-Path $ProjectRoot 'tools\release\Sign-GeoraePlanWindowsArtifacts.ps1'
+    if (-not (Test-Path -LiteralPath $signingScript)) {
+        throw "Windows Authenticode signing script not found: $signingScript"
+    }
+
+    $arguments = @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $signingScript,
+        '-ProjectRoot', $ProjectRoot
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($WindowsSigningConfigPath)) {
+        $arguments += @('-WindowsSigningConfigPath', $WindowsSigningConfigPath)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PackageRoot)) {
+        $arguments += @('-PackageRoot', $PackageRoot)
+    }
+    if ($Paths.Count -gt 0) {
+        $arguments += '-Paths'
+        $arguments += $Paths
+    }
+    if ($RequireSigning) {
+        $arguments += '-RequireSigning'
+    }
+
+    & powershell @arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Windows Authenticode signing failed.'
+    }
 }
 
 function Get-ProjectVersion {
@@ -298,6 +368,7 @@ $env:DOTNET_EXE = $dotnetExe
 
 $deploymentRoot = Get-DeploymentRoot -ProjectRoot $ProjectRoot
 $desktopVersion = Get-ProjectVersion -ProjectRoot $ProjectRoot
+$WindowsSigningConfigPath = Resolve-WindowsSigningConfigPath -ProjectRoot $ProjectRoot -ConfigPath $WindowsSigningConfigPath
 
 if ([string]::IsNullOrWhiteSpace($SourceFolder)) {
     $SourceFolder = Prepare-DefaultClientSourceFolder -ProjectRoot $ProjectRoot -AppDisplayName $AppDisplayName -DotnetExe $dotnetExe
@@ -357,6 +428,8 @@ if (Test-Path -LiteralPath $updaterProject) {
     Get-ChildItem -LiteralPath (Join-Path $appRoot 'Updater') -Recurse -File -Filter '*.pdb' -ErrorAction SilentlyContinue |
         Remove-Item -Force -ErrorAction Stop
 }
+
+Invoke-WindowsArtifactSigning -ProjectRoot $ProjectRoot -WindowsSigningConfigPath $WindowsSigningConfigPath -PackageRoot $packageRoot -RequireSigning:$RequireWindowsAuthenticode
 
 $serverUrl = ''
 $appSettingsPath = Join-Path $SourceFolder 'appsettings.json'
@@ -877,7 +950,23 @@ Write-Host "package_zip=$zipPath"
 if (-not $SkipNativeInstallers) {
     $nativeInstallerScript = Join-Path $scriptRoot 'Build-GeoraePlanDesktopNativeInstallers.ps1'
     if (Test-Path -LiteralPath $nativeInstallerScript) {
-        & powershell -ExecutionPolicy Bypass -File $nativeInstallerScript -ProjectRoot $ProjectRoot -SourceFolder $appRoot -OutputRoot $OutputRoot -PackageName $PackageName -AppDisplayName $AppDisplayName
+        $nativeInstallerArguments = @(
+            '-ExecutionPolicy', 'Bypass',
+            '-File', $nativeInstallerScript,
+            '-ProjectRoot', $ProjectRoot,
+            '-SourceFolder', $appRoot,
+            '-OutputRoot', $OutputRoot,
+            '-PackageName', $PackageName,
+            '-AppDisplayName', $AppDisplayName
+        )
+        if (-not [string]::IsNullOrWhiteSpace($WindowsSigningConfigPath)) {
+            $nativeInstallerArguments += @('-WindowsSigningConfigPath', $WindowsSigningConfigPath)
+        }
+        if ($RequireWindowsAuthenticode) {
+            $nativeInstallerArguments += '-RequireWindowsAuthenticode'
+        }
+
+        & powershell @nativeInstallerArguments
         if ($LASTEXITCODE -ne 0) {
             throw 'Native installer generation failed.'
         }

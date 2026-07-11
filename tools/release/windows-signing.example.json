@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "description": "Copy to tools/release/windows-signing.local.json and fill either certificate store selectors or environment-variable-backed PFX settings.",
+  "fileDigestAlgorithm": "SHA256",
+  "timestampDigestAlgorithm": "SHA256",
+  "timestampRfc3161Url": "https://timestamp.digicert.com",
+  "signToolPath": "",
+  "certificateStoreLocation": "CurrentUser",
+  "certificateStoreName": "My",
+  "certificateThumbprint": "",
+  "certificateSubjectContains": "",
+  "certificatePathEnvironmentVariable": "GEORAEPLAN_WINDOWS_SIGN_PFX_PATH",
+  "certificatePasswordEnvironmentVariable": "GEORAEPLAN_WINDOWS_SIGN_PFX_PASSWORD",
+  "timestampSubjectContains": []
+}

@@ -604,15 +604,32 @@ function Invoke-AndroidSigningContinuityGate {
         throw "Android signing continuity script not found: $androidSigningContinuityScript"
     }
 
-    $androidDownloadsRoot = Join-Path $PublishRoot 'updates\downloads\android'
-    $localAndroidPackage = Get-ChildItem -LiteralPath $androidDownloadsRoot -File -Filter '*.apk' -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 1
-    if ($null -eq $localAndroidPackage) {
-        Write-Warning "Android signing continuity gate skipped because no Android APK was prepared under $androidDownloadsRoot"
-        Write-Host 'pre-deploy_android_signing_continuity=skipped reason=no-android-apk'
+    $manifestPath = Join-Path (Join-Path $PublishRoot 'updates\manifest') ($Channel + '.json')
+    if (-not (Test-Path -LiteralPath $manifestPath)) {
+        throw "Android signing continuity manifest not found: $manifestPath"
+    }
+
+    $publishedManifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $localAndroidFileName = [string]$publishedManifest.android.fileName
+    if ([string]::IsNullOrWhiteSpace($localAndroidFileName)) {
+        Write-Warning "Android signing continuity gate skipped because the published $Channel manifest has no Android package."
+        Write-Host 'pre-deploy_android_signing_continuity=skipped reason=no-android-manifest-package'
         return
     }
+
+    if (-not [string]::Equals(
+            [System.IO.Path]::GetFileName($localAndroidFileName),
+            $localAndroidFileName,
+            [System.StringComparison]::Ordinal)) {
+        throw "Android signing continuity manifest fileName must not contain a path: $localAndroidFileName"
+    }
+
+    $androidDownloadsRoot = Join-Path $PublishRoot 'updates\downloads\android'
+    $localAndroidPackagePath = Join-Path $androidDownloadsRoot $localAndroidFileName
+    if (-not (Test-Path -LiteralPath $localAndroidPackagePath)) {
+        throw "Android signing continuity package referenced by the published manifest was not found: $localAndroidPackagePath"
+    }
+    $localAndroidPackage = Get-Item -LiteralPath $localAndroidPackagePath
 
     if ([string]::IsNullOrWhiteSpace($BaseUrl)) {
         throw 'Android signing continuity gate cannot run because BaseUrl is missing.'

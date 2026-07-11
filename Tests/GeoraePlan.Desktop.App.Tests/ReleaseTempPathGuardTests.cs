@@ -374,6 +374,13 @@ public sealed class ReleaseTempPathGuardTests
             "tools",
             "release",
             "Restore-GeoraePlanPreviousUpdateManifest.ps1");
+        var scriptBytes = File.ReadAllBytes(scriptPath);
+        Assert.True(
+            scriptBytes.Length >= 3 &&
+            scriptBytes[0] == 0xEF &&
+            scriptBytes[1] == 0xBB &&
+            scriptBytes[2] == 0xBF,
+            "한글 배포 경로를 사용하는 rollback 스크립트는 Windows PowerShell 5.1용 UTF-8 BOM이 필요합니다.");
         var testRoot = Path.Combine(
             repositoryRoot,
             "temp",
@@ -448,7 +455,7 @@ public sealed class ReleaseTempPathGuardTests
 
         Assert.Contains("Get-ChildItem -LiteralPath $appRoot -Recurse -File -Filter '*.pdb'", installerSource, StringComparison.Ordinal);
         Assert.Contains("Remove-Item -Force -ErrorAction Stop", installerSource, StringComparison.Ordinal);
-        Assert.Contains("Get-AuthenticodeSignature -LiteralPath $path", signingSource, StringComparison.Ordinal);
+        Assert.Contains("Get-AuthenticodeSignature -LiteralPath $resolvedPath", signingSource, StringComparison.Ordinal);
         Assert.Contains("[switch]$RequireSigned", signingSource, StringComparison.Ordinal);
         Assert.Contains("windows_authenticode=PASS", signingSource, StringComparison.Ordinal);
         Assert.Contains("windows_authenticode=WARNING_UNSIGNED", signingSource, StringComparison.Ordinal);
@@ -674,7 +681,7 @@ public sealed class ReleaseTempPathGuardTests
             "if ([string]::IsNullOrWhiteSpace($ProjectRoot))",
             "$ProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path",
             "$tempInitializer = Join-Path $ProjectRoot 'tools\\common\\Initialize-GeoraePlanTemp.ps1'",
-            "& powershell -ExecutionPolicy Bypass -File $nativeInstallerScript -ProjectRoot $ProjectRoot");
+            "& powershell @nativeInstallerArguments");
 
         var androidBuildSource = ReadRepositoryFile(
             "tools",
@@ -688,7 +695,7 @@ public sealed class ReleaseTempPathGuardTests
             "$ProjectRoot = Resolve-DefaultProjectRoot -ScriptPath $MyInvocation.MyCommand.Path",
             "$tempInitializer = Join-Path $ProjectRoot 'tools\\common\\Initialize-GeoraePlanTemp.ps1'",
             "$resolvedDotNetPath = Get-ResolvedDotNetPath -ProjectRoot $ProjectRoot -RequestedPath $DotNetPath",
-            "$publishResult = Invoke-DotnetPublishAndRelay -DotNetPath $resolvedDotNetPath -Arguments $arguments");
+            "$publishResult = Invoke-DotnetPublishAndRelay");
 
         var fullReleaseSource = ReadRepositoryFile(
             "tools",
@@ -700,7 +707,7 @@ public sealed class ReleaseTempPathGuardTests
             "if ([string]::IsNullOrWhiteSpace($ProjectRoot))",
             "$ProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path",
             "$tempInitializer = Join-Path $ProjectRoot 'tools\\common\\Initialize-GeoraePlanTemp.ps1'",
-            "& powershell -NoProfile -ExecutionPolicy Bypass -File $desktopScript -ProjectRoot $ProjectRoot");
+            "& powershell @desktopArgs");
 
         var linuxReleaseSource = ReadRepositoryFile(
             "tools",
@@ -1625,6 +1632,14 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("[switch]$AcceptAndroidSigningCertificateChange", linuxRelease, StringComparison.Ordinal);
         Assert.Contains("function Invoke-AndroidSigningContinuityGate", linuxRelease, StringComparison.Ordinal);
         Assert.Contains("pre-deploy_android_signing_continuity_start", linuxRelease, StringComparison.Ordinal);
+        Assert.Contains("$manifestPath = Join-Path (Join-Path $PublishRoot 'updates\\manifest') ($Channel + '.json')", linuxRelease, StringComparison.Ordinal);
+        Assert.Contains("$localAndroidFileName = [string]$publishedManifest.android.fileName", linuxRelease, StringComparison.Ordinal);
+        Assert.Contains("$localAndroidPackagePath = Join-Path $androidDownloadsRoot $localAndroidFileName", linuxRelease, StringComparison.Ordinal);
+        var continuityGateStart = linuxRelease.IndexOf("function Invoke-AndroidSigningContinuityGate", StringComparison.Ordinal);
+        var continuityGateEnd = linuxRelease.IndexOf("function Update-PublishedAppSettings", continuityGateStart, StringComparison.Ordinal);
+        Assert.True(continuityGateStart >= 0 && continuityGateEnd > continuityGateStart);
+        var continuityGateSource = linuxRelease[continuityGateStart..continuityGateEnd];
+        Assert.DoesNotContain("Sort-Object LastWriteTime", continuityGateSource, StringComparison.Ordinal);
         Assert.Contains("-AcceptCertificateChange ([bool]$AcceptAndroidSigningCertificateChange)", linuxRelease, StringComparison.Ordinal);
         AssertInOrder(
             linuxRelease,
@@ -1648,6 +1663,80 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("android_signing_continuity=FAIL", continuityScript, StringComparison.Ordinal);
         Assert.Contains("android_signing_continuity=ACCEPTED_CERTIFICATE_CHANGE", continuityScript, StringComparison.Ordinal);
         Assert.Contains("android_signing_continuity=PASS", continuityScript, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task LinuxRelease_AndroidSigningContinuityUsesManifestPackageInsteadOfNewestFileTimestamp()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var linuxRelease = ReadRepositoryFile(
+            "tools",
+            "linux",
+            "Publish-GeoraeplanLinuxPcRelease.ps1");
+        var functionStart = linuxRelease.IndexOf("function Invoke-AndroidSigningContinuityGate", StringComparison.Ordinal);
+        var functionEnd = linuxRelease.IndexOf("function Update-PublishedAppSettings", functionStart, StringComparison.Ordinal);
+        Assert.True(functionStart >= 0 && functionEnd > functionStart);
+
+        var testRoot = Path.Combine(
+            repositoryRoot,
+            "temp",
+            "android-signing-selection-tests",
+            Guid.NewGuid().ToString("N"));
+        var publishRoot = Path.Combine(testRoot, "publish");
+        var manifestRoot = Path.Combine(publishRoot, "updates", "manifest");
+        var downloadsRoot = Path.Combine(publishRoot, "updates", "downloads", "android");
+        var toolsRoot = Path.Combine(testRoot, "tools", "mobile");
+        var targetFileName = "tradeplan-android-v0.2.81.apk";
+        var staleFileName = "tradeplan-android-v0.2.80.apk";
+        var targetPath = Path.Combine(downloadsRoot, targetFileName);
+        var stalePath = Path.Combine(downloadsRoot, staleFileName);
+
+        try
+        {
+            Directory.CreateDirectory(manifestRoot);
+            Directory.CreateDirectory(downloadsRoot);
+            Directory.CreateDirectory(toolsRoot);
+            File.WriteAllText(targetPath, "new manifest package");
+            File.WriteAllText(stalePath, "old rollback package");
+            File.SetLastWriteTimeUtc(stalePath, DateTime.UtcNow.AddMinutes(5));
+
+            var manifestJson = JsonSerializer.Serialize(
+                new { android = new { fileName = targetFileName } },
+                new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(
+                Path.Combine(manifestRoot, "stable.json"),
+                manifestJson,
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+
+            var stubScriptPath = Path.Combine(toolsRoot, "Test-GeoraePlanAndroidSigningContinuity.ps1");
+            File.WriteAllText(
+                stubScriptPath,
+                "param([string]$ProjectRoot,[string]$LocalApkPath,[string]$BaseUrl,[string]$Channel,[switch]$AcceptCertificateChange)" + Environment.NewLine +
+                "Write-Host \"stub_local_apk=$LocalApkPath\"" + Environment.NewLine +
+                "exit 0" + Environment.NewLine,
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+
+            var testScriptPath = Path.Combine(testRoot, "invoke-continuity-selection.ps1");
+            var functionSource = linuxRelease[functionStart..functionEnd];
+            var testScript = functionSource + Environment.NewLine +
+                             $"Invoke-AndroidSigningContinuityGate -Root '{EscapePowerShellSingleQuotedLiteral(testRoot)}' -PublishRoot '{EscapePowerShellSingleQuotedLiteral(publishRoot)}' -BaseUrl 'https://trade.2884.kr' -Channel 'stable'" +
+                             Environment.NewLine;
+            File.WriteAllText(
+                testScriptPath,
+                testScript,
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+
+            var result = await RunPowerShellAsync(testScriptPath);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains($"stub_local_apk={targetPath}", result.StdOut, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain($"stub_local_apk={stalePath}", result.StdOut, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (Directory.Exists(testRoot))
+                Directory.Delete(testRoot, recursive: true);
+        }
     }
 
     [Fact]

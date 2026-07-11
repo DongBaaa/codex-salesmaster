@@ -48,6 +48,17 @@
 - 인증서 변경을 단순 경고 수용 스위치로 우회하지 않는다.
 - 실제 기기 검증과 사용자 확인 전에 모바일 버전을 올리거나 stable APK를 교체하지 않는다.
 
+## Release AOT 임시 staging 운영 메모
+
+- `tools\mobile\Build-GeoraePlanAndroidApk.ps1` 는 Release AOT 빌드에서 프로젝트 루트 경로에 비ASCII 문자가 있으면 `D:\gpaot\...` 아래의 짧은 ASCII 임시 staging copy를 자동으로 사용한다.
+- staging 대상은 `Mobile`, `Shared`, `AppIcons` 세 경로뿐이며, `bin`, `obj`, `signing`, `artifacts` 폴더와 `android-signing.local.json`, `android-signing.release.local.json`, keystore/jks/pfx류 파일은 복사하지 않는다.
+- AOT 실행 중 `TEMP`와 `TMP`도 staging 내부의 짧은 ASCII `tmp` 경로로만 임시 전환하고, 빌드가 끝나면 원래 환경값으로 복구한다.
+- staging 빌드는 compiler server/node 재사용을 끄고 정리를 재시도한다. 정리가 끝내 실패하면 성공으로 숨기지 않고 빌드 자체를 실패 처리해 D드라이브 임시폴더 누적을 막는다.
+- 즉, 서명 비밀번호와 keystore 원본은 staging 폴더로 옮기지 않고 원래 보관 위치에서만 읽는다.
+- 빌드 로그에는 `android_aot_staging=*` 표식이 남는다. 운영 점검 시 `enabled`, `skipped_no_restore`, `failed_prepare`, `cleanup=success/failed` 여부를 함께 기록한다.
+- `-NoRestore` 를 주면 필터된 staging copy와 충돌하므로 staging은 건너뛰고, 기존의 알려진 response-file fallback(AOT 비활성 재시도)은 그대로 유지된다.
+- staging 정리에 실패하면 폴더를 억지로 넓게 지우지 말고, 로그에 남은 `android_aot_staging_cleanup_root` 경로만 개별 확인 후 수동 정리한다.
+
 ## 배포 설정 파일 분리
 
 - 유료 납품용 release signing 설정은 `Mobile\GeoraePlan.Mobile.App\android-signing.release.local.json`에 둔다.
