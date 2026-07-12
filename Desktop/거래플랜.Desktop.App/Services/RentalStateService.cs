@@ -13466,9 +13466,14 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (string.IsNullOrWhiteSpace(preferredOfficeCode))
             return true;
 
+        var responsibleOfficeCode = responsibleOfficeCodeSelector(customer);
+        var customerRentalOfficeCode = string.IsNullOrWhiteSpace(responsibleOfficeCode)
+            ? NormalizeOfficeCode(officeCodeSelector(customer), officeCodeSelector(customer))
+            : ResolveCustomerRentalOfficeCode(responsibleOfficeCode);
+
         return string.Equals(
-            NormalizeOfficeCode(officeCodeSelector(customer), responsibleOfficeCodeSelector(customer)),
-            NormalizeOfficeCode(preferredOfficeCode, preferredOfficeCode),
+            customerRentalOfficeCode,
+            ResolveCustomerRentalOfficeCode(preferredOfficeCode),
             StringComparison.OrdinalIgnoreCase);
     }
 

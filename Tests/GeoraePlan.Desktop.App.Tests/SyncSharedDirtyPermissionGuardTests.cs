@@ -67,6 +67,10 @@ public sealed class SyncSharedDirtyPermissionGuardTests
             requestPropertyName: "RentalManagementCompanies",
             localSetName: "RentalManagementCompanies",
             entityDisplayName: "렌탈 관리업체 변경");
+        Assert.Contains(
+            "var referencedRentalManagementCompanies = canSyncRentalSettings",
+            syncServiceSource,
+            StringComparison.Ordinal);
     }
 
     [Fact]

@@ -293,7 +293,7 @@ public sealed partial class EnvironmentSettingsViewModel
             }
 
             var syncSucceeded = await _sync.TrySyncAsync();
-            var hasPendingChanges = await _local.HasPendingSyncChangesAsync();
+            var hasPendingChanges = await _local.HasPendingSyncChangesAsync(_session);
             if (syncSucceeded && !hasPendingChanges)
                 await _sync.RefreshSharedMirrorFromServerAsync();
 

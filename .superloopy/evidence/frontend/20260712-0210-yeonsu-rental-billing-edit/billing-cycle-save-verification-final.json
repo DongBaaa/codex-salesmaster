@@ -1,0 +1,75 @@
+{
+  "verifiedAtUtc": "2026-07-11T18:27:40.734545+00:00",
+  "scenario": "YEONSU office user edits an existing rental billing profile and synchronizes it end-to-end",
+  "user": {
+    "username": "user",
+    "role": "User",
+    "tenantCode": "USENET_GROUP",
+    "officeCode": "YEONSU",
+    "scopeType": "OfficeOnly",
+    "permissions": [
+      "Customer.Edit",
+      "Delivery.Edit",
+      "Inventory.Reset",
+      "Invoice.Edit",
+      "Item.Edit",
+      "Payment.Edit",
+      "Rental.AssetEdit",
+      "Rental.ProfileEdit"
+    ]
+  },
+  "before": {
+    "Id": "0509A32E-FCFC-1694-D0C6-028DC6372956",
+    "CustomerName": "연수구청[문화관광과]",
+    "TenantCode": "USENET_GROUP",
+    "OfficeCode": "USENET",
+    "ResponsibleOfficeCode": "YEONSU",
+    "BillingCycleMonths": 36,
+    "Revision": 1783788322519,
+    "UpdatedAtUtc": "2026-07-11 16:45:22.4966636",
+    "IsDeleted": 0,
+    "IsDirty": 0
+  },
+  "clientAfter": {
+    "Id": "0509A32E-FCFC-1694-D0C6-028DC6372956",
+    "CustomerName": "연수구청[문화관광과]",
+    "TenantCode": "USENET_GROUP",
+    "OfficeCode": "USENET",
+    "ResponsibleOfficeCode": "YEONSU",
+    "BillingCycleMonths": 35,
+    "Revision": 1783794256845,
+    "UpdatedAtUtc": "2026-07-11 18:24:16.8454841",
+    "IsDeleted": 0,
+    "IsDirty": 0
+  },
+  "serverAfter": {
+    "Id": "0509A32E-FCFC-1694-D0C6-028DC6372956",
+    "CustomerName": "연수구청[문화관광과]",
+    "TenantCode": "USENET_GROUP",
+    "OfficeCode": "USENET",
+    "ResponsibleOfficeCode": "YEONSU",
+    "BillingCycleMonths": 35,
+    "Revision": 1783794256845,
+    "UpdatedAtUtc": "2026-07-11 18:24:16.8454841",
+    "IsDeleted": 0
+  },
+  "outboxStatus": {
+    "Acknowledged": 5
+  },
+  "dirtyCounts": {
+    "RentalBillingProfiles": 0,
+    "RentalAssets": 0,
+    "RentalManagementCompanies": 0,
+    "Customers": 0,
+    "Items": 0
+  },
+  "assertions": {
+    "yeonsuOfficeOnly": true,
+    "profileAndAssetEditGranted": true,
+    "wideRentalPermissionsNotGranted": true,
+    "cycleChanged36To35": true,
+    "clientServerMatch": true,
+    "noFailedOutbox": true,
+    "noDirtyRentalData": true
+  }
+}

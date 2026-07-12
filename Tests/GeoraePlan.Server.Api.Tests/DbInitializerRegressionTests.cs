@@ -42,6 +42,200 @@ public sealed class DbInitializerRegressionTests : IDisposable
     }
 
     [Fact]
+    public void ResolveDefaultOperationalPermissions_YeonsuCanEditOwnRentalProfilesAndAssetsWithoutWideScope()
+    {
+        var method = typeof(DbInitializer).GetMethod(
+            "ResolveDefaultOperationalPermissions",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var user = new UserAccount
+        {
+            Username = "yeonsu",
+            Role = "User",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+
+        var permissions = Assert.IsAssignableFrom<IReadOnlyCollection<string>>(method!.Invoke(null, [user]));
+
+        Assert.Contains(PermissionNames.RentalProfileEdit, permissions);
+        Assert.Contains(PermissionNames.RentalAssetEdit, permissions);
+        Assert.DoesNotContain(PermissionNames.RentalViewAll, permissions);
+        Assert.DoesNotContain(PermissionNames.RentalEditAll, permissions);
+    }
+
+    [Fact]
+    public async Task EnsureOperationalPermissionDefaultsAsync_PersistsYeonsuRentalPermissions()
+    {
+        var user = new UserAccount
+        {
+            Username = "yeonsu",
+            PasswordHash = "test",
+            Role = "User",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+        _dbContext.Users.Add(user);
+        await _dbContext.SaveChangesAsync();
+
+        var method = typeof(DbInitializer).GetMethod(
+            "EnsureOperationalPermissionDefaultsAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var task = Assert.IsAssignableFrom<Task>(method!.Invoke(null, [_dbContext, CancellationToken.None]));
+        await task;
+        await _dbContext.SaveChangesAsync();
+
+        _dbContext.ChangeTracker.Clear();
+        var persisted = await _dbContext.Users
+            .Include(current => current.Permissions)
+            .SingleAsync(current => current.Id == user.Id);
+
+        Assert.Contains(persisted.Permissions, permission => permission.Permission == PermissionNames.RentalProfileEdit);
+        Assert.Contains(persisted.Permissions, permission => permission.Permission == PermissionNames.RentalAssetEdit);
+        Assert.DoesNotContain(persisted.Permissions, permission => permission.Permission == PermissionNames.RentalEditAll);
+    }
+
+    [Fact]
+    public async Task EnsureOperationalPermissionDefaultsAsync_IncludesNewlyTrackedSeedUserBeforeFirstSave()
+    {
+        var user = new UserAccount
+        {
+            Username = "user",
+            PasswordHash = "test",
+            Role = "User",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+        _dbContext.Users.Add(user);
+
+        var method = typeof(DbInitializer).GetMethod(
+            "EnsureOperationalPermissionDefaultsAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var task = Assert.IsAssignableFrom<Task>(method!.Invoke(null, [_dbContext, CancellationToken.None]));
+        await task;
+        await _dbContext.SaveChangesAsync();
+
+        _dbContext.ChangeTracker.Clear();
+        var persisted = await _dbContext.Users
+            .Include(current => current.Permissions)
+            .SingleAsync(current => current.Id == user.Id);
+
+        Assert.Contains(persisted.Permissions, permission => permission.Permission == PermissionNames.RentalProfileEdit);
+        Assert.Contains(persisted.Permissions, permission => permission.Permission == PermissionNames.RentalAssetEdit);
+    }
+
+    [Fact]
+    public async Task EnsureDefaultRentalManagementCompaniesAsync_CreatesCanonicalProfileReferences()
+    {
+        await InvokeEnsureDefaultRentalManagementCompaniesAsync();
+        await _dbContext.SaveChangesAsync();
+
+        var companies = await _dbContext.RentalManagementCompanies
+            .IgnoreQueryFilters()
+            .OrderBy(company => company.TenantCode)
+            .ThenBy(company => company.Code)
+            .ToListAsync();
+
+        Assert.Collection(
+            companies,
+            company =>
+            {
+                Assert.Equal(TenantScopeCatalog.Itworld, company.TenantCode);
+                Assert.Equal(OfficeCodeCatalog.Itworld, company.Code);
+                Assert.True(company.IsSystemDefault);
+                Assert.True(company.IsActive);
+                Assert.False(company.IsDeleted);
+            },
+            company =>
+            {
+                Assert.Equal(TenantScopeCatalog.UsenetGroup, company.TenantCode);
+                Assert.Equal(OfficeCodeCatalog.Usenet, company.Code);
+                Assert.Equal(OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet), company.Name);
+                Assert.True(company.IsSystemDefault);
+                Assert.True(company.IsActive);
+                Assert.False(company.IsDeleted);
+            },
+            company =>
+            {
+                Assert.Equal(TenantScopeCatalog.UsenetGroup, company.TenantCode);
+                Assert.Equal(OfficeCodeCatalog.Yeonsu, company.Code);
+                Assert.True(company.IsSystemDefault);
+                Assert.True(company.IsActive);
+                Assert.False(company.IsDeleted);
+            });
+    }
+
+    [Fact]
+    public async Task EnsureDefaultRentalManagementCompaniesAsync_SecondRunIsNoOp()
+    {
+        await InvokeEnsureDefaultRentalManagementCompaniesAsync();
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var before = await _dbContext.RentalManagementCompanies
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .ToDictionaryAsync(
+                company => company.Id,
+                company => (company.Revision, company.UpdatedAtUtc));
+
+        await InvokeEnsureDefaultRentalManagementCompaniesAsync();
+
+        Assert.False(_dbContext.ChangeTracker.HasChanges());
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var after = await _dbContext.RentalManagementCompanies
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .ToDictionaryAsync(
+                company => company.Id,
+                company => (company.Revision, company.UpdatedAtUtc));
+
+        Assert.Equal(before, after);
+    }
+
+    [Fact]
+    public async Task EnsureDefaultRentalManagementCompaniesAsync_RepairsDeletedCodeLabelWithoutOverwritingCustomName()
+    {
+        var deletedUsenet = new RentalManagementCompany
+        {
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = OfficeCodeCatalog.Usenet,
+            IsSystemDefault = false,
+            IsActive = false,
+            IsDeleted = true
+        };
+        var customItworld = new RentalManagementCompany
+        {
+            TenantCode = TenantScopeCatalog.Itworld,
+            Code = OfficeCodeCatalog.Itworld,
+            Name = "아이티월드 렌탈 전용",
+            IsSystemDefault = true,
+            IsActive = true,
+            IsDeleted = false
+        };
+        _dbContext.RentalManagementCompanies.AddRange(deletedUsenet, customItworld);
+        await _dbContext.SaveChangesAsync();
+
+        await InvokeEnsureDefaultRentalManagementCompaniesAsync();
+        await _dbContext.SaveChangesAsync();
+
+        Assert.Equal(OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet), deletedUsenet.Name);
+        Assert.True(deletedUsenet.IsSystemDefault);
+        Assert.True(deletedUsenet.IsActive);
+        Assert.False(deletedUsenet.IsDeleted);
+        Assert.Equal("아이티월드 렌탈 전용", customItworld.Name);
+    }
+
+    [Fact]
     public async Task EnsureDefaultCompanyProfilesAsync_CreatesUsenetTradeNameInKorean()
     {
         await InvokeEnsureDefaultCompanyProfilesAsync();
@@ -1548,6 +1742,19 @@ public sealed class DbInitializerRegressionTests : IDisposable
     {
         _dbContext.Dispose();
         _connection.Dispose();
+    }
+
+    private async Task InvokeEnsureDefaultRentalManagementCompaniesAsync()
+    {
+        var method = typeof(DbInitializer).GetMethod(
+            "EnsureDefaultRentalManagementCompaniesAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
     }
 
     private async Task InvokeEnsureDefaultCompanyProfilesAsync()

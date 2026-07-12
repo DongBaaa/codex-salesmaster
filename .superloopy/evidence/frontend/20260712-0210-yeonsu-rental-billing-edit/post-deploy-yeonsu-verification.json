@@ -1,0 +1,34 @@
+{
+    "verifiedAt":  "2026-07-12T21:01:58.5588030+09:00",
+    "releaseId":  "georaeplan-1.1.676-20260712-205408",
+    "username":  "yeonsu",
+    "tenant":  "USENET_GROUP",
+    "office":  "YEONSU",
+    "scopeType":  "OfficeOnly",
+    "permissions":  {
+                        "rentalProfileEdit":  true,
+                        "rentalAssetEdit":  true,
+                        "rentalViewAll":  false,
+                        "rentalEditAll":  false,
+                        "rentalSettingsEdit":  false
+                    },
+    "visible":  {
+                    "profiles":  21,
+                    "assets":  76,
+                    "wrongOfficeProfiles":  0,
+                    "managementCompanies":  [
+                                                "USENET_GROUP:USENET",
+                                                "USENET_GROUP:YEONSU"
+                                            ]
+                },
+    "manifest":  {
+                     "desktopVersion":  "1.1.676",
+                     "desktopFile":  "tradeplan-pc-installer-v1.1.676.zip",
+                     "desktopSize":  232214537,
+                     "desktopSha256":  "814E36BF7AC746324C24A4C6244AA3FA147FB375EC265A0A26D7E6C37FBD0DE3",
+                     "androidVersion":  "0.2.81",
+                     "androidFile":  "tradeplan-android-v0.2.81.apk",
+                     "androidSize":  41424314,
+                     "androidSha256":  "FFB75EE0AC7F1C5B7FD75AD8C29B31E0F635ED7E6799CC6C44FE9E43C601D642"
+                 }
+}

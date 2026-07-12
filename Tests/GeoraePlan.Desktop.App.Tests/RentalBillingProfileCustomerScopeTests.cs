@@ -13,12 +13,11 @@ public sealed class RentalBillingProfileCustomerScopeTests
     [Fact]
     public async Task SaveBillingProfileAsync_AutoLinksCustomerWhenTenantAndOfficeMatch()
     {
-        PrepareAppRoot("georaeplan-billing-profile-customer-positive");
+        await using var connection = await OpenInMemoryConnectionAsync();
 
         try
         {
-            await using var db = new LocalDbContext();
-            await db.Database.EnsureDeletedAsync();
+            await using var db = CreateDb(connection);
             await db.Database.EnsureCreatedAsync();
 
             var customerId = Guid.NewGuid();
@@ -39,7 +38,6 @@ public sealed class RentalBillingProfileCustomerScopeTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
             SqliteConnection.ClearAllPools();
         }
     }
@@ -47,12 +45,11 @@ public sealed class RentalBillingProfileCustomerScopeTests
     [Fact]
     public async Task SaveBillingProfileAsync_UsesLinkedCustomerCanonicalSnapshot()
     {
-        PrepareAppRoot("georaeplan-billing-profile-customer-canonical");
+        await using var connection = await OpenInMemoryConnectionAsync();
 
         try
         {
-            await using var db = new LocalDbContext();
-            await db.Database.EnsureDeletedAsync();
+            await using var db = CreateDb(connection);
             await db.Database.EnsureCreatedAsync();
 
             var customerId = Guid.NewGuid();
@@ -86,7 +83,48 @@ public sealed class RentalBillingProfileCustomerScopeTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SaveBillingProfileAsync_AllowsYeonsuResponsibleCustomerWithUsenetOwner()
+    {
+        await using var connection = await OpenInMemoryConnectionAsync();
+
+        try
+        {
+            await using var db = CreateDb(connection);
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var customer = CreateCustomer(customerId, OfficeCodeCatalog.Usenet, TenantScopeCatalog.UsenetGroup);
+            customer.ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu;
+            customer.NameOriginal = "연수구 담당 거래처";
+            customer.NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(customer.NameOriginal);
+            db.Customers.Add(customer);
+            await db.SaveChangesAsync();
+
+            var profileId = Guid.NewGuid();
+            var profile = CreateProfile(profileId, customerId, OfficeCodeCatalog.Yeonsu);
+            profile.CustomerName = customer.NameOriginal;
+            var session = CreateOfficeUserSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Yeonsu,
+                AppPermissionNames.RentalProfileEdit,
+                AppPermissionNames.RentalAssetEdit);
+
+            var result = await new RentalStateService(db).SaveBillingProfileAsync(profile, session);
+
+            Assert.True(result.Success, result.Message);
+            var stored = await db.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(current => current.Id == profileId);
+            Assert.Equal(customerId, stored.CustomerId);
+            Assert.Equal(OfficeCodeCatalog.Usenet, stored.OfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, stored.ResponsibleOfficeCode);
+            Assert.Equal(TenantScopeCatalog.UsenetGroup, stored.TenantCode);
+        }
+        finally
+        {
             SqliteConnection.ClearAllPools();
         }
     }
@@ -94,12 +132,11 @@ public sealed class RentalBillingProfileCustomerScopeTests
     [Fact]
     public async Task GetBillingRowsAsync_UsesLinkedCustomerCurrentNameForDisplayAndSearch()
     {
-        PrepareAppRoot("georaeplan-billing-profile-customer-current-display-search");
+        await using var connection = await OpenInMemoryConnectionAsync();
 
         try
         {
-            await using var db = new LocalDbContext();
-            await db.Database.EnsureDeletedAsync();
+            await using var db = CreateDb(connection);
             await db.Database.EnsureCreatedAsync();
 
             var customerId = Guid.NewGuid();
@@ -142,7 +179,6 @@ public sealed class RentalBillingProfileCustomerScopeTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
             SqliteConnection.ClearAllPools();
         }
     }
@@ -150,12 +186,11 @@ public sealed class RentalBillingProfileCustomerScopeTests
     [Fact]
     public async Task SaveBillingProfileAsync_DoesNotAutoLinkSameTenantCustomerFromDifferentOffice()
     {
-        PrepareAppRoot("georaeplan-billing-profile-customer-office-mismatch");
+        await using var connection = await OpenInMemoryConnectionAsync();
 
         try
         {
-            await using var db = new LocalDbContext();
-            await db.Database.EnsureDeletedAsync();
+            await using var db = CreateDb(connection);
             await db.Database.EnsureCreatedAsync();
 
             var yeonsuCustomerId = Guid.NewGuid();
@@ -177,7 +212,6 @@ public sealed class RentalBillingProfileCustomerScopeTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
             SqliteConnection.ClearAllPools();
         }
     }
@@ -185,12 +219,11 @@ public sealed class RentalBillingProfileCustomerScopeTests
     [Fact]
     public async Task SaveBillingProfileAsync_RejectsExistingCustomerLinkWhenOfficeDiffers()
     {
-        PrepareAppRoot("georaeplan-billing-profile-existing-customer-office-mismatch");
+        await using var connection = await OpenInMemoryConnectionAsync();
 
         try
         {
-            await using var db = new LocalDbContext();
-            await db.Database.EnsureDeletedAsync();
+            await using var db = CreateDb(connection);
             await db.Database.EnsureCreatedAsync();
 
             var yeonsuCustomerId = Guid.NewGuid();
@@ -208,7 +241,6 @@ public sealed class RentalBillingProfileCustomerScopeTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
             SqliteConnection.ClearAllPools();
         }
     }
@@ -216,12 +248,11 @@ public sealed class RentalBillingProfileCustomerScopeTests
     [Fact]
     public async Task StartBillingAsync_DoesNotCreateInvoiceForSameTenantCustomerFromDifferentOffice()
     {
-        PrepareAppRoot("georaeplan-billing-start-customer-office-mismatch");
+        await using var connection = await OpenInMemoryConnectionAsync();
 
         try
         {
-            await using var db = new LocalDbContext();
-            await db.Database.EnsureDeletedAsync();
+            await using var db = CreateDb(connection);
             await db.Database.EnsureCreatedAsync();
 
             var yeonsuCustomerId = Guid.NewGuid();
@@ -245,7 +276,6 @@ public sealed class RentalBillingProfileCustomerScopeTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
             SqliteConnection.ClearAllPools();
         }
     }
@@ -345,10 +375,34 @@ public sealed class RentalBillingProfileCustomerScopeTests
         return session;
     }
 
-    private static void PrepareAppRoot(string prefix)
+    private static SessionState CreateOfficeUserSession(
+        string tenantCode,
+        string officeCode,
+        params string[] permissions)
     {
-        var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(tempRoot);
-        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            UserId = Guid.NewGuid(),
+            Username = "billing-scope-user",
+            Role = DomainConstants.RoleUser,
+            TenantCode = tenantCode,
+            OfficeCode = officeCode,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = permissions.ToList()
+        });
+        return session;
     }
+
+    private static async Task<SqliteConnection> OpenInMemoryConnectionAsync()
+    {
+        var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        return connection;
+    }
+
+    private static LocalDbContext CreateDb(SqliteConnection connection)
+        => new(new DbContextOptionsBuilder<LocalDbContext>()
+            .UseSqlite(connection)
+            .Options);
 }

@@ -1,0 +1,8 @@
+georaeplan_temp_root=D:\거래플랜\temp
+update_manifest=D:\거래플랜\배포\업데이트\manifest\stable.json
+delivery_manifest=D:\거래플랜\배포\stable.json
+previous_manifest=D:\거래플랜\배포\업데이트\manifest\stable.previous.json
+desktop_package=tradeplan-pc-installer-v1.1.676.zip
+android_package=tradeplan-android-v0.2.81.apk
+desktop_packages_pruned=1
+android_packages_pruned=1

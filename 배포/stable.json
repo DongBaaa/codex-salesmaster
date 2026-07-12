@@ -1,17 +1,17 @@
 ﻿{
     "channel":  "stable",
-    "generatedAtUtc":  "2026-07-11T14:02:23.1064398Z",
+    "generatedAtUtc":  "2026-07-12T11:56:31.2116371Z",
     "desktop":  {
                     "platform":  "desktop",
-                    "version":  "1.1.675",
+                    "version":  "1.1.676",
                     "mandatory":  false,
                     "minimumSupportedVersion":  "",
-                    "packageUrl":  "/updates/download/desktop/tradeplan-pc-installer-v1.1.675.zip",
-                    "fileName":  "tradeplan-pc-installer-v1.1.675.zip",
-                    "sha256":  "984F069D1206C37FE1229323CCEAEB222CC93552ED116A506DFD2D35AC2D40ED",
-                    "fileSize":  232214600,
-                    "notes":  "인쇄 진단·1쪽 테스트, Windows 서명 파이프라인, 롤백 인코딩 및 패키지 검증 보강",
-                    "releasedAtUtc":  "2026-07-11T14:02:25.8418421Z"
+                    "packageUrl":  "/updates/download/desktop/tradeplan-pc-installer-v1.1.676.zip",
+                    "fileName":  "tradeplan-pc-installer-v1.1.676.zip",
+                    "sha256":  "814E36BF7AC746324C24A4C6244AA3FA147FB375EC265A0A26D7E6C37FBD0DE3",
+                    "fileSize":  232214537,
+                    "notes":  "연수구 렌탈 청구 설정 편집·담당지점 범위·동기화 완료 판정 보강",
+                    "releasedAtUtc":  "2026-07-12T11:56:33.8698890Z"
                 },
     "android":  {
                     "platform":  "android",
@@ -23,6 +23,6 @@
                     "sha256":  "FFB75EE0AC7F1C5B7FD75AD8C29B31E0F635ED7E6799CC6C44FE9E43C601D642",
                     "fileSize":  41424314,
                     "notes":  "비ASCII 경로 AOT staging 적용, manifest 지정 APK 서명 연속성 검증",
-                    "releasedAtUtc":  "2026-07-11T14:02:25.9233615Z"
+                    "releasedAtUtc":  "2026-07-12T11:56:33.9493975Z"
                 }
 }

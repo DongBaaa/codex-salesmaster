@@ -5095,6 +5095,114 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_AcceptsYeonsuProfileAndAsset_WhenCanonicalManagementCompanyExistsAndPayloadIsOmitted()
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        var createdAtUtc = new DateTime(2026, 7, 12, 0, 0, 0, DateTimeKind.Utc);
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet),
+            IsSystemDefault = true,
+            IsActive = true
+        });
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "연수구 청구 설정 테스트",
+            NameMatchKey = "연수구청구설정테스트",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu-rental-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions =
+            [
+                PermissionNames.RentalProfileEdit,
+                PermissionNames.RentalAssetEdit
+            ]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-yeonsu-rental-editor-reference-omitted",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"USENET|CUSTOMER:{customerId:N}|묶음|후불|25|35",
+                    CustomerId = customerId,
+                    CustomerName = "연수구 청구 설정 테스트",
+                    BillingType = "묶음",
+                    BillingCycleMonths = 35,
+                    BillingDay = 25,
+                    MonthlyAmount = 300_000m,
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = createdAtUtc
+                }
+            ],
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = $"USENET|YEONSU-TEST-001|{customerId:N}|IMC2010",
+                    BillingProfileId = profileId,
+                    CustomerId = customerId,
+                    CustomerName = "연수구 청구 설정 테스트",
+                    CurrentCustomerName = "연수구 청구 설정 테스트",
+                    ManagementId = "YEONSU-TEST-001",
+                    ManagementNumber = "YEONSU-TEST-001",
+                    ItemName = "IMC2010",
+                    AssetStatus = "임대진행중",
+                    MonthlyFee = 300_000m,
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = createdAtUtc
+                }
+            ]
+        };
+
+        Assert.Empty(request.RentalManagementCompanies);
+        var response = await controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+
+        var storedProfile = await scopedDb.RentalBillingProfiles.IgnoreQueryFilters()
+            .SingleAsync(profile => profile.Id == profileId);
+        var storedAsset = await scopedDb.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(asset => asset.Id == assetId);
+        Assert.Equal(35, storedProfile.BillingCycleMonths);
+        Assert.Equal(OfficeCodeCatalog.Usenet, storedProfile.ManagementCompanyCode);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, storedProfile.ResponsibleOfficeCode);
+        Assert.Equal(profileId, storedAsset.BillingProfileId);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, storedAsset.ResponsibleOfficeCode);
+    }
+
+    [Fact]
     public async Task Push_AcceptsRentalBillingProfile_WhenReferencedCustomerIsInSameBatch()
     {
         var customerId = Guid.NewGuid();

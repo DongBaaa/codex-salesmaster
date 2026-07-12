@@ -191,7 +191,7 @@ public sealed class SyncService : IDisposable
         {
             attempts++;
             var synced = await StartSyncAsync(waitForRunningSync: true, ct).WaitAsync(ct);
-            var hasPendingChanges = await _local.HasPendingSyncChangesAsync(ct);
+            var hasPendingChanges = await _local.HasPendingSyncChangesAsync(_session, ct);
             if (!hasPendingChanges)
                 return synced;
             if (!synced)
@@ -200,7 +200,7 @@ public sealed class SyncService : IDisposable
             await Task.Delay(TimeSpan.FromMilliseconds(250), ct);
         }
 
-        return !await _local.HasPendingSyncChangesAsync(ct);
+        return !await _local.HasPendingSyncChangesAsync(_session, ct);
     }
 
     public async Task<SyncScopeExecutionResult> TrySyncScopeAsync(string scopeKey, CancellationToken ct = default)
@@ -1750,11 +1750,16 @@ public sealed class SyncService : IDisposable
             dirtyRentalAssets,
             dirtyRentalBillingProfiles,
             ct);
-        var referencedRentalManagementCompanies = await LoadReferencedRentalManagementCompaniesForPushAsync(
-            dirtyRentalAssets,
-            dirtyRentalBillingProfiles.Concat(referencedRentalBillingProfiles).ToList(),
-            dirtyRentalManagementCompanies,
-            ct);
+        // 렌탈 관리업체는 Rental.SettingsEdit 전용 기준정보다. 청구 프로필/자산 편집 권한만 있는
+        // 담당지점 사용자의 정상 변경에 참조용 관리업체를 함께 싣으면 서버 권한 검사에서 전체
+        // push가 403으로 거절된다. 기준정보 편집 권한이 있을 때만 참조 보강 payload를 만든다.
+        var referencedRentalManagementCompanies = canSyncRentalSettings
+            ? await LoadReferencedRentalManagementCompaniesForPushAsync(
+                dirtyRentalAssets,
+                dirtyRentalBillingProfiles.Concat(referencedRentalBillingProfiles).ToList(),
+                dirtyRentalManagementCompanies,
+                ct)
+            : [];
         if (referencedRentalManagementCompanies.Count > 0)
         {
             AppLogger.Warn(

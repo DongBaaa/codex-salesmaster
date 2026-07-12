@@ -1,0 +1,11 @@
+{
+    "Evidence":  "D:\\거래플랜\\.superloopy\\evidence\\frontend\\20260712-0210-yeonsu-rental-billing-edit",
+    "ServerPid":  6748,
+    "Ready":  "ready",
+    "Username":  "yeonsu",
+    "Role":  "User",
+    "Tenant":  "USENET_GROUP",
+    "Office":  "YEONSU",
+    "Scope":  "OfficeOnly",
+    "Permissions":  "Customer.Edit, Delivery.Edit, Inventory.Reset, Invoice.Edit, Item.Edit, Payment.Edit, Rental.AssetEdit, Rental.ProfileEdit"
+}

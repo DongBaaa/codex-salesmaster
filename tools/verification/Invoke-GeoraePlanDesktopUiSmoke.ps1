@@ -1015,7 +1015,7 @@ try {
     else {
         $childResults = @()
         $childResults += Open-And-VerifyChildWindow -MainWindow $mainWindow -ProcessId $process.Id -ButtonName '거래처 관리' -WindowTitle '거래처 관리' -RequiredNames @('새 거래처 등록', '선택 거래처 수정', '선택 거래처 삭제') -Steps $steps
-        $childResults += Open-And-VerifyChildWindow -MainWindow $mainWindow -ProcessId $process.Id -ButtonName '품목/재고 관리' -WindowTitle '품목/재고 관리' -RequiredNames @('신규 품목', '품목 저장', '재고 초기화', '닫기 (F12)') -Steps $steps
+        $childResults += Open-And-VerifyChildWindow -MainWindow $mainWindow -ProcessId $process.Id -ButtonName '품목/재고 관리' -WindowTitle '품목/재고 관리' -RequiredNames @('신규 품목', '품목 저장', '선택 재고 초기화', '닫기 (F12)') -Steps $steps
         $childResults += Open-And-VerifyChildWindow -MainWindow $mainWindow -ProcessId $process.Id -ButtonName '판매작성' -WindowTitle '판매(매출)' -RequiredNames @('수금 입력', '항목추가') -Steps $steps
         $childResults += Open-And-VerifyChildWindow -MainWindow $mainWindow -ProcessId $process.Id -ButtonName '구매작성' -WindowTitle '구매(매입)' -RequiredNames @('지급 입력', '항목추가') -Steps $steps
     }

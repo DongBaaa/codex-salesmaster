@@ -44,6 +44,12 @@ public static partial class DbInitializer
         (OfficeCodeCatalog.ItworldDefaultCompanyProfileId, "ITWORLD 기본", OfficeCodeCatalog.Itworld, OfficeCodeCatalog.Itworld, "", "", "", ""),
         (OfficeCodeCatalog.YeonsuDefaultCompanyProfileId, "YEONSU 기본", OfficeCodeCatalog.Yeonsu, OfficeCodeCatalog.Yeonsu, string.Empty, string.Empty, string.Empty, string.Empty)
     ];
+    private static readonly (string TenantCode, string Code, string Name)[] DefaultRentalManagementCompanies =
+    [
+        (TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet, OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet)),
+        (TenantScopeCatalog.Itworld, OfficeCodeCatalog.Itworld, OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Itworld)),
+        (TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Yeonsu, OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Yeonsu))
+    ];
 
     public static async Task InitializeAsync(IServiceProvider serviceProvider, CancellationToken cancellationToken = default)
     {
@@ -495,6 +501,7 @@ public static partial class DbInitializer
     {
         await EnsureDefaultTenantConfigurationAsync(dbContext, cancellationToken);
         await EnsureDefaultCustomerCategoriesAsync(dbContext, cancellationToken);
+        await EnsureDefaultRentalManagementCompaniesAsync(dbContext, cancellationToken);
 
         if (!await dbContext.Units.IgnoreQueryFilters().AnyAsync(cancellationToken))
         {
@@ -568,6 +575,85 @@ public static partial class DbInitializer
 
         await EnsureItemCategoryOptionsForExistingReferencesAsync(dbContext, cancellationToken);
         await EnsureDefaultCompanyProfilesAsync(dbContext, cancellationToken);
+    }
+
+    private static async Task EnsureDefaultRentalManagementCompaniesAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow;
+        var companies = await dbContext.RentalManagementCompanies
+            .IgnoreQueryFilters()
+            .ToListAsync(cancellationToken);
+
+        foreach (var definition in DefaultRentalManagementCompanies)
+        {
+            var current = companies.FirstOrDefault(company =>
+                string.Equals(company.TenantCode, definition.TenantCode, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(company.Code, definition.Code, StringComparison.OrdinalIgnoreCase));
+
+            if (current is null)
+            {
+                current = new RentalManagementCompany
+                {
+                    TenantCode = definition.TenantCode,
+                    Code = definition.Code,
+                    Name = definition.Name,
+                    IsSystemDefault = true,
+                    IsActive = true,
+                    IsDeleted = false,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                };
+                dbContext.RentalManagementCompanies.Add(current);
+                companies.Add(current);
+                continue;
+            }
+
+            var changed = false;
+            if (!string.Equals(current.TenantCode, definition.TenantCode, StringComparison.Ordinal))
+            {
+                current.TenantCode = definition.TenantCode;
+                changed = true;
+            }
+
+            if (!string.Equals(current.Code, definition.Code, StringComparison.Ordinal))
+            {
+                current.Code = definition.Code;
+                changed = true;
+            }
+
+            if (string.IsNullOrWhiteSpace(current.Name) ||
+                string.Equals(current.Name.Trim(), definition.Code, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!string.Equals(current.Name, definition.Name, StringComparison.Ordinal))
+                {
+                    current.Name = definition.Name;
+                    changed = true;
+                }
+            }
+
+            if (!current.IsSystemDefault)
+            {
+                current.IsSystemDefault = true;
+                changed = true;
+            }
+
+            if (!current.IsActive)
+            {
+                current.IsActive = true;
+                changed = true;
+            }
+
+            if (current.IsDeleted)
+            {
+                current.IsDeleted = false;
+                changed = true;
+            }
+
+            if (changed)
+                current.UpdatedAtUtc = now;
+        }
     }
 
     private static async Task EnsureItemCategoryOptionsForExistingReferencesAsync(

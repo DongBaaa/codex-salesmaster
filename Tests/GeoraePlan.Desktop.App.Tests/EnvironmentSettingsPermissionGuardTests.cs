@@ -61,6 +61,23 @@ public sealed class EnvironmentSettingsPermissionGuardTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void EnvironmentSettings_YeonsuDefaultBundle_IncludesProfileAndAssetEditWithoutWideRentalPermissions()
+    {
+        var root = FindRepositoryRoot();
+        var desktopAppDir = Directory.GetDirectories(Path.Combine(root, "Desktop"), "*.Desktop.App").Single();
+        var source = File.ReadAllText(Path.Combine(
+            desktopAppDir,
+            "ViewModels",
+            "EnvironmentSettingsViewModel.cs"));
+        var normalizedSource = source.Replace("\r\n", "\n");
+
+        Assert.Contains(
+            "else if (string.Equals(normalizedOfficeCode, OfficeCodeCatalog.Yeonsu, StringComparison.OrdinalIgnoreCase))\n        {\n            permissions.Add(AppPermissionNames.RentalProfileEdit);\n            permissions.Add(AppPermissionNames.RentalAssetEdit);\n        }",
+            normalizedSource,
+            StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);

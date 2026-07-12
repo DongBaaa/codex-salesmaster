@@ -174,7 +174,7 @@ public sealed class RuntimeSafetyMonitorService
         if (report.RequiresFullMirrorRefresh &&
             !_sync.HasActiveOrQueuedSync &&
             !sync.HasActiveOrQueuedSync &&
-            !await local.HasPendingSyncChangesAsync(ct))
+            !await local.HasPendingSyncChangesAsync(_session, ct))
         {
             autoRecoveryAttempted = true;
             backupPath = await backup.BackupNowWithPathAsync(ct);

@@ -1,0 +1,42 @@
+[
+    {
+        "Platform":  "desktop",
+        "Version":  "1.1.675",
+        "FileName":  "tradeplan-pc-installer-v1.1.675.zip",
+        "PackageUrl":  "https://trade.2884.kr/updates/download/desktop/tradeplan-pc-installer-v1.1.675.zip",
+        "AbsoluteUri":  "https://trade.2884.kr/updates/download/desktop/tradeplan-pc-installer-v1.1.675.zip",
+        "ExpectedFileSize":  232214600,
+        "HeadStatus":  200,
+        "HeadContentLength":  232214600,
+        "HeadContentType":  "application/zip",
+        "HeadElapsedMs":  21,
+        "GetStatus":  200,
+        "GetContentLength":  232214600,
+        "GetContentType":  "application/zip",
+        "GetElapsedMs":  16,
+        "Result":  "PASS",
+        "Issues":  [
+
+                   ]
+    },
+    {
+        "Platform":  "android",
+        "Version":  "0.2.81",
+        "FileName":  "tradeplan-android-v0.2.81.apk",
+        "PackageUrl":  "https://trade.2884.kr/updates/download/android/tradeplan-android-v0.2.81.apk",
+        "AbsoluteUri":  "https://trade.2884.kr/updates/download/android/tradeplan-android-v0.2.81.apk",
+        "ExpectedFileSize":  41424314,
+        "HeadStatus":  200,
+        "HeadContentLength":  41424314,
+        "HeadContentType":  "application/vnd.android.package-archive",
+        "HeadElapsedMs":  14,
+        "GetStatus":  200,
+        "GetContentLength":  41424314,
+        "GetContentType":  "application/vnd.android.package-archive",
+        "GetElapsedMs":  16,
+        "Result":  "PASS",
+        "Issues":  [
+
+                   ]
+    }
+]

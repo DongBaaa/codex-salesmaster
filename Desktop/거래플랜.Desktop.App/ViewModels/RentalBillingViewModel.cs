@@ -333,6 +333,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         DocumentIssueModeOptions.Add(RentalBillingScheduleRules.DocumentIssueModePreviousBusinessDay);
         DocumentIssueModeOptions.Add(RentalBillingScheduleRules.DocumentIssueModePreviousMonthEnd);
 
+        // 담당지점 범위에서 프로필만 편집하는 실무자는 요약 행보다 실제 청구건이
+        // 먼저 보여야 선택 즉시 설정을 수정할 수 있다. 전체 관리자는 기존 요약 보기를 유지한다.
+        _showIndividualProfiles = CanEditRentalProfiles && !CanManageAll;
         InitializeAutoSave();
     }
 

@@ -1078,7 +1078,7 @@ public partial class MainWindow : Window
         if (_sync.HasRecentSuccessfulSync(minInterval))
             return null;
 
-        if (await _local.HasPendingSyncChangesAsync())
+        if (await _local.HasPendingSyncChangesAsync(_session))
             return 0L;
 
         if (!requireServerRevisionChange && !observedServerRevision.HasValue)

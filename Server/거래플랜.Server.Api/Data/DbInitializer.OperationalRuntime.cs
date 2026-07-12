@@ -278,10 +278,17 @@ public static partial class DbInitializer
 
     private static async Task EnsureOperationalPermissionDefaultsAsync(AppDbContext dbContext, CancellationToken cancellationToken)
     {
-        var users = await dbContext.Users
+        var persistedUsers = await dbContext.Users
             .IgnoreQueryFilters()
             .Include(user => user.Permissions)
             .ToListAsync(cancellationToken);
+        // 최초 설치에서는 seed 계정들이 아직 SaveChanges 전 Local에만 존재한다. DB 쿼리 결과만
+        // 순회하면 일반/연수구/ITWORLD 계정에 기본 권한이 한 번도 부여되지 않는다.
+        var users = dbContext.Users.Local
+            .Concat(persistedUsers)
+            .GroupBy(user => user.Id)
+            .Select(group => group.First())
+            .ToList();
 
         foreach (var user in users)
         {
@@ -349,6 +356,7 @@ public static partial class DbInitializer
             PermissionNames.PaymentEdit,
             PermissionNames.InventoryReset,
             PermissionNames.RentalProfileEdit,
+            PermissionNames.RentalAssetEdit,
             PermissionNames.DeliveryEdit
         ];
     }

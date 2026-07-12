@@ -889,6 +889,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         else if (string.Equals(normalizedOfficeCode, OfficeCodeCatalog.Yeonsu, StringComparison.OrdinalIgnoreCase))
         {
             permissions.Add(AppPermissionNames.RentalProfileEdit);
+            permissions.Add(AppPermissionNames.RentalAssetEdit);
         }
 
         return permissions.ToList();

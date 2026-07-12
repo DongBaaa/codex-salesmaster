@@ -58,6 +58,18 @@ public sealed partial class LocalStateService
                || await _db.SyncOutboxEntries.AnyAsync(entry => entry.Status != "Acknowledged", ct);
     }
 
+    public async Task<bool> HasPendingSyncChangesAsync(SessionState session, CancellationToken ct = default)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return await HasPendingSyncChangesAsync(ct);
+
+        if (await CountDirtyAsync(session, ct) > 0)
+            return true;
+
+        var outboxSummary = await GetSyncOutboxSummaryAsync(session, ct);
+        return outboxSummary.PendingCount > 0 || outboxSummary.FailedCount > 0;
+    }
+
     public async Task<bool> HasVisibleBusinessCacheAsync(SessionState session, CancellationToken ct = default)
     {
         if (session is null || !session.IsLoggedIn)

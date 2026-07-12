@@ -1,0 +1,103 @@
+georaeplan_temp_root=D:\거래플랜\temp
+linux_pc_public_health_ok name=trade status=200 url=https://trade.2884.kr/healthz
+linux_pc_public_health_ok name=work status=200 url=https://work.2884.kr/healthz
+linux_pc_public_health_ok name=itw status=200 url=https://itw.2884.kr/
+linux_pc_remote_readonly_check_ok
+georaeplan-api-1 Up 22 hours
+workplan-app-1 Up 2 days
+workplan-timezone-guard-1 Up 3 weeks
+workplan-postgres-1 Up 3 weeks (healthy)
+workplan-lan-relay Up 3 weeks
+georaeplan-lan-relay Up 3 weeks
+georaeplan-postgres-1 Up 3 weeks (healthy)
+pre-deploy-required-data_rental_template_item_reference_gate_start output=D:\거래플랜\.superloopy\evidence\frontend\20260712-0210-yeonsu-rental-billing-edit\pre-deploy-retry\rental-template-item-reference-gate
+rental_template_item_reference_candidate_output=D:\거래플랜\.superloopy\evidence\frontend\20260712-0210-yeonsu-rental-billing-edit\pre-deploy-retry\rental-template-item-reference-gate\candidate-export
+candidate_rows=D:\거래플랜\.superloopy\evidence\frontend\20260712-0210-yeonsu-rental-billing-edit\pre-deploy-retry\rental-template-item-reference-gate\candidate-export\candidate-rows.csv
+manual_review_candidate_details=D:\거래플랜\.superloopy\evidence\frontend\20260712-0210-yeonsu-rental-billing-edit\pre-deploy-retry\rental-template-item-reference-gate\candidate-export\manual-review-candidate-details.csv
+summary_by_database=D:\거래플랜\.superloopy\evidence\frontend\20260712-0210-yeonsu-rental-billing-edit\pre-deploy-retry\rental-template-item-reference-gate\candidate-export\summary-by-database.csv
+summary_by_match_class=D:\거래플랜\.superloopy\evidence\frontend\20260712-0210-yeonsu-rental-billing-edit\pre-deploy-retry\rental-template-item-reference-gate\candidate-export\summary-by-match-class.csv
+manual_review_candidate_detail_summary=D:\거래플랜\.superloopy\evidence\frontend\20260712-0210-yeonsu-rental-billing-edit\pre-deploy-retry\rental-template-item-reference-gate\candidate-export\manual-review-candidate-detail-summary.csv
+
+rental_template_item_reference_gate_status=PASS
+rental_template_item_reference_gate_report=D:\거래플랜\.superloopy\evidence\frontend\20260712-0210-yeonsu-rental-billing-edit\pre-deploy-retry\rental-template-item-reference-gate\rental-template-item-reference-gate.md
+rental_template_item_reference_candidate_output=D:\거래플랜\.superloopy\evidence\frontend\20260712-0210-yeonsu-rental-billing-edit\pre-deploy-retry\rental-template-item-reference-gate\candidate-export
+rental_template_item_reference_candidate_count=0
+rental_template_item_reference_proposed_count=0
+rental_template_item_reference_manual_review_count=0
+pre-deploy-required-data_rental_template_item_reference_gate_done output=D:\거래플랜\.superloopy\evidence\frontend\20260712-0210-yeonsu-rental-billing-edit\pre-deploy-retry\rental-template-item-reference-gate
+pre-deploy_operational_gate_start base_url=https://trade.2884.kr output=D:\거래플랜\.superloopy\evidence\frontend\20260712-0210-yeonsu-rental-billing-edit\pre-deploy-retry
+Operational gate report: D:\거래플랜\.superloopy\evidence\frontend\20260712-0210-yeonsu-rental-billing-edit\pre-deploy-retry\operational-gate-report.md
+Result: PASS
+pre-deploy_operational_gate_done output=D:\거래플랜\.superloopy\evidence\frontend\20260712-0210-yeonsu-rental-billing-edit\pre-deploy-retry
+  복원할 프로젝트를 확인하는 중...
+  복원할 모든 프로젝트가 최신 상태입니다.
+  거래플랜.Shared.Contracts -> D:\거래플랜\Shared\거래플랜.Shared.Contracts\bin\Release\net8.0\GeoraePlan.Shared.Contracts.dll
+  거래플랜.Updater -> D:\거래플랜\Updater\거래플랜.Updater\bin\Release\net8.0-windows\거래플랜.Updater.dll
+  거래플랜.Desktop.App -> D:\거래플랜\Desktop\거래플랜.Desktop.App\bin\Release\net8.0-windows\거래플랜.Desktop.App.dll
+  거래플랜.Server.Api -> D:\거래플랜\Server\거래플랜.Server.Api\bin\Release\net8.0\거래플랜.Server.Api.dll
+  GeoraePlan.Server.Api.Tests -> D:\거래플랜\Tests\GeoraePlan.Server.Api.Tests\bin\Release\net8.0\GeoraePlan.Server.Api.Tests.dll
+  GeoraePlan.Desktop.App.Tests -> D:\거래플랜\Tests\GeoraePlan.Desktop.App.Tests\bin\Release\net8.0-windows\GeoraePlan.Desktop.App.Tests.dll
+
+빌드했습니다.
+    경고 0개
+    오류 0개
+
+경과 시간: 00:00:06.90
+
+워크로드 업데이트를 사용할 수 있습니다. 자세한 내용을 보려면 `dotnet workload list`을 실행하세요.
+  복원할 프로젝트를 확인하는 중...
+  복원할 모든 프로젝트가 최신 상태입니다.
+  거래플랜.Shared.Contracts -> D:\거래플랜\Shared\거래플랜.Shared.Contracts\bin\Release\net8.0\GeoraePlan.Shared.Contracts.dll
+  거래플랜.Server.Api -> D:\거래플랜\Server\거래플랜.Server.Api\bin\Release\net8.0\거래플랜.Server.Api.dll
+  거래플랜.Server.Api -> D:\거래플랜\release-temp\linux-georaeplan-1.1.676-20260712-205408\
+
+워크로드 업데이트를 사용할 수 있습니다. 자세한 내용을 보려면 `dotnet workload list`을 실행하세요.
+System.Threading.Tasks.VoidTaskResult
+System.Threading.Tasks.VoidTaskResult
+live_update_rollback_baseline_seeded manifests=1 packages=2 base_url=https://trade.2884.kr source=linux_pc_live
+georaeplan_temp_root=D:\거래플랜\temp
+update_manifest=D:\거래플랜\release-temp\linux-georaeplan-1.1.676-20260712-205408\updates\manifest\stable.json
+delivery_manifest=D:\거래플랜\배포\stable.json
+previous_manifest=D:\거래플랜\release-temp\linux-georaeplan-1.1.676-20260712-205408\updates\manifest\stable.previous.json
+desktop_package=tradeplan-pc-installer-v1.1.676.zip
+android_package=tradeplan-android-v0.2.81.apk
+pre-deploy_android_signing_continuity_start apk=D:\거래플랜\release-temp\linux-georaeplan-1.1.676-20260712-205408\updates\downloads\android\tradeplan-android-v0.2.81.apk base_url=https://trade.2884.kr
+android_signing_continuity_base_url=https://trade.2884.kr
+android_signing_continuity_manifest=https://trade.2884.kr/updates/manifest?channel=stable
+android_signing_continuity_local_apk=D:\거래플랜\release-temp\linux-georaeplan-1.1.676-20260712-205408\updates\downloads\android\tradeplan-android-v0.2.81.apk
+android_signing_continuity_remote_apk=https://trade.2884.kr/updates/download/android/tradeplan-android-v0.2.81.apk
+local_certificate_dn=CN=Android Debug, O=Android, C=US
+local_certificate_sha256=dfc2e3680116ebe4291c466ba7da9491a2ecdf8502323ffafefc155e0c45dc28
+remote_certificate_dn=CN=Android Debug, O=Android, C=US
+remote_certificate_sha256=dfc2e3680116ebe4291c466ba7da9491a2ecdf8502323ffafefc155e0c45dc28
+WARNING: Android APK signing continuity passed, but the continuing certificate is a debug signing certificate.
+android_signing_continuity=PASS
+pre-deploy_android_signing_continuity_done
+linux_pc_remote_prune pruned label=live-backups root=/srv/georaeplan/app/backups total=2 keep=2 removed=0
+linux_pc_remote_prune pruned label=releases root=/srv/georaeplan/releases total=2 keep=2 removed=0
+linux_pc_disk_preflight_ok disk_preflight_ok label=pre-upload path=/srv/georaeplan available_kb=43728840 minimum_kb=2097152
+linux_pc_upload_start release_id=georaeplan-1.1.676-20260712-205408 remote_path=/srv/georaeplan/releases/georaeplan-1.1.676-20260712-205408
+linux_pc_upload_done release_id=georaeplan-1.1.676-20260712-205408 remote_path=/srv/georaeplan/releases/georaeplan-1.1.676-20260712-205408
+linux_pc_disk_preflight_ok disk_preflight_ok label=pre-apply path=/srv/georaeplan available_kb=43195876 minimum_kb=2097152
+linux_pc_apply_release_mode=ssh host=192.168.0.199 user=itw port=2222
+backup=/srv/georaeplan/app/backups/live-20260712-205811
+applying_release=georaeplan-1.1.676-20260712-205408
+health_ok attempt=2
+{"status":"ok","utc":"2026-07-12T11:58:16.8079394Z"}
+apply_release_done release_id=georaeplan-1.1.676-20260712-205408
+WARNING:  Container georaeplan-api-1 Recreate
+WARNING:  Container georaeplan-api-1 Recreated
+WARNING:  Container georaeplan-api-1 Starting
+WARNING:  Container georaeplan-api-1 Started
+post-deploy_operational_gate_start base_url=https://trade.2884.kr output=D:\거래플랜\.superloopy\evidence\frontend\20260712-0210-yeonsu-rental-billing-edit\post-deploy-retry
+Operational gate report: D:\거래플랜\.superloopy\evidence\frontend\20260712-0210-yeonsu-rental-billing-edit\post-deploy-retry\operational-gate-report.md
+Result: PASS
+post-deploy_operational_gate_done output=D:\거래플랜\.superloopy\evidence\frontend\20260712-0210-yeonsu-rental-billing-edit\post-deploy-retry
+linux_pc_remote_prune pruned label=releases root=/srv/georaeplan/releases total=3 keep=2 removed=1
+linux_pc_remote_prune pruned label=live-backups root=/srv/georaeplan/app/backups total=3 keep=2 removed=1
+publish_done release_id=georaeplan-1.1.676-20260712-205408 release_path=/srv/georaeplan/releases/georaeplan-1.1.676-20260712-205408
+linux_pc_apply_release_done release_id=georaeplan-1.1.676-20260712-205408 host=192.168.0.199 user=itw
+linux_pc_release_done release_id=georaeplan-1.1.676-20260712-205408
+linux_pc_public_health_ok name=trade status=200 url=https://trade.2884.kr/healthz
+linux_pc_public_health_ok name=work status=200 url=https://work.2884.kr/healthz
+linux_pc_public_health_ok name=itw status=200 url=https://itw.2884.kr/

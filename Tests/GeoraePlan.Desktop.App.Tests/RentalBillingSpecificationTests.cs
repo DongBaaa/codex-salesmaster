@@ -725,6 +725,37 @@ public sealed class RentalBillingSpecificationTests
         Assert.False(allowed.DeleteCheckedCommand.CanExecute(null));
     }
 
+    [Fact]
+    public void RentalBillingViewModel_YeonsuProfileEditor_DefaultsToEditableRowsAndKeepsOfficeScope()
+    {
+        var vm = new RentalBillingViewModel(
+            null!,
+            null!,
+            CreateOfficeUserSession(OfficeCodeCatalog.Yeonsu, AppPermissionNames.RentalProfileEdit));
+
+        Assert.True(vm.ShowIndividualProfiles);
+        Assert.False(vm.CanManageAll);
+
+        SetPrivateField(vm, "_selectedRow", CreateBillingDeleteRow(OfficeCodeCatalog.Yeonsu, isSelected: false));
+        Assert.True(vm.CanSave);
+        Assert.True(vm.CanEditBillingProfileDetails);
+
+        SetPrivateField(vm, "_selectedRow", CreateBillingDeleteRow(OfficeCodeCatalog.Usenet, isSelected: false));
+        Assert.False(vm.CanSave);
+    }
+
+    [Fact]
+    public void RentalBillingViewModel_WideRentalEditor_KeepsGroupedSummaryDefault()
+    {
+        var vm = new RentalBillingViewModel(
+            null!,
+            null!,
+            CreateOfficeUserSession(OfficeCodeCatalog.Usenet, AppPermissionNames.RentalEditAll));
+
+        Assert.True(vm.CanManageAll);
+        Assert.False(vm.ShowIndividualProfiles);
+    }
+
     private static T GetPrivateField<T>(object target, string fieldName)
     {
         var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
@@ -766,6 +797,9 @@ public sealed class RentalBillingSpecificationTests
     }
 
     private static SessionState CreateUserSession(params string[] permissions)
+        => CreateOfficeUserSession(OfficeCodeCatalog.Usenet, permissions);
+
+    private static SessionState CreateOfficeUserSession(string officeCode, params string[] permissions)
     {
         var session = new SessionState();
         session.SetOfflineSession(new UserSessionDto
@@ -773,7 +807,7 @@ public sealed class RentalBillingSpecificationTests
             Username = "user",
             Role = DomainConstants.RoleUser,
             TenantCode = TenantScopeCatalog.UsenetGroup,
-            OfficeCode = OfficeCodeCatalog.Usenet,
+            OfficeCode = officeCode,
             ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
             Permissions = permissions.ToList()
         });
