@@ -1,17 +1,17 @@
-﻿{
+{
     "channel":  "stable",
-    "generatedAtUtc":  "2026-07-12T11:56:31.2116371Z",
+    "generatedAtUtc":  "2026-07-12T14:22:49.5863116Z",
     "desktop":  {
                     "platform":  "desktop",
-                    "version":  "1.1.676",
+                    "version":  "1.1.677",
                     "mandatory":  false,
                     "minimumSupportedVersion":  "",
-                    "packageUrl":  "/updates/download/desktop/tradeplan-pc-installer-v1.1.676.zip",
-                    "fileName":  "tradeplan-pc-installer-v1.1.676.zip",
-                    "sha256":  "814E36BF7AC746324C24A4C6244AA3FA147FB375EC265A0A26D7E6C37FBD0DE3",
-                    "fileSize":  232214537,
-                    "notes":  "연수구 렌탈 청구 설정 편집·담당지점 범위·동기화 완료 판정 보강",
-                    "releasedAtUtc":  "2026-07-12T11:56:33.8698890Z"
+                    "packageUrl":  "/updates/download/desktop/tradeplan-pc-installer-v1.1.677.zip",
+                    "fileName":  "tradeplan-pc-installer-v1.1.677.zip",
+                    "sha256":  "8B2F9084E67B7F8A8A95418DBB5286CAE5CF748DDCB777C6B4EC3A35DAD8ED57",
+                    "fileSize":  232232419,
+                    "notes":  "렌탈 청구주기 실제 건수 요약, 거래처별 인라인 펼침, 안전한 주기 일괄 통일",
+                    "releasedAtUtc":  "2026-07-12T14:22:52.4464392Z"
                 },
     "android":  {
                     "platform":  "android",
@@ -22,7 +22,7 @@
                     "fileName":  "tradeplan-android-v0.2.81.apk",
                     "sha256":  "FFB75EE0AC7F1C5B7FD75AD8C29B31E0F635ED7E6799CC6C44FE9E43C601D642",
                     "fileSize":  41424314,
-                    "notes":  "비ASCII 경로 AOT staging 적용, manifest 지정 APK 서명 연속성 검증",
-                    "releasedAtUtc":  "2026-07-12T11:56:33.9493975Z"
+                    "notes":  "모바일 상세탭/첨부 보기/내부 업데이트 확인 기능 반영",
+                    "releasedAtUtc":  "2026-07-12T14:22:52.5289535Z"
                 }
 }

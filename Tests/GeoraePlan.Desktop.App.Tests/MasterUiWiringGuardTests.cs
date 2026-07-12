@@ -117,7 +117,13 @@ public sealed class MasterUiWiringGuardTests
             "청구서 표시 품목 (전표/거래명세서 출력 라인)",
             "실제 청구/전표 대상 자산은 아래 '거래처 임대 자산' 목록에서만 결정됩니다.",
             "개별 라인은 같은 모델명끼리 청구서 만들기 시 수량 합산됩니다.",
-            "개별 청구건 직접 보기",
+            "전체 프로필 개별 보기",
+            "IsChecked=\"{Binding ShowIndividualProfiles}\"",
+            "ToggleCustomerGroupCommand",
+            "CustomerDisplayLabel",
+            "Focusable=\"False\"",
+            "선택 주기 통일",
+            "SelectedGroupCycleImpactText",
             "표시품목 요약",
             "선택 표시 라인 삭제",
             "렌탈 자산연결",
@@ -129,12 +135,13 @@ public sealed class MasterUiWiringGuardTests
             "전표에 넣을 장비를 선택한 뒤 표시품목에 추가하세요.",
             "삭제하면 이 목록에서 빠지고 렌탈 자산연결 후보로 돌아갑니다.",
             "이 행은 거래처별 요약입니다.",
-            "실제 데이터를 바꾸는 작업은 목록에서 실제 개별 청구건을 선택한 뒤 진행하세요.",
+            "펼친 뒤 개별 프로필을 선택해 저장·삭제·장비연결·입금등록을 진행합니다.",
             "BillingAssetCoverageWarning",
             "HasBillingAssetCoverageWarning");
 
         Assert.DoesNotContain("청구항목 요약", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("그룹을 개별 청구건으로 보기", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("개별 청구건 직접 보기", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Content=\"선택 품목 삭제\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Content=\"새 장비연결\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Content=\"선택 청구 보류\"", xaml, StringComparison.Ordinal);
@@ -147,7 +154,7 @@ public sealed class MasterUiWiringGuardTests
             code,
             "GetBillingAssetCoverageStartWarning()",
             "거래처별 요약행에서는 장비 연결을 직접 편집할 수 없습니다.",
-            "'개별 청구건 직접 보기'",
+            "거래처 행을 펼쳐 실제 청구건을 선택한 뒤",
             "청구 대상 장비 확인");
 
         AssertContainsAll(
@@ -158,7 +165,11 @@ public sealed class MasterUiWiringGuardTests
             "청구 프로필 연결 자산",
             "표시품목 포함 자산",
             "거래처별 요약 보기입니다.",
-            "개별 청구건 직접 보기",
+            "거래처 행을 펼쳐",
+            "UpdateBillingProfileCyclesAsync",
+            "HasUnsavedEditorChangesForCustomerGroupToggle",
+            "저장하지 않은 렌탈 청구 편집 내용이 있어 거래처 프로필 펼침/접기를 중단했습니다.",
+            "청구기간 시작월과 기존 청구·입금·전표 이력은 변경하지 않습니다.",
             "GetBillingAssetCoverageStartWarning");
     }
 

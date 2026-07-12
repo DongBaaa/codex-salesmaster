@@ -1144,12 +1144,18 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         stepStopwatch.Restart();
+        var individualRows = rows;
         if (!filter.ExpandCustomerSummaryRows)
             rows = GroupBillingRowsByCustomer(rows);
 
         rows = ApplyBillingFinalRowFilters(rows, filter, alertWindow);
 
         var result = SortBillingRowsForDisplay(rows);
+        if (!filter.ExpandCustomerSummaryRows && filter.ExpandedCustomerGroupKeys.Count > 0)
+        {
+            var filteredIndividualRows = ApplyBillingFinalRowFilters(individualRows, filter, alertWindow);
+            result = ExpandSelectedBillingCustomerGroups(result, filteredIndividualRows, filter.ExpandedCustomerGroupKeys);
+        }
         LogRentalLoadStep("Rental billing final filter/sort", stepStopwatch, $"rows={result.Count:N0}");
         OperationTiming.LogIfSlow(
             "DATA",
@@ -1191,6 +1197,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             DueOnly = filter.DueOnly,
             PastDueOnly = filter.PastDueOnly,
             ExpandCustomerSummaryRows = filter.ExpandCustomerSummaryRows,
+            ExpandedCustomerGroupKeys = filter.ExpandedCustomerGroupKeys.ToList(),
             IncludeHistoryRows = filter.IncludeHistoryRows,
             ReferenceDate = filter.ReferenceDate
         };
@@ -3863,14 +3870,16 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         foreach (var groupRows in groupsInOrder)
         {
+            var groupKey = BuildBillingCustomerGroupKey(groupRows[0]);
             if (groupRows.Count <= 1)
             {
+                groupRows[0].CustomerGroupKey = groupKey;
                 groupedRows.Add(groupRows[0]);
                 continue;
             }
 
             groupRows.Sort(CompareGroupedBillingRows);
-            groupedRows.Add(CreateGroupedBillingViewRow(groupRows));
+            groupedRows.Add(CreateGroupedBillingViewRow(groupRows, groupKey));
         }
 
         return groupedRows;
@@ -3929,7 +3938,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
     private string BuildBillingCustomerGroupKey(RentalBillingViewRow row)
         => BuildBillingProfileGroupKey(row.Source, row.CustomerDisplayName, row.SelectionId);
 
-    private RentalBillingViewRow CreateGroupedBillingViewRow(IReadOnlyList<RentalBillingViewRow> rows)
+    private RentalBillingViewRow CreateGroupedBillingViewRow(
+        IReadOnlyList<RentalBillingViewRow> rows,
+        string customerGroupKey)
     {
         var representative = rows[0];
         var groupedMetrics = BuildGroupedBillingMetrics(rows);
@@ -3947,6 +3958,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var groupedPersistedProfileCount = groupedPersistedProfileIds.Count;
         var groupedUnlinkedAssetCount = groupedMetrics.GroupedUnlinkedAssetCount;
         var groupedSourceCount = groupedMetrics.GroupedSourceCount;
+        var groupedBillingCycleCounts = BuildGroupedBillingCycleCounts(rows);
         var installLocationDisplay = BuildGroupedInstallLocationDisplay(distinctInstallLocations);
         var aggregateSummary = BuildGroupedBillingAggregateSummary(groupedPersistedProfileCount, groupedUnlinkedAssetCount);
         var historyRows = groupedMetrics.BillingHistoryRows;
@@ -3970,9 +3982,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
             GroupedSelectionIds = groupedSelectionIds,
             GroupedPersistedProfileIds = groupedPersistedProfileIds,
             GroupedProfileRevisions = groupedProfileRevisions,
+            GroupedBillingCycleCounts = groupedBillingCycleCounts,
             AggregateSummary = aggregateSummary,
+            CustomerGroupKey = customerGroupKey,
             CustomerDisplayName = representative.CustomerDisplayName,
-            BillingCycleDisplay = distinctCycles.Count <= 1 ? distinctCycles.FirstOrDefault() ?? string.Empty : $"다중({distinctCycles.Count:N0})",
+            BillingCycleDisplay = BuildGroupedBillingCycleDisplay(groupedBillingCycleCounts, groupedUnlinkedAssetCount),
             ResponsibleOfficeName = representative.ResponsibleOfficeName,
             NextBillingDate = groupedMetrics.NextBillingDate,
             DaysRemaining = groupedMetrics.DaysRemaining,
@@ -4019,6 +4033,91 @@ WHERE ""AssignedUsername"" <> '';", ct);
             HasDataIssue = groupedMetrics.HasDataIssue || groupedSourceCount > 1,
             DataIssueSummary = dataIssues.Count == 0 ? aggregateSummary : string.Join(" / ", dataIssues)
         };
+    }
+
+    private List<RentalBillingViewRow> ExpandSelectedBillingCustomerGroups(
+        IReadOnlyList<RentalBillingViewRow> groupedRows,
+        IReadOnlyList<RentalBillingViewRow> individualRows,
+        IReadOnlyCollection<string> expandedCustomerGroupKeys)
+    {
+        if (groupedRows.Count == 0 || individualRows.Count == 0 || expandedCustomerGroupKeys.Count == 0)
+            return groupedRows.ToList();
+
+        var expandedKeys = expandedCustomerGroupKeys
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .ToHashSet(StringComparer.Ordinal);
+        if (expandedKeys.Count == 0)
+            return groupedRows.ToList();
+
+        var childrenByGroupKey = new Dictionary<string, List<RentalBillingViewRow>>(StringComparer.Ordinal);
+        foreach (var row in individualRows)
+        {
+            var groupKey = BuildBillingCustomerGroupKey(row);
+            row.CustomerGroupKey = groupKey;
+            if (!expandedKeys.Contains(groupKey))
+                continue;
+
+            if (!childrenByGroupKey.TryGetValue(groupKey, out var children))
+            {
+                children = new List<RentalBillingViewRow>();
+                childrenByGroupKey.Add(groupKey, children);
+            }
+
+            children.Add(row);
+        }
+
+        var result = new List<RentalBillingViewRow>(groupedRows.Count + childrenByGroupKey.Values.Sum(children => children.Count));
+        foreach (var row in groupedRows)
+        {
+            result.Add(row);
+            if (!row.IsAggregateRow ||
+                string.IsNullOrWhiteSpace(row.CustomerGroupKey) ||
+                !expandedKeys.Contains(row.CustomerGroupKey) ||
+                !childrenByGroupKey.TryGetValue(row.CustomerGroupKey, out var children))
+            {
+                continue;
+            }
+
+            row.IsCustomerGroupExpanded = true;
+            children.Sort(CompareGroupedBillingRows);
+            foreach (var child in children)
+            {
+                child.IsCustomerGroupChild = true;
+                result.Add(child);
+            }
+        }
+
+        return result;
+    }
+
+    private static Dictionary<int, int> BuildGroupedBillingCycleCounts(
+        IReadOnlyList<RentalBillingViewRow> rows)
+    {
+        var counts = new Dictionary<int, int>();
+        foreach (var row in rows)
+        {
+            if (!row.HasPersistedProfile || row.Source.Id == Guid.Empty)
+                continue;
+
+            var cycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(row.Source.BillingCycleMonths);
+            counts[cycleMonths] = counts.GetValueOrDefault(cycleMonths) + 1;
+        }
+
+        return counts;
+    }
+
+    private static string BuildGroupedBillingCycleDisplay(
+        IReadOnlyDictionary<int, int> cycleCounts,
+        int unlinkedAssetCount)
+    {
+        var parts = cycleCounts
+            .OrderBy(pair => pair.Key)
+            .Select(pair => $"{(pair.Key == 1 ? "매월" : $"{pair.Key:N0}개월")} {pair.Value:N0}건")
+            .ToList();
+        if (unlinkedAssetCount > 0)
+            parts.Add($"설정필요 {unlinkedAssetCount:N0}대");
+
+        return parts.Count == 0 ? string.Empty : string.Join(" · ", parts);
     }
 
     private static List<RentalBillingHistoryRow> BuildGroupedBillingHistoryRows(
@@ -5187,6 +5286,131 @@ WHERE ""AssignedUsername"" <> '';", ct);
             incomingTemplateHasExplicitAssetCoverage || existingTemplateHadExplicitAssetCoverage,
             ct);
         return LocalMutationResult.Ok(profile.Id, "렌탈 청구 프로필을 저장했습니다.");
+    }
+
+    public async Task<LocalMutationResult> UpdateBillingProfileCyclesAsync(
+        IReadOnlyDictionary<Guid, long> expectedRevisions,
+        int billingCycleMonths,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        if (expectedRevisions is null)
+            throw new ArgumentNullException(nameof(expectedRevisions));
+
+        var profileIds = expectedRevisions.Keys
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (profileIds.Count == 0)
+            return LocalMutationResult.Missing("청구주기를 통일할 렌탈 청구 프로필을 찾을 수 없습니다.");
+
+        var normalizedCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(billingCycleMonths);
+        await using var transaction = await _db.Database.BeginTransactionAsync(ct);
+        var profiles = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .Where(profile => profileIds.Contains(profile.Id) && !profile.IsDeleted)
+            .OrderBy(profile => profile.Id)
+            .ToListAsync(ct);
+        if (profiles.Count != profileIds.Count)
+            return LocalMutationResult.Missing("일부 렌탈 청구 프로필을 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도하세요.");
+
+        foreach (var profile in profiles)
+        {
+            if (!CanEditRentalProfileEntityScope(profile, session))
+                return LocalMutationResult.Denied("권한 범위를 벗어난 렌탈 청구 프로필이 포함되어 있어 청구주기를 변경하지 않았습니다.");
+
+            var expectedRevision = expectedRevisions.TryGetValue(profile.Id, out var revision)
+                ? revision
+                : (long?)null;
+            var concurrency = await TryEnsureRentalBillingProfileOperationAllowedAsync(
+                profile,
+                expectedRevision,
+                ct);
+            if (!concurrency.Success)
+                return LocalMutationResult.Conflict(concurrency.ConflictMessage);
+        }
+
+        var targetKeysByProfileId = profiles.ToDictionary(
+            profile => profile.Id,
+            profile => BuildProfileKey(
+                profile.ManagementCompanyCode,
+                profile.CustomerId,
+                profile.BusinessNumber,
+                profile.CustomerName,
+                profile.BillingType,
+                profile.BillingAdvanceMode,
+                profile.BillingDay,
+                normalizedCycleMonths,
+                profile.BillingMethod));
+        var duplicateTargetKey = targetKeysByProfileId.Values
+            .GroupBy(key => key, StringComparer.Ordinal)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicateTargetKey is not null)
+        {
+            return LocalMutationResult.Denied(
+                "청구주기를 통일하면 같은 거래처의 청구 프로필 식별값이 서로 겹칩니다. " +
+                "각 프로필의 청구유형·선불/후불·청구일·청구방식을 먼저 구분한 뒤 다시 시도하세요.");
+        }
+
+        var targetKeys = targetKeysByProfileId.Values.ToList();
+        var conflictingProfileExists = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .AnyAsync(profile =>
+                !profileIds.Contains(profile.Id) &&
+                targetKeys.Contains(profile.ProfileKey),
+                ct);
+        if (conflictingProfileExists)
+        {
+            return LocalMutationResult.Denied(
+                "청구주기를 통일하면 기존 청구 프로필과 식별값이 겹칩니다. " +
+                "중복 프로필을 먼저 확인한 뒤 다시 시도하세요.");
+        }
+
+        var now = DateTime.UtcNow;
+        var referenceDate = DateOnly.FromDateTime(DateTime.Today);
+        var changedCount = 0;
+        foreach (var profile in profiles)
+        {
+            if (profile.BillingCycleMonths == normalizedCycleMonths)
+                continue;
+
+            profile.BillingCycleMonths = normalizedCycleMonths;
+            profile.BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
+                normalizedCycleMonths,
+                profile.BillingAnchorMonth,
+                profile.BillingAnchorDate,
+                profile.BillingStartDate,
+                profile.ContractStartDate,
+                profile.ContractDate,
+                profile.LastBilledDate,
+                referenceDate);
+            profile.ProfileKey = targetKeysByProfileId[profile.Id];
+            profile.IsDirty = true;
+            profile.UpdatedAtUtc = now;
+            changedCount++;
+        }
+
+        if (changedCount == 0)
+            return LocalMutationResult.Ok(profileIds[0], $"선택한 청구 프로필은 이미 {normalizedCycleMonths:N0}개월 주기입니다.");
+
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
+        }
+        catch (DbUpdateException)
+        {
+            await transaction.RollbackAsync(ct);
+            foreach (var profile in profiles)
+                await _db.Entry(profile).ReloadAsync(ct);
+            return LocalMutationResult.Denied(
+                "청구주기 변경 중 중복 프로필 충돌이 확인되어 저장하지 않았습니다. 목록을 새로고침한 뒤 프로필 구성을 확인하세요.");
+        }
+
+        return LocalMutationResult.Ok(
+            profileIds[0],
+            $"렌탈 청구 프로필 {changedCount:N0}건의 청구주기를 {normalizedCycleMonths:N0}개월로 통일했습니다.");
     }
 
     public async Task<long> GetBillingProfileRevisionAsync(Guid profileId, CancellationToken ct = default)

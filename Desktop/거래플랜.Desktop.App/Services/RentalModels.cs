@@ -15,6 +15,7 @@ public sealed class RentalBillingFilter
     public bool DueOnly { get; set; }
     public bool PastDueOnly { get; set; }
     public bool ExpandCustomerSummaryRows { get; set; }
+    public List<string> ExpandedCustomerGroupKeys { get; set; } = new();
     public bool IncludeHistoryRows { get; set; } = true;
     public DateOnly ReferenceDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
 }
@@ -485,7 +486,11 @@ public sealed class RentalBillingViewRow : INotifyPropertyChanged
     public List<Guid> GroupedSelectionIds { get; init; } = new();
     public List<Guid> GroupedPersistedProfileIds { get; init; } = new();
     public Dictionary<Guid, long> GroupedProfileRevisions { get; init; } = new();
+    public Dictionary<int, int> GroupedBillingCycleCounts { get; init; } = new();
     public string AggregateSummary { get; init; } = string.Empty;
+    public string CustomerGroupKey { get; set; } = string.Empty;
+    public bool IsCustomerGroupChild { get; set; }
+    public bool IsCustomerGroupExpanded { get; set; }
     public string CustomerDisplayName { get; set; } = string.Empty;
     public string BillingCycleDisplay { get; init; } = string.Empty;
     public string ResponsibleOfficeName { get; init; } = string.Empty;
@@ -528,6 +533,15 @@ public sealed class RentalBillingViewRow : INotifyPropertyChanged
     public bool HasDataIssue { get; init; }
     public string DataIssueSummary { get; init; } = string.Empty;
     public bool IsAggregateRow => GroupedSourceCount > 1;
+    public string CustomerDisplayLabel => IsCustomerGroupChild ? $"↳ {CustomerDisplayName}" : CustomerDisplayName;
+    public string CustomerGroupToggleGlyph => IsCustomerGroupExpanded ? "▼" : "▶";
+    public int PrimaryBillingCycleMonths => GroupedBillingCycleCounts.Count == 0
+        ? RentalBillingScheduleRules.NormalizeCycleMonths(Source.BillingCycleMonths)
+        : GroupedBillingCycleCounts
+            .OrderByDescending(pair => pair.Value)
+            .ThenBy(pair => pair.Key)
+            .Select(pair => pair.Key)
+            .First();
     public bool HasUnlinkedBillingAssets => GroupedUnlinkedAssetCount > 0;
     public bool RequiresBillingProfileCreation => GroupedPersistedProfileCount == 0 && GroupedUnlinkedAssetCount > 0;
     public string BillingSetupStatus
@@ -544,10 +558,10 @@ public sealed class RentalBillingViewRow : INotifyPropertyChanged
     public string BillingSetupHelpText
         => RequiresBillingProfileCreation
             ? GroupedUnlinkedAssetCount > 1
-                ? $"같은 거래처의 미연결 장비 {GroupedUnlinkedAssetCount:N0}대를 묶어 표시했습니다. '개별 청구건 보기'로 전환해 장비별 내용을 확인한 뒤 저장하면 청구 프로필이 생성됩니다."
+                ? $"같은 거래처의 미연결 장비 {GroupedUnlinkedAssetCount:N0}대를 묶어 표시했습니다. 거래처 행을 펼쳐 장비별 내용을 확인한 뒤 저장하면 청구 프로필이 생성됩니다."
                 : "청구 프로필이 없는 렌탈 장비입니다. 내용을 확인한 뒤 저장하면 청구 프로필이 생성됩니다."
             : HasUnlinkedBillingAssets
-                ? $"청구 프로필에 연결되지 않은 장비 {GroupedUnlinkedAssetCount:N0}대가 함께 있습니다. 필요하면 '개별 청구건 보기'에서 정리하세요."
+                ? $"청구 프로필에 연결되지 않은 장비 {GroupedUnlinkedAssetCount:N0}대가 함께 있습니다. 필요하면 거래처 행을 펼쳐 정리하세요."
                 : "청구 설정이 완료된 건입니다.";
     public string SettlementStatusDisplay
     {

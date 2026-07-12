@@ -341,7 +341,12 @@
                 <ComboBox Width="140" ItemsSource="{Binding StatusOptions}" SelectedItem="{Binding SelectedStatusFilter}" Margin="0,0,12,0"/>
                 <CheckBox Content="알림대상만" IsChecked="{Binding DueOnly}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0"/>
                 <CheckBox Content="과거 미처리만 보기" IsChecked="{Binding PastDueOnly}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0"/>
-                <CheckBox Content="개별 청구건 직접 보기" IsChecked="{Binding ShowIndividualProfiles}" Foreground="#EAF2FF" VerticalAlignment="Center" Margin="0,0,12,0" ToolTip="거래처별 요약 대신 저장/삭제/장비연결이 가능한 개별 청구 프로필을 모두 표시합니다."/>
+                <CheckBox Content="전체 프로필 개별 보기"
+                          IsChecked="{Binding ShowIndividualProfiles}"
+                          Foreground="#EAF2FF"
+                          VerticalAlignment="Center"
+                          Margin="0,0,12,0"
+                          ToolTip="모든 프로필을 한 번에 개별 표시합니다. 보통은 체크를 끄고 거래처별 ▶ 버튼으로 필요한 거래처만 펼치세요."/>
                 <TextBlock Text="조회/작성 기준일" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <DatePicker Width="180" SelectedDate="{Binding ReferenceDate, Converter={StaticResource DateOnlyConverter}}" SelectedDateFormat="Short">
                     <DatePicker.Resources>
@@ -362,6 +367,24 @@
             <Border Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
                 <DataGrid ItemsSource="{Binding Rows}" SelectedItem="{Binding SelectedRow}" BorderThickness="0" IsReadOnly="False" MouseDoubleClick="BillingRowsDataGrid_MouseDoubleClick">
                     <DataGrid.Columns>
+                        <DataGridTemplateColumn Header="" Width="38" IsReadOnly="True">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Button Content="{Binding CustomerGroupToggleGlyph}"
+                                            Width="28"
+                                            MinWidth="28"
+                                            Height="28"
+                                            Padding="0"
+                                            Focusable="False"
+                                            Background="#263A55"
+                                            BorderBrush="#4FC3F7"
+                                            Command="{Binding DataContext.ToggleCustomerGroupCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            CommandParameter="{Binding}"
+                                            ToolTip="이 거래처의 개별 청구 프로필 펼치기/접기"
+                                            Visibility="{Binding IsAggregateRow, Converter={StaticResource BoolToVisibility}}"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
                         <DataGridTemplateColumn Width="46">
                             <DataGridTemplateColumn.HeaderTemplate>
                                 <DataTemplate><TextBlock Text="선택" HorizontalAlignment="Center"/></DataTemplate>
@@ -372,8 +395,8 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTextColumn Header="거래처명" Binding="{Binding CustomerDisplayName}" Width="220" IsReadOnly="True"/>
-                        <DataGridTextColumn Header="청구주기" Binding="{Binding BillingCycleDisplay}" Width="88" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="거래처명" Binding="{Binding CustomerDisplayLabel}" Width="230" IsReadOnly="True"/>
+                        <DataGridTextColumn Header="청구주기" Binding="{Binding BillingCycleDisplay}" Width="180" IsReadOnly="True"/>
                         <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocationDisplay}" Width="170" IsReadOnly="True"/>
                         <DataGridTextColumn Header="예정일" Binding="{Binding NextBillingDate}" Width="100" IsReadOnly="True"/>
                         <DataGridTextColumn Header="청구기간" Binding="{Binding CurrentBillingPeriodLabel}" Width="130" IsReadOnly="True"/>
@@ -451,13 +474,54 @@
                                 Margin="0,0,0,10"
                                 Visibility="{Binding IsCustomerGroupSelection, Converter={StaticResource BoolToVisibility}}">
                             <StackPanel>
-                                <TextBlock Text="이 행은 거래처별 요약입니다. 중복 거래처처럼 보이지 않도록 여러 청구 프로필과 청구설정 필요 장비를 한 줄로 묶어 보여줍니다."
+                                <DockPanel LastChildFill="True">
+                                    <Button DockPanel.Dock="Right"
+                                            Content="{Binding SelectedCustomerGroupToggleLabel}"
+                                            Command="{Binding ExpandSelectedSummaryCommand}"
+                                            IsEnabled="{Binding CanExpandSelectedSummary}"
+                                            MinWidth="112"
+                                            Margin="10,0,0,0"
+                                            Background="#1565C0"
+                                            BorderBrush="#1565C0"/>
+                                    <StackPanel>
+                                        <TextBlock Text="거래처 청구주기" Foreground="#4FC3F7" FontWeight="Bold"/>
+                                        <TextBlock Text="{Binding SelectedGroupCycleSummary}"
+                                                   Foreground="#EAF2FF"
+                                                   FontSize="15"
+                                                   FontWeight="SemiBold"
+                                                   Margin="0,4,0,0"
+                                                   TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                </DockPanel>
+                                <TextBlock Text="이 행은 거래처별 요약입니다. 여러 청구 프로필의 실제 주기별 건수를 표시하며, 펼친 뒤 개별 프로필을 선택해 저장·삭제·장비연결·입금등록을 진행합니다."
                                            Foreground="#B3E5FC"
+                                           Margin="0,8,0,0"
                                            TextWrapping="Wrap"/>
-                                <TextBlock Text="저장, 삭제, 장비연결, 입금등록처럼 실제 데이터를 바꾸는 작업은 목록에서 실제 개별 청구건을 선택한 뒤 진행하세요."
-                                           Foreground="#EAF2FF"
-                                           Margin="0,6,0,0"
-                                           TextWrapping="Wrap"/>
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="78"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="통일할 주기(개월)" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <TextBox Grid.Column="1"
+                                             Text="{Binding GroupCycleTargetMonths, UpdateSourceTrigger=PropertyChanged}"
+                                             HorizontalContentAlignment="Right"
+                                             Margin="0,0,8,0"/>
+                                    <Button Grid.Column="2"
+                                            Content="선택 주기 통일"
+                                            Command="{Binding UnifySelectedGroupCycleCommand}"
+                                            IsEnabled="{Binding CanUnifySelectedGroupCycle}"
+                                            Background="#6A1B9A"
+                                            BorderBrush="#6A1B9A"
+                                            Margin="0,0,10,0"/>
+                                    <TextBlock Grid.Column="3"
+                                               Text="{Binding SelectedGroupCycleImpactText}"
+                                               Foreground="#90CAF9"
+                                               VerticalAlignment="Center"
+                                               TextWrapping="Wrap"/>
+                                </Grid>
                             </StackPanel>
                         </Border>
 

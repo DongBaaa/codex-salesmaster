@@ -1,0 +1,35 @@
+{
+  "verifiedAt": "2026-07-12T23:28:00+09:00",
+  "releaseId": "georaeplan-1.1.677-20260712-231943",
+  "manifest": {
+    "desktopVersion": "1.1.677",
+    "desktopFile": "tradeplan-pc-installer-v1.1.677.zip",
+    "desktopSize": 232232419,
+    "desktopSha256": "8B2F9084E67B7F8A8A95418DBB5286CAE5CF748DDCB777C6B4EC3A35DAD8ED57",
+    "androidVersion": "0.2.81",
+    "androidFile": "tradeplan-android-v0.2.81.apk",
+    "androidSize": 41424314,
+    "androidSha256": "FFB75EE0AC7F1C5B7FD75AD8C29B31E0F635ED7E6799CC6C44FE9E43C601D642"
+  },
+  "http": {
+    "desktopHead": 200,
+    "desktopContentLength": 232232419,
+    "androidHead": 200,
+    "androidContentLength": 41424314,
+    "tradeHealth": 200,
+    "tradeReady": 200,
+    "workHealth": 200,
+    "itwHome": 200
+  },
+  "linuxPc": {
+    "api": "Up",
+    "postgres": "Up healthy, not restarted",
+    "desktopSha256": "8b2f9084e67b7f8a8a95418dbb5286cae5cf748ddcb777c6b4ec3a35dad8ed57",
+    "androidSha256": "ffb75ee0ac7f1c5b7fd75ad8c29b31e0f635ed7e6799cc6c44fe9e43c601d642"
+  },
+  "operationalGate": "PASS",
+  "integrityErrors": 0,
+  "integrityWarnings": 0,
+  "rentalMonthlyRepairCandidates": 0,
+  "rentalTemplateItemReferenceCandidates": 0
+}

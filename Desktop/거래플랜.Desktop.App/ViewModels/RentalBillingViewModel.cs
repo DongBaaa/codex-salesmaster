@@ -54,6 +54,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private readonly List<RentalBillingAssetOption> _includedAssetPool = new();
     private readonly List<RentalBillingAssetOption> _candidateAssetPool = new();
     private readonly Dictionary<Guid, RentalBillingAssetLinkEdit> _pendingAssetLinkEdits = new();
+    private readonly HashSet<string> _expandedCustomerGroupKeys = new(StringComparer.Ordinal);
     private string _selectedRowBaselineSignature = string.Empty;
     private long _editRevision;
     private readonly Dictionary<string, CandidateAssetLoadCacheEntry> _candidateAssetLoadCache = new(StringComparer.Ordinal);
@@ -72,6 +73,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [ObservableProperty] private bool _dueOnly;
     [ObservableProperty] private bool _pastDueOnly;
     [ObservableProperty] private bool _showIndividualProfiles;
+    [ObservableProperty] private int _groupCycleTargetMonths = 1;
     [ObservableProperty] private DateOnly _referenceDate = DateOnly.FromDateTime(DateTime.Today);
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private string _statusMessage = "렌탈 청구 대상을 불러오는 중입니다.";
@@ -172,7 +174,27 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                                           !string.IsNullOrWhiteSpace(EditCustomerName);
     public bool CanEditTemplateLineMode => CanEditBillingProfileDetails &&
                                            string.Equals((EditBillingType ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal);
-    public bool CanExpandSelectedSummary => SelectedRow?.IsAggregateRow == true && !ShowIndividualProfiles;
+    public bool CanExpandSelectedSummary => SelectedRow?.IsAggregateRow == true;
+    public string SelectedCustomerGroupToggleLabel => SelectedRow?.IsCustomerGroupExpanded == true
+        ? "프로필 접기"
+        : "프로필 펼치기";
+    public string SelectedGroupCycleSummary => SelectedRow?.IsAggregateRow == true
+        ? SelectedRow.BillingCycleDisplay
+        : string.Empty;
+    public int SelectedGroupCycleAffectedCount => SelectedRow?.IsAggregateRow == true
+        ? SelectedRow.GroupedBillingCycleCounts
+            .Where(pair => pair.Key != RentalBillingScheduleRules.NormalizeCycleMonths(GroupCycleTargetMonths))
+            .Sum(pair => pair.Value)
+        : 0;
+    public string SelectedGroupCycleImpactText => SelectedRow?.IsAggregateRow == true
+        ? SelectedGroupCycleAffectedCount == 0
+            ? $"모든 청구 프로필이 이미 {FormatBillingCycleMonths(GroupCycleTargetMonths)} 주기입니다."
+            : $"청구 프로필 {SelectedGroupCycleAffectedCount:N0}건의 다음 청구 예정일만 다시 계산합니다. 청구기간 시작월과 기존 청구·입금·전표 이력은 바꾸지 않습니다."
+        : string.Empty;
+    public bool CanUnifySelectedGroupCycle => SelectedRow?.IsAggregateRow == true &&
+                                               SelectedRow.GroupedPersistedProfileCount > 1 &&
+                                               CanEditCurrentSelection &&
+                                               SelectedGroupCycleAffectedCount > 0;
     public bool CanStartBillingSelected => SelectedRow is not null &&
                                            CanEditCurrentSelection &&
                                            CanEditInvoices &&
@@ -365,6 +387,20 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     {
         NotifySelectionActionState();
         RequestFilterReload();
+    }
+    partial void OnGroupCycleTargetMonthsChanged(int value)
+    {
+        var normalized = RentalBillingScheduleRules.NormalizeCycleMonths(value);
+        if (normalized != value)
+        {
+            GroupCycleTargetMonths = normalized;
+            return;
+        }
+
+        OnPropertyChanged(nameof(SelectedGroupCycleAffectedCount));
+        OnPropertyChanged(nameof(SelectedGroupCycleImpactText));
+        OnPropertyChanged(nameof(CanUnifySelectedGroupCycle));
+        UnifySelectedGroupCycleCommand.NotifyCanExecuteChanged();
     }
     partial void OnReferenceDateChanged(DateOnly value)
     {
@@ -767,6 +803,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             var requestVersion = Interlocked.Increment(ref _filterReloadVersion);
             var selectedId = SelectedRow?.SelectionId;
             var selectedRowBeforeReload = SelectedRow;
+            var selectedCustomerGroupKey = SelectedRow?.CustomerGroupKey ?? string.Empty;
+            var selectedWasAggregateRow = SelectedRow?.IsAggregateRow == true;
             var preserveSelectedEditor = ShouldPreserveSelectedEditorDuringReload();
             IsBusy = true;
             StatusMessage = "렌탈 청구 목록을 조회하는 중입니다. 데이터가 많은 경우 잠시 걸릴 수 있습니다.";
@@ -781,6 +819,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                     DueOnly = DueOnly,
                     PastDueOnly = PastDueOnly,
                     ExpandCustomerSummaryRows = ShowIndividualProfiles,
+                    ExpandedCustomerGroupKeys = _expandedCustomerGroupKeys.ToList(),
                     IncludeHistoryRows = false,
                     ReferenceDate = ReferenceDate
                 }, _session, ct);
@@ -796,30 +835,39 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 RebindBillingRowSelectionHandlers();
                 NotifyDeleteCheckedState();
 
-                TotalCount = rows.Count;
-                DueCount = rows.Count(row => row.DaysRemaining.HasValue && row.DaysRemaining.Value <= 0);
-                IssueCount = rows.Count(row => row.HasDataIssue);
-                CompletedCount = rows.Count(row => string.Equals(row.CompletionStatus, PaymentFlowConstants.CompletionDone, StringComparison.OrdinalIgnoreCase));
-                PartialSettlementCount = rows.Count(row => string.Equals(row.SettlementStatus, PaymentFlowConstants.SettlementStatusPartial, StringComparison.OrdinalIgnoreCase));
-                PastUnresolvedCustomerCount = rows.Count(row => row.HasPastUnresolved);
-                PastUnresolvedCount = rows.Sum(row => row.PastUnresolvedCount);
-                PastUnresolvedAmount = rows.Sum(row => row.PastUnresolvedAmount);
-                TotalOutstandingAmount = rows.Sum(row => row.OutstandingAmount);
-                var unlinkedCount = rows.Sum(row => row.GroupedUnlinkedAssetCount);
+                var summaryRows = rows.Where(row => !row.IsCustomerGroupChild).ToList();
+                var expandedProfileCount = rows.Count(row => row.IsCustomerGroupChild);
+                TotalCount = summaryRows.Count;
+                DueCount = summaryRows.Count(row => row.DaysRemaining.HasValue && row.DaysRemaining.Value <= 0);
+                IssueCount = summaryRows.Count(row => row.HasDataIssue);
+                CompletedCount = summaryRows.Count(row => string.Equals(row.CompletionStatus, PaymentFlowConstants.CompletionDone, StringComparison.OrdinalIgnoreCase));
+                PartialSettlementCount = summaryRows.Count(row => string.Equals(row.SettlementStatus, PaymentFlowConstants.SettlementStatusPartial, StringComparison.OrdinalIgnoreCase));
+                PastUnresolvedCustomerCount = summaryRows.Count(row => row.HasPastUnresolved);
+                PastUnresolvedCount = summaryRows.Sum(row => row.PastUnresolvedCount);
+                PastUnresolvedAmount = summaryRows.Sum(row => row.PastUnresolvedAmount);
+                TotalOutstandingAmount = summaryRows.Sum(row => row.OutstandingAmount);
+                var unlinkedCount = summaryRows.Sum(row => row.GroupedUnlinkedAssetCount);
                 var unlinkedLimitNotice = BuildUnlinkedAssetLimitNotice(unlinkedCount);
-                var profileLimitNotice = BuildBillingProfileLimitNotice(rows);
+                var profileLimitNotice = BuildBillingProfileLimitNotice(summaryRows);
+                var expandedProfileNotice = expandedProfileCount > 0
+                    ? $" 펼친 개별 프로필 {expandedProfileCount:N0}건이 목록에 함께 표시됩니다."
+                    : string.Empty;
 
-                StatusMessage = rows.Count == 0
+                StatusMessage = summaryRows.Count == 0
                     ? "조건에 맞는 렌탈 청구 대상이 없습니다."
                     : unlinkedCount > 0
-                        ? $"렌탈 청구 {rows.Count:N0}건을 조회했습니다. 청구 설정이 필요한 장비 {unlinkedCount:N0}대가 포함되어 있습니다.{unlinkedLimitNotice}{profileLimitNotice}"
+                        ? $"렌탈 청구 {summaryRows.Count:N0}건을 조회했습니다. 청구 설정이 필요한 장비 {unlinkedCount:N0}대가 포함되어 있습니다.{expandedProfileNotice}{unlinkedLimitNotice}{profileLimitNotice}"
                         : ShowIndividualProfiles
-                            ? $"렌탈 청구 프로필 {rows.Count:N0}건을 개별 조회했습니다.{profileLimitNotice}"
-                            : $"렌탈 청구 {rows.Count:N0}건을 조회했습니다.{profileLimitNotice}";
+                            ? $"렌탈 청구 프로필 {summaryRows.Count:N0}건을 개별 조회했습니다.{profileLimitNotice}"
+                            : $"렌탈 청구 {summaryRows.Count:N0}건을 조회했습니다.{expandedProfileNotice}{profileLimitNotice}";
 
                 if (selectedId.HasValue)
                 {
-                    var reloadedSelection = FindRow(selectedId.Value);
+                    var reloadedSelection = selectedWasAggregateRow && !string.IsNullOrWhiteSpace(selectedCustomerGroupKey)
+                        ? FindAggregateRow(selectedCustomerGroupKey)
+                        : FindRow(selectedId.Value);
+                    if (reloadedSelection is null && !string.IsNullOrWhiteSpace(selectedCustomerGroupKey))
+                        reloadedSelection = FindAggregateRow(selectedCustomerGroupKey);
                     if (reloadedSelection is not null)
                     {
                         if (preserveSelectedEditor)
@@ -1053,7 +1101,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         if (targetIds.Count == 0)
         {
-            StatusMessage = "거래처별 요약에 청구 가능한 개별 프로필이 없습니다. '개별 청구건 직접 보기'에서 프로필을 생성/저장한 뒤 다시 시도하세요.";
+            StatusMessage = "거래처별 요약에 청구 가능한 개별 프로필이 없습니다. 거래처 행을 펼쳐 프로필을 생성/저장한 뒤 다시 시도하세요.";
             return;
         }
 
@@ -1093,8 +1141,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         }
 
         var aggregateSelectionId = aggregateRow.SelectionId;
+        var aggregateGroupKey = aggregateRow.CustomerGroupKey;
         await ReloadAsync();
-        SelectRow(aggregateSelectionId);
+        SelectedRow = FindAggregateRow(aggregateGroupKey) ?? FindRow(aggregateSelectionId);
 
         var skippedUnlinkedText = aggregateRow.GroupedUnlinkedAssetCount > 0
             ? $" / 청구설정 필요 장비 {aggregateRow.GroupedUnlinkedAssetCount:N0}대 제외"
@@ -1219,7 +1268,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         var history = SelectedBillingHistory;
         if (history.BillingProfileId != targetId)
         {
-            StatusMessage = "거래처별 요약에 포함된 다른 청구건입니다. '개별 청구건 직접 보기'으로 실제 청구건을 선택한 뒤 삭제하세요.";
+            StatusMessage = "거래처별 요약에 포함된 다른 청구건입니다. 거래처 행을 펼쳐 실제 청구건을 선택한 뒤 삭제하세요.";
             return;
         }
 
@@ -1359,7 +1408,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (persistedTargets.Count == 0 && unlinkedTargets.Count == 0)
         {
             StatusMessage = skippedAggregateCount > 0
-                ? "거래처별 요약행은 선택삭제할 수 없습니다. '개별 청구건 직접 보기'으로 실제 청구건을 선택해 정리한 뒤 다시 시도하세요."
+                ? "거래처별 요약행은 선택삭제할 수 없습니다. 거래처 행을 펼쳐 실제 청구건을 선택해 정리한 뒤 다시 시도하세요."
                 : "삭제할 수 있는 청구 프로필 또는 청구설정 필요 장비가 없습니다.";
             return;
         }
@@ -1584,36 +1633,107 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanExpandSelectedSummary))]
     private async Task ExpandSelectedSummaryAsync()
     {
-        if (SelectedRow is null || !SelectedRow.IsAggregateRow)
+        await ToggleCustomerGroupAsync(SelectedRow);
+    }
+
+    [RelayCommand]
+    private async Task ToggleCustomerGroupAsync(RentalBillingViewRow? row)
+    {
+        if (row is null || !row.IsAggregateRow || string.IsNullOrWhiteSpace(row.CustomerGroupKey))
         {
-            StatusMessage = "거래처별 요약행을 먼저 선택하세요.";
+            StatusMessage = "펼치거나 접을 거래처별 요약행을 선택하세요.";
             return;
         }
 
-        var targetId = SelectedRow.GroupedPersistedProfileIds.FirstOrDefault(id => id != Guid.Empty);
-        if (targetId == Guid.Empty)
-            targetId = SelectedRow.GroupedSelectionIds.FirstOrDefault(id => id != Guid.Empty);
-        if (targetId == Guid.Empty)
-            targetId = SelectedRow.SelectionId;
-
-        _suppressFilterReload = true;
-        try
+        if (HasUnsavedEditorChangesForCustomerGroupToggle())
         {
-            ShowIndividualProfiles = true;
+            StatusMessage = "저장하지 않은 렌탈 청구 편집 내용이 있어 거래처 프로필 펼침/접기를 중단했습니다. 먼저 저장하거나 변경을 취소하세요.";
+            MessageBox.Show(
+                StatusMessage,
+                "저장되지 않은 변경",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
         }
-        finally
+
+        var groupKey = row.CustomerGroupKey;
+        var shouldExpand = !_expandedCustomerGroupKeys.Contains(groupKey);
+        if (shouldExpand)
+            _expandedCustomerGroupKeys.Add(groupKey);
+        else
+            _expandedCustomerGroupKeys.Remove(groupKey);
+
+        await ReloadAsync();
+        SelectedRow = FindAggregateRow(groupKey);
+        StatusMessage = shouldExpand
+            ? "선택 거래처의 개별 청구 프로필을 바로 아래에 펼쳤습니다. 수정할 프로필 행을 선택하세요."
+            : "선택 거래처의 개별 청구 프로필을 접었습니다.";
+    }
+
+    private bool HasUnsavedEditorChangesForCustomerGroupToggle()
+        => SelectedRow is null
+            ? HasMeaningfulDraftState()
+            : HasUnsavedSelectedRowChanges();
+
+    [RelayCommand(CanExecute = nameof(CanUnifySelectedGroupCycle))]
+    private async Task UnifySelectedGroupCycleAsync()
+    {
+        if (SelectedRow is null || !SelectedRow.IsAggregateRow)
         {
-            _suppressFilterReload = false;
+            StatusMessage = "청구주기를 통일할 거래처별 요약행을 선택하세요.";
+            return;
+        }
+
+        var aggregateRow = SelectedRow;
+        var targetCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(GroupCycleTargetMonths);
+        var affectedCount = SelectedGroupCycleAffectedCount;
+        if (affectedCount == 0)
+        {
+            StatusMessage = $"선택 거래처의 청구 프로필은 이미 {FormatBillingCycleMonths(targetCycleMonths)} 주기입니다.";
+            return;
+        }
+
+        var confirmation = MessageBox.Show(
+            $"'{aggregateRow.CustomerDisplayName}'의 청구 프로필 {affectedCount:N0}건을 {FormatBillingCycleMonths(targetCycleMonths)} 주기로 변경합니다.\n\n" +
+            "청구기간 시작월과 기존 청구·입금·전표 이력은 변경하지 않습니다. 다음 청구 예정일만 새 주기로 다시 계산됩니다.\n" +
+            "프로필 식별값이 겹치면 전체 변경을 취소합니다. 계속하시겠습니까?",
+            "청구주기 통일 확인",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (confirmation != MessageBoxResult.Yes)
+            return;
+
+        var groupKey = aggregateRow.CustomerGroupKey;
+        var result = await _rental.UpdateBillingProfileCyclesAsync(
+            aggregateRow.GroupedProfileRevisions,
+            targetCycleMonths,
+            _session);
+        StatusMessage = result.Message;
+        if (!result.Success)
+        {
+            if (result.ConcurrencyConflict)
+            {
+                await ReloadAsync();
+                SelectedRow = FindAggregateRow(groupKey);
+                MessageBox.Show(
+                    result.Message,
+                    "동시 수정 충돌",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+
+            return;
         }
 
         await ReloadAsync();
+        SelectedRow = FindAggregateRow(groupKey);
+        StatusMessage = result.Message;
+    }
 
-        if (targetId != Guid.Empty)
-            SelectRow(targetId);
-
-        StatusMessage = SelectedRow is null
-            ? "개별 청구건 직접 보기로 전환했습니다. 목록에서 수정할 청구건을 선택하세요."
-            : "개별 청구건 직접 보기로 전환했습니다. 선택된 청구건에서 저장/삭제/장비연결을 진행하세요.";
+    private static string FormatBillingCycleMonths(int cycleMonths)
+    {
+        var normalized = RentalBillingScheduleRules.NormalizeCycleMonths(cycleMonths);
+        return normalized == 1 ? "매월(1개월)" : $"{normalized:N0}개월";
     }
 
     [RelayCommand]
@@ -1627,7 +1747,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         if (!CanEditBillingProfileDetails)
         {
-            StatusMessage = "거래처별 요약행에서는 표시 품목을 직접 편집할 수 없습니다. '개별 청구건 직접 보기'으로 실제 청구건을 선택한 뒤 진행하세요.";
+            StatusMessage = "거래처별 요약행에서는 표시 품목을 직접 편집할 수 없습니다. 거래처 행을 펼쳐 실제 청구건을 선택한 뒤 진행하세요.";
             return;
         }
 
@@ -2130,7 +2250,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     {
         if (!CanEditBillingProfileDetails)
         {
-            StatusMessage = "거래처별 요약행에서는 장비 연결을 직접 편집할 수 없습니다. '개별 청구건 직접 보기'으로 실제 청구건을 선택한 뒤 진행하세요.";
+            StatusMessage = "거래처별 요약행에서는 장비 연결을 직접 편집할 수 없습니다. 거래처 행을 펼쳐 실제 청구건을 선택한 뒤 진행하세요.";
             return;
         }
 
@@ -2358,6 +2478,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     {
         PersistDraftBeforeContextSwitch();
         CancelPendingSelectionLoads();
+        UpdateSelectedCustomerGroupState(value);
 
         if (value is null)
         {
@@ -2467,6 +2588,19 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         OnPropertyChanged(nameof(CanMarkCompletedSelected));
         ExpandSelectedSummaryCommand.NotifyCanExecuteChanged();
         NotifySelectionActionState();
+    }
+
+    private void UpdateSelectedCustomerGroupState(RentalBillingViewRow? row)
+    {
+        if (row?.IsAggregateRow == true)
+            GroupCycleTargetMonths = row.PrimaryBillingCycleMonths;
+
+        OnPropertyChanged(nameof(SelectedCustomerGroupToggleLabel));
+        OnPropertyChanged(nameof(SelectedGroupCycleSummary));
+        OnPropertyChanged(nameof(SelectedGroupCycleAffectedCount));
+        OnPropertyChanged(nameof(SelectedGroupCycleImpactText));
+        OnPropertyChanged(nameof(CanUnifySelectedGroupCycle));
+        UnifySelectedGroupCycleCommand.NotifyCanExecuteChanged();
     }
 
     private void RefreshBillingHistoryRows(RentalBillingViewRow? row)
@@ -2975,10 +3109,20 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
     private RentalBillingViewRow? FindRow(Guid entityId)
         => Rows.FirstOrDefault(row =>
-            row.SelectionId == entityId ||
-            row.Source.Id == entityId ||
-            row.GroupedSelectionIds.Contains(entityId) ||
-            row.GroupedPersistedProfileIds.Contains(entityId));
+               !row.IsAggregateRow &&
+               (row.SelectionId == entityId || row.Source.Id == entityId))
+           ?? Rows.FirstOrDefault(row =>
+               row.SelectionId == entityId ||
+               row.Source.Id == entityId ||
+               row.GroupedSelectionIds.Contains(entityId) ||
+               row.GroupedPersistedProfileIds.Contains(entityId));
+
+    private RentalBillingViewRow? FindAggregateRow(string customerGroupKey)
+        => string.IsNullOrWhiteSpace(customerGroupKey)
+            ? null
+            : Rows.FirstOrDefault(row =>
+                row.IsAggregateRow &&
+                string.Equals(row.CustomerGroupKey, customerGroupKey, StringComparison.Ordinal));
 
     private async Task RefreshEditRevisionFromStoreAsync(Guid profileId)
     {
@@ -5198,7 +5342,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         var aggregateSummary = string.IsNullOrWhiteSpace(SelectedRow.AggregateSummary)
             ? "여러 청구 프로필/자산이 묶인 거래처별 요약행입니다."
             : $"{SelectedRow.AggregateSummary} 기준 거래처별 요약행입니다.";
-        StatusMessage = $"{aggregateSummary} {actionName}은 '개별 청구건 직접 보기'으로 실제 청구건을 선택한 뒤 진행하세요.";
+        StatusMessage = $"{aggregateSummary} {actionName}은 거래처 행을 펼쳐 실제 청구건을 선택한 뒤 진행하세요.";
         return true;
     }
 
@@ -5215,14 +5359,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         TemplateSummary = string.IsNullOrWhiteSpace(value.AggregateSummary)
             ? "거래처별 요약 보기입니다."
             : value.AggregateSummary;
-        AssetCandidateSummary = "거래처별 요약행에서는 장비 연결 편집을 지원하지 않습니다. '개별 청구건 직접 보기'으로 실제 청구건을 선택하세요.";
+        AssetCandidateSummary = "거래처별 요약행에서는 장비 연결 편집을 지원하지 않습니다. 거래처 행을 펼쳐 실제 청구건을 선택하세요.";
         ApplySelectedAssetsHint = value.GroupedPersistedProfileIds.Any(id => id != Guid.Empty)
-            ? "거래처별 요약 보기입니다. 청구서 만들기는 연결된 개별 프로필을 한 번에 처리하고, 저장/삭제/장비연결은 '개별 청구건 직접 보기' 후 진행하세요."
-            : "거래처별 요약 보기입니다. 청구 가능한 프로필이 없습니다. '개별 청구건 직접 보기'에서 프로필을 생성/저장하세요.";
+            ? "거래처별 요약 보기입니다. 청구서 만들기는 연결된 개별 프로필을 한 번에 처리하고, 저장/삭제/장비연결은 거래처 행을 펼친 뒤 진행하세요."
+            : "거래처별 요약 보기입니다. 청구 가능한 프로필이 없습니다. 거래처 행을 펼쳐 프로필을 생성/저장하세요.";
         _selectedRowBaselineSignature = BuildCurrentEditorSignature();
         StatusMessage = string.IsNullOrWhiteSpace(value.AggregateSummary)
-            ? "거래처별 요약 보기입니다. 청구서 만들기는 한 번에 가능하지만 편집은 '개별 청구건 직접 보기' 후 진행하세요."
-            : $"{value.AggregateSummary} 기준 거래처별 요약행입니다. 청구서 만들기는 한 번에 가능하지만 편집은 '개별 청구건 직접 보기' 후 진행하세요.";
+            ? "거래처별 요약 보기입니다. 청구서 만들기는 한 번에 가능하지만 편집은 거래처 행을 펼친 뒤 진행하세요."
+            : $"{value.AggregateSummary} 기준 거래처별 요약행입니다. 청구서 만들기는 한 번에 가능하지만 편집은 거래처 행을 펼친 뒤 진행하세요.";
     }
 
     private bool CanOperateScope(string? officeCode)
@@ -5761,6 +5905,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             DueOnly ? "DUE" : string.Empty,
             PastDueOnly ? "PAST" : string.Empty,
             ShowIndividualProfiles ? "INDIVIDUAL" : "GROUPED",
+            string.Join(",", _expandedCustomerGroupKeys.OrderBy(key => key, StringComparer.Ordinal)),
             ReferenceDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
 
     private string BuildUnlinkedAssetLimitNotice(int unlinkedCount)

@@ -756,6 +756,70 @@ public sealed class RentalBillingSpecificationTests
         Assert.False(vm.ShowIndividualProfiles);
     }
 
+    [Fact]
+    public void RentalBillingViewModel_FindRow_PrefersExpandedProfileOverAggregateWithSameSelectionId()
+    {
+        var vm = new RentalBillingViewModel(
+            null!,
+            null!,
+            CreateUserSession(AppPermissionNames.RentalProfileEdit));
+        var profileId = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        var aggregate = new RentalBillingViewRow
+        {
+            SelectionId = profileId,
+            Source = new LocalRentalBillingProfile { Id = profileId },
+            GroupedSourceCount = 2,
+            GroupedPersistedProfileCount = 2,
+            GroupedSelectionIds = [profileId, Guid.NewGuid()],
+            GroupedPersistedProfileIds = [profileId, Guid.NewGuid()],
+            CustomerGroupKey = "USENET|ID:TEST"
+        };
+        var child = new RentalBillingViewRow
+        {
+            SelectionId = profileId,
+            Source = new LocalRentalBillingProfile { Id = profileId },
+            GroupedSourceCount = 1,
+            GroupedPersistedProfileCount = 1,
+            CustomerGroupKey = aggregate.CustomerGroupKey,
+            IsCustomerGroupChild = true
+        };
+        vm.Rows.Add(aggregate);
+        vm.Rows.Add(child);
+
+        var method = typeof(RentalBillingViewModel).GetMethod(
+            "FindRow",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        var selected = method!.Invoke(vm, [profileId]);
+
+        Assert.Same(child, selected);
+    }
+
+    [Fact]
+    public void RentalBillingViewModel_CustomerGroupToggleDetectsUnsavedEditorChanges()
+    {
+        var vm = new RentalBillingViewModel(
+            null!,
+            null!,
+            CreateUserSession(AppPermissionNames.RentalProfileEdit));
+        var profileId = Guid.Parse("bbbbbbbb-cccc-dddd-eeee-ffffffffffff");
+        SetPrivateField(vm, "_selectedRow", new RentalBillingViewRow
+        {
+            SelectionId = profileId,
+            Source = new LocalRentalBillingProfile { Id = profileId },
+            CustomerGroupKey = "USENET|ID:UNSAVED"
+        });
+        vm.EditCustomerName = "미저장 편집 거래처";
+        var baseline = InvokePrivateInstance<string>(vm, "BuildCurrentEditorSignature");
+        SetPrivateField(vm, "_selectedRowBaselineSignature", baseline);
+
+        Assert.False(InvokePrivateInstance<bool>(vm, "HasUnsavedEditorChangesForCustomerGroupToggle"));
+
+        vm.EditNotes = "저장 전 변경";
+
+        Assert.True(InvokePrivateInstance<bool>(vm, "HasUnsavedEditorChangesForCustomerGroupToggle"));
+    }
+
     private static T GetPrivateField<T>(object target, string fieldName)
     {
         var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
