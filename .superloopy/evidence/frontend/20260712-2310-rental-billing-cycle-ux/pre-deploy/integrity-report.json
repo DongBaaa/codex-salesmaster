@@ -1,0 +1,20 @@
+{
+    "generatedAtUtc":  "2026-07-12T14:21:15.425307Z",
+    "tenantCode":  "USENET_GROUP",
+    "officeCode":  "USENET",
+    "issueCount":  2,
+    "issues":  [
+                   {
+                       "code":  "duplicate_item_name_match_keys",
+                       "severity":  "Info",
+                       "count":  1579,
+                       "message":  "동일 품명 매칭키를 공유하는 품목이 있습니다. 규격/분류가 다르면 정상일 수 있습니다."
+                   },
+                   {
+                       "code":  "rental_assignment_historical_stale_reference_rows",
+                       "severity":  "Info",
+                       "count":  60,
+                       "message":  "과거 렌탈 임대이력의 자산/거래처/청구 프로필 참조가 현재 마스터에서 사라졌지만 스냅샷 표시값은 남아 있습니다."
+                   }
+               ]
+}

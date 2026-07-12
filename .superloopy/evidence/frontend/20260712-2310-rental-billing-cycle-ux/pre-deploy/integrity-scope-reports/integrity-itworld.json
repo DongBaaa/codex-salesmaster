@@ -1,0 +1,14 @@
+{
+    "generatedAtUtc":  "2026-07-12T14:21:16.0327305Z",
+    "tenantCode":  "ITWORLD",
+    "officeCode":  "ITWORLD",
+    "issueCount":  1,
+    "issues":  [
+                   {
+                       "code":  "duplicate_item_name_match_keys",
+                       "severity":  "Info",
+                       "count":  1260,
+                       "message":  "동일 품명 매칭키를 공유하는 품목이 있습니다. 규격/분류가 다르면 정상일 수 있습니다."
+                   }
+               ]
+}
