@@ -114,9 +114,16 @@ public sealed class MasterUiWiringGuardTests
         AssertContainsAll(
             xaml,
             "청구서 표시 품목(거래명세서 출력 라인)과 거래처 임대 자산(실제 청구/전표 대상 자산)을 분리 관리합니다.",
-            "청구서 표시 품목 (전표/거래명세서 출력 라인)",
-            "실제 청구/전표 대상 자산은 아래 '거래처 임대 자산' 목록에서만 결정됩니다.",
-            "개별 청구는 표시품목 1행이 전표 1행이 되며",
+            "청구서 표시 품목",
+            "전표/거래명세서 출력 라인을 먼저 확인하고, 선택한 행의 세부값은 아래에서 편집합니다.",
+            "선택 표시품목 상세",
+            "연결대수",
+            "IncludedAssetCountDisplay",
+            "상세 크게 보기",
+            "ToggleBillingDetailWidthButton_Click",
+            "GridSplitter",
+            "드래그하여 거래처 목록과 상세 편집 영역의 너비를 조절합니다.",
+            "실제 청구/전표 대상 자산은 아래 목록에서만 결정됩니다.",
             "전체 프로필 개별 보기",
             "IsChecked=\"{Binding ShowIndividualProfiles}\"",
             "ToggleCustomerGroupCommand",
@@ -152,6 +159,8 @@ public sealed class MasterUiWiringGuardTests
 
         AssertContainsAll(
             code,
+            "BillingListColumn.Width = new GridLength(0)",
+            "ToggleBillingDetailWidthButton.Content = \"목록 같이 보기\"",
             "GetBillingAssetCoverageStartWarning()",
             "거래처별 요약행에서는 장비 연결을 직접 편집할 수 없습니다.",
             "거래처 행을 펼쳐 실제 청구건을 선택한 뒤",

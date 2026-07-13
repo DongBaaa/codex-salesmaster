@@ -10,6 +10,22 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class RentalBillingSpecificationTests
 {
     [Fact]
+    public void RentalBillingTemplateEditorItem_DisplaysCurrentIncludedAssetCount()
+    {
+        var item = new RentalBillingTemplateEditorItem();
+        var changedProperties = new List<string?>();
+        item.PropertyChanged += (_, args) => changedProperties.Add(args.PropertyName);
+
+        Assert.Equal("0대", item.IncludedAssetCountDisplay);
+
+        item.IncludedAssetIds.Add(Guid.NewGuid());
+        item.IncludedAssetIds.Add(Guid.NewGuid());
+
+        Assert.Equal("2대", item.IncludedAssetCountDisplay);
+        Assert.Contains(nameof(RentalBillingTemplateEditorItem.IncludedAssetCountDisplay), changedProperties);
+    }
+
+    [Fact]
     public void RentalCustomerOnboardingViewModel_IndividualTypeUpdatesLineModeAndGroupsSelectedAssetsByModel()
     {
         var assetAId = Guid.NewGuid();

@@ -7,6 +7,11 @@ public sealed partial class RentalBillingTemplateEditorItem : ObservableObject
 {
     private bool _suppressCalculatedAmountSync;
 
+    public RentalBillingTemplateEditorItem()
+    {
+        IncludedAssetIds.CollectionChanged += (_, _) => OnPropertyChanged(nameof(IncludedAssetCountDisplay));
+    }
+
     [ObservableProperty] private Guid _itemId = Guid.NewGuid();
     [ObservableProperty] private Guid? _catalogItemId;
     [ObservableProperty] private string _displayItemName = string.Empty;
@@ -25,6 +30,8 @@ public sealed partial class RentalBillingTemplateEditorItem : ObservableObject
     [ObservableProperty] private string _representativeAssetSummary = "대표자산 미지정";
 
     public ObservableCollection<Guid> IncludedAssetIds { get; } = new();
+
+    public string IncludedAssetCountDisplay => $"{IncludedAssetIds.Count:N0}대";
 
     public decimal EffectiveAmount => CalculateLineAmount(Quantity, UnitPrice);
 

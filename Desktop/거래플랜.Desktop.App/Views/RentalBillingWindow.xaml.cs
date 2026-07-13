@@ -23,6 +23,9 @@ public partial class RentalBillingWindow : Window
     private bool _allowClose;
     private bool _closeInProgress;
     private bool _customerEditorOpenInProgress;
+    private bool _isBillingDetailExpanded;
+    private GridLength _billingListColumnWidth = new(2.2, GridUnitType.Star);
+    private GridLength _billingDetailColumnWidth = new(1.6, GridUnitType.Star);
     private readonly HashSet<CustomerEditWindow> _trackedCustomerEditorWindows = new();
 
     public RentalBillingWindow(
@@ -70,6 +73,33 @@ public partial class RentalBillingWindow : Window
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
         DialogWindowCloseHelper.Close(this);
+    }
+
+    private void ToggleBillingDetailWidthButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_isBillingDetailExpanded)
+        {
+            _billingListColumnWidth = BillingListColumn.Width;
+            _billingDetailColumnWidth = BillingDetailColumn.Width;
+            BillingListColumn.MinWidth = 0;
+            BillingDetailColumn.MinWidth = 0;
+            BillingListColumn.Width = new GridLength(0);
+            BillingWorkspaceSplitterColumn.Width = new GridLength(0);
+            BillingWorkspaceGridSplitter.Visibility = Visibility.Collapsed;
+            BillingDetailColumn.Width = new GridLength(1, GridUnitType.Star);
+            ToggleBillingDetailWidthButton.Content = "목록 같이 보기";
+            _isBillingDetailExpanded = true;
+            return;
+        }
+
+        BillingListColumn.MinWidth = 420;
+        BillingDetailColumn.MinWidth = 620;
+        BillingListColumn.Width = _billingListColumnWidth;
+        BillingWorkspaceSplitterColumn.Width = new GridLength(10);
+        BillingWorkspaceGridSplitter.Visibility = Visibility.Visible;
+        BillingDetailColumn.Width = _billingDetailColumnWidth;
+        ToggleBillingDetailWidthButton.Content = "상세 크게 보기";
+        _isBillingDetailExpanded = false;
     }
 
     private void Window_KeyDown(object sender, KeyEventArgs e)
