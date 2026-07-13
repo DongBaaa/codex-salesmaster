@@ -35,6 +35,7 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
     public string CurrentCustomerName => string.IsNullOrWhiteSpace(_currentCustomerName) ? "(거래처 미지정)" : _currentCustomerName;
     public string CurrentOfficeName => OfficeCodeCatalog.GetOfficeDisplayName(_currentOfficeCode);
     public int SelectedCount => _assetPool.Count(asset => asset.IsSelected);
+    public string ConfirmButtonLabel => $"선택 {SelectedCount:N0}대 반영";
     public bool CanConfirm => SelectedCount > 0;
 
     public RentalAssetLinkDialogViewModel(
@@ -264,6 +265,7 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
                 ? $"선택 장비 {SelectedCount:N0}대를 현재 거래처에 연결할 예정입니다. {BuildScopeStatusSuffix()}"
                 : $"표시 장비 {Assets.Count:N0}대 / 전체 {_assetPool.Count:N0}대 ({BuildScopeStatusSuffix()})";
         OnPropertyChanged(nameof(SelectedCount));
+        OnPropertyChanged(nameof(ConfirmButtonLabel));
         OnPropertyChanged(nameof(CanConfirm));
     }
 
@@ -297,6 +299,7 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
                 asset.InstallLocation = _defaultInstallLocation;
 
             OnPropertyChanged(nameof(SelectedCount));
+            OnPropertyChanged(nameof(ConfirmButtonLabel));
             OnPropertyChanged(nameof(CanConfirm));
             StatusMessage = SelectedCount > 0
                 ? $"선택 장비 {SelectedCount:N0}대를 현재 거래처에 연결할 예정입니다. {BuildScopeStatusSuffix()}"

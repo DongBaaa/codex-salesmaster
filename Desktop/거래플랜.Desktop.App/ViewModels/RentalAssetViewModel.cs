@@ -124,6 +124,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         ? CanCreateAsset
         : SelectedRow.HasFullDetail && CanEditCurrentSelection;
     public bool CanDeleteSelected => SelectedRow is not null && CanEditCurrentSelection;
+    public int CheckedAssetCount => Rows.Count(row => row.IsSelected);
+    public string DeleteCheckedButtonLabel => $"체크 {CheckedAssetCount:N0}건 일괄삭제";
     public bool CanDeleteChecked => Rows.Any(row => row.IsSelected && CanEditAssetRow(row));
     public bool CanReplaceSelected => SelectedRow is not null &&
                                       SelectedRow.HasFullDetail &&
@@ -1803,6 +1805,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         OnPropertyChanged(nameof(CanCreateAsset));
         OnPropertyChanged(nameof(CanSave));
         OnPropertyChanged(nameof(CanDeleteSelected));
+        OnPropertyChanged(nameof(CheckedAssetCount));
+        OnPropertyChanged(nameof(DeleteCheckedButtonLabel));
         OnPropertyChanged(nameof(CanDeleteChecked));
         OnPropertyChanged(nameof(CanReplaceSelected));
         SaveCommand.NotifyCanExecuteChanged();

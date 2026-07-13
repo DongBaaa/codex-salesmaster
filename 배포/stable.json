@@ -1,28 +1,28 @@
 {
-    "channel":  "stable",
-    "generatedAtUtc":  "2026-07-13T12:50:12.8847594Z",
-    "desktop":  {
-                    "platform":  "desktop",
-                    "version":  "1.1.682",
-                    "mandatory":  false,
-                    "minimumSupportedVersion":  "",
-                    "packageUrl":  "/updates/download/desktop/tradeplan-pc-installer-v1.1.682.zip",
-                    "fileName":  "tradeplan-pc-installer-v1.1.682.zip",
-                    "sha256":  "FA278420C5DD63FBDAD237448896897C52BFBF3A89CFC829BD598E2895FEBF69",
-                    "fileSize":  232255989,
-                    "notes":  "렌탈 청구관리 표시품목 요약표와 선택 상세 편집 영역을 분리하고 상세 크게 보기 기능을 추가했습니다.",
-                    "releasedAtUtc":  "2026-07-13T12:50:16.9345009Z"
-                },
-    "android":  {
-                    "platform":  "android",
-                    "version":  "0.2.81",
-                    "mandatory":  false,
-                    "minimumSupportedVersion":  "",
-                    "packageUrl":  "/updates/download/android/tradeplan-android-v0.2.81.apk",
-                    "fileName":  "tradeplan-android-v0.2.81.apk",
-                    "sha256":  "FFB75EE0AC7F1C5B7FD75AD8C29B31E0F635ED7E6799CC6C44FE9E43C601D642",
-                    "fileSize":  41424314,
-                    "notes":  "모바일 상세탭/첨부 보기/내부 업데이트 확인 기능 반영",
-                    "releasedAtUtc":  "2026-07-13T12:50:17.0718912Z"
-                }
+  "channel": "stable",
+  "generatedAtUtc": "2026-07-13T16:54:35.4128554Z",
+  "desktop": {
+    "platform": "desktop",
+    "version": "1.1.683",
+    "mandatory": false,
+    "minimumSupportedVersion": "",
+    "packageUrl": "/updates/download/desktop/tradeplan-pc-installer-v1.1.683.zip",
+    "fileName": "tradeplan-pc-installer-v1.1.683.zip",
+    "sha256": "6E1CC182BB75B0C07FA4F53BF491F9462B542DDCE2813C7A71F335A8E9DC420A",
+    "fileSize": 232256244,
+    "notes": "렌탈 자산/설치현황 버튼 정리, 렌탈 자산 연결 선택 수·고정 하단 작업 개선, 확정 렌탈 자산 연결 및 동일 DB 중복 시리얼 보정",
+    "releasedAtUtc": "2026-07-13T16:54:37.9617445Z"
+  },
+  "android": {
+    "platform": "android",
+    "version": "0.2.81",
+    "mandatory": false,
+    "minimumSupportedVersion": "",
+    "packageUrl": "/updates/download/android/tradeplan-android-v0.2.81.apk",
+    "fileName": "tradeplan-android-v0.2.81.apk",
+    "sha256": "FFB75EE0AC7F1C5B7FD75AD8C29B31E0F635ED7E6799CC6C44FE9E43C601D642",
+    "fileSize": 41424314,
+    "notes": "Android 변경 없음",
+    "releasedAtUtc": "2026-07-13T16:54:38.0444684Z"
+  }
 }

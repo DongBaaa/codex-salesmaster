@@ -91,6 +91,43 @@
             <Setter Property="MinWidth" Value="108"/>
             <Setter Property="Cursor" Value="Hand"/>
         </Style>
+        <Style x:Key="HeaderSecondaryActionButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="#435A72"/>
+            <Setter Property="BorderBrush" Value="#5D7593"/>
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Background" Value="#2B3D54"/>
+                    <Setter Property="BorderBrush" Value="#40556F"/>
+                    <Setter Property="Foreground" Value="#7F93AA"/>
+                    <Setter Property="Opacity" Value="0.78"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="HeaderDestructiveOutlineButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="#26364C"/>
+            <Setter Property="BorderBrush" Value="#C62828"/>
+            <Setter Property="Foreground" Value="#FFCDD2"/>
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Background" Value="#2B3D54"/>
+                    <Setter Property="BorderBrush" Value="#40556F"/>
+                    <Setter Property="Foreground" Value="#7F93AA"/>
+                    <Setter Property="Opacity" Value="0.78"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="HeaderDestructiveButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="#C62828"/>
+            <Setter Property="BorderBrush" Value="#C62828"/>
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Background" Value="#2B3D54"/>
+                    <Setter Property="BorderBrush" Value="#40556F"/>
+                    <Setter Property="Foreground" Value="#7F93AA"/>
+                    <Setter Property="Opacity" Value="0.78"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
         <Style TargetType="DataGrid">
             <Setter Property="Background" Value="#1E2D40"/>
             <Setter Property="Foreground" Value="#EAF2FF"/>
@@ -152,24 +189,39 @@
         </Grid.RowDefinitions>
 
         <Border Grid.Row="0" Background="#1A2B4A" Padding="12" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
-            <DockPanel>
-                <StackPanel DockPanel.Dock="Left">
-                    <TextBlock Text="렌탈 자산 / 설치현황" FontSize="22" FontWeight="Bold" Foreground="#4FC3F7"/>
-                    <TextBlock Text="장비 상태와 청구 연결 상태를 함께 관리해 청구 누락과 소속 오류를 줄입니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
-                </StackPanel>
-                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                    <Button Content="새로고침" Margin="0,0,6,0" Command="{Binding ReloadCommand}"/>
-                    <Button Content="신규 자산" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,6,0" Command="{Binding NewAssetCommand}" IsEnabled="{Binding CanCreateAsset}"/>
-                    <Button Content="자산 저장" Background="#1B5E20" BorderBrush="#1B5E20" Margin="0,0,6,0" Command="{Binding SaveCommand}" IsEnabled="{Binding CanSave}"/>
-                    <Button Content="렌탈 장비 교체" Background="#00897B" BorderBrush="#00897B" Margin="0,0,6,0" Command="{Binding ReplaceRentalEquipmentCommand}" IsEnabled="{Binding CanReplaceSelected}"/>
-                    <Button Content="현재 자산 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,6,0" Command="{Binding DeleteCommand}" IsEnabled="{Binding CanDeleteSelected}"/>
-                    <Button Content="체크 자산 일괄삭제" Background="#8E24AA" BorderBrush="#8E24AA" Margin="0,0,6,0" Command="{Binding DeleteCheckedCommand}" IsEnabled="{Binding CanDeleteChecked}"/>
-                    <Button Content="회수장비내역서" Background="#5D4037" BorderBrush="#5D4037" Margin="0,0,6,0" Command="{Binding OpenReturnReportCommand}"/>
-                    <Button Content="렌탈장비내역서" Background="#00897B" BorderBrush="#00897B" Margin="0,0,6,0" Command="{Binding OpenEquipmentDetailCommand}"/>
-                    <Button Content="계약서 작성" Background="#6A1B9A" BorderBrush="#6A1B9A" Margin="0,0,6,0" Command="{Binding OpenContractWriterCommand}"/>
-                    <Button Content="닫기 (F12)" Click="CloseButton_Click"/>
-                </StackPanel>
-            </DockPanel>
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <DockPanel Grid.Row="0" LastChildFill="True">
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="새로고침" Style="{StaticResource HeaderSecondaryActionButtonStyle}" Margin="0,0,8,0" Command="{Binding ReloadCommand}"/>
+                        <Button Content="+ 신규 자산" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,8,0" Command="{Binding NewAssetCommand}" IsEnabled="{Binding CanCreateAsset}"/>
+                        <Button Content="자산 저장" Background="#1B5E20" BorderBrush="#1B5E20" Margin="0,0,8,0" Command="{Binding SaveCommand}" IsEnabled="{Binding CanSave}"/>
+                        <Button Content="닫기 (F12)" Style="{StaticResource HeaderSecondaryActionButtonStyle}" Click="CloseButton_Click"/>
+                    </StackPanel>
+                    <StackPanel>
+                        <TextBlock Text="렌탈 자산 / 설치현황" FontSize="22" FontWeight="Bold" Foreground="#4FC3F7"/>
+                        <TextBlock Text="장비 상태와 청구 연결 상태를 함께 관리해 청구 누락과 소속 오류를 줄입니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
+                    </StackPanel>
+                </DockPanel>
+
+                <Border Grid.Row="1" Margin="0,10,0,0" Padding="10,8" Background="#162943" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="4">
+                    <WrapPanel VerticalAlignment="Center">
+                        <TextBlock Text="선택 자산 작업" Foreground="#9FB3C8" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                        <Button Content="렌탈 장비 교체" Style="{StaticResource HeaderSecondaryActionButtonStyle}" Margin="0,0,8,0" Command="{Binding ReplaceRentalEquipmentCommand}" IsEnabled="{Binding CanReplaceSelected}"/>
+                        <Button Content="선택 자산 삭제" Style="{StaticResource HeaderDestructiveOutlineButtonStyle}" Margin="0,0,8,0" Command="{Binding DeleteCommand}" IsEnabled="{Binding CanDeleteSelected}" ToolTip="목록에서 현재 선택한 자산 1건을 삭제합니다."/>
+                        <Button Content="{Binding DeleteCheckedButtonLabel}" Style="{StaticResource HeaderDestructiveButtonStyle}" Margin="0,0,18,0" Command="{Binding DeleteCheckedCommand}" IsEnabled="{Binding CanDeleteChecked}" ToolTip="선택 칸에 체크한 자산을 일괄 삭제합니다."/>
+                        <Border Width="1" Height="28" Background="#4A6382" Margin="0,0,18,0"/>
+                        <TextBlock Text="문서·출력" Foreground="#9FB3C8" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                        <Button Content="회수장비 내역서" Style="{StaticResource HeaderSecondaryActionButtonStyle}" Margin="0,0,8,0" Command="{Binding OpenReturnReportCommand}"/>
+                        <Button Content="렌탈장비 내역서" Style="{StaticResource HeaderSecondaryActionButtonStyle}" Margin="0,0,8,0" Command="{Binding OpenEquipmentDetailCommand}"/>
+                        <Button Content="계약서 작성" Style="{StaticResource HeaderSecondaryActionButtonStyle}" Command="{Binding OpenContractWriterCommand}"/>
+                    </WrapPanel>
+                </Border>
+            </Grid>
         </Border>
 
         <Border Grid.Row="1" Margin="0,10,0,0" Background="#1A2B4A" Padding="12" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">

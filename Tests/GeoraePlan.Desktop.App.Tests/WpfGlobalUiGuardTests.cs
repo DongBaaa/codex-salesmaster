@@ -655,8 +655,13 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("Text=\"품목분류\"", windowXaml, StringComparison.Ordinal);
         Assert.Contains("Text=\"담당지점\"", windowXaml, StringComparison.Ordinal);
         Assert.Contains("Text=\"상태\"", windowXaml, StringComparison.Ordinal);
-        Assert.Contains("Content=\"현재 자산 삭제\"", windowXaml, StringComparison.Ordinal);
-        Assert.Contains("Content=\"체크 자산 일괄삭제\"", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("Content=\"+ 신규 자산\"", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"선택 자산 작업\"", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("Content=\"선택 자산 삭제\"", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("DeleteCheckedButtonLabel", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"문서·출력\"", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("Content=\"회수장비 내역서\"", windowXaml, StringComparison.Ordinal);
+        Assert.Contains("Content=\"렌탈장비 내역서\"", windowXaml, StringComparison.Ordinal);
         Assert.Contains("Visibility=\"{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}\"", windowXaml, StringComparison.Ordinal);
         Assert.Contains("조건에 맞는 렌탈 자산이 없습니다.", windowXaml, StringComparison.Ordinal);
         Assert.Contains("ClearItemCategoryFiltersCommand", windowXaml, StringComparison.Ordinal);

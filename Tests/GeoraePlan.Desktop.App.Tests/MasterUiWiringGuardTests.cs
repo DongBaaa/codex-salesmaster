@@ -575,7 +575,13 @@ public sealed class MasterUiWiringGuardTests
             xaml,
             "SelectionMode=\"Single\" SelectionUnit=\"FullRow\"",
             "RentalAssetSingleSelectionRowStyle",
-            "RentalAssetSingleSelectionCellStyle");
+            "RentalAssetSingleSelectionCellStyle",
+            "HeaderSecondaryActionButtonStyle",
+            "HeaderDestructiveOutlineButtonStyle",
+            "Text=\"선택 자산 작업\"",
+            "Content=\"선택 자산 삭제\"",
+            "DeleteCheckedButtonLabel",
+            "Text=\"문서·출력\"");
 
         AssertContainsAll(
             viewModel,
@@ -583,6 +589,10 @@ public sealed class MasterUiWiringGuardTests
             "partial void OnEditMonthlyFeeChanged(decimal value) => NotifyEditFieldChanged(nameof(EditMonthlyFee));",
             "partial void OnEditInstallLocationChanged(string value) => NotifyEditFieldChanged(nameof(EditInstallLocation));",
             "private void NotifyEditFieldChanged(string fieldName)",
+            "public int CheckedAssetCount => Rows.Count(row => row.IsSelected);",
+            "public string DeleteCheckedButtonLabel => $\"체크 {CheckedAssetCount:N0}건 일괄삭제\";",
+            "OnPropertyChanged(nameof(CheckedAssetCount));",
+            "OnPropertyChanged(nameof(DeleteCheckedButtonLabel));",
             "RefreshSavedAssetRowInPlaceAsync(savedAssetId, preserveSelectionRowId)",
             "await _rental.GetAssetRowAsync(assetId, _session)");
     }
@@ -618,7 +628,9 @@ public sealed class MasterUiWiringGuardTests
             linkDialogViewModel,
             "PurchaseVendor = source.PurchaseVendor",
             "BillingExclusionReason = source.BillingExclusionReason",
-            "RentalEndDate = ToDateTime(source.RentalEndDate)");
+            "RentalEndDate = ToDateTime(source.RentalEndDate)",
+            "public string ConfirmButtonLabel => $\"선택 {SelectedCount:N0}대 반영\";",
+            "OnPropertyChanged(nameof(ConfirmButtonLabel));");
 
         AssertContainsAll(
             service,
