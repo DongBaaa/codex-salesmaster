@@ -6284,6 +6284,7 @@ public sealed class SyncController : ControllerBase
                     dto.FileSize = 0;
                     dto.FileHash = string.Empty;
                     dto.FileContent = [];
+                    valid.Add(dto);
                     continue;
                 }
 

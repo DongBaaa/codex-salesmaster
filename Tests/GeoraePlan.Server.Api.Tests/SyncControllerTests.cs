@@ -8761,6 +8761,66 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_AcceptsExplicitCustomerContractDraftWithoutPdf()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "CONTRACT-EXPLICIT-DRAFT-CUSTOMER",
+            NameMatchKey = "CONTRACTEXPLICITDRAFTCUSTOMER",
+            TradeType = "Sales"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var contractId = Guid.NewGuid();
+        var request = new SyncPushRequest
+        {
+            CustomerContracts =
+            [
+                new CustomerContractDto
+                {
+                    Id = contractId,
+                    CustomerId = customer.Id,
+                    ContractType = "거래계약서",
+                    FileName = "PDF 미등록",
+                    MimeType = string.Empty,
+                    FileSize = 0,
+                    FileHash = string.Empty,
+                    Description = "PDF를 나중에 첨부할 초안",
+                    IsPrimary = true,
+                    UploadedAtUtc = new DateTime(2026, 7, 13, 1, 34, 46, DateTimeKind.Utc),
+                    CreatedAtUtc = new DateTime(2026, 7, 13, 1, 34, 46, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 7, 13, 1, 34, 46, DateTimeKind.Utc),
+                    FileContent = []
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Contains(result.AcceptedRevisions, accepted =>
+            accepted.EntityName == nameof(CustomerContract) &&
+            accepted.EntityId == contractId);
+
+        var stored = await _dbContext.CustomerContracts.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == contractId);
+        Assert.Equal("PDF 미등록", stored.FileName);
+        Assert.Equal("application/pdf", stored.MimeType);
+        Assert.Equal(0, stored.FileSize);
+        Assert.Equal(string.Empty, stored.FileHash);
+        Assert.Empty(stored.FileContent);
+        Assert.Equal("PDF를 나중에 첨부할 초안", stored.Description);
+        Assert.True(stored.IsPrimary);
+    }
+
+    [Fact]
     public async Task Push_AllowsTransactionReferencingInvoiceCreatedInSameBatch()
     {
         var customer = new Customer

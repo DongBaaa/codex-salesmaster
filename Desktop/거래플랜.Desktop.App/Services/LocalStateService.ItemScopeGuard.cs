@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Shared.Contracts;
 
@@ -23,6 +24,32 @@ public sealed partial class LocalStateService
         CancellationToken ct = default)
     {
         EnsureCanUpsertItem(item, session, preferredOfficeCode);
+
+        if (_db.Database.CurrentTransaction is not null)
+            return await SaveItemAndPriceGradesAsync(item, session, preferredOfficeCode, itemPriceGrades, ct);
+
+        await using var transaction = await _db.Database.BeginTransactionAsync(ct);
+        try
+        {
+            var saved = await SaveItemAndPriceGradesAsync(item, session, preferredOfficeCode, itemPriceGrades, ct);
+            await transaction.CommitAsync(ct);
+            return saved;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            _db.ChangeTracker.Clear();
+            throw;
+        }
+    }
+
+    private async Task<LocalItem> SaveItemAndPriceGradesAsync(
+        LocalItem item,
+        SessionState session,
+        string? preferredOfficeCode,
+        IEnumerable<LocalItemPriceGrade>? itemPriceGrades,
+        CancellationToken ct)
+    {
         var saved = await UpsertItemAsync(
             item,
             preferredOfficeCode,

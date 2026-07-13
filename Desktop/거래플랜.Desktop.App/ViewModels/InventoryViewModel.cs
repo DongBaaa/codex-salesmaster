@@ -1220,6 +1220,9 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             EditTotalStock = 0m,
             EditLastPurchaseDate = null,
             EditLastSaleDate = null,
+            PriceGrades = sourceSnapshot.PriceGrades
+                .Select(row => row with { Id = Guid.NewGuid() })
+                .ToList(),
             EditOfficeCode = targetOfficeCode,
             EditTenantCode = targetTenantCode,
             PreferredOfficeCode = SelectedOfficeCode,

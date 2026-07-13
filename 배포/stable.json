@@ -1,17 +1,17 @@
 {
     "channel":  "stable",
-    "generatedAtUtc":  "2026-07-12T14:22:49.5863116Z",
+    "generatedAtUtc":  "2026-07-13T02:20:46.4481913Z",
     "desktop":  {
                     "platform":  "desktop",
-                    "version":  "1.1.677",
+                    "version":  "1.1.678",
                     "mandatory":  false,
                     "minimumSupportedVersion":  "",
-                    "packageUrl":  "/updates/download/desktop/tradeplan-pc-installer-v1.1.677.zip",
-                    "fileName":  "tradeplan-pc-installer-v1.1.677.zip",
-                    "sha256":  "8B2F9084E67B7F8A8A95418DBB5286CAE5CF748DDCB777C6B4EC3A35DAD8ED57",
-                    "fileSize":  232232419,
-                    "notes":  "렌탈 청구주기 실제 건수 요약, 거래처별 인라인 펼침, 안전한 주기 일괄 통일",
-                    "releasedAtUtc":  "2026-07-12T14:22:52.4464392Z"
+                    "packageUrl":  "/updates/download/desktop/tradeplan-pc-installer-v1.1.678.zip",
+                    "fileName":  "tradeplan-pc-installer-v1.1.678.zip",
+                    "sha256":  "D8D8E5485BCBDB3EFE2D7ECD8E0E9C063E5C308438CBF2EF4CEEB5F26BA5BAB7",
+                    "fileSize":  232228106,
+                    "notes":  "동기화 상태 반복 방지, 계약서 초안 동기화, 품목 계속 입력 등급단가 저장 안정화",
+                    "releasedAtUtc":  "2026-07-13T02:20:50.3858720Z"
                 },
     "android":  {
                     "platform":  "android",
@@ -23,6 +23,6 @@
                     "sha256":  "FFB75EE0AC7F1C5B7FD75AD8C29B31E0F635ED7E6799CC6C44FE9E43C601D642",
                     "fileSize":  41424314,
                     "notes":  "모바일 상세탭/첨부 보기/내부 업데이트 확인 기능 반영",
-                    "releasedAtUtc":  "2026-07-12T14:22:52.5289535Z"
+                    "releasedAtUtc":  "2026-07-13T02:20:50.4845340Z"
                 }
 }

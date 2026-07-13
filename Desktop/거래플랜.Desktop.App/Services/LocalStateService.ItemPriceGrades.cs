@@ -91,6 +91,22 @@ public sealed partial class LocalStateService
             .Where(option => optionIds.Contains(option.Id))
             .ToDictionaryAsync(option => option.Id, option => (option.Name ?? string.Empty).Trim(), ct);
 
+        var incomingRowIds = normalizedRows
+            .Select(row => row.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToArray();
+        var occupiedRowIds = incomingRowIds.Length == 0
+            ? new HashSet<Guid>()
+            : (await _db.ItemPriceGrades
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(row => incomingRowIds.Contains(row.Id))
+                .Select(row => row.Id)
+                .ToListAsync(ct))
+                .ToHashSet();
+        var assignedNewRowIds = new HashSet<Guid>();
+
         var existingRows = await _db.ItemPriceGrades
             .IgnoreQueryFilters()
             .Where(row => row.ItemId == itemId)
@@ -109,9 +125,19 @@ public sealed partial class LocalStateService
 
             if (!existingByOption.TryGetValue(incoming.PriceGradeOptionId, out var existing))
             {
+                var rowId = incoming.Id;
+                if (rowId == Guid.Empty || occupiedRowIds.Contains(rowId) || !assignedNewRowIds.Add(rowId))
+                {
+                    do
+                    {
+                        rowId = Guid.NewGuid();
+                    }
+                    while (occupiedRowIds.Contains(rowId) || !assignedNewRowIds.Add(rowId));
+                }
+
                 _db.ItemPriceGrades.Add(new LocalItemPriceGrade
                 {
-                    Id = incoming.Id == Guid.Empty ? Guid.NewGuid() : incoming.Id,
+                    Id = rowId,
                     ItemId = itemId,
                     PriceGradeOptionId = incoming.PriceGradeOptionId,
                     PriceGradeName = priceGradeName,

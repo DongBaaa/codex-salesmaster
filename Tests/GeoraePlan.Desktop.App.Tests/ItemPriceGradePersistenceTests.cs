@@ -13,6 +13,151 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class ItemPriceGradePersistenceTests
 {
     [Fact]
+    public async Task UpsertItemWithPriceGrades_RollsBackItemWhenGradeValidationFails()
+    {
+        PrepareAppRoot("georaeplan-item-price-grade-atomic-save");
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+            var session = CreateAdminSession();
+            var local = CreateLocalStateService(db, session);
+            var itemId = Guid.NewGuid();
+            var optionId = Guid.NewGuid();
+            db.PriceGradeOptions.Add(new LocalPriceGradeOption
+            {
+                Id = optionId,
+                Name = "매출단가",
+                PriceSource = SelectionOptionDefaults.PriceSourceSales,
+                IsActive = true
+            });
+            await db.SaveChangesAsync();
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => local.UpsertItemAsync(
+                new LocalItem
+                {
+                    Id = itemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Shared,
+                    NameOriginal = "원자적 저장 확인 품목",
+                    SpecificationOriginal = "A",
+                    TrackingType = ItemTrackingTypes.Stock,
+                    ItemKind = ItemKinds.Product
+                },
+                session,
+                OfficeCodeCatalog.Usenet,
+                [
+                    new LocalItemPriceGrade
+                    {
+                        Id = Guid.NewGuid(),
+                        PriceGradeOptionId = optionId,
+                        PriceGradeName = "매출단가",
+                        UnitPrice = -1m,
+                        IsActive = true
+                    }
+                ]));
+
+            db.ChangeTracker.Clear();
+            Assert.False(await db.Items.IgnoreQueryFilters().AnyAsync(item => item.Id == itemId));
+            Assert.False(await db.ItemPriceGrades.IgnoreQueryFilters().AnyAsync(row => row.ItemId == itemId));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SaveItemPriceGradesForItem_RekeysRowIdsCopiedFromAnotherItem()
+    {
+        PrepareAppRoot("georaeplan-item-price-grade-copy");
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+            var session = CreateAdminSession();
+            var local = CreateLocalStateService(db, session);
+
+            var optionId = Guid.NewGuid();
+            var sourceItemId = Guid.NewGuid();
+            var targetItemId = Guid.NewGuid();
+            var copiedRowId = Guid.NewGuid();
+            db.PriceGradeOptions.Add(new LocalPriceGradeOption
+            {
+                Id = optionId,
+                Name = "매출단가",
+                PriceSource = SelectionOptionDefaults.PriceSourceSales,
+                IsActive = true
+            });
+            db.Items.AddRange(
+                new LocalItem
+                {
+                    Id = sourceItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Shared,
+                    NameOriginal = "원본 품목",
+                    NameMatchKey = "원본품목",
+                    SpecificationOriginal = "A",
+                    SpecificationMatchKey = "A",
+                    IsDirty = false
+                },
+                new LocalItem
+                {
+                    Id = targetItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Shared,
+                    NameOriginal = "복사 품목",
+                    NameMatchKey = "복사품목",
+                    SpecificationOriginal = "B",
+                    SpecificationMatchKey = "B",
+                    IsDirty = false
+                });
+            db.ItemPriceGrades.Add(new LocalItemPriceGrade
+            {
+                Id = copiedRowId,
+                ItemId = sourceItemId,
+                PriceGradeOptionId = optionId,
+                PriceGradeName = "매출단가",
+                UnitPrice = 10_000m,
+                IsActive = true
+            });
+            await db.SaveChangesAsync();
+
+            await local.SaveItemPriceGradesForItemAsync(
+                targetItemId,
+                [
+                    new LocalItemPriceGrade
+                    {
+                        Id = copiedRowId,
+                        ItemId = targetItemId,
+                        PriceGradeOptionId = optionId,
+                        PriceGradeName = "매출단가",
+                        UnitPrice = 12_000m,
+                        IsActive = true
+                    }
+                ]);
+
+            var rows = await db.ItemPriceGrades.AsNoTracking()
+                .OrderBy(row => row.ItemId)
+                .ToListAsync();
+            Assert.Equal(2, rows.Count);
+            Assert.Equal(2, rows.Select(row => row.Id).Distinct().Count());
+            Assert.Equal(copiedRowId, rows.Single(row => row.ItemId == sourceItemId).Id);
+            var copied = rows.Single(row => row.ItemId == targetItemId);
+            Assert.NotEqual(copiedRowId, copied.Id);
+            Assert.Equal(12_000m, copied.UnitPrice);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SaveItemPriceGradesForItem_PersistsCustomOptionsAndRenamesWithOption()
     {
         PrepareAppRoot("georaeplan-item-price-grade-persist");

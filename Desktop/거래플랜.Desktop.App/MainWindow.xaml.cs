@@ -271,6 +271,11 @@ public partial class MainWindow : Window
         if (_isClosingOrClosed || string.IsNullOrWhiteSpace(status))
             return;
 
+        // 자동/실시간 동기화는 짧은 주기로 실행될 수 있으므로 진행 문구로 상태바를
+        // 계속 덮어쓰지 않는다. 완료·대기·오류 결과는 그대로 표시한다.
+        if (string.Equals(status, "동기화 중...", StringComparison.Ordinal))
+            return;
+
         _vm.ApplyExternalSyncStatus(status);
     }
 
@@ -348,6 +353,11 @@ public partial class MainWindow : Window
                 }
 
                 var baselineRevision = _lastPassiveServerRevisionHint;
+                if (baselineRevision <= 0)
+                {
+                    baselineRevision = await ResolveLocalLastSyncRevisionAsync();
+                    _lastPassiveServerRevisionHint = baselineRevision;
+                }
                 var status = await _api.WaitForSyncChangeAsync(
                     baselineRevision,
                     TimeSpan.FromSeconds(25),
@@ -1079,7 +1089,12 @@ public partial class MainWindow : Window
             return null;
 
         if (await _local.HasPendingSyncChangesAsync(_session))
-            return 0L;
+        {
+            // 실시간 감시가 이미 관측한 revision을 0으로 버리면 후속 처리에서
+            // 기준 revision을 갱신하지 못해 같은 변경을 2초마다 다시 감지한다.
+            // 관측값이 없는 화면 전환/강제 확인만 기존처럼 0으로 즉시 동기화한다.
+            return observedServerRevision.GetValueOrDefault();
+        }
 
         if (!requireServerRevisionChange && !observedServerRevision.HasValue)
             return 0L;
