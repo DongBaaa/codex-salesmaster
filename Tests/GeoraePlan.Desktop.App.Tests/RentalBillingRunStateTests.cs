@@ -881,9 +881,9 @@ public sealed class RentalBillingRunStateTests
     }
 
     [Fact]
-    public async Task StartBilling_QuarterlyStartMonthSixDuringJuly_CreatesJuneToAugustInvoice()
+    public async Task StartBilling_QuarterlyStartMonthSevenDuringJuly_CreatesJulyToSeptemberInvoice()
     {
-        PrepareAppRoot("georaeplan-rental-quarterly-start-month-six-invoice");
+        PrepareAppRoot("georaeplan-rental-quarterly-start-month-seven-invoice");
 
         try
         {
@@ -898,11 +898,27 @@ public sealed class RentalBillingRunStateTests
             db.Customers.Add(CreateCustomer(customerId, customerName));
             var profile = CreateBillingProfile(profileId, assetId, customerName, customerId);
             profile.BillingCycleMonths = 3;
-            profile.BillingAnchorMonth = 6;
+            profile.BillingAnchorMonth = 7;
             profile.BillingDay = 25;
             profile.BillingAnchorDate = new DateOnly(2026, 1, 5);
             profile.ContractStartDate = new DateOnly(2026, 1, 5);
             profile.LastBilledDate = null;
+            profile.BillingRunsJson = JsonSerializer.Serialize(new List<RentalBillingRunModel>
+            {
+                new()
+                {
+                    RunId = Guid.NewGuid(),
+                    RunKey = "20260401-20260630",
+                    ScheduledDate = new DateOnly(2026, 6, 25),
+                    PeriodStartDate = new DateOnly(2026, 4, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    CycleMonths = 1,
+                    PeriodLabel = "2026-04 ~ 2026-06",
+                    Status = PaymentFlowConstants.BillingStatusInProgress,
+                    BilledAmount = 396_000m,
+                    SettlementStatus = PaymentFlowConstants.SettlementStatusPending
+                }
+            });
             db.RentalBillingProfiles.Add(profile);
             db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
             await db.SaveChangesAsync();
@@ -926,18 +942,20 @@ public sealed class RentalBillingRunStateTests
                 .ToList();
             Assert.Equal(
                 [
-                    "사무기기 렌탈대금[6월]",
                     "사무기기 렌탈대금[7월]",
-                    "사무기기 렌탈대금[8월]"
+                    "사무기기 렌탈대금[8월]",
+                    "사무기기 렌탈대금[9월]"
                 ],
                 orderedLineNames);
 
             var persistedProfile = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(current => current.Id == profileId);
-            var currentRun = Assert.Single(DeserializeRuns(persistedProfile.BillingRunsJson));
-            Assert.Equal(new DateOnly(2026, 8, 25), currentRun.ScheduledDate);
-            Assert.Equal(new DateOnly(2026, 6, 1), currentRun.PeriodStartDate);
-            Assert.Equal(new DateOnly(2026, 8, 31), currentRun.PeriodEndDate);
-            Assert.Equal("2026-06 ~ 2026-08", currentRun.PeriodLabel);
+            var persistedRuns = DeserializeRuns(persistedProfile.BillingRunsJson);
+            Assert.Contains(persistedRuns, run => run.RunKey == "20260401-20260630");
+            var currentRun = Assert.Single(persistedRuns, run => run.RunKey == "20260701-20260930");
+            Assert.Equal(new DateOnly(2026, 9, 25), currentRun.ScheduledDate);
+            Assert.Equal(new DateOnly(2026, 7, 1), currentRun.PeriodStartDate);
+            Assert.Equal(new DateOnly(2026, 9, 30), currentRun.PeriodEndDate);
+            Assert.Equal("2026-07 ~ 2026-09", currentRun.PeriodLabel);
         }
         finally
         {
@@ -946,9 +964,9 @@ public sealed class RentalBillingRunStateTests
     }
 
     [Fact]
-    public async Task StartBilling_FourMonthStartMonthThreeOnNextCycleStart_CreatesPreviousCycleInvoice()
+    public async Task StartBilling_FourMonthStartMonthThreeOnNextCycleStart_CreatesConfiguredCurrentCycleInvoice()
     {
-        PrepareAppRoot("georaeplan-rental-four-month-previous-cycle-invoice");
+        PrepareAppRoot("georaeplan-rental-four-month-configured-cycle-invoice");
 
         try
         {
@@ -988,10 +1006,10 @@ public sealed class RentalBillingRunStateTests
 
             var persistedProfile = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(current => current.Id == profileId);
             var currentRun = Assert.Single(DeserializeRuns(persistedProfile.BillingRunsJson));
-            Assert.Equal(new DateOnly(2026, 6, 25), currentRun.ScheduledDate);
-            Assert.Equal(new DateOnly(2026, 3, 1), currentRun.PeriodStartDate);
-            Assert.Equal(new DateOnly(2026, 6, 30), currentRun.PeriodEndDate);
-            Assert.Equal("2026-03 ~ 2026-06", currentRun.PeriodLabel);
+            Assert.Equal(new DateOnly(2026, 10, 25), currentRun.ScheduledDate);
+            Assert.Equal(new DateOnly(2026, 7, 1), currentRun.PeriodStartDate);
+            Assert.Equal(new DateOnly(2026, 10, 31), currentRun.PeriodEndDate);
+            Assert.Equal("2026-07 ~ 2026-10", currentRun.PeriodLabel);
         }
         finally
         {

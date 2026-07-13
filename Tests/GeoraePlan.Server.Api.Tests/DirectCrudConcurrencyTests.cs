@@ -3558,7 +3558,7 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
-    public async Task RentalSettlementRecalculation_RestoresMissingBillingRunJsonFromLinkedInvoice()
+    public async Task RentalSettlementRecalculation_RestoresConfiguredQuarterlyPeriodFromLinkedInvoice()
     {
         var currentUser = CreateAdminUser();
         await using var dbContext = CreateDbContext(currentUser);
@@ -3592,7 +3592,10 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             SettlementStatus = "확인대기",
             CompletionStatus = "미완료",
             MonthlyAmount = 100_000m,
-            BillingCycleMonths = 1,
+            BillingDay = 25,
+            BillingDayMode = RentalBillingScheduleRules.BillingDayModeFixedDay,
+            BillingCycleMonths = 3,
+            BillingAnchorMonth = 7,
             SettledAmount = 0m,
             OutstandingAmount = 0m,
             BillingRunsJson = "[]"
@@ -3609,10 +3612,10 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             VersionNumber = 1,
             IsLatestVersion = true,
             VoucherType = VoucherType.Sales,
-            InvoiceDate = new DateOnly(2026, 8, 25),
-            TotalAmount = 120_000m,
-            SupplyAmount = 109_091m,
-            VatAmount = 10_909m,
+            InvoiceDate = new DateOnly(2026, 7, 13),
+            TotalAmount = 396_000m,
+            SupplyAmount = 396_000m,
+            VatAmount = 0m,
             LinkedRentalBillingProfileId = profileId,
             LinkedRentalBillingRunId = runId
         });
@@ -3642,16 +3645,17 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         var recalculatedProfile = await dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking()
             .SingleAsync(profile => profile.Id == profileId);
         Assert.Equal(40_000m, recalculatedProfile.SettledAmount);
-        Assert.Equal(80_000m, recalculatedProfile.OutstandingAmount);
+        Assert.Equal(356_000m, recalculatedProfile.OutstandingAmount);
         Assert.Equal("미완료", recalculatedProfile.CompletionStatus);
 
         var restoredRun = Assert.Single(JsonSerializer.Deserialize<List<ServerRentalBillingRunSnapshot>>(recalculatedProfile.BillingRunsJson) ?? [], current => current.RunId == runId);
-        Assert.Equal("20260801-20260831", restoredRun.RunKey);
-        Assert.Equal(new DateOnly(2026, 8, 25), restoredRun.ScheduledDate);
-        Assert.Equal(new DateOnly(2026, 8, 1), restoredRun.PeriodStartDate);
-        Assert.Equal(new DateOnly(2026, 8, 31), restoredRun.PeriodEndDate);
-        Assert.Equal("2026-08", restoredRun.PeriodLabel);
-        Assert.Equal(120_000m, restoredRun.BilledAmount);
+        Assert.Equal("20260701-20260930", restoredRun.RunKey);
+        Assert.Equal(new DateOnly(2026, 9, 25), restoredRun.ScheduledDate);
+        Assert.Equal(new DateOnly(2026, 7, 1), restoredRun.PeriodStartDate);
+        Assert.Equal(new DateOnly(2026, 9, 30), restoredRun.PeriodEndDate);
+        Assert.Equal(3, restoredRun.CycleMonths);
+        Assert.Equal("2026-07 ~ 2026-09", restoredRun.PeriodLabel);
+        Assert.Equal(396_000m, restoredRun.BilledAmount);
         Assert.Equal(40_000m, restoredRun.SettledAmount);
         Assert.Equal(new DateOnly(2026, 8, 26), restoredRun.SettledDate);
     }
@@ -6594,6 +6598,7 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         public DateOnly ScheduledDate { get; set; }
         public DateOnly PeriodStartDate { get; set; }
         public DateOnly PeriodEndDate { get; set; }
+        public int CycleMonths { get; set; }
         public string PeriodLabel { get; set; } = string.Empty;
         public string Status { get; set; } = string.Empty;
         public decimal BilledAmount { get; set; }

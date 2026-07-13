@@ -123,24 +123,6 @@ public static class RentalBillingScheduleRules
         var periodStartMonth = new DateOnly(referenceDate.Year, referenceDate.Month, 1).AddMonths(-lag);
         var candidate = BuildBillingDateForPeriodEnd(periodStartMonth, cycleMonths, billingDay, billingDayMode);
 
-        // 직전 미청구 기간 보정은 새 주기의 시작월에 진입한 경우에만 적용한다.
-        // 현재 주기가 이미 진행 중이면 사용자가 지정한 청구기간 시작월을 유지해야 한다.
-        if (cycleMonths > 1 &&
-            lag == 0 &&
-            candidate > referenceDate &&
-            firstBillingDate.HasValue)
-        {
-            var previousPeriodStartMonth = periodStartMonth.AddMonths(-cycleMonths);
-            var previousCandidate = BuildBillingDateForPeriodEnd(previousPeriodStartMonth, cycleMonths, billingDay, billingDayMode);
-            if (previousCandidate <= referenceDate &&
-                previousCandidate >= firstBillingDate.Value &&
-                (!lastBilledDate.HasValue || !IsAlreadyBilledPeriod(previousPeriodStartMonth, previousCandidate, lastBilledDate.Value)))
-            {
-                periodStartMonth = previousPeriodStartMonth;
-                candidate = previousCandidate;
-            }
-        }
-
         if (firstBillingDate.HasValue)
         {
             while (candidate < firstBillingDate.Value)
@@ -153,6 +135,45 @@ public static class RentalBillingScheduleRules
         if (lastBilledDate.HasValue)
         {
             while (IsAlreadyBilledPeriod(periodStartMonth, candidate, lastBilledDate.Value))
+            {
+                periodStartMonth = periodStartMonth.AddMonths(cycleMonths);
+                candidate = BuildBillingDateForPeriodEnd(periodStartMonth, cycleMonths, billingDay, billingDayMode);
+            }
+        }
+
+        return candidate;
+    }
+
+    public static DateOnly ResolveConfiguredBillingDate(
+        int billingDay,
+        string? billingDayMode,
+        int cycleMonths,
+        int anchorMonth,
+        DateOnly referenceDate)
+        => ResolveConfiguredBillingDate(
+            billingDay,
+            billingDayMode,
+            cycleMonths,
+            anchorMonth,
+            referenceDate,
+            firstBillingDate: null);
+
+    public static DateOnly ResolveConfiguredBillingDate(
+        int billingDay,
+        string? billingDayMode,
+        int cycleMonths,
+        int anchorMonth,
+        DateOnly referenceDate,
+        DateOnly? firstBillingDate)
+    {
+        cycleMonths = NormalizeCycleMonths(cycleMonths);
+        anchorMonth = Math.Clamp(anchorMonth, 1, 12);
+        var lag = cycleMonths == 1 ? 0 : GetBillingLagMonths(referenceDate.Month, anchorMonth, cycleMonths);
+        var periodStartMonth = new DateOnly(referenceDate.Year, referenceDate.Month, 1).AddMonths(-lag);
+        var candidate = BuildBillingDateForPeriodEnd(periodStartMonth, cycleMonths, billingDay, billingDayMode);
+        if (firstBillingDate.HasValue)
+        {
+            while (candidate < firstBillingDate.Value)
             {
                 periodStartMonth = periodStartMonth.AddMonths(cycleMonths);
                 candidate = BuildBillingDateForPeriodEnd(periodStartMonth, cycleMonths, billingDay, billingDayMode);

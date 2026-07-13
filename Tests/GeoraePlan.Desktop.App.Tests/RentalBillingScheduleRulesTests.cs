@@ -87,7 +87,7 @@ public sealed class RentalBillingScheduleRulesTests
     }
 
     [Fact]
-    public void ResolveApplicableBillingDate_WhenReferenceIsNextCycleStartButPreviousCycleUnbilled_UsesPreviousCycleEnd()
+    public void ResolveApplicableBillingDate_WhenReferenceIsNextCycleStart_KeepsConfiguredCycle()
     {
         var scheduledDate = RentalBillingScheduleRules.ResolveApplicableBillingDate(
             billingDay: 25,
@@ -102,9 +102,9 @@ public sealed class RentalBillingScheduleRulesTests
             billingAdvanceMode: "후불",
             scheduledDate);
 
-        Assert.Equal(new DateOnly(2026, 6, 25), scheduledDate);
-        Assert.Equal(new DateOnly(2026, 3, 1), period.StartDate);
-        Assert.Equal(new DateOnly(2026, 6, 30), period.EndDate);
+        Assert.Equal(new DateOnly(2026, 10, 25), scheduledDate);
+        Assert.Equal(new DateOnly(2026, 7, 1), period.StartDate);
+        Assert.Equal(new DateOnly(2026, 10, 31), period.EndDate);
     }
 
     [Fact]
@@ -147,5 +147,24 @@ public sealed class RentalBillingScheduleRulesTests
         Assert.Equal(new DateOnly(2026, 8, 25), scheduledDate);
         Assert.Equal(new DateOnly(2026, 6, 1), period.StartDate);
         Assert.Equal(new DateOnly(2026, 8, 31), period.EndDate);
+    }
+
+    [Fact]
+    public void ResolveConfiguredBillingDate_QuarterlyStartMonthSeven_ResolvesJulyToSeptember()
+    {
+        var scheduledDate = RentalBillingScheduleRules.ResolveConfiguredBillingDate(
+            billingDay: 25,
+            billingDayMode: RentalBillingScheduleRules.BillingDayModeFixedDay,
+            cycleMonths: 3,
+            anchorMonth: 7,
+            referenceDate: new DateOnly(2026, 7, 13));
+        var period = RentalBillingScheduleRules.ResolveBillingPeriod(
+            cycleMonths: 3,
+            billingAdvanceMode: "후불",
+            scheduledDate);
+
+        Assert.Equal(new DateOnly(2026, 9, 25), scheduledDate);
+        Assert.Equal(new DateOnly(2026, 7, 1), period.StartDate);
+        Assert.Equal(new DateOnly(2026, 9, 30), period.EndDate);
     }
 }

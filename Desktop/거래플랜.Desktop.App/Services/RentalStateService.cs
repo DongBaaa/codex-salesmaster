@@ -2882,11 +2882,26 @@ WHERE ""AssignedUsername"" <> '';", ct);
         SupplementalBillingRunAccumulator accumulator)
     {
         var cycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths);
-        var scheduledDate = accumulator.InvoiceDate
+        var referenceDate = accumulator.InvoiceDate
                             ?? accumulator.LastSettlementDate
                             ?? profile.LastSettledDate
                             ?? profile.LastBilledDate
                             ?? DateOnly.FromDateTime(DateTime.Today);
+        var anchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
+            cycleMonths,
+            profile.BillingAnchorMonth,
+            profile.BillingAnchorDate,
+            profile.BillingStartDate,
+            profile.ContractStartDate,
+            profile.ContractDate,
+            profile.LastBilledDate,
+            referenceDate);
+        var scheduledDate = RentalBillingScheduleRules.ResolveConfiguredBillingDate(
+            profile.BillingDay,
+            profile.BillingDayMode,
+            cycleMonths,
+            anchorMonth,
+            referenceDate);
         var period = ResolveBillingPeriod(profile, scheduledDate, cycleMonths);
         var expectedCycleAmount = Math.Max(0m, profile.MonthlyAmount) * cycleMonths;
         var settledAmount = Math.Max(0m, accumulator.SettlementAmount);
@@ -11060,15 +11075,40 @@ WHERE ""AssignedUsername"" <> '';", ct);
     {
         ArgumentNullException.ThrowIfNull(profile);
         NormalizeBillingSchedule(profile, referenceDate);
-        var scheduledDate = GetNextBillingDate(profile, referenceDate);
-        if (!scheduledDate.HasValue)
-            return null;
+        var normalizedReference = NormalizeReferenceDate(referenceDate);
+        var firstBillingDate = ResolveFirstBillingDate(profile, normalizedReference);
+        var configuredScheduledDate = RentalBillingScheduleRules.ResolveConfiguredBillingDate(
+            profile.BillingDay,
+            profile.BillingDayMode,
+            profile.BillingCycleMonths,
+            profile.BillingAnchorMonth,
+            normalizedReference,
+            firstBillingDate);
 
         var templateItems = templateItemsOverride?.ToList() ?? GetBillingTemplateItems(profile);
         var cycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths);
-        var period = ResolveBillingPeriod(profile, scheduledDate.Value, cycleMonths);
-        var runKey = $"{period.StartDate:yyyyMMdd}-{period.EndDate:yyyyMMdd}";
         var runs = runsOverride ?? GetBillingRuns(profile);
+        var configuredPeriod = ResolveBillingPeriod(profile, configuredScheduledDate, cycleMonths);
+        var configuredRunKey = $"{configuredPeriod.StartDate:yyyyMMdd}-{configuredPeriod.EndDate:yyyyMMdd}";
+        var configuredExisting = runs.FirstOrDefault(run => string.Equals(run.RunKey, configuredRunKey, StringComparison.OrdinalIgnoreCase));
+        var applicableScheduledDate = RentalBillingScheduleRules.ResolveApplicableBillingDate(
+            profile.BillingDay,
+            profile.BillingDayMode,
+            profile.BillingCycleMonths,
+            profile.BillingAnchorMonth,
+            normalizedReference,
+            profile.LastBilledDate,
+            firstBillingDate);
+        var applicablePeriod = ResolveBillingPeriod(profile, applicableScheduledDate, cycleMonths);
+        var applicableRunKey = $"{applicablePeriod.StartDate:yyyyMMdd}-{applicablePeriod.EndDate:yyyyMMdd}";
+        var applicableExisting = runs.FirstOrDefault(run => string.Equals(run.RunKey, applicableRunKey, StringComparison.OrdinalIgnoreCase));
+        var useApplicableSchedule = !string.Equals(configuredRunKey, applicableRunKey, StringComparison.OrdinalIgnoreCase) &&
+                                    (applicableExisting is not null ||
+                                     configuredExisting is not null && IsCompletedBillingRun(configuredExisting) ||
+                                     configuredExisting is null && runs.Count == 0);
+        var scheduledDate = useApplicableSchedule ? applicableScheduledDate : configuredScheduledDate;
+        var period = useApplicableSchedule ? applicablePeriod : configuredPeriod;
+        var runKey = useApplicableSchedule ? applicableRunKey : configuredRunKey;
         var existing = runs.FirstOrDefault(run => string.Equals(run.RunKey, runKey, StringComparison.OrdinalIgnoreCase));
         var billedAmount = templateItems.Sum(item => ResolveTemplateMonthlyAmount(item)) * cycleMonths;
         var deterministicRunId = SyncIdentityGenerator.CreateRentalBillingRunId(profile.Id, runKey);
@@ -11078,7 +11118,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             {
                 RunId = deterministicRunId == Guid.Empty ? Guid.NewGuid() : deterministicRunId,
                 RunKey = runKey,
-                ScheduledDate = scheduledDate.Value,
+                ScheduledDate = scheduledDate,
                 PeriodStartDate = period.StartDate,
                 PeriodEndDate = period.EndDate,
                 CycleMonths = cycleMonths,
@@ -11098,7 +11138,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 : existing.RunId;
             if (canRefreshExistingRun)
             {
-                existing.ScheduledDate = scheduledDate.Value;
+                existing.ScheduledDate = scheduledDate;
                 existing.PeriodStartDate = period.StartDate;
                 existing.PeriodEndDate = period.EndDate;
                 existing.CycleMonths = cycleMonths;
@@ -11138,6 +11178,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
                string.Equals(status, PaymentFlowConstants.BillingStatusOnHold, StringComparison.OrdinalIgnoreCase) ||
                string.Equals(status, "예정", StringComparison.OrdinalIgnoreCase);
     }
+
+    private static bool IsCompletedBillingRun(RentalBillingRunModel run)
+        => string.Equals(
+            (run.Status ?? string.Empty).Trim(),
+            PaymentFlowConstants.BillingStatusCompleted,
+            StringComparison.OrdinalIgnoreCase);
 
     private static List<RentalBillingTemplateItemModel> CloneTemplateItemsForRun(
         IEnumerable<RentalBillingTemplateItemModel> items,

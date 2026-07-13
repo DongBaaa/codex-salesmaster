@@ -6246,7 +6246,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return null;
 		}
 
-		var scheduledDate = evidence.InvoiceDate
+		var referenceDate = evidence.InvoiceDate
 		                    ?? evidence.LastSettlementDate
 		                    ?? profile.LastSettledDate
 		                    ?? profile.LastBilledDate
@@ -6255,17 +6255,35 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		                    ?? profile.ContractStartDate
 		                    ?? profile.ContractDate
 		                    ?? DateOnly.FromDateTime(DateTime.Today);
-		var periodStartDate = new DateOnly(scheduledDate.Year, scheduledDate.Month, 1);
-		var periodEndDate = periodStartDate.AddMonths(1).AddDays(-1);
+		var cycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths);
+		var anchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
+			cycleMonths,
+			profile.BillingAnchorMonth,
+			profile.BillingAnchorDate,
+			profile.BillingStartDate,
+			profile.ContractStartDate,
+			profile.ContractDate,
+			profile.LastBilledDate,
+			referenceDate);
+		var scheduledDate = RentalBillingScheduleRules.ResolveConfiguredBillingDate(
+			profile.BillingDay,
+			profile.BillingDayMode,
+			cycleMonths,
+			anchorMonth,
+			referenceDate);
+		var period = RentalBillingScheduleRules.ResolveBillingPeriod(cycleMonths, profile.BillingAdvanceMode, scheduledDate);
+		var periodLabel = period.StartDate.Year == period.EndDate.Year && period.StartDate.Month == period.EndDate.Month
+			? $"{period.StartDate:yyyy-MM}"
+			: $"{period.StartDate:yyyy-MM} ~ {period.EndDate:yyyy-MM}";
 		return new RentalBillingRunModel
 		{
 			RunId = billingRunId,
-			RunKey = $"{periodStartDate:yyyyMMdd}-{periodEndDate:yyyyMMdd}",
+			RunKey = $"{period.StartDate:yyyyMMdd}-{period.EndDate:yyyyMMdd}",
 			ScheduledDate = scheduledDate,
-			PeriodStartDate = periodStartDate,
-			PeriodEndDate = periodEndDate,
-			CycleMonths = 1,
-			PeriodLabel = $"{scheduledDate:yyyy-MM}",
+			PeriodStartDate = period.StartDate,
+			PeriodEndDate = period.EndDate,
+			CycleMonths = cycleMonths,
+			PeriodLabel = periodLabel,
 			Status = settledAmount > 0m && Math.Max(0m, billedAmount - settledAmount) <= 0m
 				? PaymentFlowConstants.BillingStatusCompleted
 				: PaymentFlowConstants.BillingStatusInProgress,

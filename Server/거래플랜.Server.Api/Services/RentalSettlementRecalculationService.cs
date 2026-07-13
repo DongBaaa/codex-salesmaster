@@ -477,7 +477,7 @@ public sealed class RentalSettlementRecalculationService
         if (evidence is null)
             return null;
 
-        var scheduledDate = evidence.InvoiceDate
+        var referenceDate = evidence.InvoiceDate
                             ?? evidence.LastSettlementDate
                             ?? profile.LastSettledDate
                             ?? profile.LastBilledDate
@@ -487,6 +487,21 @@ public sealed class RentalSettlementRecalculationService
                             ?? profile.ContractDate
                             ?? DateOnly.FromDateTime(DateTime.Today);
         var cycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths);
+        var anchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
+            cycleMonths,
+            profile.BillingAnchorMonth,
+            profile.BillingAnchorDate,
+            profile.BillingStartDate,
+            profile.ContractStartDate,
+            profile.ContractDate,
+            profile.LastBilledDate,
+            referenceDate);
+        var scheduledDate = RentalBillingScheduleRules.ResolveConfiguredBillingDate(
+            profile.BillingDay,
+            profile.BillingDayMode,
+            cycleMonths,
+            anchorMonth,
+            referenceDate);
         var period = RentalBillingScheduleRules.ResolveBillingPeriod(cycleMonths, profile.BillingAdvanceMode, scheduledDate);
 
         return new RentalBillingRunSnapshot
@@ -496,6 +511,7 @@ public sealed class RentalSettlementRecalculationService
             ScheduledDate = scheduledDate,
             PeriodStartDate = period.StartDate,
             PeriodEndDate = period.EndDate,
+            CycleMonths = cycleMonths,
             PeriodLabel = BuildBillingPeriodLabel(period.StartDate, period.EndDate),
             Status = settledAmount > 0m && Math.Max(0m, billedAmount - settledAmount) <= 0m
                 ? RentalBillingEvidenceStatusResolver.Completed
@@ -627,6 +643,7 @@ public sealed class RentalSettlementRecalculationService
         public DateOnly ScheduledDate { get; set; }
         public DateOnly PeriodStartDate { get; set; }
         public DateOnly PeriodEndDate { get; set; }
+        public int CycleMonths { get; set; } = 1;
         public string PeriodLabel { get; set; } = string.Empty;
         public string Status { get; set; } = string.Empty;
         public decimal BilledAmount { get; set; }

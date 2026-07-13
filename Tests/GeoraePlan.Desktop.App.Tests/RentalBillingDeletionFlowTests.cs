@@ -875,8 +875,9 @@ public sealed class RentalBillingDeletionFlowTests
             db.Customers.Add(CreateCustomer(customerId, customerName));
             var profile = CreateBillingProfile(profileId, assetId, customerName);
             profile.CustomerId = customerId;
-            profile.BillingCycleMonths = 12;
-            profile.MonthlyAmount = 330_000m;
+            profile.BillingCycleMonths = 3;
+            profile.BillingAnchorMonth = 7;
+            profile.MonthlyAmount = 132_000m;
             profile.BillingRunsJson = "[]";
             db.RentalBillingProfiles.Add(profile);
             db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "청구대상"));
@@ -887,13 +888,13 @@ public sealed class RentalBillingDeletionFlowTests
                 TenantCode = TenantScopeCatalog.UsenetGroup,
                 OfficeCode = OfficeCodeCatalog.Usenet,
                 ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
-                TransactionDate = new DateOnly(2026, 1, 8),
+                TransactionDate = new DateOnly(2026, 7, 13),
                 TransactionKind = PaymentFlowConstants.TransactionKindRentalReceipt,
                 LinkedRentalBillingProfileId = profileId,
                 LinkedRentalBillingRunId = runId,
-                ReceiptTotal = 3_960_000m,
-                BankReceipt = 3_960_000m,
-                SettlementAmount = 3_960_000m,
+                ReceiptTotal = 396_000m,
+                BankReceipt = 396_000m,
+                SettlementAmount = 396_000m,
                 CreatedAtUtc = DateTime.UtcNow,
                 UpdatedAtUtc = DateTime.UtcNow
             });
@@ -906,18 +907,20 @@ public sealed class RentalBillingDeletionFlowTests
             var histories = await service.GetBillingHistoryRowsAsync(
                 new[] { profileId },
                 session,
-                new DateOnly(2026, 6, 17));
+                new DateOnly(2026, 7, 13));
 
             var history = Assert.Single(histories, current => current.BillingRunId == runId);
-            Assert.Equal(3_960_000m, history.SettledAmount);
-            Assert.Equal(3_960_000m, history.BilledAmount);
+            Assert.Equal(396_000m, history.SettledAmount);
+            Assert.Equal(396_000m, history.BilledAmount);
             Assert.Equal(0m, history.OutstandingAmount);
+            Assert.Equal(new DateOnly(2026, 9, 25), history.ScheduledDate);
+            Assert.Equal("2026-07 ~ 2026-09", history.PeriodLabel);
             Assert.True(history.CanDelete);
 
             var rows = await service.GetBillingRowsAsync(
                 new RentalBillingFilter
                 {
-                    ReferenceDate = new DateOnly(2026, 6, 17),
+                    ReferenceDate = new DateOnly(2026, 7, 13),
                     ExpandCustomerSummaryRows = true
                 },
                 session);
@@ -931,6 +934,68 @@ public sealed class RentalBillingDeletionFlowTests
                 .AsNoTracking()
                 .SingleAsync(current => current.LinkedRentalBillingRunId == runId);
             Assert.True(deletedTransaction.IsDeleted);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RecalculateRentalSettlements_RestoresConfiguredQuarterlyPeriodFromLinkedInvoice()
+    {
+        PrepareAppRoot("georaeplan-rental-local-quarterly-run-reconstruction");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var runId = Guid.NewGuid();
+            var invoiceId = Guid.NewGuid();
+            var customerName = "인천보건환경연구원[삼산동농산물검사소]";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            profile.BillingDay = 25;
+            profile.BillingDayMode = RentalBillingScheduleRules.BillingDayModeFixedDay;
+            profile.BillingCycleMonths = 3;
+            profile.BillingAnchorMonth = 7;
+            profile.BillingRunsJson = "[]";
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "청구대상"));
+            var invoice = CreateRentalRunInvoice(
+                invoiceId,
+                customerId,
+                customerName,
+                profileId,
+                runId,
+                "RENTAL-QUARTERLY-RECONSTRUCT-001",
+                396_000m);
+            invoice.InvoiceDate = new DateOnly(2026, 7, 13);
+            db.Invoices.Add(invoice);
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+
+            await local.RecalculateRentalSettlementsAsync([(profileId, runId)]);
+
+            var updatedProfile = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == profileId);
+            var restoredRun = Assert.Single(DeserializeRuns(updatedProfile), current => current.RunId == runId);
+            Assert.Equal("20260701-20260930", restoredRun.RunKey);
+            Assert.Equal(new DateOnly(2026, 9, 25), restoredRun.ScheduledDate);
+            Assert.Equal(new DateOnly(2026, 7, 1), restoredRun.PeriodStartDate);
+            Assert.Equal(new DateOnly(2026, 9, 30), restoredRun.PeriodEndDate);
+            Assert.Equal(3, restoredRun.CycleMonths);
+            Assert.Equal("2026-07 ~ 2026-09", restoredRun.PeriodLabel);
         }
         finally
         {
