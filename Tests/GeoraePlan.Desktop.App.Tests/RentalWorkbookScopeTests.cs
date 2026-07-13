@@ -131,6 +131,41 @@ public sealed class RentalWorkbookScopeTests
         }
     }
 
+    [Fact]
+    public async Task ImportBillingWorkbook_NewProfileUsesWorkbookAnchorMonth()
+    {
+        PrepareAppRoot("georaeplan-rental-billing-workbook-anchor-month");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var workbookPath = Path.Combine(Path.GetTempPath(), $"usenet-rental-billing-anchor-{Guid.NewGuid():N}.xlsx");
+            WriteRentalBillingWorkbook(
+                workbookPath,
+                officeCode: "USENET",
+                anchorDate: new DateOnly(2026, 7, 1),
+                billingCycleMonths: 3);
+            var session = CreateUsenetRentalImportSession(includeEditAll: false);
+
+            var result = await new RentalStateService(db).ImportBillingWorkbookAsync(workbookPath, session);
+            var profile = await db.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync();
+
+            Assert.Equal(1, result.CreatedCount);
+            Assert.Equal(0, result.ErrorCount);
+            Assert.Equal(3, profile.BillingCycleMonths);
+            Assert.Equal(7, profile.BillingAnchorMonth);
+            Assert.Equal(new DateOnly(2026, 7, 25), profile.BillingAnchorDate);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
 
     private static void PrepareAppRoot(string name)
     {
@@ -213,7 +248,11 @@ public sealed class RentalWorkbookScopeTests
         WriteEntry(archive, "xl/worksheets/sheet2.xml", BuildSheetXml(new[] { "상호명", "사업자번호" }, new[] { customerName, "123-45-67890" }));
     }
 
-    private static void WriteRentalBillingWorkbook(string path, string officeCode = "ITWORLD")
+    private static void WriteRentalBillingWorkbook(
+        string path,
+        string officeCode = "ITWORLD",
+        DateOnly? anchorDate = null,
+        int billingCycleMonths = 1)
     {
         if (File.Exists(path))
             File.Delete(path);
@@ -263,7 +302,8 @@ public sealed class RentalWorkbookScopeTests
                     "청구기간[개월수]",
                     "청구방식",
                     "월청구대금",
-                    "청구상태"
+                    "청구상태",
+                    "기준일"
                 },
                 new[]
                 {
@@ -272,10 +312,11 @@ public sealed class RentalWorkbookScopeTests
                     "ITWORLD 청구 고객",
                     "123-45-67890",
                     "렌탈 장비",
-                    "1",
+                    billingCycleMonths.ToString(),
                     "현금",
                     "10000",
-                    "청구중"
+                    "청구중",
+                    anchorDate?.ToString("yyyy-MM-dd") ?? string.Empty
                 }));
     }
 

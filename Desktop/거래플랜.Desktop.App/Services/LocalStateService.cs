@@ -6270,7 +6270,15 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			profile.BillingDayMode,
 			cycleMonths,
 			anchorMonth,
-			referenceDate);
+			referenceDate,
+			firstBillingDate: null,
+			cycleAnchorDate: RentalBillingScheduleRules.ResolveCycleAnchorDate(
+				anchorMonth,
+				referenceDate,
+				profile.BillingAnchorDate,
+				profile.BillingStartDate,
+				profile.ContractStartDate,
+				profile.ContractDate));
 		var period = RentalBillingScheduleRules.ResolveBillingPeriod(cycleMonths, profile.BillingAdvanceMode, scheduledDate);
 		var periodLabel = period.StartDate.Year == period.EndDate.Year && period.StartDate.Month == period.EndDate.Month
 			? $"{period.StartDate:yyyy-MM}"

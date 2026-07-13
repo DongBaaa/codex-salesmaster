@@ -2901,7 +2901,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
             profile.BillingDayMode,
             cycleMonths,
             anchorMonth,
-            referenceDate);
+            referenceDate,
+            firstBillingDate: null,
+            cycleAnchorDate: GetCycleAnchor(profile, referenceDate));
         var period = ResolveBillingPeriod(profile, scheduledDate, cycleMonths);
         var expectedCycleAmount = Math.Max(0m, profile.MonthlyAmount) * cycleMonths;
         var settledAmount = Math.Max(0m, accumulator.SettlementAmount);
@@ -3577,7 +3579,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             profile.BillingAnchorMonth,
             normalizedReference,
             profile.LastBilledDate,
-            ResolveFirstBillingDate(profile, normalizedReference));
+            ResolveFirstBillingDate(profile, normalizedReference),
+            GetCycleAnchor(profile, normalizedReference));
     }
 
     private static List<LocalRentalBillingProfile> FilterBillingProfilesByIds(
@@ -9214,6 +9217,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     if (existing is not null && !CanImportRentalProfileEntityScope(existing, session))
                         throw new InvalidOperationException("권한이 없어 해당 렌탈 청구 프로필을 가져올 수 없습니다.");
 
+                    var isNewProfile = existing is null;
                     var profile = existing ?? new LocalRentalBillingProfile
                     {
                         Id = SyncIdentityGenerator.CreateRentalBillingProfileId(profileKey),
@@ -9240,9 +9244,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     profile.SubmissionDocuments = GetCellString(row, headerMap, "추가제출서류").Trim();
                     profile.Notes = GetCellString(row, headerMap, "비고").Trim();
                     profile.BillingAnchorDate = anchorDate ?? profile.BillingAnchorDate;
+                    var requestedAnchorMonth = isNewProfile && anchorDate.HasValue
+                        ? anchorDate.Value.Month
+                        : profile.BillingAnchorMonth;
                     profile.BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
                         profile.BillingCycleMonths,
-                        profile.BillingAnchorMonth,
+                        requestedAnchorMonth,
                         profile.BillingAnchorDate,
                         profile.BillingStartDate,
                         profile.ContractStartDate,
@@ -10954,6 +10961,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 {
                     DisplayItemName = string.IsNullOrWhiteSpace(profile.ItemName) ? "렌탈 임대료" : profile.ItemName,
                     BillingLineMode = ResolveTemplateBillingLineMode(string.Empty, profileBillingType),
+                    IndividualGroupingMode = RentalBillingTemplateItemModel.IndividualGroupingByModel,
                     RepresentativeAssetId = representativeAssetId == Guid.Empty ? null : representativeAssetId,
                     Quantity = 1m,
                     UnitPrice = Math.Max(0m, profile.MonthlyAmount),
@@ -10990,6 +10998,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 CatalogItemId = NormalizeCatalogItemId(current.CatalogItemId),
                 DisplayItemName = string.IsNullOrWhiteSpace(displayItemName) ? "렌탈 임대료" : displayItemName,
                 BillingLineMode = billingLineMode,
+                IndividualGroupingMode = NormalizeIndividualGroupingMode(current.IndividualGroupingMode),
                 Specification = (current.Specification ?? string.Empty).Trim(),
                 Unit = (current.Unit ?? string.Empty).Trim(),
                 MaterialNumber = (current.MaterialNumber ?? string.Empty).Trim(),
@@ -11030,6 +11039,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             {
                 DisplayItemName = string.IsNullOrWhiteSpace(profile.ItemName) ? "렌탈 임대료" : profile.ItemName,
                 BillingLineMode = ResolveTemplateBillingLineMode(string.Empty, profileBillingType),
+                IndividualGroupingMode = RentalBillingTemplateItemModel.IndividualGroupingByModel,
                 RepresentativeAssetId = representativeAssetId == Guid.Empty ? null : representativeAssetId,
                 Quantity = 1m,
                 UnitPrice = Math.Max(0m, profile.MonthlyAmount),
@@ -11077,13 +11087,15 @@ WHERE ""AssignedUsername"" <> '';", ct);
         NormalizeBillingSchedule(profile, referenceDate);
         var normalizedReference = NormalizeReferenceDate(referenceDate);
         var firstBillingDate = ResolveFirstBillingDate(profile, normalizedReference);
+        var cycleAnchorDate = GetCycleAnchor(profile, normalizedReference);
         var configuredScheduledDate = RentalBillingScheduleRules.ResolveConfiguredBillingDate(
             profile.BillingDay,
             profile.BillingDayMode,
             profile.BillingCycleMonths,
             profile.BillingAnchorMonth,
             normalizedReference,
-            firstBillingDate);
+            firstBillingDate,
+            cycleAnchorDate);
 
         var templateItems = templateItemsOverride?.ToList() ?? GetBillingTemplateItems(profile);
         var cycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths);
@@ -11098,7 +11110,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             profile.BillingAnchorMonth,
             normalizedReference,
             profile.LastBilledDate,
-            firstBillingDate);
+            firstBillingDate,
+            cycleAnchorDate);
         var applicablePeriod = ResolveBillingPeriod(profile, applicableScheduledDate, cycleMonths);
         var applicableRunKey = $"{applicablePeriod.StartDate:yyyyMMdd}-{applicablePeriod.EndDate:yyyyMMdd}";
         var applicableExisting = runs.FirstOrDefault(run => string.Equals(run.RunKey, applicableRunKey, StringComparison.OrdinalIgnoreCase));
@@ -11195,6 +11208,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 CatalogItemId = NormalizeCatalogItemId(item.CatalogItemId),
                 DisplayItemName = item.DisplayItemName,
                 BillingLineMode = item.BillingLineMode,
+                IndividualGroupingMode = NormalizeIndividualGroupingMode(item.IndividualGroupingMode),
                 Specification = item.Specification,
                 Unit = item.Unit,
                 MaterialNumber = item.MaterialNumber,
@@ -11278,17 +11292,26 @@ WHERE ""AssignedUsername"" <> '';", ct);
         };
     }
 
+    private static string NormalizeIndividualGroupingMode(string? value)
+        => string.Equals(
+            (value ?? string.Empty).Trim(),
+            RentalBillingTemplateItemModel.IndividualGroupingCustom,
+            StringComparison.Ordinal)
+            ? RentalBillingTemplateItemModel.IndividualGroupingCustom
+            : RentalBillingTemplateItemModel.IndividualGroupingByModel;
+
     private sealed record RentalBillingInvoiceLineDraft(
         int Sequence,
         bool CanAggregateQuantity,
         DateOnly BillingMonth,
+        Guid TemplateItemId,
         string DisplayItemName,
         LocalInvoiceLine Line,
         IReadOnlyList<LocalRentalAsset> Assets);
 
     private readonly record struct RentalBillingInvoiceLineAggregateKey(
         DateOnly BillingMonth,
-        string ModelNameKey,
+        Guid TemplateItemId,
         string ItemName,
         string Unit,
         string Remark);
@@ -11341,6 +11364,25 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Where(id => id != Guid.Empty)
             .Distinct()
             .ToList();
+
+        var duplicatedAssetReference = templateItems
+            .SelectMany(item => (item.IncludedAssetIds ?? new List<Guid>())
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .Select(id => new { AssetId = id, item.DisplayItemName }))
+            .GroupBy(reference => reference.AssetId)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicatedAssetReference is not null)
+        {
+            var duplicatedItemNames = duplicatedAssetReference
+                .Select(reference => string.IsNullOrWhiteSpace(reference.DisplayItemName)
+                    ? "표시 품목"
+                    : reference.DisplayItemName.Trim())
+                .Distinct(StringComparer.CurrentCultureIgnoreCase);
+            return (false,
+                $"같은 렌탈 자산이 여러 청구서 표시 품목에 중복 연결되어 있습니다: {string.Join(", ", duplicatedItemNames)}. 자산은 한 표시 품목에만 연결한 뒤 다시 시도하세요.",
+                new List<LocalInvoiceLine>());
+        }
 
         var includedAssets = await LoadRentalAssetsByIdsAsync(
             includedAssetIds,
@@ -11472,6 +11514,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                         lineDrafts.Count,
                         false,
                         billingMonth,
+                        templateItem.ItemId,
                         templateItem.DisplayItemName,
                         line,
                         templateAssets));
@@ -11523,6 +11566,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                         lineDrafts.Count,
                         true,
                         billingMonth,
+                        templateItem.ItemId,
                         templateItem.DisplayItemName,
                         line,
                         [asset]));
@@ -11586,7 +11630,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         RentalBillingInvoiceLineDraft draft)
         => new(
             draft.BillingMonth,
-            ResolveRentalBillingInvoiceLineModelKey(draft),
+            draft.TemplateItemId,
             (draft.Line.ItemNameOriginal ?? string.Empty).Trim(),
             (draft.Line.Unit ?? string.Empty).Trim(),
             (draft.Line.Remark ?? string.Empty).Trim());
@@ -11633,23 +11677,6 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return quantity <= 1
             ? firstSpecification
             : $"{firstSpecification} 외 {quantity - 1:N0}대";
-    }
-
-    private static string ResolveRentalBillingInvoiceLineModelKey(RentalBillingInvoiceLineDraft draft)
-    {
-        var modelNames = draft.Assets
-            .Select(asset => RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(asset.ItemName))
-            .Where(name => !string.IsNullOrWhiteSpace(name))
-            .Distinct(StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
-        if (modelNames.Count == 1)
-            return modelNames[0];
-
-        var specification = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(draft.Line.SpecificationOriginal);
-        if (!string.IsNullOrWhiteSpace(specification))
-            return specification;
-
-        return NormalizeRentalBillingDisplayItemKey(draft.DisplayItemName);
     }
 
     private static string ResolveAggregatedRentalBillingInvoiceModelName(
@@ -13316,7 +13343,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
             profile.BillingAnchorMonth,
             normalizedReference,
             profile.LastBilledDate,
-            ResolveFirstBillingDate(profile, normalizedReference));
+            ResolveFirstBillingDate(profile, normalizedReference),
+            GetCycleAnchor(profile, normalizedReference));
     }
 
     public bool IsBillingMonth(LocalRentalBillingProfile profile, DateOnly referenceDate)
@@ -13325,7 +13353,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return RentalBillingScheduleRules.IsBillingMonth(
             profile.BillingCycleMonths,
             profile.BillingAnchorMonth,
-            NormalizeReferenceDate(referenceDate));
+            NormalizeReferenceDate(referenceDate),
+            GetCycleAnchor(profile, referenceDate));
     }
 
     private static DateOnly GetCycleAnchor(LocalRentalBillingProfile profile, DateOnly referenceDate)
@@ -13340,12 +13369,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
             profile.ContractDate,
             profile.LastBilledDate,
             normalizedReference);
-        return profile.BillingAnchorDate
-               ?? profile.BillingStartDate
-               ?? profile.ContractStartDate
-               ?? profile.ContractDate
-               ?? profile.LastBilledDate
-               ?? new DateOnly(normalizedReference.Year, anchorMonth, 1);
+        return RentalBillingScheduleRules.ResolveCycleAnchorDate(
+            anchorMonth,
+            normalizedReference,
+            profile.BillingAnchorDate,
+            profile.BillingStartDate,
+            profile.ContractStartDate,
+            profile.ContractDate);
     }
 
     private static DateOnly BuildBillingDate(int year, int month, int billingDay)

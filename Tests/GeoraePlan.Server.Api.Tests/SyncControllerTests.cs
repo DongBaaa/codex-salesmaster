@@ -5270,6 +5270,142 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_AcceptsInvoiceAndTransaction_WhenRentalBillingProfileIsCreatedInSameBatch()
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+        var createdAtUtc = new DateTime(2026, 7, 13, 1, 0, 0, DateTimeKind.Utc);
+
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "동시 렌탈 청구 고객",
+            NameMatchKey = "동시렌탈청구고객",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet),
+            IsActive = true
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-profile-invoice-transaction-same-batch",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"USENET|CUSTOMER:{customerId:N}|묶음|후불|25|1",
+                    CustomerId = customerId,
+                    CustomerName = "동시 렌탈 청구 고객",
+                    BillingType = "묶음",
+                    BillingAdvanceMode = "후불",
+                    BillingCycleMonths = 1,
+                    BillingDay = 25,
+                    BillingAnchorMonth = 6,
+                    BillingAnchorDate = new DateOnly(2026, 6, 25),
+                    MonthlyAmount = 100_000m,
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = createdAtUtc
+                }
+            ],
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customerId,
+                    CustomerName = "동시 렌탈 청구 고객",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    InvoiceNumber = "SYNC-RENTAL-SAME-BATCH-001",
+                    VersionGroupId = invoiceId,
+                    VersionNumber = 1,
+                    IsLatestVersion = true,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = new DateOnly(2026, 6, 25),
+                    TotalAmount = 100_000m,
+                    SupplyAmount = 90_909m,
+                    VatAmount = 9_091m,
+                    LinkedRentalBillingProfileId = profileId,
+                    LinkedRentalBillingRunId = runId,
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = createdAtUtc,
+                    Lines =
+                    [
+                        new InvoiceLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            InvoiceId = invoiceId,
+                            ItemNameOriginal = "사무기기 렌탈대금",
+                            Unit = "EA",
+                            Quantity = 1m,
+                            UnitPrice = 100_000m,
+                            LineAmount = 100_000m
+                        }
+                    ]
+                }
+            ],
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = transactionId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 6, 26),
+                    TransactionKind = "렌탈수금",
+                    LinkedInvoiceId = invoiceId,
+                    LinkedInvoiceNumber = "SYNC-RENTAL-SAME-BATCH-001",
+                    LinkedRentalBillingProfileId = profileId,
+                    LinkedRentalBillingRunId = runId,
+                    BankReceipt = 40_000m,
+                    ReceiptTotal = 40_000m,
+                    SettlementAmount = 40_000m,
+                    CreatedAtUtc = createdAtUtc.AddMinutes(1),
+                    UpdatedAtUtc = createdAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+
+        var storedInvoice = await _dbContext.Invoices.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(invoice => invoice.Id == invoiceId);
+        var storedTransaction = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == transactionId);
+        Assert.Equal(profileId, storedInvoice.LinkedRentalBillingProfileId);
+        Assert.Equal(runId, storedInvoice.LinkedRentalBillingRunId);
+        Assert.Equal(profileId, storedTransaction.LinkedRentalBillingProfileId);
+        Assert.Equal(runId, storedTransaction.LinkedRentalBillingRunId);
+        Assert.Equal("렌탈수금", storedTransaction.TransactionKind);
+    }
+
+    [Fact]
     public async Task Push_ReusesReadableRentalBillingProfileCustomer_WhenIncomingCustomerIdIsStale()
     {
         _dbContext.Customers.Add(new Customer

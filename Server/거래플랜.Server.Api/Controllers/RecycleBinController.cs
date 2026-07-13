@@ -3015,5 +3015,7 @@ public sealed class RecycleBinController : ControllerBase
     private sealed class RentalBillingTemplateItemModel
     {
         public List<Guid> IncludedAssetIds { get; set; } = new();
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public Dictionary<string, JsonElement>? ExtensionData { get; set; }
     }
 }

@@ -922,6 +922,8 @@ public static partial class DbInitializer
         public decimal Amount { get; set; }
         public string Note { get; set; } = string.Empty;
         public List<Guid> IncludedAssetIds { get; set; } = new();
+        [JsonExtensionData]
+        public Dictionary<string, JsonElement>? ExtensionData { get; set; }
     }
 
     private static int CountFilledStrings(params string?[] values)

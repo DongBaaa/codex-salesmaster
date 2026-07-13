@@ -678,6 +678,8 @@ public static partial class DbInitializer
         public decimal Amount { get; set; }
         public string Note { get; set; } = string.Empty;
         public List<Guid> IncludedAssetIds { get; set; } = new();
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public Dictionary<string, JsonElement>? ExtensionData { get; set; }
     }
 
     private static async Task RepairMfcL8900CategoryAsync(

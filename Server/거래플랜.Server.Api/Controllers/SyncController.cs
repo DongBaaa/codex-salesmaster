@@ -666,6 +666,31 @@ public sealed class SyncController : ControllerBase
                 await RecalculateItemCurrentStocksFromWarehousesAsync(itemWarehouseStockResult.AffectedItemIds, cancellationToken);
                 await _dbContext.SaveChangesAsync(cancellationToken);
             }
+            var scopedRentalCompanies = await PrepareScopedRentalManagementCompaniesAsync(request.RentalManagementCompanies ?? [], result, cancellationToken);
+            await UpsertEntitiesAsync(scopedRentalCompanies, _dbContext.RentalManagementCompanies,
+                (e, d) => e.Apply(d), d => new RentalManagementCompany { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+            if (scopedRentalCompanies.Count > 0)
+                await _dbContext.SaveChangesAsync(cancellationToken);
+            var requestedRentalProfiles = request.RentalBillingProfiles ?? [];
+            var incomingRentalProfileIdMap = BuildIncomingRentalBillingProfileIdMap(requestedRentalProfiles);
+            var scopedRentalProfiles = await PrepareScopedRentalBillingProfilesAsync(requestedRentalProfiles, result, cancellationToken);
+            var rentalProfileRestoreCustomerIds = await BuildRentalBillingProfileRestoreCustomerIdsAsync(scopedRentalProfiles, result, cancellationToken);
+            var validRentalProfiles = await FilterValidRentalBillingProfilesAsync(scopedRentalProfiles, result, cancellationToken);
+            var acceptedRentalProfiles = await UpsertRentalBillingProfilesAsync(
+                validRentalProfiles,
+                incomingRentalProfileIdMap,
+                result,
+                deviceId,
+                cancellationToken);
+            await RestoreLinkedDeletedCustomerContractsForRentalBillingProfilesAsync(acceptedRentalProfiles, rentalProfileRestoreCustomerIds, cancellationToken);
+            if (validRentalProfiles.Count > 0)
+            {
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                if (acceptedRentalProfiles.Count > 0)
+                    requiresRentalAssignmentRefresh = true;
+            }
+
+            var resolvedRentalProfileIds = BuildResolvedRentalBillingProfileIdMap(validRentalProfiles, incomingRentalProfileIdMap);
             var validInvoices = await FilterValidInvoicesAsync(request.Invoices ?? [], result, cancellationToken);
             var invoiceUpsertResult = await UpsertInvoicesAsync(
                 validInvoices,
@@ -705,31 +730,6 @@ public sealed class SyncController : ControllerBase
             var acceptedInventoryTransferCount = await UpsertInventoryTransfersAsync(validInventoryTransfers, result, deviceId, itemWarehouseStockResult.AcceptedStockKeys, cancellationToken);
             if (acceptedInventoryTransferCount > 0)
                 requiresInventoryLedgerRebuild = true;
-            var scopedRentalCompanies = await PrepareScopedRentalManagementCompaniesAsync(request.RentalManagementCompanies ?? [], result, cancellationToken);
-            await UpsertEntitiesAsync(scopedRentalCompanies, _dbContext.RentalManagementCompanies,
-                (e, d) => e.Apply(d), d => new RentalManagementCompany { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
-            if (scopedRentalCompanies.Count > 0)
-                await _dbContext.SaveChangesAsync(cancellationToken);
-            var requestedRentalProfiles = request.RentalBillingProfiles ?? [];
-            var incomingRentalProfileIdMap = BuildIncomingRentalBillingProfileIdMap(requestedRentalProfiles);
-            var scopedRentalProfiles = await PrepareScopedRentalBillingProfilesAsync(requestedRentalProfiles, result, cancellationToken);
-            var rentalProfileRestoreCustomerIds = await BuildRentalBillingProfileRestoreCustomerIdsAsync(scopedRentalProfiles, result, cancellationToken);
-            var validRentalProfiles = await FilterValidRentalBillingProfilesAsync(scopedRentalProfiles, result, cancellationToken);
-            var acceptedRentalProfiles = await UpsertRentalBillingProfilesAsync(
-                validRentalProfiles,
-                incomingRentalProfileIdMap,
-                result,
-                deviceId,
-                cancellationToken);
-            await RestoreLinkedDeletedCustomerContractsForRentalBillingProfilesAsync(acceptedRentalProfiles, rentalProfileRestoreCustomerIds, cancellationToken);
-            if (validRentalProfiles.Count > 0)
-            {
-                await _dbContext.SaveChangesAsync(cancellationToken);
-                if (acceptedRentalProfiles.Count > 0)
-                    requiresRentalAssignmentRefresh = true;
-            }
-
-            var resolvedRentalProfileIds = BuildResolvedRentalBillingProfileIdMap(validRentalProfiles, incomingRentalProfileIdMap);
             var requiresRentalAssetLock =
                 (request.RentalAssets?.Count ?? 0) > 0 ||
                 (request.RentalAssetAssignmentHistories?.Count ?? 0) > 0;

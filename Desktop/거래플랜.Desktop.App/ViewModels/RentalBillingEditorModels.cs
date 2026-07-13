@@ -11,6 +11,7 @@ public sealed partial class RentalBillingTemplateEditorItem : ObservableObject
     [ObservableProperty] private Guid? _catalogItemId;
     [ObservableProperty] private string _displayItemName = string.Empty;
     [ObservableProperty] private string _billingLineMode = string.Empty;
+    [ObservableProperty] private string _individualGroupingMode = "모델자동";
     [ObservableProperty] private string _specification = string.Empty;
     [ObservableProperty] private string _unit = string.Empty;
     [ObservableProperty] private string _materialNumber = string.Empty;

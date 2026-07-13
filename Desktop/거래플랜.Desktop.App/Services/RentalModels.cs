@@ -271,12 +271,16 @@ public sealed class RentalWorkbookRebuildResult
 
 public sealed class RentalBillingTemplateItemModel
 {
+    public const string IndividualGroupingByModel = "모델자동";
+    public const string IndividualGroupingCustom = "사용자묶음";
+
     // Display template row identifier. This is not an item master reference.
     public Guid ItemId { get; set; } = Guid.NewGuid();
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Guid? CatalogItemId { get; set; }
     public string DisplayItemName { get; set; } = string.Empty;
     public string BillingLineMode { get; set; } = string.Empty;
+    public string IndividualGroupingMode { get; set; } = IndividualGroupingByModel;
     public string Specification { get; set; } = string.Empty;
     public string Unit { get; set; } = string.Empty;
     public string MaterialNumber { get; set; } = string.Empty;

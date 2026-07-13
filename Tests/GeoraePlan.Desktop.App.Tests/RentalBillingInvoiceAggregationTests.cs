@@ -121,7 +121,7 @@ public sealed class RentalBillingInvoiceAggregationTests
     }
 
     [Fact]
-    public async Task BuildRentalBillingInvoiceLinesAsync_DoesNotGroupDifferentModelsWithSameDisplayItemAndUnitPrice()
+    public async Task BuildRentalBillingInvoiceLinesAsync_GroupsDifferentModelsAssignedToSameDisplayItem()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-invoice-model-separate-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -157,15 +157,11 @@ public sealed class RentalBillingInvoiceAggregationTests
                 CreateAdminSession());
 
             Assert.True(result.Success, result.Message);
-            Assert.Equal(2, result.Lines.Count);
-            Assert.All(result.Lines, line =>
-            {
-                Assert.Equal(1m, line.Quantity);
-                Assert.Equal(50_000m, line.UnitPrice);
-                Assert.Equal(50_000m, line.LineAmount);
-            });
-            Assert.Contains(result.Lines, line => line.SpecificationOriginal == "IMC2010");
-            Assert.Contains(result.Lines, line => line.SpecificationOriginal == "MFC-L5700DN");
+            var line = Assert.Single(result.Lines);
+            Assert.Equal(2m, line.Quantity);
+            Assert.Equal(50_000m, line.UnitPrice);
+            Assert.Equal(100_000m, line.LineAmount);
+            Assert.Equal("복합기 렌탈료", line.SpecificationOriginal);
         }
         finally
         {
@@ -175,7 +171,7 @@ public sealed class RentalBillingInvoiceAggregationTests
     }
 
     [Fact]
-    public async Task BuildRentalBillingInvoiceLinesAsync_GroupsSameModelAcrossDifferentDisplayItems()
+    public async Task BuildRentalBillingInvoiceLinesAsync_KeepsDifferentDisplayItemGroupsSeparateForSameModel()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-invoice-model-display-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -218,11 +214,16 @@ public sealed class RentalBillingInvoiceAggregationTests
                 CreateAdminSession());
 
             Assert.True(result.Success, result.Message);
-            var line = Assert.Single(result.Lines);
-            Assert.Equal("IMC2010", line.SpecificationOriginal);
-            Assert.Equal(2m, line.Quantity);
-            Assert.Equal(50_000m, line.UnitPrice);
-            Assert.Equal(100_000m, line.LineAmount);
+            Assert.Equal(2, result.Lines.Count);
+            Assert.All(result.Lines, line =>
+            {
+                Assert.Equal("IMC2010", line.SpecificationOriginal);
+                Assert.Equal(1m, line.Quantity);
+                Assert.Equal(50_000m, line.UnitPrice);
+                Assert.Equal(50_000m, line.LineAmount);
+            });
+            Assert.Contains(result.Lines, line => line.MaterialNumber == "DISPLAY-A");
+            Assert.Contains(result.Lines, line => line.MaterialNumber == "DISPLAY-B");
         }
         finally
         {
@@ -290,6 +291,55 @@ public sealed class RentalBillingInvoiceAggregationTests
             Assert.Equal(2m, line.Quantity);
             Assert.Equal(240_000m, line.UnitPrice);
             Assert.Equal(480_000m, line.LineAmount);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task BuildRentalBillingInvoiceLinesAsync_RejectsAssetReferencedByMultipleDisplayItems()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-invoice-duplicate-group-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            db.RentalAssets.Add(CreateBillableAsset(assetId, profileId, "DUP-A", "DUP-SN", "IMC2010", 50_000m));
+            await db.SaveChangesAsync();
+
+            var result = await InvokeBuildRentalBillingInvoiceLinesAsync(
+                new RentalStateService(db),
+                CreateProfile(profileId, "개별"),
+                CreateRun(),
+                [
+                    new RentalBillingTemplateItemModel
+                    {
+                        DisplayItemName = "그룹 A",
+                        BillingLineMode = "개별",
+                        IncludedAssetIds = [assetId]
+                    },
+                    new RentalBillingTemplateItemModel
+                    {
+                        DisplayItemName = "그룹 B",
+                        BillingLineMode = "개별",
+                        IncludedAssetIds = [assetId]
+                    }
+                ],
+                CreateAdminSession());
+
+            Assert.False(result.Success);
+            Assert.Empty(result.Lines);
+            Assert.Contains("중복 연결", result.Message, StringComparison.Ordinal);
         }
         finally
         {

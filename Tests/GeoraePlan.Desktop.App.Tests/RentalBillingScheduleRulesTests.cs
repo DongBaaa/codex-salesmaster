@@ -167,4 +167,69 @@ public sealed class RentalBillingScheduleRulesTests
         Assert.Equal(new DateOnly(2026, 7, 1), period.StartDate);
         Assert.Equal(new DateOnly(2026, 9, 30), period.EndDate);
     }
+
+    [Fact]
+    public void ResolveApplicableBillingDate_TwentyFourMonthCycle_UsesAnchorYear()
+    {
+        var cycleAnchorDate = new DateOnly(2024, 3, 1);
+
+        var currentCycleDate = RentalBillingScheduleRules.ResolveApplicableBillingDate(
+            billingDay: 25,
+            billingDayMode: RentalBillingScheduleRules.BillingDayModeFixedDay,
+            cycleMonths: 24,
+            anchorMonth: 3,
+            referenceDate: new DateOnly(2026, 2, 10),
+            lastBilledDate: null,
+            firstBillingDate: null,
+            cycleAnchorDate: cycleAnchorDate);
+        var nextCycleDate = RentalBillingScheduleRules.ResolveApplicableBillingDate(
+            billingDay: 25,
+            billingDayMode: RentalBillingScheduleRules.BillingDayModeFixedDay,
+            cycleMonths: 24,
+            anchorMonth: 3,
+            referenceDate: new DateOnly(2027, 2, 10),
+            lastBilledDate: null,
+            firstBillingDate: null,
+            cycleAnchorDate: cycleAnchorDate);
+
+        Assert.Equal(new DateOnly(2026, 2, 25), currentCycleDate);
+        Assert.Equal(new DateOnly(2028, 2, 25), nextCycleDate);
+        Assert.True(RentalBillingScheduleRules.IsBillingMonth(24, 3, new DateOnly(2026, 2, 1), cycleAnchorDate));
+        Assert.False(RentalBillingScheduleRules.IsBillingMonth(24, 3, new DateOnly(2027, 2, 1), cycleAnchorDate));
+    }
+
+    [Fact]
+    public void ResolveConfiguredBillingDate_FiveMonthCycle_DoesNotResetAtCalendarYear()
+    {
+        var scheduledDate = RentalBillingScheduleRules.ResolveConfiguredBillingDate(
+            billingDay: 25,
+            billingDayMode: RentalBillingScheduleRules.BillingDayModeFixedDay,
+            cycleMonths: 5,
+            anchorMonth: 7,
+            referenceDate: new DateOnly(2026, 1, 13),
+            firstBillingDate: null,
+            cycleAnchorDate: new DateOnly(2025, 7, 1));
+        var period = RentalBillingScheduleRules.ResolveBillingPeriod(
+            cycleMonths: 5,
+            billingAdvanceMode: "후불",
+            scheduledDate);
+
+        Assert.Equal(new DateOnly(2026, 4, 25), scheduledDate);
+        Assert.Equal(new DateOnly(2025, 12, 1), period.StartDate);
+        Assert.Equal(new DateOnly(2026, 4, 30), period.EndDate);
+    }
+
+    [Fact]
+    public void ResolveCycleAnchorDate_UsesFirstConfiguredMonthOnOrAfterStoredStart()
+    {
+        var anchorDate = RentalBillingScheduleRules.ResolveCycleAnchorDate(
+            anchorMonth: 3,
+            referenceDate: new DateOnly(2026, 7, 13),
+            billingAnchorDate: new DateOnly(2024, 9, 4),
+            billingStartDate: null,
+            contractStartDate: null,
+            contractDate: null);
+
+        Assert.Equal(new DateOnly(2025, 3, 1), anchorDate);
+    }
 }

@@ -501,7 +501,15 @@ public sealed class RentalSettlementRecalculationService
             profile.BillingDayMode,
             cycleMonths,
             anchorMonth,
-            referenceDate);
+            referenceDate,
+            firstBillingDate: null,
+            cycleAnchorDate: RentalBillingScheduleRules.ResolveCycleAnchorDate(
+                anchorMonth,
+                referenceDate,
+                profile.BillingAnchorDate,
+                profile.BillingStartDate,
+                profile.ContractStartDate,
+                profile.ContractDate));
         var period = RentalBillingScheduleRules.ResolveBillingPeriod(cycleMonths, profile.BillingAdvanceMode, scheduledDate);
 
         return new RentalBillingRunSnapshot

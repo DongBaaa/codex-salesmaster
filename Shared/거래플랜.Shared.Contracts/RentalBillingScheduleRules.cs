@@ -69,6 +69,24 @@ public static class RentalBillingScheduleRules
         };
     }
 
+    public static DateOnly ResolveCycleAnchorDate(
+        int anchorMonth,
+        DateOnly referenceDate,
+        DateOnly? billingAnchorDate,
+        DateOnly? billingStartDate,
+        DateOnly? contractStartDate,
+        DateOnly? contractDate)
+    {
+        var storedAnchor = billingAnchorDate
+                           ?? billingStartDate
+                           ?? contractStartDate
+                           ?? contractDate;
+        var anchorYear = storedAnchor?.Year ?? referenceDate.Year;
+        if (storedAnchor.HasValue && Math.Clamp(anchorMonth, 1, 12) < storedAnchor.Value.Month)
+            anchorYear++;
+        return new DateOnly(anchorYear, Math.Clamp(anchorMonth, 1, 12), 1);
+    }
+
     public static DateOnly BuildBillingDate(int year, int month, int billingDay, string? billingDayMode)
     {
         var resolvedMode = NormalizeBillingDayMode(billingDayMode);
@@ -83,13 +101,21 @@ public static class RentalBillingScheduleRules
         int cycleMonths,
         int anchorMonth,
         DateOnly referenceDate)
+        => IsBillingMonth(cycleMonths, anchorMonth, referenceDate, cycleAnchorDate: null);
+
+    public static bool IsBillingMonth(
+        int cycleMonths,
+        int anchorMonth,
+        DateOnly referenceDate,
+        DateOnly? cycleAnchorDate)
     {
         cycleMonths = NormalizeCycleMonths(cycleMonths);
         if (cycleMonths == 1)
             return true;
 
-        var lag = GetBillingLagMonths(referenceDate.Month, anchorMonth, cycleMonths);
-        return lag == cycleMonths - 1;
+        var periodStartMonth = ResolvePeriodStartMonth(cycleMonths, anchorMonth, referenceDate, cycleAnchorDate);
+        var periodEndMonth = periodStartMonth.AddMonths(cycleMonths - 1);
+        return periodEndMonth.Year == referenceDate.Year && periodEndMonth.Month == referenceDate.Month;
     }
 
     public static DateOnly ResolveApplicableBillingDate(
@@ -106,7 +132,8 @@ public static class RentalBillingScheduleRules
             anchorMonth,
             referenceDate,
             lastBilledDate,
-            firstBillingDate: null);
+            firstBillingDate: null,
+            cycleAnchorDate: null);
 
     public static DateOnly ResolveApplicableBillingDate(
         int billingDay,
@@ -116,11 +143,29 @@ public static class RentalBillingScheduleRules
         DateOnly referenceDate,
         DateOnly? lastBilledDate,
         DateOnly? firstBillingDate)
+        => ResolveApplicableBillingDate(
+            billingDay,
+            billingDayMode,
+            cycleMonths,
+            anchorMonth,
+            referenceDate,
+            lastBilledDate,
+            firstBillingDate,
+            cycleAnchorDate: null);
+
+    public static DateOnly ResolveApplicableBillingDate(
+        int billingDay,
+        string? billingDayMode,
+        int cycleMonths,
+        int anchorMonth,
+        DateOnly referenceDate,
+        DateOnly? lastBilledDate,
+        DateOnly? firstBillingDate,
+        DateOnly? cycleAnchorDate)
     {
         cycleMonths = NormalizeCycleMonths(cycleMonths);
         anchorMonth = Math.Clamp(anchorMonth, 1, 12);
-        var lag = cycleMonths == 1 ? 0 : GetBillingLagMonths(referenceDate.Month, anchorMonth, cycleMonths);
-        var periodStartMonth = new DateOnly(referenceDate.Year, referenceDate.Month, 1).AddMonths(-lag);
+        var periodStartMonth = ResolvePeriodStartMonth(cycleMonths, anchorMonth, referenceDate, cycleAnchorDate);
         var candidate = BuildBillingDateForPeriodEnd(periodStartMonth, cycleMonths, billingDay, billingDayMode);
 
         if (firstBillingDate.HasValue)
@@ -156,7 +201,8 @@ public static class RentalBillingScheduleRules
             cycleMonths,
             anchorMonth,
             referenceDate,
-            firstBillingDate: null);
+            firstBillingDate: null,
+            cycleAnchorDate: null);
 
     public static DateOnly ResolveConfiguredBillingDate(
         int billingDay,
@@ -165,11 +211,27 @@ public static class RentalBillingScheduleRules
         int anchorMonth,
         DateOnly referenceDate,
         DateOnly? firstBillingDate)
+        => ResolveConfiguredBillingDate(
+            billingDay,
+            billingDayMode,
+            cycleMonths,
+            anchorMonth,
+            referenceDate,
+            firstBillingDate,
+            cycleAnchorDate: null);
+
+    public static DateOnly ResolveConfiguredBillingDate(
+        int billingDay,
+        string? billingDayMode,
+        int cycleMonths,
+        int anchorMonth,
+        DateOnly referenceDate,
+        DateOnly? firstBillingDate,
+        DateOnly? cycleAnchorDate)
     {
         cycleMonths = NormalizeCycleMonths(cycleMonths);
         anchorMonth = Math.Clamp(anchorMonth, 1, 12);
-        var lag = cycleMonths == 1 ? 0 : GetBillingLagMonths(referenceDate.Month, anchorMonth, cycleMonths);
-        var periodStartMonth = new DateOnly(referenceDate.Year, referenceDate.Month, 1).AddMonths(-lag);
+        var periodStartMonth = ResolvePeriodStartMonth(cycleMonths, anchorMonth, referenceDate, cycleAnchorDate);
         var candidate = BuildBillingDateForPeriodEnd(periodStartMonth, cycleMonths, billingDay, billingDayMode);
         if (firstBillingDate.HasValue)
         {
@@ -249,12 +311,40 @@ public static class RentalBillingScheduleRules
             ? "서류발송"
             : "청구";
 
-    private static int GetBillingLagMonths(int referenceMonth, int anchorMonth, int cycleMonths)
+    private static DateOnly ResolvePeriodStartMonth(
+        int cycleMonths,
+        int anchorMonth,
+        DateOnly referenceDate,
+        DateOnly? cycleAnchorDate)
     {
-        var raw = (referenceMonth - anchorMonth) % cycleMonths;
-        if (raw < 0)
-            raw += cycleMonths;
-        return raw;
+        cycleMonths = NormalizeCycleMonths(cycleMonths);
+        anchorMonth = Math.Clamp(anchorMonth, 1, 12);
+        var referenceMonth = new DateOnly(referenceDate.Year, referenceDate.Month, 1);
+        if (cycleMonths == 1)
+            return referenceMonth;
+
+        if (!cycleAnchorDate.HasValue)
+        {
+            var lag = (referenceDate.Month - anchorMonth) % cycleMonths;
+            if (lag < 0)
+                lag += cycleMonths;
+            return referenceMonth.AddMonths(-lag);
+        }
+
+        // The configured anchor month remains authoritative. The stored date supplies
+        // the recurrence epoch year so cycles longer than a calendar year stay distinct.
+        var anchor = new DateOnly(cycleAnchorDate.Value.Year, anchorMonth, 1);
+        var monthsFromAnchor = ((referenceMonth.Year - anchor.Year) * 12) + referenceMonth.Month - anchor.Month;
+        var cycleIndex = FloorDivide(monthsFromAnchor, cycleMonths);
+        return anchor.AddMonths(cycleIndex * cycleMonths);
+    }
+
+    private static int FloorDivide(int dividend, int divisor)
+    {
+        var quotient = dividend / divisor;
+        if (dividend % divisor < 0)
+            quotient--;
+        return quotient;
     }
 
     private static DateOnly GetPreviousBusinessDay(DateOnly dueDate)

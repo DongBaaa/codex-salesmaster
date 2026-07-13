@@ -362,6 +362,11 @@
                                 <WrapPanel>
                                     <Button Content="표시 라인 추가" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,8,0" Command="{Binding AddTemplateItemCommand}"/>
                                     <Button Content="선택 표시 라인 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,8,0" Command="{Binding RemoveTemplateItemCommand}"/>
+                                    <Button Content="모델별 자동 구성"
+                                            Background="#00897B"
+                                            BorderBrush="#00897B"
+                                            Margin="0,0,8,0"
+                                            Command="{Binding AutoGroupIndividualTemplateItemsByModelCommand}"/>
                                     <Button Content="선택 장비를 거래처 임대 자산으로 연결"
                                             Background="#00897B"
                                             BorderBrush="#00897B"
@@ -384,6 +389,7 @@
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="그룹방식" Binding="{Binding IndividualGroupingMode}" Width="90" IsReadOnly="True"/>
                                     <DataGridTextColumn Header="표시 품목명" Binding="{Binding DisplayItemName, UpdateSourceTrigger=PropertyChanged}" Width="160"/>
                                     <DataGridTextColumn Header="규격" Binding="{Binding Specification, UpdateSourceTrigger=PropertyChanged}" Width="160"/>
                                     <DataGridTextColumn Header="수량" Binding="{Binding Quantity, UpdateSourceTrigger=PropertyChanged}" Width="80"/>

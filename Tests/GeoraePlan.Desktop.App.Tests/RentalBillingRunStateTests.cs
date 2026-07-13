@@ -897,12 +897,18 @@ public sealed class RentalBillingRunStateTests
             var customerName = "인천보건환경연구원[삼산동농산물검사소]";
             db.Customers.Add(CreateCustomer(customerId, customerName));
             var profile = CreateBillingProfile(profileId, assetId, customerName, customerId);
+            profile.BillingType = "개별";
             profile.BillingCycleMonths = 3;
             profile.BillingAnchorMonth = 7;
             profile.BillingDay = 25;
             profile.BillingAnchorDate = new DateOnly(2026, 1, 5);
             profile.ContractStartDate = new DateOnly(2026, 1, 5);
             profile.LastBilledDate = null;
+            var individualTemplate = Assert.Single(DeserializeTemplateItems(profile.BillingTemplateJson));
+            individualTemplate.BillingLineMode = "개별";
+            individualTemplate.IndividualGroupingMode = RentalBillingTemplateItemModel.IndividualGroupingByModel;
+            individualTemplate.RepresentativeAssetId = null;
+            profile.BillingTemplateJson = JsonSerializer.Serialize(new[] { individualTemplate });
             profile.BillingRunsJson = JsonSerializer.Serialize(new List<RentalBillingRunModel>
             {
                 new()

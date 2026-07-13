@@ -286,6 +286,11 @@ public sealed partial class RentalCustomerOnboardingViewModel
                 BillingLineMode = string.Equals((BillingType ?? string.Empty).Trim(), "혼합", StringComparison.Ordinal)
                     ? NormalizeBillingLineModeValue(item.BillingLineMode)
                     : NormalizeBillingLineModeValue(BillingType),
+                IndividualGroupingMode = NormalizeIndividualGroupingMode(item.IndividualGroupingMode),
+                Specification = item.Specification,
+                Unit = item.Unit,
+                MaterialNumber = item.MaterialNumber,
+                RepresentativeAssetId = item.RepresentativeAssetId,
                 Quantity = item.Quantity,
                 UnitPrice = item.UnitPrice,
                 Amount = item.Amount,

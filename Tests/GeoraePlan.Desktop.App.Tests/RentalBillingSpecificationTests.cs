@@ -10,6 +10,43 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class RentalBillingSpecificationTests
 {
     [Fact]
+    public void RentalCustomerOnboardingViewModel_IndividualTypeUpdatesLineModeAndGroupsSelectedAssetsByModel()
+    {
+        var assetAId = Guid.NewGuid();
+        var assetBId = Guid.NewGuid();
+        var vm = new RentalCustomerOnboardingViewModel(null!, null!, new SessionState());
+        vm.CandidateAssets.Add(new RentalBillingAssetOption
+        {
+            AssetId = assetAId,
+            ItemName = "IMC2010",
+            MonthlyFee = 50_000m
+        });
+        vm.CandidateAssets.Add(new RentalBillingAssetOption
+        {
+            AssetId = assetBId,
+            ItemName = "IMC2010",
+            MonthlyFee = 70_000m
+        });
+        var item = new RentalBillingTemplateEditorItem
+        {
+            DisplayItemName = "렌탈 임대료",
+            BillingLineMode = "묶음"
+        };
+        item.IncludedAssetIds.Add(assetAId);
+        item.IncludedAssetIds.Add(assetBId);
+        vm.TemplateItems.Add(item);
+
+        vm.BillingType = "개별";
+
+        var groupedItem = Assert.Single(vm.TemplateItems);
+        Assert.Equal("개별", groupedItem.BillingLineMode);
+        Assert.Equal("IMC2010", groupedItem.DisplayItemName);
+        Assert.Equal(2m, groupedItem.Quantity);
+        Assert.Equal(60_000m, groupedItem.UnitPrice);
+        Assert.Equal(120_000m, groupedItem.Amount);
+    }
+
+    [Fact]
     public void RentalBillingViewModel_AppliesRepresentativeAssetSpecificationForBundleTemplateItem()
     {
         var representativeAssetId = Guid.Parse("11111111-1111-1111-1111-111111111111");
@@ -170,6 +207,79 @@ public sealed class RentalBillingSpecificationTests
         Assert.Equal(100_000m, mergedItem.Amount);
         Assert.Equal(2, mergedItem.IncludedAssetIds.Distinct().Count());
         Assert.Equal("IMC2010", mergedItem.Specification);
+    }
+
+    [Fact]
+    public void RentalBillingViewModel_AutomaticIndividualGroupingBuildsOneDisplayItemPerModel()
+    {
+        var assetAId = Guid.NewGuid();
+        var assetBId = Guid.NewGuid();
+        var assetCId = Guid.NewGuid();
+        var vm = new RentalBillingViewModel(null!, null!, new SessionState())
+        {
+            EditBillingType = "개별"
+        };
+        var includedPool = GetPrivateField<List<RentalBillingAssetOption>>(vm, "_includedAssetPool");
+        includedPool.AddRange(
+        [
+            new RentalBillingAssetOption { AssetId = assetAId, ItemName = "IMC2010", MonthlyFee = 50_000m },
+            new RentalBillingAssetOption { AssetId = assetBId, ItemName = "IMC2010", MonthlyFee = 70_000m },
+            new RentalBillingAssetOption { AssetId = assetCId, ItemName = "MFC-L5700DN", MonthlyFee = 30_000m }
+        ]);
+
+        var legacyItem = new RentalBillingTemplateEditorItem
+        {
+            DisplayItemName = "렌탈 임대료",
+            BillingLineMode = "개별",
+            IndividualGroupingMode = RentalBillingTemplateItemModel.IndividualGroupingByModel
+        };
+        legacyItem.IncludedAssetIds.Add(assetAId);
+        legacyItem.IncludedAssetIds.Add(assetBId);
+        legacyItem.IncludedAssetIds.Add(assetCId);
+        vm.TemplateItems.Add(legacyItem);
+
+        var changed = InvokePrivateInstance<bool>(vm, "NormalizeAutomaticIndividualTemplateGroupsByModel", false);
+
+        Assert.True(changed);
+        Assert.Equal(2, vm.TemplateItems.Count);
+        var imcItem = Assert.Single(vm.TemplateItems, item => item.DisplayItemName == "IMC2010");
+        Assert.Equal(2m, imcItem.Quantity);
+        Assert.Equal(60_000m, imcItem.UnitPrice);
+        Assert.Equal(120_000m, imcItem.Amount);
+        Assert.Equal(RentalBillingTemplateItemModel.IndividualGroupingByModel, imcItem.IndividualGroupingMode);
+        var mfcItem = Assert.Single(vm.TemplateItems, item => item.DisplayItemName == "MFC-L5700DN");
+        Assert.Equal(1m, mfcItem.Quantity);
+        Assert.Equal(30_000m, mfcItem.UnitPrice);
+    }
+
+    [Fact]
+    public void RentalBillingViewModel_MovingAssetToCustomDisplayItemRemovesOtherReferences()
+    {
+        var assetId = Guid.NewGuid();
+        var vm = new RentalBillingViewModel(null!, null!, new SessionState())
+        {
+            EditBillingType = "개별"
+        };
+        var source = new RentalBillingTemplateEditorItem
+        {
+            DisplayItemName = "IMC2010",
+            BillingLineMode = "개별"
+        };
+        source.IncludedAssetIds.Add(assetId);
+        var target = new RentalBillingTemplateEditorItem
+        {
+            DisplayItemName = "사용자 묶음",
+            BillingLineMode = "개별",
+            IndividualGroupingMode = RentalBillingTemplateItemModel.IndividualGroupingCustom
+        };
+        vm.TemplateItems.Add(source);
+        vm.TemplateItems.Add(target);
+
+        InvokePrivateInstance(vm, "MoveAssetReferenceToTemplateItem", target, assetId);
+
+        Assert.Single(vm.TemplateItems);
+        Assert.Same(target, vm.TemplateItems[0]);
+        Assert.Equal([assetId], target.IncludedAssetIds);
     }
 
     [Fact]
