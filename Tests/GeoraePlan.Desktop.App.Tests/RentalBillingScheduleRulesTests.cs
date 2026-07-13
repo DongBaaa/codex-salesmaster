@@ -127,4 +127,25 @@ public sealed class RentalBillingScheduleRulesTests
         Assert.Equal(new DateOnly(2026, 7, 1), period.StartDate);
         Assert.Equal(new DateOnly(2026, 10, 31), period.EndDate);
     }
+
+    [Fact]
+    public void ResolveApplicableBillingDate_DuringCurrentQuarter_KeepsConfiguredStartMonth()
+    {
+        var scheduledDate = RentalBillingScheduleRules.ResolveApplicableBillingDate(
+            billingDay: 25,
+            billingDayMode: RentalBillingScheduleRules.BillingDayModeFixedDay,
+            cycleMonths: 3,
+            anchorMonth: 6,
+            referenceDate: new DateOnly(2026, 7, 13),
+            lastBilledDate: null,
+            firstBillingDate: new DateOnly(2026, 1, 25));
+        var period = RentalBillingScheduleRules.ResolveBillingPeriod(
+            cycleMonths: 3,
+            billingAdvanceMode: "후불",
+            scheduledDate);
+
+        Assert.Equal(new DateOnly(2026, 8, 25), scheduledDate);
+        Assert.Equal(new DateOnly(2026, 6, 1), period.StartDate);
+        Assert.Equal(new DateOnly(2026, 8, 31), period.EndDate);
+    }
 }
