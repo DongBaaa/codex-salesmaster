@@ -1,17 +1,17 @@
 {
     "channel":  "stable",
-    "generatedAtUtc":  "2026-07-13T04:29:12.8102899Z",
+    "generatedAtUtc":  "2026-07-13T08:20:40.6287590Z",
     "desktop":  {
                     "platform":  "desktop",
-                    "version":  "1.1.679",
+                    "version":  "1.1.680",
                     "mandatory":  false,
                     "minimumSupportedVersion":  "",
-                    "packageUrl":  "/updates/download/desktop/tradeplan-pc-installer-v1.1.679.zip",
-                    "fileName":  "tradeplan-pc-installer-v1.1.679.zip",
-                    "sha256":  "9E7D15B3FB571909307664274F65CFB54154B04DCBB83CF322DABF01BEAA35D1",
-                    "fileSize":  232228019,
-                    "notes":  "렌탈 청구기간 시작월 기준 계산 수정 및 3개월 청구서 월 산정 안정화",
-                    "releasedAtUtc":  "2026-07-13T04:29:16.6255992Z"
+                    "packageUrl":  "/updates/download/desktop/tradeplan-pc-installer-v1.1.680.zip",
+                    "fileName":  "tradeplan-pc-installer-v1.1.680.zip",
+                    "sha256":  "59686E92736D1AAD47FCD7F1829588188A6E2D5ACD46C2B1442B73BC4F4F0B1D",
+                    "fileSize":  232229472,
+                    "notes":  "내부 업데이트 패키지/동기화 안정화 개선 반영",
+                    "releasedAtUtc":  "2026-07-13T08:20:43.9640098Z"
                 },
     "android":  {
                     "platform":  "android",
@@ -23,6 +23,6 @@
                     "sha256":  "FFB75EE0AC7F1C5B7FD75AD8C29B31E0F635ED7E6799CC6C44FE9E43C601D642",
                     "fileSize":  41424314,
                     "notes":  "모바일 상세탭/첨부 보기/내부 업데이트 확인 기능 반영",
-                    "releasedAtUtc":  "2026-07-13T04:29:16.8061954Z"
+                    "releasedAtUtc":  "2026-07-13T08:20:44.0486708Z"
                 }
 }
