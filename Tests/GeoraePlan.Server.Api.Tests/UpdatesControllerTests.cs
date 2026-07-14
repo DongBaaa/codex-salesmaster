@@ -85,6 +85,58 @@ public sealed class UpdatesControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task GetManifestAsync_ExpandsDesktopNativeInstallerUrls_UsingCurrentRequestHost()
+    {
+        var manifest = new AppUpdateManifestDto
+        {
+            Channel = "stable",
+            Desktop = new AppUpdatePackageDto
+            {
+                Platform = "desktop",
+                Version = "1.1.683",
+                FileName = "tradeplan-pc-installer-v1.1.683.zip",
+                PackageUrl = "/updates/download/desktop/tradeplan-pc-installer-v1.1.683.zip",
+                Installers =
+                [
+                    new AppUpdateInstallerDto
+                    {
+                        Audience = "user",
+                        Format = "exe",
+                        Version = "1.1.683",
+                        FileName = "tradeplan-pc-setup-v1.1.683.exe",
+                        PackageUrl = "/updates/download/desktop/tradeplan-pc-setup-v1.1.683.exe"
+                    },
+                    new AppUpdateInstallerDto
+                    {
+                        Audience = "administrator",
+                        Format = "msi",
+                        Version = "1.1.683",
+                        FileName = "tradeplan-pc-admin-v1.1.683.msi",
+                        PackageUrl = "/updates/download/desktop/tradeplan-pc-admin-v1.1.683.msi"
+                    }
+                ]
+            }
+        };
+
+        await WriteManifestAsync("stable", manifest);
+        var controller = CreateController();
+
+        var response = await controller.GetManifestAsync("stable", CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<AppUpdateManifestDto>(ok.Value);
+
+        Assert.NotNull(payload.Desktop);
+        Assert.Collection(
+            payload.Desktop!.Installers,
+            installer => Assert.Equal(
+                "https://updates.example.com/updates/download/desktop/tradeplan-pc-setup-v1.1.683.exe",
+                installer.PackageUrl),
+            installer => Assert.Equal(
+                "https://updates.example.com/updates/download/desktop/tradeplan-pc-admin-v1.1.683.msi",
+                installer.PackageUrl));
+    }
+
+    [Fact]
     public async Task GetManifestAsync_RewritesRootRelativePackageUrl_WhenPlatformPathDoesNotMatchPackage()
     {
         var manifest = new AppUpdateManifestDto
@@ -267,6 +319,22 @@ public sealed class UpdatesControllerTests : IDisposable
         Assert.Equal(4, controller.Response.ContentLength);
         Assert.Equal("no-store", controller.Response.Headers.CacheControl.ToString());
         Assert.Equal(fileName, Uri.UnescapeDataString(controller.Response.Headers["X-Update-FileName"].ToString()));
+    }
+
+    [Theory]
+    [InlineData("tradeplan-pc-setup-v1.1.683.exe", "application/vnd.microsoft.portable-executable")]
+    [InlineData("tradeplan-pc-admin-v1.1.683.msi", "application/x-msi")]
+    public void HeadPackage_ReturnsNativeInstallerContentType(string fileName, string expectedContentType)
+    {
+        var packagePath = Path.Combine(_storageRoot, "downloads", "desktop", fileName);
+        File.WriteAllBytes(packagePath, [1, 2, 3, 4]);
+        var controller = CreateController();
+
+        var result = controller.HeadPackage("desktop", fileName);
+
+        Assert.IsType<EmptyResult>(result);
+        Assert.Equal(expectedContentType, controller.Response.ContentType);
+        Assert.Equal(4, controller.Response.ContentLength);
     }
 
     [Fact]

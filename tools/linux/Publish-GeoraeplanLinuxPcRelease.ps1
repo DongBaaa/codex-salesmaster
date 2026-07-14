@@ -775,6 +775,30 @@ function Test-UpdatePackageFile {
     }
 }
 
+function Get-UpdatePackageArtifacts {
+    param($Package)
+
+    $artifacts = New-Object System.Collections.Generic.List[object]
+    if ($null -eq $Package) {
+        return $artifacts.ToArray()
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$Package.fileName)) {
+        $artifacts.Add($Package) | Out-Null
+    }
+
+    $installersProperty = $Package.PSObject.Properties['installers']
+    if ($null -ne $installersProperty) {
+        foreach ($installer in @($installersProperty.Value)) {
+            if ($null -ne $installer -and -not [string]::IsNullOrWhiteSpace([string]$installer.fileName)) {
+                $artifacts.Add($installer) | Out-Null
+            }
+        }
+    }
+
+    return $artifacts.ToArray()
+}
+
 function Resolve-UpdateBaseUri {
     param(
         [Parameter(Mandatory = $true)][string]$BaseUrl,
@@ -938,24 +962,26 @@ function Copy-VerifiedLiveUpdateRollbackBaselineFromSourceUpdatesRoot {
             continue
         }
 
-        $fileName = ([string]$package.fileName).Trim()
-        Assert-SafeUpdatePackageFileName -FileName $fileName -Platform $platform -BaselineLabel $baselineLabel
-        [void](Resolve-VerifiedUpdatePackageUri `
-            -PackageUrl ([string]$package.packageUrl).Trim() `
-            -ManifestBaseUri $baseUri `
-            -AllowedBaseUris $allowedBaseUris `
-            -Platform $platform `
-            -ExpectedFileName $fileName `
-            -BaselineLabel $baselineLabel)
+        foreach ($artifact in @(Get-UpdatePackageArtifacts -Package $package)) {
+            $fileName = ([string]$artifact.fileName).Trim()
+            Assert-SafeUpdatePackageFileName -FileName $fileName -Platform $platform -BaselineLabel $baselineLabel
+            [void](Resolve-VerifiedUpdatePackageUri `
+                -PackageUrl ([string]$artifact.packageUrl).Trim() `
+                -ManifestBaseUri $baseUri `
+                -AllowedBaseUris $allowedBaseUris `
+                -Platform $platform `
+                -ExpectedFileName $fileName `
+                -BaselineLabel $baselineLabel)
 
-        $sourcePackagePath = Join-Path (Join-Path $sourceDownloadsRoot $platform) $fileName
-        Test-UpdatePackageFile `
-            -Package $package `
-            -PackagePath $sourcePackagePath `
-            -Platform $platform `
-            -BaselineLabel $baselineLabel `
-            -RequireFileSize `
-            -RequireSha256
+            $sourcePackagePath = Join-Path (Join-Path $sourceDownloadsRoot $platform) $fileName
+            Test-UpdatePackageFile `
+                -Package $artifact `
+                -PackagePath $sourcePackagePath `
+                -Platform $platform `
+                -BaselineLabel $baselineLabel `
+                -RequireFileSize `
+                -RequireSha256
+        }
     }
 
     New-Item -ItemType Directory -Force -Path $targetManifestRoot | Out-Null
@@ -967,12 +993,14 @@ function Copy-VerifiedLiveUpdateRollbackBaselineFromSourceUpdatesRoot {
             continue
         }
 
-        $fileName = ([string]$package.fileName).Trim()
-        $sourcePackagePath = Join-Path (Join-Path $sourceDownloadsRoot $platform) $fileName
         $targetPackageRoot = Join-Path $targetDownloadsRoot $platform
         New-Item -ItemType Directory -Force -Path $targetPackageRoot | Out-Null
-        Copy-Item -LiteralPath $sourcePackagePath -Destination (Join-Path $targetPackageRoot $fileName) -Force
-        $copiedPackageCount++
+        foreach ($artifact in @(Get-UpdatePackageArtifacts -Package $package)) {
+            $fileName = ([string]$artifact.fileName).Trim()
+            $sourcePackagePath = Join-Path (Join-Path $sourceDownloadsRoot $platform) $fileName
+            Copy-Item -LiteralPath $sourcePackagePath -Destination (Join-Path $targetPackageRoot $fileName) -Force
+            $copiedPackageCount++
+        }
     }
 
     Write-Host "live_update_rollback_baseline_seeded manifests=1 packages=$copiedPackageCount base_url=$($baseUri.AbsoluteUri.TrimEnd('/')) source=linux_pc_live"
@@ -1098,11 +1126,13 @@ function Copy-LiveUpdateRollbackBaseline {
                 continue
             }
 
-            $fileName = ([string]$package.fileName).Trim()
-            Assert-SafeUpdatePackageFileName -FileName $fileName -Platform $platform -BaselineLabel $baselineLabel
-            $remotePackagePath = $remoteUpdatesRoot + '/downloads/' + $platform + '/' + $fileName
-            $localPackagePath = Join-Path (Join-Path $stagingDownloadsRoot $platform) $fileName
-            Invoke-SshFileDownload -RemotePath $remotePackagePath -DestinationPath $localPackagePath -Config $Config
+            foreach ($artifact in @(Get-UpdatePackageArtifacts -Package $package)) {
+                $fileName = ([string]$artifact.fileName).Trim()
+                Assert-SafeUpdatePackageFileName -FileName $fileName -Platform $platform -BaselineLabel $baselineLabel
+                $remotePackagePath = $remoteUpdatesRoot + '/downloads/' + $platform + '/' + $fileName
+                $localPackagePath = Join-Path (Join-Path $stagingDownloadsRoot $platform) $fileName
+                Invoke-SshFileDownload -RemotePath $remotePackagePath -DestinationPath $localPackagePath -Config $Config
+            }
         }
 
         Copy-VerifiedLiveUpdateRollbackBaselineFromSourceUpdatesRoot `
@@ -1154,15 +1184,16 @@ function Copy-LocalUpdateRollbackBaseline {
                     continue
                 }
 
-                $fileName = ([string]$package.fileName).Trim()
-                Assert-SafeUpdatePackageFileName -FileName $fileName -Platform $platform -BaselineLabel '롤백 기준'
-                $sourcePackagePath = Join-Path (Join-Path (Join-Path $sourceUpdatesRoot 'downloads') $platform) $fileName
-                Test-UpdatePackageFile -Package $package -PackagePath $sourcePackagePath -Platform $platform -BaselineLabel '롤백 기준'
-
                 $targetPackageRoot = Join-Path (Join-Path $targetUpdatesRoot 'downloads') $platform
                 New-Item -ItemType Directory -Force -Path $targetPackageRoot | Out-Null
-                Copy-Item -LiteralPath $sourcePackagePath -Destination (Join-Path $targetPackageRoot $fileName) -Force
-                $copiedPackageCount++
+                foreach ($artifact in @(Get-UpdatePackageArtifacts -Package $package)) {
+                    $fileName = ([string]$artifact.fileName).Trim()
+                    Assert-SafeUpdatePackageFileName -FileName $fileName -Platform $platform -BaselineLabel '롤백 기준'
+                    $sourcePackagePath = Join-Path (Join-Path (Join-Path $sourceUpdatesRoot 'downloads') $platform) $fileName
+                    Test-UpdatePackageFile -Package $artifact -PackagePath $sourcePackagePath -Platform $platform -BaselineLabel '롤백 기준'
+                    Copy-Item -LiteralPath $sourcePackagePath -Destination (Join-Path $targetPackageRoot $fileName) -Force
+                    $copiedPackageCount++
+                }
             }
         }
         catch {

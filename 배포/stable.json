@@ -1,28 +1,48 @@
-{
-  "channel": "stable",
-  "generatedAtUtc": "2026-07-13T16:54:35.4128554Z",
-  "desktop": {
-    "platform": "desktop",
-    "version": "1.1.683",
-    "mandatory": false,
-    "minimumSupportedVersion": "",
-    "packageUrl": "/updates/download/desktop/tradeplan-pc-installer-v1.1.683.zip",
-    "fileName": "tradeplan-pc-installer-v1.1.683.zip",
-    "sha256": "6E1CC182BB75B0C07FA4F53BF491F9462B542DDCE2813C7A71F335A8E9DC420A",
-    "fileSize": 232256244,
-    "notes": "렌탈 자산/설치현황 버튼 정리, 렌탈 자산 연결 선택 수·고정 하단 작업 개선, 확정 렌탈 자산 연결 및 동일 DB 중복 시리얼 보정",
-    "releasedAtUtc": "2026-07-13T16:54:37.9617445Z"
-  },
-  "android": {
-    "platform": "android",
-    "version": "0.2.81",
-    "mandatory": false,
-    "minimumSupportedVersion": "",
-    "packageUrl": "/updates/download/android/tradeplan-android-v0.2.81.apk",
-    "fileName": "tradeplan-android-v0.2.81.apk",
-    "sha256": "FFB75EE0AC7F1C5B7FD75AD8C29B31E0F635ED7E6799CC6C44FE9E43C601D642",
-    "fileSize": 41424314,
-    "notes": "Android 변경 없음",
-    "releasedAtUtc": "2026-07-13T16:54:38.0444684Z"
-  }
+﻿{
+    "channel":  "stable",
+    "generatedAtUtc":  "2026-07-14T02:23:39.2125011Z",
+    "desktop":  {
+                    "platform":  "desktop",
+                    "version":  "1.1.683",
+                    "mandatory":  false,
+                    "minimumSupportedVersion":  "",
+                    "packageUrl":  "/updates/download/desktop/tradeplan-pc-installer-v1.1.683.zip",
+                    "fileName":  "tradeplan-pc-installer-v1.1.683.zip",
+                    "sha256":  "6E1CC182BB75B0C07FA4F53BF491F9462B542DDCE2813C7A71F335A8E9DC420A",
+                    "fileSize":  232256244,
+                    "notes":  "렌탈 청구·자산 연결 수정 및 설치패키지 통합 배포",
+                    "releasedAtUtc":  "2026-07-14T02:23:42.0961351Z",
+                    "installers":  [
+                                       {
+                                           "audience":  "user",
+                                           "format":  "exe",
+                                           "version":  "1.1.683",
+                                           "packageUrl":  "/updates/download/desktop/tradeplan-pc-setup-v1.1.683.exe",
+                                           "fileName":  "tradeplan-pc-setup-v1.1.683.exe",
+                                           "sha256":  "ED5CDB209CA4C308C98353E0A33B943BFC83465EB665C988ABC1196C5A101F16",
+                                           "fileSize":  248981088
+                                       },
+                                       {
+                                           "audience":  "administrator",
+                                           "format":  "msi",
+                                           "version":  "1.1.683",
+                                           "packageUrl":  "/updates/download/desktop/tradeplan-pc-admin-v1.1.683.msi",
+                                           "fileName":  "tradeplan-pc-admin-v1.1.683.msi",
+                                           "sha256":  "EFFF79C5076F534FF5B9A952A9C1EE74DFE630DC2A2A522A549F4ACFEC755DAE",
+                                           "fileSize":  186576896
+                                       }
+                                   ]
+                },
+    "android":  {
+                    "platform":  "android",
+                    "version":  "0.2.81",
+                    "mandatory":  false,
+                    "minimumSupportedVersion":  "",
+                    "packageUrl":  "/updates/download/android/tradeplan-android-v0.2.81.apk",
+                    "fileName":  "tradeplan-android-v0.2.81.apk",
+                    "sha256":  "FFB75EE0AC7F1C5B7FD75AD8C29B31E0F635ED7E6799CC6C44FE9E43C601D642",
+                    "fileSize":  41424314,
+                    "notes":  "기존 안정 버전 유지",
+                    "releasedAtUtc":  "2026-07-14T02:23:43.3646615Z"
+                }
 }

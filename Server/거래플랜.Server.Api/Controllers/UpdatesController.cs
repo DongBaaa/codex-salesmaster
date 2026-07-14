@@ -104,6 +104,9 @@ public sealed class UpdatesController : ControllerBase
         if (package.Mandatory && string.IsNullOrWhiteSpace(package.MinimumSupportedVersion))
             package.MinimumSupportedVersion = package.Version;
 
+        foreach (var installer in package.Installers ?? [])
+            NormalizeInstaller(installer, platform);
+
         var packageUrl = package.PackageUrl?.Trim() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(package.FileName) && !string.IsNullOrWhiteSpace(packageUrl))
             package.FileName = Path.GetFileName(packageUrl);
@@ -129,6 +132,41 @@ public sealed class UpdatesController : ControllerBase
 
         var encodedFileName = Uri.EscapeDataString(package.FileName);
         package.PackageUrl = $"{Request.Scheme}://{Request.Host}/updates/download/{platform}/{encodedFileName}";
+    }
+
+    private void NormalizeInstaller(AppUpdateInstallerDto installer, string platform)
+    {
+        installer.Audience = installer.Audience?.Trim() ?? string.Empty;
+        installer.Format = installer.Format?.Trim().ToLowerInvariant() ?? string.Empty;
+        installer.Version = installer.Version?.Trim() ?? string.Empty;
+        installer.FileName = installer.FileName?.Trim() ?? string.Empty;
+        installer.Sha256 = installer.Sha256?.Trim() ?? string.Empty;
+
+        var packageUrl = installer.PackageUrl?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(installer.FileName) && !string.IsNullOrWhiteSpace(packageUrl))
+            installer.FileName = Path.GetFileName(packageUrl);
+
+        if (!string.IsNullOrWhiteSpace(packageUrl) &&
+            packageUrl.StartsWith("/", StringComparison.Ordinal) &&
+            IsAllowedDownloadPackagePath(packageUrl, platform))
+        {
+            installer.PackageUrl = $"{Request.Scheme}://{Request.Host}{packageUrl}";
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(packageUrl) &&
+            Uri.TryCreate(packageUrl, UriKind.Absolute, out var absolutePackageUri) &&
+            IsAllowedAbsolutePackageUri(absolutePackageUri, platform))
+        {
+            installer.PackageUrl = packageUrl;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(installer.FileName))
+            return;
+
+        var encodedFileName = Uri.EscapeDataString(installer.FileName);
+        installer.PackageUrl = $"{Request.Scheme}://{Request.Host}/updates/download/{platform}/{encodedFileName}";
     }
 
     private bool IsAllowedAbsolutePackageUri(Uri packageUri, string platform)
@@ -208,6 +246,8 @@ public sealed class UpdatesController : ControllerBase
             ".apk" => "application/vnd.android.package-archive",
             ".json" => "application/json",
             ".zip" => "application/zip",
+            ".exe" => "application/vnd.microsoft.portable-executable",
+            ".msi" => "application/x-msi",
             ".txt" => "text/plain; charset=utf-8",
             _ => "application/octet-stream"
         };

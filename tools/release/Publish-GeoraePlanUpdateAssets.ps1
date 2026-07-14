@@ -7,6 +7,8 @@ param(
     [int]$KeepAndroidPackageCount = 2,
     [switch]$SkipPackagePrune,
     [string]$DesktopPackagePath,
+    [string]$DesktopExeInstallerPath,
+    [string]$DesktopMsiInstallerPath,
     [string]$AndroidPackagePath,
     [string]$DesktopVersion,
     [string]$AndroidVersion,
@@ -81,6 +83,58 @@ function Copy-PackageWithMetadata {
         fileSize = [int64]$fileInfo.Length
         notes = $Notes
         releasedAtUtc = [DateTime]::UtcNow.ToString('o')
+    }
+}
+
+function Resolve-DesktopNativeInstallerPath {
+    param(
+        [string]$ExplicitPath,
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$Version,
+        [Parameter(Mandatory = $true)][ValidateSet('exe', 'msi')][string]$Format
+    )
+
+    $candidate = $ExplicitPath
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        $candidate = Join-Path $Root ("배포\관리자용\버전보관\거래플랜-PC-설치패키지-v{0}.{1}" -f $Version, $Format)
+    }
+
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+        throw "데스크톱 $Format 설치패키지가 없습니다. 버전 $Version 설치패키지를 먼저 생성해야 합니다: $candidate"
+    }
+
+    $resolved = (Resolve-Path -LiteralPath $candidate).Path
+    if (-not [string]::Equals([System.IO.Path]::GetExtension($resolved), ".$Format", [StringComparison]::OrdinalIgnoreCase)) {
+        throw "데스크톱 설치패키지 확장자가 올바르지 않습니다. 기대 형식: .$Format / 실제 파일: $resolved"
+    }
+
+    return $resolved
+}
+
+function Copy-DesktopNativeInstallerWithMetadata {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$DestinationDirectory,
+        [Parameter(Mandatory = $true)][string]$OutputFileName,
+        [Parameter(Mandatory = $true)][string]$Version,
+        [Parameter(Mandatory = $true)][ValidateSet('user', 'administrator')][string]$Audience,
+        [Parameter(Mandatory = $true)][ValidateSet('exe', 'msi')][string]$Format
+    )
+
+    New-Item -ItemType Directory -Force -Path $DestinationDirectory | Out-Null
+    $destinationPath = Join-Path $DestinationDirectory $OutputFileName
+    Copy-Item -LiteralPath $SourcePath -Destination $destinationPath -Force
+
+    $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $destinationPath
+    $fileInfo = Get-Item -LiteralPath $destinationPath
+    return [ordered]@{
+        audience = $Audience
+        format = $Format
+        version = $Version
+        packageUrl = "/updates/download/desktop/$([Uri]::EscapeDataString($OutputFileName))"
+        fileName = $OutputFileName
+        sha256 = $hash.Hash
+        fileSize = [int64]$fileInfo.Length
     }
 }
 
@@ -181,6 +235,13 @@ function Get-ManifestReferencedFileNames {
             $fileName = [string]$platformNode.fileName
             if (-not [string]::IsNullOrWhiteSpace($fileName)) {
                 [void]$fileNames.Add($fileName.Trim())
+            }
+
+            foreach ($installer in @($platformNode.installers)) {
+                $installerFileName = [string]$installer.fileName
+                if (-not [string]::IsNullOrWhiteSpace($installerFileName)) {
+                    [void]$fileNames.Add($installerFileName.Trim())
+                }
             }
         }
         catch {
@@ -355,6 +416,14 @@ $manifest = [ordered]@{
 if (-not [string]::IsNullOrWhiteSpace($DesktopPackagePath) -and (Test-Path -LiteralPath $DesktopPackagePath)) {
     $desktopFileName = "tradeplan-pc-installer-v$DesktopVersion.zip"
     $manifest.desktop = Copy-PackageWithMetadata -SourcePath $DesktopPackagePath -DestinationDirectory (Join-Path $downloadsRoot 'desktop') -OutputFileName $desktopFileName -Platform 'desktop' -Version $DesktopVersion -Notes $DesktopNotes -Mandatory:$MandatoryDesktop -MinimumSupportedVersion $DesktopMinimumSupportedVersion
+
+    $resolvedDesktopExeInstallerPath = Resolve-DesktopNativeInstallerPath -ExplicitPath $DesktopExeInstallerPath -Root $ProjectRoot -Version $DesktopVersion -Format 'exe'
+    $resolvedDesktopMsiInstallerPath = Resolve-DesktopNativeInstallerPath -ExplicitPath $DesktopMsiInstallerPath -Root $ProjectRoot -Version $DesktopVersion -Format 'msi'
+    $desktopInstallerRoot = Join-Path $downloadsRoot 'desktop'
+    $manifest.desktop['installers'] = @(
+        (Copy-DesktopNativeInstallerWithMetadata -SourcePath $resolvedDesktopExeInstallerPath -DestinationDirectory $desktopInstallerRoot -OutputFileName "tradeplan-pc-setup-v$DesktopVersion.exe" -Version $DesktopVersion -Audience 'user' -Format 'exe'),
+        (Copy-DesktopNativeInstallerWithMetadata -SourcePath $resolvedDesktopMsiInstallerPath -DestinationDirectory $desktopInstallerRoot -OutputFileName "tradeplan-pc-admin-v$DesktopVersion.msi" -Version $DesktopVersion -Audience 'administrator' -Format 'msi')
+    )
 }
 
 if (-not [string]::IsNullOrWhiteSpace($AndroidPackagePath) -and (Test-Path -LiteralPath $AndroidPackagePath)) {
@@ -399,6 +468,9 @@ Write-Host "update_manifest=$manifestPath"
 Write-Host "delivery_manifest=$deliveryManifestPath"
 if (Test-Path -LiteralPath $previousManifestPath) { Write-Host "previous_manifest=$previousManifestPath" }
 if ($manifest.desktop) { Write-Host "desktop_package=$($manifest.desktop.fileName)" }
+if ($manifest.desktop -and $manifest.desktop.installers) {
+    $manifest.desktop.installers | ForEach-Object { Write-Host "desktop_native_installer=$($_.fileName)" }
+}
 if ($manifest.android) { Write-Host "android_package=$($manifest.android.fileName)" }
 if ($removedDesktopPackages.Count -gt 0) { Write-Host "desktop_packages_pruned=$($removedDesktopPackages.Count)" }
 if ($removedAndroidPackages.Count -gt 0) { Write-Host "android_packages_pruned=$($removedAndroidPackages.Count)" }

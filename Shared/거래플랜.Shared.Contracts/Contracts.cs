@@ -1063,4 +1063,16 @@ public sealed class AppUpdatePackageDto
     public long FileSize { get; set; }
     public string Notes { get; set; } = string.Empty;
     public DateTime ReleasedAtUtc { get; set; } = DateTime.UtcNow;
+    public List<AppUpdateInstallerDto> Installers { get; set; } = [];
+}
+
+public sealed class AppUpdateInstallerDto
+{
+    public string Audience { get; set; } = string.Empty;
+    public string Format { get; set; } = string.Empty;
+    public string Version { get; set; } = string.Empty;
+    public string PackageUrl { get; set; } = string.Empty;
+    public string FileName { get; set; } = string.Empty;
+    public string Sha256 { get; set; } = string.Empty;
+    public long FileSize { get; set; }
 }
