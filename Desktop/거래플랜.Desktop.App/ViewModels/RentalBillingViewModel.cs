@@ -123,6 +123,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [ObservableProperty] private DateTime? _editLastSettledDate;
     [ObservableProperty] private bool _editIsActive = true;
     [ObservableProperty] private string _billingSchedulePreviewText = "청구일 규칙을 설정하면 다음 청구일이 표시됩니다.";
+    [ObservableProperty] private string _invoiceItemNamePreviewText = "청구기간을 설정하면 전표 품명이 표시됩니다.";
     [ObservableProperty] private string _documentIssuePreviewText = "서류 발송 규칙을 설정하면 예상 발송일이 표시됩니다.";
     [ObservableProperty] private string _applySelectedAssetsHint = "거래처 임대 자산에서 전표에 넣을 장비를 선택한 뒤 표시품목에 추가할 수 있습니다.";
     [ObservableProperty] private int _totalCount;
@@ -5408,6 +5409,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         {
             NormalizeTemplateRepresentativeAssets();
             var previewBillingMonths = BuildPreviewBillingMonths();
+            var invoiceItemNamePreview = BuildInvoiceItemNamePreview(previewBillingMonths);
             foreach (var item in TemplateItems)
             {
                 item.IncludedAssetSummary = BuildIncludedAssetSummary(item.IncludedAssetIds);
@@ -5416,7 +5418,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 if (item.Quantity <= 0m)
                     item.Quantity = 1m;
                 item.NormalizeCalculatedAmount();
-                item.InvoiceItemNamePreview = BuildInvoiceItemNamePreview(previewBillingMonths);
+                item.InvoiceItemNamePreview = invoiceItemNamePreview;
             }
 
             EditMonthlyAmount = TemplateItems.Sum(item => item.EffectiveAmount);
@@ -5427,6 +5429,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             TemplateSummary = $"표시품목 {TemplateItems.Count:N0}건 / 연결장비 {linkedAssetCount:N0}대";
             BillingAssetCoverageWarning = BuildBillingAssetCoverageWarning(profileAssetCount, linkedAssetCount, LinkAssetsLater);
             BillingSchedulePreviewText = BuildBillingSchedulePreview();
+            InvoiceItemNamePreviewText = invoiceItemNamePreview;
             DocumentIssuePreviewText = BuildDocumentIssuePreview();
             ApplySelectedAssetsHint = BuildApplySelectedAssetsHint(linkedAssetCount);
             SetRepresentativeAssetCommand.NotifyCanExecuteChanged();

@@ -773,6 +773,10 @@
                                                TextWrapping="Wrap"/>
                                 </Border>
                                 <TextBlock Text="{Binding BillingSchedulePreviewText}" Foreground="#B3E5FC" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                                <TextBlock Foreground="#80CBC4" Margin="0,4,0,0" TextWrapping="Wrap">
+                                    <Run Text="전표 품명 미리보기: " FontWeight="Bold"/>
+                                    <Run Text="{Binding InvoiceItemNamePreviewText}"/>
+                                </TextBlock>
                                 <TextBlock Text="{Binding DocumentIssuePreviewText}" Foreground="#B3E5FC" Margin="0,4,0,0" TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>

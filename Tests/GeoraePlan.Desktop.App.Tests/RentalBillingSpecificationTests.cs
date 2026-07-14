@@ -152,6 +152,35 @@ public sealed class RentalBillingSpecificationTests
     }
 
     [Fact]
+    public void RentalBillingViewModel_RefreshesInvoiceItemNamesImmediately_WhenAnchorMonthOrCycleChanges()
+    {
+        var vm = new RentalBillingViewModel(null!, null!, new SessionState())
+        {
+            ReferenceDate = new DateOnly(2026, 7, 13),
+            EditContractDate = new DateTime(2026, 7, 1)
+        };
+        var item = new RentalBillingTemplateEditorItem
+        {
+            DisplayItemName = "사무기기 렌탈대금",
+            BillingLineMode = "묶음"
+        };
+        vm.TemplateItems.Add(item);
+
+        vm.EditBillingCycleMonths = 3;
+        vm.EditBillingAnchorMonth = 7;
+
+        const string threeMonthNames = "사무기기 렌탈대금[7월], 사무기기 렌탈대금[8월], 사무기기 렌탈대금[9월]";
+        Assert.Equal(threeMonthNames, vm.InvoiceItemNamePreviewText);
+        Assert.Equal(threeMonthNames, item.InvoiceItemNamePreview);
+
+        vm.EditBillingCycleMonths = 2;
+
+        const string twoMonthNames = "사무기기 렌탈대금[7월], 사무기기 렌탈대금[8월]";
+        Assert.Equal(twoMonthNames, vm.InvoiceItemNamePreviewText);
+        Assert.Equal(twoMonthNames, item.InvoiceItemNamePreview);
+    }
+
+    [Fact]
     public void RentalBillingViewModel_AppliesManufacturerModelSpecificationForIndividualTemplateItem()
     {
         var assetId = Guid.Parse("33333333-3333-3333-3333-333333333333");
