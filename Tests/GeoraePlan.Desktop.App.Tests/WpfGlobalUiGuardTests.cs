@@ -237,8 +237,10 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("<ScrollViewer Grid.Row=\"1\" VerticalScrollBarVisibility=\"Auto\">", xaml, StringComparison.Ordinal);
         Assert.Contains("Text=\"{Binding Description}\" TextWrapping=\"Wrap\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Text=\"{Binding SuggestedAction}\" TextWrapping=\"Wrap\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Content=\"수정 화면 열기\" Click=\"FixButton_Click\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Content=\"닫기(F12)\" Click=\"CloseButton_Click\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Content=\"수정 화면 열기\" Style=\"{StaticResource TradePlanEditButtonStyle}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Click=\"FixButton_Click\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Content=\"닫기(F12)\" Style=\"{StaticResource TradePlanSecondaryButtonStyle}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Click=\"CloseButton_Click\"", xaml, StringComparison.Ordinal);
         Assert.Contains("NonClosingActionRequested.Invoke", code, StringComparison.Ordinal);
         Assert.Contains("DialogWindowCloseHelper.Close(this)", code, StringComparison.Ordinal);
     }

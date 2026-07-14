@@ -104,25 +104,18 @@
                            VerticalAlignment="Center"/>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                     <Button Content="순서 초기화"
-                            Style="{StaticResource DialogActionButtonStyle}"
+                            Style="{StaticResource TradePlanSecondaryButtonStyle}"
                             Width="128"
-                            Background="#526985"
-                            Foreground="White"
                             Command="{Binding ResetOrderCommand}"/>
                     <Button Content="확인"
-                            Style="{StaticResource DialogActionButtonStyle}"
-                            Background="#1F7ACC"
-                            Foreground="White"
+                            Style="{StaticResource TradePlanPrimaryButtonStyle}"
                             Command="{Binding ConfirmCommand}"/>
                     <Button Content="취소"
-                            Style="{StaticResource DialogActionButtonStyle}"
+                            Style="{StaticResource TradePlanSecondaryButtonStyle}"
                             Margin="0"
-                            Background="#3D4F66"
-                            Foreground="White"
                             Command="{Binding CancelCommand}"/>
                 </StackPanel>
             </Grid>
         </Border>
     </Grid>
 </Window>
-

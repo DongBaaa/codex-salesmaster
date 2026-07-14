@@ -42,7 +42,7 @@
             <Setter Property="MinHeight" Value="0"/>
             <Setter Property="CaretBrush" Value="#4FC3F7"/>
         </Style>
-        <Style TargetType="Button">
+        <Style TargetType="Button" BasedOn="{StaticResource TradePlanSecondaryButtonStyle}">
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="12,7"/>
@@ -137,11 +137,11 @@
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
                     <Button Content="새로고침"
-                            Background="#455A64"
+                            Style="{StaticResource TradePlanSecondaryButtonStyle}"
                             Command="{Binding RefreshCommand}"
                             Margin="0,0,8,0"/>
                     <Button Content="닫기(F12)"
-                            Background="#546E7A"
+                            Style="{StaticResource TradePlanSecondaryButtonStyle}"
                             Click="CloseButton_Click"/>
                 </StackPanel>
             </Grid>
@@ -172,32 +172,32 @@
                     </DatePicker.Resources>
                 </DatePicker>
                 <Button Content="기간 해제"
-                        Background="#455A64"
+                        Style="{StaticResource TradePlanSecondaryButtonStyle}"
                         Command="{Binding ClearDateRangeCommand}"
                         Margin="0,0,8,0"/>
                 <Button Content="전체 거래처"
-                        Background="#2E4158"
+                        Style="{StaticResource TradePlanSecondaryButtonStyle}"
                         Command="{Binding ShowAllCommand}"
                         Margin="0,0,8,0"/>
                 <Rectangle Width="1" Height="22" Fill="#3E5875" Margin="4,0,12,0" VerticalAlignment="Center"/>
                 <Button Content="판매작성"
-                        Background="#1565C0"
+                        Style="{StaticResource TradePlanEditButtonStyle}"
                         Click="SalesEntryButton_Click"
                         Margin="0,0,6,0"/>
                 <Button Content="구매작성"
-                        Background="#0277BD"
+                        Style="{StaticResource TradePlanEditButtonStyle}"
                         Click="PurchaseEntryButton_Click"
                         Margin="0,0,6,0"/>
                 <Button Content="견적/발주"
-                        Background="#455A64"
+                        Style="{StaticResource TradePlanEditButtonStyle}"
                         Click="ProcurementEntryButton_Click"
                         Margin="0,0,6,0"/>
                 <Button Content="수금 입력"
-                        Background="#00897B"
+                        Style="{StaticResource TradePlanEditButtonStyle}"
                         Click="PaymentEntryButton_Click"
                         Margin="0,0,6,0"/>
                 <Button Content="전표 인쇄[F9]"
-                        Background="#1E88E5"
+                        Style="{StaticResource TradePlanPrintButtonStyle}"
                         Click="PrintStatementButton_Click"
                         Margin="0,0,12,0"/>
                 <TextBlock Text="기간을 비우면 전체 기간으로 조회합니다."
@@ -229,7 +229,7 @@
                                        Margin="0,4,0,0"
                                        TextWrapping="Wrap"/>
                             <Button Content="전체 보기"
-                                    Background="#2E4158"
+                                    Style="{StaticResource TradePlanSecondaryButtonStyle}"
                                     Command="{Binding ShowAllCommand}"
                                     Margin="0,8,0,0"/>
                         </StackPanel>

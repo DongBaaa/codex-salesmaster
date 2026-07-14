@@ -68,14 +68,13 @@
                      TextChanged="SearchBox_TextChanged"/>
             <Button Grid.Column="1"
                     Content="전체선택"
-                    Style="{StaticResource DialogActionButtonStyle}"
-                    Background="#314A6B"
+                    Style="{StaticResource TradePlanSecondaryButtonStyle}"
+                    Margin="0,0,8,0"
                     Click="SelectAllButton_Click"/>
             <Button Grid.Column="2"
                     Content="전체해제"
-                    Style="{StaticResource DialogActionButtonStyle}"
                     Margin="0"
-                    Background="#314A6B"
+                    Style="{StaticResource TradePlanSecondaryButtonStyle}"
                     Click="ClearSelectionButton_Click"/>
         </Grid>
 
@@ -130,15 +129,13 @@
                     HorizontalAlignment="Right"
                     Margin="0,12,0,0">
             <Button Content="불러오기"
-                    Style="{StaticResource DialogActionButtonStyle}"
-                    Background="#0D47A1"
+                    Style="{StaticResource TradePlanPrimaryButtonStyle}"
+                    Margin="0,0,8,0"
                     Click="ConfirmButton_Click"/>
             <Button Content="취소"
-                    Style="{StaticResource DialogActionButtonStyle}"
                     Margin="0"
-                    Background="#455A64"
+                    Style="{StaticResource TradePlanSecondaryButtonStyle}"
                     Click="CancelButton_Click"/>
         </StackPanel>
     </Grid>
 </Window>
-

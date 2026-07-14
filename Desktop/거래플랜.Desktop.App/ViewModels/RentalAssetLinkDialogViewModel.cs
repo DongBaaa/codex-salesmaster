@@ -34,8 +34,11 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
 
     public string CurrentCustomerName => string.IsNullOrWhiteSpace(_currentCustomerName) ? "(거래처 미지정)" : _currentCustomerName;
     public string CurrentOfficeName => OfficeCodeCatalog.GetOfficeDisplayName(_currentOfficeCode);
-    public int SelectedCount => _assetPool.Count(asset => asset.IsSelected);
-    public string ConfirmButtonLabel => $"선택 {SelectedCount:N0}대 반영";
+    public int CurrentLinkedCount => _assetPool.Count(asset => asset.IsLinkedToCurrentProfile);
+    public int SelectedCount => _assetPool.Count(asset => asset.IsSelected && !asset.IsLinkedToCurrentProfile);
+    public int RelinkSelectionCount => _assetPool.Count(asset => asset.IsSelected && asset.IsLinkedToAnotherProfile);
+    public string SelectionSummary => $"현재 연결 {CurrentLinkedCount:N0}대 · 이번 추가 {SelectedCount:N0}대 · 다른 청구에서 이동 {RelinkSelectionCount:N0}대";
+    public string ConfirmButtonLabel => $"선택 장비 {SelectedCount:N0}대 추가";
     public bool CanConfirm => SelectedCount > 0;
 
     public RentalAssetLinkDialogViewModel(
@@ -138,9 +141,7 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
                     InstallDate = ToDateTime(source.InstallDate),
                     FreeSupplyItems = source.FreeSupplyItems,
                     PaidSupplyItems = source.PaidSupplyItems,
-                    IsSelected = _currentBillingProfileId.HasValue &&
-                                 _currentBillingProfileId.Value != Guid.Empty &&
-                                 source.BillingProfileId == _currentBillingProfileId.Value,
+                    IsSelected = false,
                     IsLinkedToCurrentProfile = _currentBillingProfileId.HasValue &&
                                                _currentBillingProfileId.Value != Guid.Empty &&
                                                source.BillingProfileId == _currentBillingProfileId.Value,
@@ -240,12 +241,12 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
 
     public IReadOnlyList<RentalBillingAssetOption> GetSelectedAssets()
         => _assetPool
-            .Where(asset => asset.IsSelected)
+            .Where(asset => asset.IsSelected && !asset.IsLinkedToCurrentProfile)
             .Select(asset => CloneAsset(asset))
             .ToList();
 
     public int GetRelinkSelectionCount()
-        => _assetPool.Count(asset => asset.IsSelected && asset.IsLinkedToAnotherProfile);
+        => RelinkSelectionCount;
 
     private void ApplyFilter()
     {
@@ -265,6 +266,9 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
                 ? $"선택 장비 {SelectedCount:N0}대를 현재 거래처에 연결할 예정입니다. {BuildScopeStatusSuffix()}"
                 : $"표시 장비 {Assets.Count:N0}대 / 전체 {_assetPool.Count:N0}대 ({BuildScopeStatusSuffix()})";
         OnPropertyChanged(nameof(SelectedCount));
+        OnPropertyChanged(nameof(CurrentLinkedCount));
+        OnPropertyChanged(nameof(RelinkSelectionCount));
+        OnPropertyChanged(nameof(SelectionSummary));
         OnPropertyChanged(nameof(ConfirmButtonLabel));
         OnPropertyChanged(nameof(CanConfirm));
     }
@@ -295,10 +299,19 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
 
         if (string.Equals(e.PropertyName, nameof(RentalBillingAssetOption.IsSelected), StringComparison.Ordinal))
         {
+            if (asset.IsLinkedToCurrentProfile && asset.IsSelected)
+            {
+                asset.IsSelected = false;
+                StatusMessage = "이미 현재 청구 프로필에 연결된 장비입니다. 연결 해제는 청구관리의 '선택 장비 연결 해제'를 사용하세요.";
+                return;
+            }
+
             if (asset.IsSelected && string.IsNullOrWhiteSpace(asset.InstallLocation) && !string.IsNullOrWhiteSpace(_defaultInstallLocation))
                 asset.InstallLocation = _defaultInstallLocation;
 
             OnPropertyChanged(nameof(SelectedCount));
+            OnPropertyChanged(nameof(RelinkSelectionCount));
+            OnPropertyChanged(nameof(SelectionSummary));
             OnPropertyChanged(nameof(ConfirmButtonLabel));
             OnPropertyChanged(nameof(CanConfirm));
             StatusMessage = SelectedCount > 0

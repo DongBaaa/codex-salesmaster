@@ -41,11 +41,11 @@
             <Setter Property="MinWidth" Value="180"/>
             <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
-        <Style TargetType="Button">
+        <Style TargetType="Button" BasedOn="{StaticResource TradePlanSecondaryButtonStyle}">
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="BorderBrush" Value="#5D7593"/>
-            <Setter Property="Background" Value="#435A72"/>
+            <Setter Property="Background" Value="{StaticResource TradePlanSecondaryBrush}"/>
             <Setter Property="Padding" Value="14,0"/>
             <Setter Property="Height" Value="38"/>
             <Setter Property="MinWidth" Value="108"/>
@@ -202,18 +202,15 @@
                             HorizontalAlignment="Right"
                             Margin="0,8,0,0">
                     <Button Content="새 거래처 등록"
-                            Background="#1565C0"
-                            BorderBrush="#1565C0"
+                            Style="{StaticResource TradePlanEditButtonStyle}"
                             Margin="0,0,6,0"
                             Click="CreateCustomerButton_Click"/>
                     <Button Content="선택 거래처 수정"
-                            Background="#8E24AA"
-                            BorderBrush="#8E24AA"
+                            Style="{StaticResource TradePlanEditButtonStyle}"
                             Margin="0,0,6,0"
                             Click="EditCustomerButton_Click"/>
                     <Button Content="선택 거래처 삭제"
-                            Background="#C62828"
-                            BorderBrush="#C62828"
+                            Style="{StaticResource TradePlanDangerButtonStyle}"
                             Margin="0,0,6,0"
                             Click="DeleteCustomerButton_Click"/>
                     <Rectangle Width="1"
@@ -222,8 +219,7 @@
                                Margin="4,0,10,0"
                                VerticalAlignment="Center"/>
                     <Button Content="담당지점 저장"
-                            Background="#1B5E20"
-                            BorderBrush="#1B5E20"
+                            Style="{StaticResource TradePlanPrimaryButtonStyle}"
                             Margin="0,0,6,0"
                             ToolTip="담당지점 변경은 즉시 저장됩니다. 저장 실패로 남은 변경만 다시 저장합니다."
                             Command="{Binding SaveOfficeChangesCommand}"/>

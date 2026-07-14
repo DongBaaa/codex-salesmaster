@@ -68,12 +68,14 @@
                     HorizontalAlignment="Right"
                     Margin="0,16,0,0">
             <Button Content="확인"
+                    Style="{StaticResource TradePlanPrimaryButtonStyle}"
                     Width="110"
                     Height="36"
                     Margin="0,0,8,0"
                     IsDefault="True"
                     Click="Confirm_Click"/>
             <Button Content="취소"
+                    Style="{StaticResource TradePlanSecondaryButtonStyle}"
                     Width="110"
                     Height="36"
                     IsCancel="True"/>

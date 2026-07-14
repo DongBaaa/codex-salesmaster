@@ -96,16 +96,13 @@
 
                 <Button Content="로그인"
                         Command="{Binding LoginCommand}"
-                        Style="{StaticResource PrimaryActionButtonStyle}"
-                        Background="#0D47A1"
+                        Style="{StaticResource TradePlanPrimaryButtonStyle}"
                         IsDefault="True"/>
 
                 <Button Content="오프라인 모드로 시작"
                         Command="{Binding OfflineLoginCommand}"
                         Visibility="{Binding ShowOfflineButton, Converter={StaticResource BoolToVisibility}}"
-                        Style="{StaticResource SecondaryActionButtonStyle}"
-                        Background="#37474F"
-                        Foreground="#D2E8FF"
+                        Style="{StaticResource TradePlanSecondaryButtonStyle}"
                         Margin="0,8,0,0"/>
 
                 <ProgressBar IsIndeterminate="True"

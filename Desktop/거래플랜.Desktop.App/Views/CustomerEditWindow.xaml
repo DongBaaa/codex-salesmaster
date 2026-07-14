@@ -70,7 +70,7 @@
             <Setter Property="Padding" Value="8,0,4,0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
-        <Style TargetType="Button">
+        <Style TargetType="Button" BasedOn="{StaticResource TradePlanSecondaryButtonStyle}">
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="14,0"/>
@@ -121,7 +121,7 @@
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="거래처 등록 및 수정"
                            FontSize="14" FontWeight="Bold" Foreground="White"/>
-                <Button Grid.Column="1" Content="닫기 (F12)" Background="#B71C1C"
+                <Button Grid.Column="1" Content="닫기 (F12)" Style="{StaticResource TradePlanSecondaryButtonStyle}"
                         Click="CloseButton_Click"/>
             </Grid>
         </Border>
@@ -137,11 +137,11 @@
                 <TextBlock Grid.Column="0"
                            Text="기본 거래처 정보와 계약서 PDF를 함께 관리할 수 있습니다."
                            Foreground="#90CAF9" FontSize="11" VerticalAlignment="Center"/>
-                <Button Grid.Column="1" Content="연속입력 (F6)" Background="#00695C"
+                <Button Grid.Column="1" Content="연속입력 (F6)" Style="{StaticResource TradePlanEditButtonStyle}"
                         Margin="0,0,8,0" Command="{Binding SaveAndNewCommand}"/>
-                <Button Grid.Column="2" Content="임대 자산 보기" Background="#6A1B9A"
+                <Button Grid.Column="2" Content="임대 자산 보기" Style="{StaticResource TradePlanEditButtonStyle}"
                         Margin="0,0,8,0" Click="OpenRentalAssetsButton_Click"/>
-                <Button Grid.Column="3" Content="저장" Background="#0D47A1" Padding="20,6"
+                <Button Grid.Column="3" Content="저장" Style="{StaticResource TradePlanPrimaryButtonStyle}" Padding="20,6"
                         Command="{Binding SaveCommand}"/>
             </Grid>
         </Border>
@@ -355,13 +355,13 @@
                             <Label Grid.Column="0" Content="메모"/>
                             <TextBox Grid.Column="1" Text="{Binding ContractDescription, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,12,0"/>
                             <CheckBox Grid.Column="2" Content="대표 계약서" IsChecked="{Binding NewContractIsPrimary}" Margin="0,0,12,0"/>
-                            <Button Grid.Column="3" Content="새 계약서" Background="#455A64" Margin="0,0,8,0"
+                            <Button Grid.Column="3" Content="새 계약서" Style="{StaticResource TradePlanEditButtonStyle}" Margin="0,0,8,0"
                                     Command="{Binding BeginNewContractEntryCommand}"/>
-                            <Button Grid.Column="4" Content="PDF 추가" Background="#1565C0" Margin="0,0,8,0"
+                            <Button Grid.Column="4" Content="PDF 추가" Style="{StaticResource TradePlanEditButtonStyle}" Margin="0,0,8,0"
                                     Command="{Binding AddContractCommand}"/>
-                            <Button Grid.Column="5" Content="열기" Background="#2E7D32" Margin="0,0,8,0"
+                            <Button Grid.Column="5" Content="열기" Style="{StaticResource TradePlanSecondaryButtonStyle}" Margin="0,0,8,0"
                                     Command="{Binding OpenContractCommand}"/>
-                            <Button Grid.Column="6" Content="대표 지정" Background="#6A1B9A" Margin="0,0,8,0"
+                            <Button Grid.Column="6" Content="대표 지정" Style="{StaticResource TradePlanEditButtonStyle}" Margin="0,0,8,0"
                                     Command="{Binding SetPrimaryContractCommand}"/>
                         </Grid>
 
@@ -413,7 +413,7 @@
 
                             <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,6,0,0">
                                 <TextBlock Text="스캔한 계약서는 PDF만 등록됩니다. 권장 크기: 15MB 이하" Foreground="#90CAF9" Margin="0,0,12,0"/>
-                                <Button Content="삭제" Background="#B71C1C" Command="{Binding DeleteContractCommand}"/>
+                                <Button Content="삭제" Style="{StaticResource TradePlanDangerButtonStyle}" Command="{Binding DeleteContractCommand}"/>
                             </StackPanel>
                         </Grid>
                     </Grid>

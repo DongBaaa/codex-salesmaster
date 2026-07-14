@@ -92,11 +92,11 @@
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
         <Style x:Key="DatePickerButtonStyle" TargetType="{x:Type Button}" BasedOn="{StaticResource UnifiedDatePickerButtonStyle}"/>
-        <Style TargetType="Button">
+        <Style TargetType="Button" BasedOn="{StaticResource TradePlanSecondaryButtonStyle}">
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="BorderBrush" Value="#5D7593"/>
-            <Setter Property="Background" Value="#435A72"/>
+            <Setter Property="Background" Value="{StaticResource TradePlanSecondaryBrush}"/>
             <Setter Property="Padding" Value="14,0"/>
             <Setter Property="Height" Value="38"/>
             <Setter Property="MinWidth" Value="108"/>
@@ -114,9 +114,9 @@
                     <TextBlock Text="엑셀 렌탈계약서 전체 내용을 기준으로 계약서를 작성하고 수정합니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
                 </StackPanel>
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                    <Button Content="{Binding ToggleEditButtonText}" Background="#6A1B9A" BorderBrush="#6A1B9A" Margin="0,0,8,0" Command="{Binding ToggleEditModeCommand}"/>
-                    <Button Content="미리보기 갱신" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,8,0" Command="{Binding RefreshPreviewCommand}"/>
-                    <Button Content="닫기" Command="{Binding CloseCommand}"/>
+                    <Button Content="{Binding ToggleEditButtonText}" Style="{StaticResource TradePlanEditButtonStyle}" Margin="0,0,8,0" Command="{Binding ToggleEditModeCommand}"/>
+                    <Button Content="미리보기 갱신" Style="{StaticResource TradePlanPrintButtonStyle}" Margin="0,0,8,0" Command="{Binding RefreshPreviewCommand}"/>
+                    <Button Content="닫기" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding CloseCommand}"/>
                 </StackPanel>
             </DockPanel>
         </Border>

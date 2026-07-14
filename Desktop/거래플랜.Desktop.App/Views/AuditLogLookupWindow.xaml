@@ -95,8 +95,8 @@
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
 
-        <Style TargetType="Button">
-            <Setter Property="Background" Value="#223754"/>
+        <Style TargetType="Button" BasedOn="{StaticResource TradePlanSecondaryButtonStyle}">
+            <Setter Property="Background" Value="{StaticResource TradePlanSecondaryBrush}"/>
             <Setter Property="Foreground" Value="#EAF2FF"/>
             <Setter Property="BorderBrush" Value="#2E4060"/>
             <Setter Property="BorderThickness" Value="1"/>
@@ -187,7 +187,7 @@
                                HorizontalAlignment="Right"
                                Margin="0,0,0,10"/>
                     <Button Content="닫기(F12)"
-                            Background="#14243A"
+                            Style="{StaticResource TradePlanSecondaryButtonStyle}"
                             Click="CloseButton_Click"/>
                 </StackPanel>
             </Grid>
@@ -248,7 +248,7 @@
 
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom">
                     <Button Content="조회"
-                            Background="#2A4666"
+                            Style="{StaticResource TradePlanSecondaryButtonStyle}"
                             Command="{Binding SearchCommand}"
                             IsEnabled="{Binding CanLookupAuditLogs}"
                             IsDefault="True"

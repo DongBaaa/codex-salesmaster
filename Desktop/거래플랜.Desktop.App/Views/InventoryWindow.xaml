@@ -47,7 +47,7 @@
             <Setter Property="MinWidth" Value="180"/>
             <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
-        <Style TargetType="Button">
+        <Style TargetType="Button" BasedOn="{StaticResource TradePlanSecondaryButtonStyle}">
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="14,0"/>
@@ -151,9 +151,8 @@
                                Margin="8,0,0,0"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button Style="{StaticResource ToolbarButtonStyle}"
+                    <Button Style="{StaticResource TradePlanEditButtonStyle}" Margin="0,0,8,0"
                             Content="신규 품목"
-                            Background="#1B5E20"
                             Command="{Binding NewItemCommand}"/>
                     <Border Background="#0F2034"
                             BorderBrush="#4FC3F7"
@@ -170,29 +169,24 @@
                                   FontWeight="Bold"
                                   VerticalAlignment="Center"/>
                     </Border>
-                    <Button Style="{StaticResource ToolbarButtonStyle}"
+                    <Button Style="{StaticResource TradePlanPrimaryButtonStyle}" Margin="0,0,8,0"
                             Content="품목 저장"
-                            Background="#0D47A1"
                             Command="{Binding SaveItemCommand}"/>
-                    <Button Style="{StaticResource ToolbarButtonStyle}"
+                    <Button Style="{StaticResource TradePlanDangerButtonStyle}" Margin="0,0,8,0"
                             Content="선택 품목 삭제"
-                            Background="#B71C1C"
                             Command="{Binding DeleteItemCommand}"/>
-                    <Button Style="{StaticResource ToolbarButtonStyle}"
+                    <Button Style="{StaticResource TradePlanDangerButtonStyle}" Margin="0,0,8,0"
                             Content="선택 재고 초기화"
-                            Background="#E65100"
                             Visibility="{Binding IsAdmin, Converter={StaticResource BoolToVisibility}}"
                             ToolTip="선택한 품목들의 재고를 0으로 초기화합니다. 목록에서 Ctrl 또는 Shift로 여러 품목을 선택할 수 있으며, 기존 전표/재고이동 이력은 유지됩니다."
                             Click="ResetInventoryButton_Click"/>
-                    <Button Style="{StaticResource ToolbarButtonStyle}"
+                    <Button Style="{StaticResource TradePlanEditButtonStyle}" Margin="0,0,8,0"
                             Content="재고이동"
-                            Background="#6A1B9A"
                             Visibility="{Binding IsAdmin, Converter={StaticResource BoolToVisibility}}"
                             Click="InventoryTransferButton_Click"/>
                     <Rectangle Width="1" Height="20" Fill="#3E5875" Margin="4,0,10,0" VerticalAlignment="Center"/>
-                    <Button Style="{StaticResource ToolbarButtonStyle}"
+                    <Button Style="{StaticResource TradePlanSecondaryButtonStyle}"
                             Content="닫기 (F12)"
-                            Background="#37474F"
                             Margin="0"
                             Click="CloseButton_Click"/>
                 </StackPanel>

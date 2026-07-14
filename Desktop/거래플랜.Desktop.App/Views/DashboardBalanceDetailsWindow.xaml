@@ -8,11 +8,11 @@
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="Foreground" Value="#DDEBFF"/>
         </Style>
-        <Style TargetType="Button">
+        <Style TargetType="Button" BasedOn="{StaticResource TradePlanSecondaryButtonStyle}">
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="FontSize" Value="14"/>
             <Setter Property="Foreground" Value="White"/>
-            <Setter Property="Background" Value="#455A64"/>
+            <Setter Property="Background" Value="{StaticResource TradePlanSecondaryBrush}"/>
             <Setter Property="BorderBrush" Value="#4C6F91"/>
             <Setter Property="Padding" Value="14,8"/>
             <Setter Property="Margin" Value="4,0"/>
@@ -232,21 +232,21 @@
                     <StackPanel Grid.Row="2" Margin="0,14,0,0">
                         <Button Content="{Binding ProcessActionText}"
                                 Command="{Binding ProcessSelectedBalanceCommand}"
-                                Background="#00897B"
+                                Style="{StaticResource TradePlanEditButtonStyle}"
                                 Margin="0,0,0,8"/>
                         <Button Content="{Binding ProcessFullActionText}"
                                 Command="{Binding ProcessSelectedFullBalanceCommand}"
-                                Background="#1B5E20"
+                                Style="{StaticResource TradePlanPrimaryButtonStyle}"
                                 Margin="0,0,0,8"/>
                         <Button Content="체크 합계 입력"
                                 Command="{Binding FillCheckedBalanceAmountCommand}"
                                 IsEnabled="{Binding HasCheckedRows}"
-                                Background="#455A64"
+                                Style="{StaticResource TradePlanSecondaryButtonStyle}"
                                 Margin="0,0,0,8"/>
                         <Button Content="체크 전표 일괄 처리"
                                 Command="{Binding ProcessCheckedBalancesCommand}"
                                 IsEnabled="{Binding HasCheckedRows}"
-                                Background="#00695C"
+                                Style="{StaticResource TradePlanPrimaryButtonStyle}"
                                 Margin="0,0,0,8"/>
                         <TextBlock Text="저장 후 목록과 메인 요약 금액이 다시 계산됩니다."
                                    Foreground="#9FB3C8"

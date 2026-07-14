@@ -8,11 +8,11 @@
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="Foreground" Value="#DDEBFF"/>
         </Style>
-        <Style TargetType="Button">
+        <Style TargetType="Button" BasedOn="{StaticResource TradePlanSecondaryButtonStyle}">
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="FontSize" Value="14"/>
             <Setter Property="Foreground" Value="White"/>
-            <Setter Property="Background" Value="#2E5C7D"/>
+            <Setter Property="Background" Value="{StaticResource TradePlanSecondaryBrush}"/>
             <Setter Property="BorderBrush" Value="#4C6F91"/>
             <Setter Property="Padding" Value="14,8"/>
             <Setter Property="Margin" Value="4,0"/>
@@ -91,9 +91,9 @@
                     <TextBlock Text="{Binding ScanSummaryText}" FontSize="13" Foreground="#FFD56B" Margin="0,8,0,0"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button Content="새로고침(F5)" Command="{Binding RefreshCommand}" Background="#1976A8"/>
-                    <Button Content="엑셀 저장" Command="{Binding ExportExcelCommand}" Background="#1565C0"/>
-                    <Button Content="닫기(F12)" Click="CloseButton_Click" Background="#455A64"/>
+                    <Button Content="새로고침(F5)" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding RefreshCommand}"/>
+                    <Button Content="엑셀 저장" Style="{StaticResource TradePlanPrintButtonStyle}" Command="{Binding ExportExcelCommand}"/>
+                    <Button Content="닫기(F12)" Style="{StaticResource TradePlanSecondaryButtonStyle}" Click="CloseButton_Click"/>
                 </StackPanel>
             </Grid>
         </Border>
@@ -187,9 +187,13 @@
                         <Button Content="{Binding SelectedIssue.MergeActionText, FallbackValue=중복 병합}"
                                 Click="MergeSelectedButton_Click"
                                 IsEnabled="{Binding SelectedIssue.CanMergeDuplicates}"
-                                Background="#7B5E00"/>
-                        <Button Content="바로 수정" Click="FixSelectedButton_Click" Background="#00897B"/>
-                        <Button Content="닫기" Click="CloseButton_Click" Background="#455A64"/>
+                                Style="{StaticResource TradePlanDangerButtonStyle}"/>
+                        <Button Content="해당 화면에서 수정"
+                                Style="{StaticResource TradePlanEditButtonStyle}"
+                                Click="FixSelectedButton_Click"
+                                IsEnabled="{Binding SelectedIssue.HasDirectAction}"
+                                ToolTip="직접 이동을 지원하는 항목에서만 사용할 수 있습니다."/>
+                        <Button Content="닫기" Style="{StaticResource TradePlanSecondaryButtonStyle}" Click="CloseButton_Click"/>
                     </StackPanel>
                 </Grid>
             </Border>

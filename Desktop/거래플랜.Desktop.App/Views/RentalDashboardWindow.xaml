@@ -18,11 +18,11 @@
                 </DataTrigger>
             </Style.Triggers>
         </Style>
-        <Style TargetType="Button">
+        <Style TargetType="Button" BasedOn="{StaticResource TradePlanSecondaryButtonStyle}">
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="BorderBrush" Value="#5D7593"/>
-            <Setter Property="Background" Value="#435A72"/>
+            <Setter Property="Background" Value="{StaticResource TradePlanSecondaryBrush}"/>
             <Setter Property="Padding" Value="14,0"/>
             <Setter Property="Height" Value="38"/>
             <Setter Property="MinWidth" Value="108"/>

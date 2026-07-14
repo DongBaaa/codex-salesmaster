@@ -36,9 +36,9 @@
             <Setter Property="MinWidth" Value="180"/>
             <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
-        <Style TargetType="Button">
+        <Style TargetType="Button" BasedOn="{StaticResource TradePlanSecondaryButtonStyle}">
             <Setter Property="Foreground" Value="White"/>
-            <Setter Property="Background" Value="#435A72"/>
+            <Setter Property="Background" Value="{StaticResource TradePlanSecondaryBrush}"/>
             <Setter Property="BorderBrush" Value="#5D7593"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="14,0"/>
@@ -318,7 +318,7 @@
                             </Grid.RowDefinitions>
                             <DockPanel Grid.Row="0" Margin="0,0,0,8">
                                 <CheckBox Content="장비는 나중에 연결" IsChecked="{Binding LinkAssetsLater}" Foreground="#EAF2FF" Margin="0,0,12,0"/>
-                                <Button Content="후보 장비 새로고침" Command="{Binding RefreshCandidateAssetsCommand}" Background="#1565C0" BorderBrush="#1565C0"/>
+                                <Button Content="후보 장비 새로고침" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding RefreshCandidateAssetsCommand}"/>
                             </DockPanel>
                             <DataGrid Grid.Row="1" ItemsSource="{Binding CandidateAssets}" BorderThickness="0">
                                 <DataGrid.Columns>
@@ -360,16 +360,14 @@
                             </Grid.RowDefinitions>
                             <StackPanel Grid.Row="0" Margin="0,0,0,8">
                                 <WrapPanel>
-                                    <Button Content="표시 라인 추가" Background="#1565C0" BorderBrush="#1565C0" Margin="0,0,8,0" Command="{Binding AddTemplateItemCommand}"/>
-                                    <Button Content="선택 표시 라인 삭제" Background="#C62828" BorderBrush="#C62828" Margin="0,0,8,0" Command="{Binding RemoveTemplateItemCommand}"/>
+                                    <Button Content="표시 라인 추가" Style="{StaticResource TradePlanEditButtonStyle}" Margin="0,0,8,0" Command="{Binding AddTemplateItemCommand}"/>
+                                    <Button Content="선택 표시 라인 삭제" Style="{StaticResource TradePlanDangerButtonStyle}" Margin="0,0,8,0" Command="{Binding RemoveTemplateItemCommand}"/>
                                     <Button Content="모델별 자동 구성"
-                                            Background="#00897B"
-                                            BorderBrush="#00897B"
+                                            Style="{StaticResource TradePlanEditButtonStyle}"
                                             Margin="0,0,8,0"
                                             Command="{Binding AutoGroupIndividualTemplateItemsByModelCommand}"/>
                                     <Button Content="선택 장비를 거래처 임대 자산으로 연결"
-                                            Background="#00897B"
-                                            BorderBrush="#00897B"
+                                            Style="{StaticResource TradePlanEditButtonStyle}"
                                             Command="{Binding ApplySelectedAssetsToTemplateCommand}"
                                             IsEnabled="{Binding CanApplySelectedAssets}"/>
                                 </WrapPanel>
@@ -466,10 +464,10 @@
 
         <Border Grid.Row="2" Background="#122038" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="10">
             <DockPanel>
-                <Button DockPanel.Dock="Right" Content="취소" Click="CancelButton_Click" Margin="8,0,0,0"/>
-                <Button DockPanel.Dock="Right" Content="저장 완료" Background="#1B5E20" BorderBrush="#1B5E20" Command="{Binding SaveCommand}" Margin="8,0,0,0"/>
-                <Button DockPanel.Dock="Right" Content="다음" Background="#1565C0" BorderBrush="#1565C0" Command="{Binding NextStepCommand}" Margin="8,0,0,0"/>
-                <Button DockPanel.Dock="Right" Content="이전" Command="{Binding PreviousStepCommand}"/>
+                <Button DockPanel.Dock="Right" Content="취소" Style="{StaticResource TradePlanSecondaryButtonStyle}" Click="CancelButton_Click" Margin="8,0,0,0"/>
+                <Button DockPanel.Dock="Right" Content="저장 완료" Style="{StaticResource TradePlanPrimaryButtonStyle}" Command="{Binding SaveCommand}" Margin="8,0,0,0"/>
+                <Button DockPanel.Dock="Right" Content="다음" Style="{StaticResource TradePlanEditButtonStyle}" Command="{Binding NextStepCommand}" Margin="8,0,0,0"/>
+                <Button DockPanel.Dock="Right" Content="이전" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding PreviousStepCommand}"/>
                 <TextBlock Text="{Binding StatusMessage}" VerticalAlignment="Center" Foreground="#90CAF9"/>
             </DockPanel>
         </Border>

@@ -73,7 +73,7 @@
             <Setter Property="Padding" Value="8,0,4,0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
-        <Style TargetType="Button">
+        <Style TargetType="Button" BasedOn="{StaticResource TradePlanSecondaryButtonStyle}">
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="16,0"/>
@@ -132,21 +132,21 @@
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button Content="신규 (F6)"
-                            Background="#1B5E20"
+                            Style="{StaticResource TradePlanEditButtonStyle}"
                             Margin="0,0,6,0"
                             Command="{Binding NewTransferCommand}"/>
                     <Button Content="저장 (F8)"
-                            Background="#0D47A1"
+                            Style="{StaticResource TradePlanPrimaryButtonStyle}"
                             Margin="0,0,6,0"
                             Command="{Binding SaveTransferCommand}"/>
                     <Button Content="문서 삭제"
-                            Background="#B71C1C"
+                            Style="{StaticResource TradePlanDangerButtonStyle}"
                             Margin="0,0,6,0"
                             IsEnabled="{Binding CanDeleteTransfer}"
                             Click="DeleteTransferButton_Click"/>
                     <Rectangle Width="1" Height="20" Fill="#3E5875" Margin="4,0,10,0" VerticalAlignment="Center"/>
                     <Button Content="닫기 (F12)"
-                            Background="#37474F"
+                            Style="{StaticResource TradePlanSecondaryButtonStyle}"
                             Click="CloseButton_Click"/>
                 </StackPanel>
             </Grid>
@@ -350,7 +350,7 @@
                                              KeyDown="InputItemNameTextBox_KeyDown"/>
                                     <Button Grid.Column="3"
                                             Content="찾기"
-                                            Background="#1565C0"
+                                            Style="{StaticResource TradePlanSecondaryButtonStyle}"
                                             MinWidth="92"
                                             Width="92"
                                             Height="34"
@@ -440,19 +440,19 @@
                                                TextWrapping="Wrap"/>
                                     <Button Grid.Column="1"
                                             Content="행 추가"
-                                            Background="#1B5E20"
+                                            Style="{StaticResource TradePlanEditButtonStyle}"
                                             Margin="0,0,6,0"
                                             IsEnabled="{Binding CanAddLine}"
                                             Command="{Binding AddLineCommand}"/>
                                     <Button Grid.Column="2"
                                             Content="행 수정"
-                                            Background="#0D47A1"
+                                            Style="{StaticResource TradePlanEditButtonStyle}"
                                             Margin="0,0,6,0"
                                             IsEnabled="{Binding CanUpdateLine}"
                                             Command="{Binding UpdateLineCommand}"/>
                                     <Button Grid.Column="3"
                                             Content="행 삭제"
-                                            Background="#B71C1C"
+                                            Style="{StaticResource TradePlanDangerButtonStyle}"
                                             IsEnabled="{Binding CanDeleteLine}"
                                             Command="{Binding DeleteLineCommand}"/>
                                 </Grid>
@@ -508,12 +508,12 @@
                                             Orientation="Horizontal"
                                             VerticalAlignment="Bottom">
                                     <Button Content="수령확정"
-                                            Background="#1565C0"
+                                            Style="{StaticResource TradePlanPrimaryButtonStyle}"
                                             Margin="0,0,6,0"
                                             IsEnabled="{Binding CanConfirmReceipt}"
                                             Command="{Binding ConfirmReceiptCommand}"/>
                                     <Button Content="반려"
-                                            Background="#8E2430"
+                                            Style="{StaticResource TradePlanDangerButtonStyle}"
                                             IsEnabled="{Binding CanRejectTransfer}"
                                             Command="{Binding RejectTransferCommand}"/>
                                 </StackPanel>

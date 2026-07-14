@@ -44,13 +44,13 @@
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
-        <Style TargetType="Button">
+        <Style TargetType="Button" BasedOn="{StaticResource TradePlanSecondaryButtonStyle}">
             <Setter Property="Height" Value="38"/>
             <Setter Property="MinWidth" Value="112"/>
             <Setter Property="Margin" Value="6,0,0,0"/>
             <Setter Property="FontFamily" Value="Malgun Gothic"/>
             <Setter Property="Foreground" Value="White"/>
-            <Setter Property="Background" Value="#1F6FCE"/>
+            <Setter Property="Background" Value="{StaticResource TradePlanSecondaryBrush}"/>
             <Setter Property="BorderBrush" Value="#5E93D6"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Cursor" Value="Hand"/>
@@ -127,8 +127,8 @@
         </Border>
 
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
-            <Button Content="교체 실행" Click="Confirm_Click" Background="#157A2D"/>
-            <Button Content="취소" Click="Cancel_Click" Background="#4E6681"/>
+            <Button Content="교체 실행" Style="{StaticResource TradePlanPrimaryButtonStyle}" Click="Confirm_Click"/>
+            <Button Content="취소" Style="{StaticResource TradePlanSecondaryButtonStyle}" Click="Cancel_Click"/>
         </StackPanel>
     </Grid>
 </Window>

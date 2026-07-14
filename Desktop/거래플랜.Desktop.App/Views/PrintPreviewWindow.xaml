@@ -52,20 +52,19 @@
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button Content="확대"
-                            Style="{StaticResource ToolbarButtonStyle}"
-                            Background="#314A6B"
+                            Style="{StaticResource TradePlanSecondaryButtonStyle}"
+                            Margin="0,0,8,0"
                             Command="{Binding ZoomInCommand}"/>
                     <Button Content="축소"
-                            Style="{StaticResource ToolbarButtonStyle}"
-                            Background="#314A6B"
+                            Style="{StaticResource TradePlanSecondaryButtonStyle}"
+                            Margin="0,0,8,0"
                             Command="{Binding ZoomOutCommand}"/>
                     <Button Content="인쇄"
-                            Style="{StaticResource ToolbarButtonStyle}"
-                            Background="#0D47A1"
+                            Style="{StaticResource TradePlanPrintButtonStyle}"
+                            Margin="0,0,8,0"
                             Command="{Binding PrintCommand}"/>
                     <Button Content="닫기"
-                            Style="{StaticResource CloseToolbarButtonStyle}"
-                            Background="#455A64"
+                            Style="{StaticResource TradePlanSecondaryButtonStyle}"
                             Command="{Binding CloseCommand}"/>
                 </StackPanel>
             </Grid>
@@ -83,4 +82,3 @@
         </Border>
     </DockPanel>
 </Window>
-

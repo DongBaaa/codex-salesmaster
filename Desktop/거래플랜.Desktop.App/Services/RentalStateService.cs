@@ -5278,6 +5278,62 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구 데이터를 수정할 수 없습니다.");
         var existingTemplateHadExplicitAssetCoverage = existing is not null &&
             HasExplicitIncludedAssetIds(GetBillingTemplateItems(existing, Array.Empty<LocalRentalAsset>()));
+        var incomingAssetIds = templateItems
+            .SelectMany(item => item.IncludedAssetIds ?? Enumerable.Empty<Guid>())
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToHashSet();
+        var existingAssetIds = existing is null
+            ? new HashSet<Guid>()
+            : GetBillingTemplateItems(existing, Array.Empty<LocalRentalAsset>())
+                .SelectMany(item => item.IncludedAssetIds ?? Enumerable.Empty<Guid>())
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToHashSet();
+        var canEditLinkedAssets = CanEditRentalAssets(session);
+        if (!canEditLinkedAssets && !incomingAssetIds.SetEquals(existingAssetIds))
+        {
+            return LocalMutationResult.Denied(
+                "렌탈 자산 연결을 변경하려면 '렌탈 자산 편집' 권한이 필요합니다. 청구 일정과 표시품목만 수정하세요.");
+        }
+
+        if (canEditLinkedAssets &&
+            (incomingAssetIds.Count > 0 || profile.Id != Guid.Empty))
+        {
+            var affectedAssets = await _db.RentalAssets
+                .IgnoreQueryFilters()
+                .Where(asset => !asset.IsDeleted &&
+                                (incomingAssetIds.Contains(asset.Id) || asset.BillingProfileId == profile.Id))
+                .ToListAsync(ct);
+            var mutableAssets = affectedAssets
+                .Where(asset => RentalAssetCanTransferToBillingProfileScope(asset, profile.TenantCode))
+                .ToList();
+            if (mutableAssets.Any(asset => !CanEditRentalAssetEntityScope(asset, session)))
+            {
+                return LocalMutationResult.Denied(
+                    "권한이 없는 업체 또는 지점의 렌탈 자산이 포함되어 있어 청구 연결을 저장할 수 없습니다.");
+            }
+
+            var previousProfileIds = mutableAssets
+                .Select(asset => asset.BillingProfileId)
+                .Where(id => id.HasValue && id.Value != Guid.Empty && id.Value != profile.Id)
+                .Select(id => id!.Value)
+                .Distinct()
+                .ToList();
+            if (previousProfileIds.Count > 0)
+            {
+                var previousProfiles = await _db.RentalBillingProfiles
+                    .IgnoreQueryFilters()
+                    .Where(current => previousProfileIds.Contains(current.Id) && !current.IsDeleted)
+                    .ToListAsync(ct);
+                if (previousProfiles.Any(current => !CanEditRentalProfileEntityScope(current, session)))
+                {
+                    return LocalMutationResult.Denied(
+                        "다른 청구 프로필에 연결된 자산을 이동할 권한이 없습니다. 기존 청구 담당자에게 연결 해제를 요청하세요.");
+                }
+            }
+        }
+
         await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, profile, existing, ct);
         if (!LocalEntityConcurrencyGuard.TryPrepareForSave(profile, existing, "렌탈 청구", now, out var conflictMessage))
             return LocalMutationResult.Conflict(conflictMessage);
@@ -5295,15 +5351,34 @@ WHERE ""AssignedUsername"" <> '';", ct);
             _db.Entry(existing).CurrentValues.SetValues(profile);
         }
 
-        await _db.SaveChangesAsync(ct);
-        await SyncBillingProfileAssetsAsync(
-            profile,
-            templateItems,
-            assetLinkEdits,
-            session,
-            incomingTemplateHasExplicitAssetCoverage || existingTemplateHadExplicitAssetCoverage,
-            ct);
-        return LocalMutationResult.Ok(profile.Id, "렌탈 청구 프로필을 저장했습니다.");
+        await using var transaction = await _db.Database.BeginTransactionAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+            if (canEditLinkedAssets)
+            {
+                await SyncBillingProfileAssetsAsync(
+                    profile,
+                    templateItems,
+                    assetLinkEdits,
+                    session,
+                    incomingTemplateHasExplicitAssetCoverage || existingTemplateHadExplicitAssetCoverage,
+                    ct);
+            }
+
+            await transaction.CommitAsync(ct);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(ct);
+            throw;
+        }
+
+        return LocalMutationResult.Ok(
+            profile.Id,
+            canEditLinkedAssets
+                ? "렌탈 청구 프로필과 연결 자산을 저장했습니다."
+                : "렌탈 청구 프로필을 저장했습니다. 자산 원본은 권한에 따라 변경하지 않았습니다.");
     }
 
     public async Task<LocalMutationResult> UpdateBillingProfileCyclesAsync(
@@ -12984,6 +13059,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
         bool replaceProfileLinkedAssets,
         CancellationToken ct)
     {
+        if (session is null || !CanEditRentalAssets(session))
+            return;
+
         var includedAssetIds = templateItems
             .SelectMany(item => item.IncludedAssetIds ?? Enumerable.Empty<Guid>())
             .Where(id => id != Guid.Empty)

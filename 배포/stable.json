@@ -1,35 +1,35 @@
 {
   "channel": "stable",
-  "generatedAtUtc": "2026-07-14T04:54:00.9661682Z",
+  "generatedAtUtc": "2026-07-14T11:06:47.6221508Z",
   "desktop": {
     "platform": "desktop",
-    "version": "1.1.685",
+    "version": "1.1.686",
     "mandatory": false,
     "minimumSupportedVersion": "",
-    "packageUrl": "/updates/download/desktop/tradeplan-pc-installer-v1.1.685.zip",
-    "fileName": "tradeplan-pc-installer-v1.1.685.zip",
-    "sha256": "C88ED9F1893D305E0444939CAF9A1A3040E7EAE20EE8ADA0922F26251833DD4A",
-    "fileSize": 232257094,
-    "notes": "청구기간 시작월·청구주기 변경 시 전표 품명 실시간 미리보기",
-    "releasedAtUtc": "2026-07-14T04:54:04.0587347Z",
+    "packageUrl": "/updates/download/desktop/tradeplan-pc-installer-v1.1.686.zip",
+    "fileName": "tradeplan-pc-installer-v1.1.686.zip",
+    "sha256": "849EA7E3C1E909FE0922C43DC7E3770557FE880AB06637D146D37DCBB20DAAA0",
+    "fileSize": 232263754,
+    "notes": "렌탈 자산 수정 후 청구관리 자동 갱신, 권한별 자산 원본 보호, 자산 추가·이동 UI, 전 창 공통 디자인 반영",
+    "releasedAtUtc": "2026-07-14T11:06:50.8159279Z",
     "installers": [
       {
         "audience": "user",
         "format": "exe",
-        "version": "1.1.685",
-        "packageUrl": "/updates/download/desktop/tradeplan-pc-setup-v1.1.685.exe",
-        "fileName": "tradeplan-pc-setup-v1.1.685.exe",
-        "sha256": "DFAC326967122E29090141C6C8EFAC46101379D18388A4FC83C86F725EE66FED",
-        "fileSize": 249026144
+        "version": "1.1.686",
+        "packageUrl": "/updates/download/desktop/tradeplan-pc-setup-v1.1.686.exe",
+        "fileName": "tradeplan-pc-setup-v1.1.686.exe",
+        "sha256": "8B70BEA40C360FDFB88024F78AC65CBB5F541DF5B62DF6F11F139FF660E4BF93",
+        "fileSize": 248976992
       },
       {
         "audience": "administrator",
         "format": "msi",
-        "version": "1.1.685",
-        "packageUrl": "/updates/download/desktop/tradeplan-pc-admin-v1.1.685.msi",
-        "fileName": "tradeplan-pc-admin-v1.1.685.msi",
-        "sha256": "94E962C57CC3DFD0658F45BBF9B44D7A0C8EFBFA2B0996BDB36DE67479C59B69",
-        "fileSize": 186621952
+        "version": "1.1.686",
+        "packageUrl": "/updates/download/desktop/tradeplan-pc-admin-v1.1.686.msi",
+        "fileName": "tradeplan-pc-admin-v1.1.686.msi",
+        "sha256": "F7FCBE08368711CB3A650EC77657BC4A898EFB481F222BA822F09A3E68DD3165",
+        "fileSize": 186572800
       }
     ]
   },
@@ -42,7 +42,7 @@
     "fileName": "tradeplan-android-v0.2.81.apk",
     "sha256": "FFB75EE0AC7F1C5B7FD75AD8C29B31E0F635ED7E6799CC6C44FE9E43C601D642",
     "fileSize": 41424314,
-    "notes": "Android 변경 없음",
-    "releasedAtUtc": "2026-07-14T04:54:05.4780308Z"
+    "notes": "모바일 상세탭/첨부 보기/내부 업데이트 확인 기능 반영",
+    "releasedAtUtc": "2026-07-14T11:06:52.1271818Z"
   }
 }

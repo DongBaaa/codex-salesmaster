@@ -39,11 +39,11 @@
             <Setter Property="Foreground" Value="#EAF2FF"/>
             <Setter Property="FontFamily" Value="Malgun Gothic"/>
         </Style>
-        <Style TargetType="Button">
+        <Style TargetType="Button" BasedOn="{StaticResource TradePlanSecondaryButtonStyle}">
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="BorderBrush" Value="#5D7593"/>
-            <Setter Property="Background" Value="#435A72"/>
+            <Setter Property="Background" Value="{StaticResource TradePlanSecondaryBrush}"/>
             <Setter Property="Padding" Value="14,0"/>
             <Setter Property="Height" Value="38"/>
             <Setter Property="MinWidth" Value="108"/>
@@ -104,12 +104,12 @@
                     <TextBlock Text="{Binding SummaryStatusText}" Foreground="#90CAF9" Margin="0,8,0,0" TextWrapping="Wrap"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
-                    <Button Content="새로고침(F5)" Background="#37474F" Command="{Binding RefreshCommand}" Margin="0,0,6,0"/>
-                    <Button Content="동기화 재시도" Background="#1565C0" Command="{Binding RetrySyncCommand}" Margin="0,0,6,0"/>
-                    <Button Content="공유 캐시 다시 만들기" Background="#0277BD" Command="{Binding RebuildSharedCacheCommand}" Margin="0,0,6,0"/>
-                    <Button Content="선택 항목 복구" Background="#00897B" Command="{Binding RunSelectedRepairCommand}" Margin="0,0,6,0"/>
-                    <Button Content="복구 가능 항목 전체 처리" Background="#2E7D32" Command="{Binding RunAutoRepairCommand}" Margin="0,0,6,0"/>
-                    <Button Content="닫기(F12)" Background="#6C5B7B" Click="CloseButton_Click"/>
+                    <Button Content="새로고침(F5)" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding RefreshCommand}" Margin="0,0,6,0"/>
+                    <Button Content="동기화 재시도" Style="{StaticResource TradePlanEditButtonStyle}" Command="{Binding RetrySyncCommand}" Margin="0,0,6,0"/>
+                    <Button Content="공유 캐시 다시 만들기" Style="{StaticResource TradePlanEditButtonStyle}" Command="{Binding RebuildSharedCacheCommand}" Margin="0,0,6,0"/>
+                    <Button Content="선택 항목 복구" Style="{StaticResource TradePlanEditButtonStyle}" Command="{Binding RunSelectedRepairCommand}" Margin="0,0,6,0"/>
+                    <Button Content="복구 가능 항목 전체 처리" Style="{StaticResource TradePlanPrimaryButtonStyle}" Command="{Binding RunAutoRepairCommand}" Margin="0,0,6,0"/>
+                    <Button Content="닫기(F12)" Style="{StaticResource TradePlanSecondaryButtonStyle}" Click="CloseButton_Click"/>
                 </StackPanel>
             </Grid>
         </Border>
@@ -178,12 +178,12 @@
                     <TextBlock Text="심각도" VerticalAlignment="Center" Margin="0,0,6,0"/>
                     <ComboBox Width="120" ItemsSource="{Binding SeverityOptions}" SelectedItem="{Binding SelectedSeverity}" Margin="0,0,10,0"/>
                     <CheckBox Content="자동 복구 가능만" IsChecked="{Binding OnlyRecoverable}" VerticalAlignment="Center" Margin="0,0,12,0"/>
-                    <Button Content="진단 리포트" Background="#546E7A" Command="{Binding ExportReportCommand}" Margin="0,0,6,0"/>
-                    <Button Content="진단 이벤트 엑셀" Background="#2E7D32" Command="{Binding ExportDiagnosticExcelCommand}" Margin="0,0,6,0"/>
-                    <Button Content="서버 무결성 새로고침" Background="#455A64" Command="{Binding RefreshServerIntegrityCommand}" Margin="0,0,6,0"/>
-                    <Button Content="통합 무결성 리포트" Background="#546E7A" Command="{Binding ExportIntegrityReportCommand}" Margin="0,0,6,0"/>
-                    <Button Content="로그 폴더" Background="#546E7A" Command="{Binding OpenLogFolderCommand}" Margin="0,0,6,0"/>
-                    <Button Content="해결 이력 정리" Background="#6D4C41" Command="{Binding ClearResolvedCommand}"/>
+                    <Button Content="진단 리포트" Style="{StaticResource TradePlanPrintButtonStyle}" Command="{Binding ExportReportCommand}" Margin="0,0,6,0"/>
+                    <Button Content="진단 이벤트 엑셀" Style="{StaticResource TradePlanPrintButtonStyle}" Command="{Binding ExportDiagnosticExcelCommand}" Margin="0,0,6,0"/>
+                    <Button Content="서버 무결성 새로고침" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding RefreshServerIntegrityCommand}" Margin="0,0,6,0"/>
+                    <Button Content="통합 무결성 리포트" Style="{StaticResource TradePlanPrintButtonStyle}" Command="{Binding ExportIntegrityReportCommand}" Margin="0,0,6,0"/>
+                    <Button Content="로그 폴더" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding OpenLogFolderCommand}" Margin="0,0,6,0"/>
+                    <Button Content="해결 이력 정리" Style="{StaticResource TradePlanDangerButtonStyle}" Command="{Binding ClearResolvedCommand}"/>
                 </WrapPanel>
             </Border>
 
@@ -215,8 +215,8 @@
                         </TextBlock>
                         <TextBlock Grid.Row="2" Text="{Binding ServerIntegritySummaryText}" Foreground="#EAF2FF" Margin="0,6,0,8" TextWrapping="Wrap"/>
                         <WrapPanel Grid.Row="3" Margin="0,0,0,8">
-                            <Button Content="상세 목록 조회" Background="#0277BD" Command="{Binding LoadServerIntegrityDetailsCommand}" Margin="0,0,6,0"/>
-                            <Button Content="선택 이슈 엑셀" Background="#2E7D32" Command="{Binding ExportServerIntegrityDetailsExcelCommand}"/>
+                            <Button Content="상세 목록 조회" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding LoadServerIntegrityDetailsCommand}" Margin="0,0,6,0"/>
+                            <Button Content="선택 이슈 엑셀" Style="{StaticResource TradePlanPrintButtonStyle}" Command="{Binding ExportServerIntegrityDetailsExcelCommand}"/>
                         </WrapPanel>
                         <DataGrid Grid.Row="4" ItemsSource="{Binding ServerIntegrityIssues}" SelectedItem="{Binding SelectedServerIntegrityIssue}" IsReadOnly="True" BorderThickness="0">
                             <DataGrid.Columns>
@@ -276,9 +276,9 @@
                         </WrapPanel>
                         <TextBlock Grid.Row="2" Text="{Binding OutboxSummaryText}" Foreground="#EAF2FF" Margin="0,10,0,0" TextWrapping="Wrap"/>
                         <WrapPanel Grid.Row="3" Margin="0,12,0,0">
-                            <Button Content="선택 전송 재시도" Background="#1565C0" Command="{Binding RetrySelectedOutboxCommand}" Margin="0,0,6,0"/>
-                            <Button Content="전체 전송 재시도" Background="#2E7D32" Command="{Binding RetryAllOutboxCommand}" Margin="0,0,6,0"/>
-                            <Button Content="완료 항목 정리" Background="#6D4C41" Command="{Binding ClearAcknowledgedOutboxCommand}"/>
+                            <Button Content="선택 전송 재시도" Style="{StaticResource TradePlanEditButtonStyle}" Command="{Binding RetrySelectedOutboxCommand}" Margin="0,0,6,0"/>
+                            <Button Content="전체 전송 재시도" Style="{StaticResource TradePlanPrimaryButtonStyle}" Command="{Binding RetryAllOutboxCommand}" Margin="0,0,6,0"/>
+                            <Button Content="완료 항목 정리" Style="{StaticResource TradePlanDangerButtonStyle}" Command="{Binding ClearAcknowledgedOutboxCommand}"/>
                         </WrapPanel>
                     </Grid>
                 </Border>

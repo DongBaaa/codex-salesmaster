@@ -27,6 +27,7 @@ public partial class RentalBillingWindow : Window
     private GridLength _billingListColumnWidth = new(2.2, GridUnitType.Star);
     private GridLength _billingDetailColumnWidth = new(1.6, GridUnitType.Star);
     private readonly HashSet<CustomerEditWindow> _trackedCustomerEditorWindows = new();
+    private readonly HashSet<RentalAssetWindow> _trackedRentalAssetWindows = new();
 
     public RentalBillingWindow(
         RentalBillingViewModel viewModel,
@@ -272,6 +273,7 @@ public partial class RentalBillingWindow : Window
                                       rentalAssetViewModel.SelectedRow?.Source.Id == assetId);
         if (existingTargetWindow is not null)
         {
+            AttachRentalAssetEditorClosedRefresh(existingTargetWindow, assetId);
             if (existingTargetWindow.WindowState == WindowState.Minimized)
                 existingTargetWindow.WindowState = WindowState.Normal;
 
@@ -316,7 +318,8 @@ public partial class RentalBillingWindow : Window
             () => rentalAssetViewModel.LoadAndSelectAssetAsync(assetId),
             "렌탈 자산 / 설치현황",
             "선택한 거래처 임대 자산 정보를 불러오지 못했습니다.",
-            this);
+            this,
+            () => viewModel.RefreshAfterExternalAssetEditAsync(assetId));
         viewModel.StatusMessage = "선택한 거래처 임대 자산을 렌탈 자산/설치현황 창에서 여는 중입니다.";
     }
 
@@ -721,6 +724,25 @@ public partial class RentalBillingWindow : Window
             }));
         }
         customerWindow.Closed += HandleClosed;
+    }
+
+    private void AttachRentalAssetEditorClosedRefresh(RentalAssetWindow rentalAssetWindow, Guid assetId)
+    {
+        if (!_trackedRentalAssetWindows.Add(rentalAssetWindow))
+            return;
+
+        void HandleClosed(object? sender, EventArgs args)
+        {
+            rentalAssetWindow.Closed -= HandleClosed;
+            _trackedRentalAssetWindows.Remove(rentalAssetWindow);
+            _ = Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(async () =>
+            {
+                if (DataContext is RentalBillingViewModel viewModel)
+                    await viewModel.RefreshAfterExternalAssetEditAsync(assetId);
+            }));
+        }
+
+        rentalAssetWindow.Closed += HandleClosed;
     }
 
     private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject

@@ -243,8 +243,8 @@
                                  TextAlignment="Right"
                                  VerticalContentAlignment="Center"/>
                         <StackPanel Margin="6,0,0,0">
-                            <Button Content="▲" Width="32" Height="15" Padding="0" Click="OnCopyCountIncreaseClick"/>
-                            <Button Content="▼" Width="32" Height="15" Padding="0" Click="OnCopyCountDecreaseClick"/>
+                            <Button Content="▲" Style="{DynamicResource TradePlanCompactButtonStyle}" Width="32" Height="15" Padding="0" Click="OnCopyCountIncreaseClick"/>
+                            <Button Content="▼" Style="{DynamicResource TradePlanCompactButtonStyle}" Width="32" Height="15" Padding="0" Click="OnCopyCountDecreaseClick"/>
                         </StackPanel>
                     </StackPanel>
                     <CheckBox x:Name="CollateCheckBox"
@@ -282,24 +282,20 @@
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                     <Button Content="PDF 저장"
-                            Style="{StaticResource DialogButtonStyle}"
+                            Style="{DynamicResource TradePlanPrintButtonStyle}"
                             MinWidth="112"
-                            Background="#526985"
                             Click="OnSavePdfClick"/>
                     <Button Content="파일 저장(XPS)"
-                            Style="{StaticResource DialogButtonStyle}"
+                            Style="{DynamicResource TradePlanPrintButtonStyle}"
                             MinWidth="132"
-                            Background="#526985"
                             Click="OnSaveFileClick"/>
                     <Button x:Name="PrintButton"
                             Content="인쇄"
-                            Style="{StaticResource DialogButtonStyle}"
-                            Background="#1F7ACC"
+                            Style="{DynamicResource TradePlanPrintButtonStyle}"
                             IsDefault="True"
                             Click="OnOkClick"/>
                     <Button Content="취소"
-                            Style="{StaticResource DialogButtonStyle}"
-                            Background="#3D4F66"
+                            Style="{DynamicResource TradePlanSecondaryButtonStyle}"
                             IsCancel="True"
                             Click="OnCancelClick"/>
                 </StackPanel>

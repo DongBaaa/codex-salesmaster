@@ -275,11 +275,11 @@
                                Margin="0,0,16,0"/>
                     <Button Grid.Row="0" Grid.Column="9"
                             Content="조회"
-                            Style="{StaticResource PrimaryButtonStyle}"
+                            Style="{StaticResource TradePlanSecondaryButtonStyle}"
                             Command="{Binding LoadDeliveriesCommand}"
                             Margin="0,0,8,0"/>
                     <Button Grid.Row="0" Grid.Column="10"
-                            Style="{StaticResource BaseButtonStyle}"
+                            Style="{StaticResource TradePlanSecondaryButtonStyle}"
                             Content="초기화"
                             Command="{Binding ResetFiltersCommand}"/>
 
@@ -369,12 +369,12 @@
                 </StackPanel>
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                     <Button Content="전표 열기"
-                            Style="{StaticResource BaseButtonStyle}"
+                            Style="{StaticResource TradePlanEditButtonStyle}"
                             Width="110"
                             Margin="0,0,8,0"
                             Click="OpenInvoiceButton_Click"/>
                     <Button Content="닫기"
-                            Style="{StaticResource BaseButtonStyle}"
+                            Style="{StaticResource TradePlanSecondaryButtonStyle}"
                             Width="110"
                             Click="CloseButton_Click"/>
                 </StackPanel>

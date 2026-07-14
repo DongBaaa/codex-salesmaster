@@ -62,7 +62,7 @@
                      KeyDown="SearchBox_KeyDown"
                      TextChanged="SearchBox_TextChanged"/>
             <Button Content="검색" Grid.Column="1" Width="88" Height="36" Margin="8,0,0,0"
-                    Background="#0D47A1" Foreground="White" BorderThickness="0"
+                    Style="{StaticResource TradePlanSecondaryButtonStyle}"
                     FontSize="13" FontWeight="SemiBold" Cursor="Hand"
                     Click="SearchButton_Click"/>
         </Grid>
@@ -103,17 +103,16 @@
         <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <Button x:Name="RegisterButton"
                     Visibility="Collapsed"
-                    Style="{StaticResource DialogActionButtonStyle}"
-                    Background="#2E7D32"
+                    Style="{StaticResource TradePlanEditButtonStyle}"
+                    Margin="0,0,8,0"
                     Click="RegisterButton_Click"/>
             <Button Content="선택 (Enter)"
-                    Style="{StaticResource DialogActionButtonStyle}"
-                    Background="#0D47A1"
+                    Style="{StaticResource TradePlanPrimaryButtonStyle}"
+                    Margin="0,0,8,0"
                     Click="SelectButton_Click"/>
             <Button Content="취소 (Esc)"
-                    Style="{StaticResource DialogActionButtonStyle}"
                     Margin="0"
-                    Background="#455A64"
+                    Style="{StaticResource TradePlanSecondaryButtonStyle}"
                     Click="CancelButton_Click"/>
         </StackPanel>
     </Grid>

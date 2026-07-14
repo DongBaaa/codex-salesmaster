@@ -197,26 +197,26 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Orientation="Vertical">
-                    <TextBlock Text="{Binding HeaderTitleText}" Foreground="White" FontSize="28" FontWeight="Bold"/>
-                    <TextBlock Text="{Binding HeaderSubtitleText}" Foreground="#E7EEF9" FontSize="12"/>
+                    <TextBlock Text="{Binding HeaderTitleText}" Style="{StaticResource TradePlanWindowTitleStyle}" FontSize="28" Foreground="White"/>
+                    <TextBlock Text="{Binding HeaderSubtitleText}" Style="{StaticResource TradePlanWindowSubtitleStyle}" Foreground="#E7EEF9" FontSize="12"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button Style="{StaticResource BaseButtonStyle}" Content="{Binding NewDocumentButtonText}" Height="40" MinWidth="132" Margin="0,0,8,0" Command="{Binding StartNewInvoiceCommand}"/>
-                    <Button Style="{StaticResource BaseButtonStyle}"
+                    <Button Style="{StaticResource TradePlanEditButtonStyle}" Content="{Binding NewDocumentButtonText}" Height="40" MinWidth="132" Margin="0,0,8,0" Command="{Binding StartNewInvoiceCommand}"/>
+                    <Button Style="{StaticResource TradePlanPrimaryButtonStyle}"
                             Content="저장"
                             Height="40"
                             MinWidth="96"
                             Margin="0,0,8,0"
                             Command="{Binding SaveCommand}"
                             ToolTip="현재 전표를 저장합니다. 렌탈 청구 전표는 저장 전 반영 범위를 확인합니다."/>
-                    <Button Style="{StaticResource BaseButtonStyle}"
+                    <Button Style="{StaticResource TradePlanEditButtonStyle}"
                             Content="{Binding PaymentActionButtonText}"
                             Height="40"
                             MinWidth="116"
                             Margin="0,0,8,0"
                             Visibility="{Binding ShowPaymentAction, Converter={StaticResource BoolToVisibilityConverter}}"
                             Click="PaymentButton_Click"/>
-                    <Button Style="{StaticResource BaseButtonStyle}" Content="닫기(F12)" Height="40" MinWidth="112" Click="CloseButton_Click"/>
+                    <Button Style="{StaticResource TradePlanSecondaryButtonStyle}" Content="닫기(F12)" Height="40" MinWidth="112" Click="CloseButton_Click"/>
                 </StackPanel>
             </Grid>
         </Border>
@@ -451,7 +451,7 @@
                                 </DatePicker.Resources>
                             </DatePicker>
                             <Button Grid.Column="3"
-                                    Style="{StaticResource BaseButtonStyle}"
+                                    Style="{StaticResource TradePlanSecondaryButtonStyle}"
                                     Content="이전기록불러오기"
                                     Height="34"
                                     Width="132"
@@ -499,7 +499,7 @@
                             <TextBox x:Name="InputItemNameTextBox" Grid.Row="1" Grid.Column="0" Height="32"
                                      Text="{Binding InputItemName, UpdateSourceTrigger=PropertyChanged}"
                                      KeyDown="InputItemNameTextBox_KeyDown"/>
-                            <Button Grid.Row="1" Grid.Column="1" Style="{StaticResource BaseButtonStyle}" Height="32" Width="34" MinWidth="34" Margin="4,0,0,0" Padding="0"
+                            <Button Grid.Row="1" Grid.Column="1" Style="{StaticResource TradePlanCompactButtonStyle}" Height="32" Width="34" MinWidth="34" Margin="4,0,0,0" Padding="0"
                                     Content="..." Click="ItemLookupButton_Click"/>
                             <TextBox Grid.Row="1" Grid.Column="2" Height="32" MinWidth="0" Text="{Binding InputSpec, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0"/>
                             <TextBox Grid.Row="1" Grid.Column="3" Height="32" Width="50" MinWidth="0" Padding="4,3" FontSize="12" Text="{Binding InputQty, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0" HorizontalAlignment="Left" TextAlignment="Right"/>
@@ -518,11 +518,11 @@
                             <TextBox Grid.Row="1" Grid.Column="7" Height="32" MinWidth="0" Text="{Binding InputRemark, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0"/>
 
                             <StackPanel Grid.Row="1" Grid.Column="8" Orientation="Horizontal" Margin="4,0,0,0" HorizontalAlignment="Left">
-                                <Button Style="{StaticResource BaseButtonStyle}" Content="항목추가" Width="80" Height="34" MinWidth="80" Padding="6,0" Margin="0,0,4,0" Command="{Binding AddLineCommand}"/>
-                                <Button Style="{StaticResource BaseButtonStyle}" Content="▲" Width="34" Height="34" MinWidth="34" Padding="0" Margin="0,0,4,0" ToolTip="선택한 품목을 위로 이동" Command="{Binding MoveLineUpCommand}"/>
-                                <Button Style="{StaticResource BaseButtonStyle}" Content="▼" Width="34" Height="34" MinWidth="34" Padding="0" Margin="0,0,4,0" ToolTip="선택한 품목을 아래로 이동" Command="{Binding MoveLineDownCommand}"/>
-                                <Button Style="{StaticResource BaseButtonStyle}" Content="항목수정" Width="80" Height="34" MinWidth="80" Padding="6,0" Margin="0,0,4,0" Command="{Binding UpdateLineCommand}"/>
-                                <Button Style="{StaticResource BaseButtonStyle}" Content="항목삭제" Width="80" Height="34" MinWidth="80" Padding="6,0" Command="{Binding DeleteLineCommand}"/>
+                                <Button Style="{StaticResource TradePlanEditButtonStyle}" Content="항목추가" Width="80" Height="34" MinWidth="80" Padding="6,0" Margin="0,0,4,0" Command="{Binding AddLineCommand}"/>
+                                <Button Style="{StaticResource TradePlanCompactButtonStyle}" Content="▲" Width="34" Height="34" MinWidth="34" Padding="0" Margin="0,0,4,0" ToolTip="선택한 품목을 위로 이동" Command="{Binding MoveLineUpCommand}"/>
+                                <Button Style="{StaticResource TradePlanCompactButtonStyle}" Content="▼" Width="34" Height="34" MinWidth="34" Padding="0" Margin="0,0,4,0" ToolTip="선택한 품목을 아래로 이동" Command="{Binding MoveLineDownCommand}"/>
+                                <Button Style="{StaticResource TradePlanEditButtonStyle}" Content="항목수정" Width="80" Height="34" MinWidth="80" Padding="6,0" Margin="0,0,4,0" Command="{Binding UpdateLineCommand}"/>
+                                <Button Style="{StaticResource TradePlanDangerButtonStyle}" Content="항목삭제" Width="80" Height="34" MinWidth="80" Padding="6,0" Command="{Binding DeleteLineCommand}"/>
                             </StackPanel>
                         </Grid>
                     </StackPanel>
@@ -600,7 +600,7 @@
                                              VerticalScrollBarVisibility="Auto"
                                              Margin="0,0,0,6"
                                              ToolTip="송장번호, 배송 확인 메모, 입고 특이사항을 기록합니다."/>
-                                    <Button Style="{StaticResource BaseButtonStyle}"
+                                    <Button Style="{StaticResource TradePlanEditButtonStyle}"
                                             Content="입고확인"
                                             Height="34"
                                             HorizontalAlignment="Stretch"
@@ -618,8 +618,8 @@
                                            TextWrapping="Wrap"/>
                             </Border>
 
-                            <Button Style="{StaticResource BaseButtonStyle}" Content="인쇄하기[F9]" Height="36" HorizontalAlignment="Stretch" Margin="0,0,0,6" Command="{Binding PrintCommand}"/>
-                            <Button Style="{StaticResource BaseButtonStyle}" Content="출력물 편집"
+                            <Button Style="{StaticResource TradePlanPrintButtonStyle}" Content="인쇄하기[F9]" Height="36" HorizontalAlignment="Stretch" Margin="0,0,0,6" Command="{Binding PrintCommand}"/>
+                            <Button Style="{StaticResource TradePlanPrintButtonStyle}" Content="출력물 편집"
                                     Height="36"
                                     HorizontalAlignment="Stretch"
                                     Margin="0,0,0,6"
@@ -636,7 +636,7 @@
                                        Foreground="#B7C9E6"
                                        TextWrapping="Wrap"
                                        Margin="0,0,0,10"/>
-                            <Button Style="{StaticResource BaseButtonStyle}" Content="세금계산서 인쇄"
+                            <Button Style="{StaticResource TradePlanPrintButtonStyle}" Content="세금계산서 인쇄"
                                     Height="36"
                                     HorizontalAlignment="Stretch"
                                     Margin="0,0,0,6"

@@ -163,6 +163,13 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private bool CanEditRentalProfiles => _session.HasAdministrativePrivileges ||
                                            _session.HasPermission(AppPermissionNames.RentalEditAll) ||
                                            _session.HasPermission(AppPermissionNames.RentalProfileEdit);
+    public bool CanEditRentalAssetSource => _session.HasAdministrativePrivileges ||
+                                            _session.HasPermission(AppPermissionNames.RentalEditAll) ||
+                                            _session.HasPermission(AppPermissionNames.RentalAssetEdit);
+    public bool IsRentalAssetSourceReadOnly => !CanEditRentalAssetSource;
+    public string RentalAssetEditPermissionNotice => CanEditRentalAssetSource
+        ? string.Empty
+        : "자산 원본을 수정하거나 연결을 변경하려면 '렌탈 자산 편집' 권한이 필요합니다. 청구 일정과 표시품목은 계속 수정할 수 있습니다.";
     private bool CanEditPayments => _session.HasAdministrativePrivileges ||
                                     _session.HasPermission(AppPermissionNames.PaymentEdit);
     private bool CanEditInvoices => _session.HasAdministrativePrivileges ||
@@ -170,7 +177,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     public bool CanSave => CanEditRentalProfiles && (SelectedRow is null || (CanEditCurrentSelection && CanEditSelectedRowInEditor));
     public bool IsCustomerGroupSelection => SelectedRow?.IsAggregateRow == true;
     public bool CanEditBillingProfileDetails => SelectedRow is null || !SelectedRow.IsAggregateRow;
-    public bool CanOpenAssetLinkDialog => CanEditBillingProfileDetails &&
+    public bool CanOpenAssetLinkDialog => CanEditRentalAssetSource &&
+                                          CanEditBillingProfileDetails &&
                                           CanEditCurrentSelection &&
                                           !string.IsNullOrWhiteSpace(EditCustomerName);
     public bool CanEditTemplateLineMode => CanEditBillingProfileDetails &&
@@ -229,7 +237,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                                            SelectedTemplateItem is not null &&
                                            TemplateItems.IndexOf(SelectedTemplateItem) >= 0 &&
                                            TemplateItems.IndexOf(SelectedTemplateItem) < TemplateItems.Count - 1;
-    public bool CanRemoveIncludedAsset => CanEditBillingProfileDetails &&
+    public bool CanRemoveIncludedAsset => CanEditRentalAssetSource &&
+                                          CanEditBillingProfileDetails &&
                                           CanEditCurrentSelection &&
                                           SelectedIncludedAsset is not null &&
                                           SelectedIncludedAsset.AssetId != Guid.Empty &&
@@ -243,14 +252,15 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                                              SelectedIncludedAsset is not null &&
                                              SelectedIncludedAsset.AssetId != Guid.Empty &&
                                              TemplateItems.Count > 0;
-    public bool CanAddIncludedAssetAssignmentHistory => CanEditBillingProfileDetails &&
+    public bool CanAddIncludedAssetAssignmentHistory => CanEditRentalAssetSource &&
+                                                        CanEditBillingProfileDetails &&
                                                         SelectedIncludedAsset is not null &&
                                                         SelectedIncludedAsset.AssetId != Guid.Empty &&
                                                         CanEditCurrentSelection;
     public bool CanEditIncludedAssetAssignmentHistory => CanAddIncludedAssetAssignmentHistory &&
                                                          SelectedIncludedAssetAssignmentHistory is not null;
     public bool CanDeleteIncludedAssetAssignmentHistory => CanEditIncludedAssetAssignmentHistory;
-    public bool CanApplySelectedAssets => CanEditBillingProfileDetails && CanEditCurrentSelection && SelectedTemplateItem is not null && CandidateAssets.Any(asset => asset.IsSelected);
+    public bool CanApplySelectedAssets => CanEditRentalAssetSource && CanEditBillingProfileDetails && CanEditCurrentSelection && SelectedTemplateItem is not null && CandidateAssets.Any(asset => asset.IsSelected);
     public bool CanOpenCustomerContract => EditCustomerId.HasValue && EditCustomerId.Value != Guid.Empty;
     public bool IsFixedBillingDayMode => string.Equals(EditBillingDayMode, RentalBillingScheduleRules.BillingDayModeFixedDay, StringComparison.Ordinal);
     public bool IsDocumentLeadDaysVisible => string.Equals(EditDocumentIssueMode, RentalBillingScheduleRules.DocumentIssueModeDaysBeforeDueDate, StringComparison.Ordinal);
@@ -3525,6 +3535,37 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 cts.Dispose();
             }
         }
+    }
+
+    public async Task RefreshAfterExternalAssetEditAsync(Guid assetId, CancellationToken ct = default)
+    {
+        if (_isDisposed || assetId == Guid.Empty)
+            return;
+
+        InvalidateSelectionLoadCaches();
+        var billingProfileId = EditId != Guid.Empty
+            ? EditId
+            : SelectedRow?.Source.Id;
+        if (billingProfileId == Guid.Empty)
+            billingProfileId = null;
+
+        await LoadCandidateAssetsAsync(
+            billingProfileId,
+            EditCustomerId,
+            EditCustomerName,
+            EditOfficeCode,
+            preserveSelection: true,
+            autoIncludeAllCandidates: false,
+            ct: ct);
+
+        SelectedIncludedAsset = IncludedAssets.FirstOrDefault(asset => asset.AssetId == assetId)
+                                ?? IncludedAssets.FirstOrDefault();
+        if (SelectedIncludedAsset?.AssetId == assetId)
+            await LoadIncludedAssetAssignmentHistoriesAsync(assetId);
+
+        StatusMessage = SelectedIncludedAsset?.AssetId == assetId
+            ? "렌탈 자산 수정 내용을 거래처 임대 자산 목록에 반영했습니다."
+            : "렌탈 자산 수정 내용을 다시 조회했습니다. 현재 청구 연결에서 제외된 장비일 수 있습니다.";
     }
 
     private void CancelPendingSelectionLoads()

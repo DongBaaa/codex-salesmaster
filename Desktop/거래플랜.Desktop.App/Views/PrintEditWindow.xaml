@@ -59,9 +59,9 @@
             <Setter Property="Padding" Value="8,0,4,0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
-        <Style TargetType="Button">
-            <Setter Property="Foreground" Value="#101010"/>
-            <Setter Property="Background" Value="#E8E8E8"/>
+        <Style TargetType="Button" BasedOn="{StaticResource TradePlanSecondaryButtonStyle}">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Background" Value="{StaticResource TradePlanSecondaryBrush}"/>
             <Setter Property="BorderBrush" Value="#8F8F8F"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="14,0"/>
@@ -112,9 +112,9 @@
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="{Binding StatusMessage}" Foreground="#A5D6A7"/>
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
-                    <Button Content="미리보기 갱신" Margin="0,0,8,0" Command="{Binding RefreshPreviewCommand}"/>
-                    <Button Content="저장" Margin="0,0,8,0" Background="#DDE9FF" Command="{Binding SaveCommand}"/>
-                    <Button Content="닫기" Command="{Binding CloseCommand}"/>
+                    <Button Content="미리보기 갱신" Style="{StaticResource TradePlanPrintButtonStyle}" Margin="0,0,8,0" Command="{Binding RefreshPreviewCommand}"/>
+                    <Button Content="저장" Style="{StaticResource TradePlanPrimaryButtonStyle}" Margin="0,0,8,0" Command="{Binding SaveCommand}"/>
+                    <Button Content="닫기" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding CloseCommand}"/>
                 </StackPanel>
             </Grid>
         </Border>
@@ -407,7 +407,7 @@
                     <StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
                             <TextBlock Text="{Binding LineEditorTitleText}" FontWeight="Bold" Margin="0,0,4,0"/>
-                            <Button Content="행 추가" Command="{Binding AddLineCommand}" Padding="8,3"/>
+                            <Button Content="행 추가" Style="{StaticResource TradePlanEditButtonStyle}" Command="{Binding AddLineCommand}" Padding="8,3"/>
                         </StackPanel>
                         <DataGrid ItemsSource="{Binding Lines}"
                                   SelectedItem="{Binding SelectedLine}"
@@ -426,6 +426,7 @@
                                     <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>
                                             <Button Content="삭제"
+                                                    Style="{StaticResource TradePlanDangerButtonStyle}"
                                                     Padding="4,2"
                                                     Command="{Binding DataContext.RemoveLineCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
                                                     CommandParameter="{Binding}"/>

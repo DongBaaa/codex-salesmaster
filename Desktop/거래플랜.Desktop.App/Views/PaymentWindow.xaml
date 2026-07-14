@@ -94,11 +94,7 @@
             <Setter Property="Padding" Value="8,0,4,0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
-        <Style x:Key="BaseButtonStyle" TargetType="Button">
-            <Setter Property="Foreground" Value="#111"/>
-            <Setter Property="Background" Value="#E6E6E6"/>
-            <Setter Property="BorderBrush" Value="#8F8F8F"/>
-            <Setter Property="BorderThickness" Value="1"/>
+        <Style x:Key="BaseButtonStyle" TargetType="Button" BasedOn="{StaticResource TradePlanSecondaryButtonStyle}">
             <Setter Property="Padding" Value="9,0"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="FontSize" Value="11"/>
@@ -107,10 +103,10 @@
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
-        <Style x:Key="PrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource BaseButtonStyle}">
-            <Setter Property="Background" Value="#2D8DE0"/>
-            <Setter Property="BorderBrush" Value="#2D8DE0"/>
-            <Setter Property="Foreground" Value="White"/>
+        <Style x:Key="PrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource TradePlanPrimaryButtonStyle}">
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="Padding" Value="9,0"/>
+            <Setter Property="FontSize" Value="11"/>
             <Setter Property="FontWeight" Value="Bold"/>
             <Setter Property="MinWidth" Value="96"/>
         </Style>
@@ -190,10 +186,8 @@
                                FontSize="11"/>
                 </StackPanel>
                 <Button Grid.Column="1"
-                        Style="{StaticResource BaseButtonStyle}"
+                        Style="{StaticResource TradePlanSecondaryButtonStyle}"
                         Content="닫기(F12)"
-                        Background="#E3E3E3"
-                        Foreground="#111"
                         MinWidth="92"
                         Click="CloseButton_Click"/>
             </Grid>
@@ -604,19 +598,19 @@
                                            TextTrimming="CharacterEllipsis"
                                            ToolTip="{Binding SelectedCustomer.NameOriginal}"/>
                                 <Button Content="수정"
-                                        Style="{StaticResource BaseButtonStyle}"
+                                        Style="{StaticResource TradePlanEditButtonStyle}"
                                         MinWidth="62"
                                         Margin="8,0,0,0"
                                         IsEnabled="{Binding CanEditHistory}"
                                         Command="{Binding EditHistoryCommand}"/>
                                 <Button Content="삭제"
-                                        Style="{StaticResource BaseButtonStyle}"
+                                        Style="{StaticResource TradePlanDangerButtonStyle}"
                                         MinWidth="62"
                                         Margin="4,0,0,0"
                                         IsEnabled="{Binding CanDeleteHistory}"
                                         Command="{Binding DeleteHistoryCommand}"/>
                                 <Button Content="수정 취소"
-                                        Style="{StaticResource BaseButtonStyle}"
+                                        Style="{StaticResource TradePlanSecondaryButtonStyle}"
                                         MinWidth="78"
                                         Margin="4,0,0,0"
                                         Visibility="{Binding IsEditingHistory, Converter={StaticResource BoolToVisibility}}"
@@ -704,19 +698,19 @@
                                            HorizontalAlignment="Left"
                                            Margin="0,0,0,0">
                                     <Button Content="증빙 첨부"
-                                            Style="{StaticResource PrimaryButtonStyle}"
+                                            Style="{StaticResource TradePlanEditButtonStyle}"
                                             MinWidth="86"
                                             Margin="0,0,6,4"
                                             IsEnabled="{Binding CanAddAttachment}"
                                             Command="{Binding AddAttachmentCommand}"/>
                                     <Button Content="미리보기"
-                                            Style="{StaticResource BaseButtonStyle}"
+                                            Style="{StaticResource TradePlanPrintButtonStyle}"
                                             MinWidth="72"
                                             Margin="0,0,6,4"
                                             IsEnabled="{Binding CanPreviewAttachment}"
                                             Command="{Binding PreviewAttachmentCommand}"/>
                                     <Button Content="삭제"
-                                            Style="{StaticResource BaseButtonStyle}"
+                                            Style="{StaticResource TradePlanDangerButtonStyle}"
                                             MinWidth="64"
                                             Margin="0,0,6,4"
                                             IsEnabled="{Binding CanDeleteAttachment}"

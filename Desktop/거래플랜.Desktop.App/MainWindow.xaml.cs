@@ -2100,7 +2100,10 @@ public partial class MainWindow : Window
         var win = new RentalBillingWindow(
             vm,
             (invoiceId, owner) => OpenInvoiceWindowAsync(invoiceId, owner),
-            (assetId, owner) => OpenRentalAssetWindowAsync(assetId, owner),
+            (assetId, owner) => OpenRentalAssetWindowAsync(
+                assetId,
+                owner,
+                () => vm.RefreshAfterExternalAssetEditAsync(assetId)),
             () => _vm.LoadInvoiceListCommand.ExecuteAsync(null))
         {
             Owner = ownerOverride ?? this
@@ -2113,7 +2116,10 @@ public partial class MainWindow : Window
             () => _vm.LoadInvoiceListCommand.ExecuteAsync(null));
     }
 
-    private async Task OpenRentalAssetWindowAsync(Guid? targetAssetId = null, Window? ownerOverride = null)
+    private async Task OpenRentalAssetWindowAsync(
+        Guid? targetAssetId = null,
+        Window? ownerOverride = null,
+        Func<Task>? closedAsync = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new RentalAssetViewModel(_rental, _local, _rentalDocuments, _invoicePrintService, _session);
@@ -2126,7 +2132,12 @@ public partial class MainWindow : Window
             () => targetAssetId.HasValue ? vm.LoadAndSelectAssetAsync(targetAssetId.Value) : vm.LoadAsync(),
             "렌탈 자산 / 설치현황",
             "렌탈 자산 데이터를 불러오지 못했습니다.",
-            () => _vm.LoadInvoiceListCommand.ExecuteAsync(null));
+            async () =>
+            {
+                await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+                if (closedAsync is not null)
+                    await closedAsync();
+            });
     }
 
     private async Task OpenRentalSettingsWindowAsync()
