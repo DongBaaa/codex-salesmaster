@@ -1,35 +1,35 @@
 {
   "channel": "stable",
-  "generatedAtUtc": "2026-07-15T05:08:06.0538401Z",
+  "generatedAtUtc": "2026-07-15T07:01:36.1526756Z",
   "desktop": {
     "platform": "desktop",
-    "version": "1.1.687",
+    "version": "1.1.688",
     "mandatory": false,
     "minimumSupportedVersion": "",
-    "packageUrl": "/updates/download/desktop/tradeplan-pc-installer-v1.1.687.zip",
-    "fileName": "tradeplan-pc-installer-v1.1.687.zip",
-    "sha256": "05D1EA7657B2ECBE1C177A5377B1654044DCF72A1126AE7ECBEC72007B1D17D7",
-    "fileSize": 232272242,
-    "notes": "앱 시작·렌탈 청구 최초 로딩 속도 개선 및 메인 전표 버튼 2단 정렬",
-    "releasedAtUtc": "2026-07-15T05:08:09.5830528Z",
+    "packageUrl": "/updates/download/desktop/tradeplan-pc-installer-v1.1.688.zip",
+    "fileName": "tradeplan-pc-installer-v1.1.688.zip",
+    "sha256": "BBFEB412B018D30E532325BBA9219B09B1EAB6653504F355D82D70F325A783C7",
+    "fileSize": 232295218,
+    "notes": "내부 업데이트 패키지/동기화 안정화 개선 반영",
+    "releasedAtUtc": "2026-07-15T07:01:39.2091459Z",
     "installers": [
       {
         "audience": "user",
         "format": "exe",
-        "version": "1.1.687",
-        "packageUrl": "/updates/download/desktop/tradeplan-pc-setup-v1.1.687.exe",
-        "fileName": "tradeplan-pc-setup-v1.1.687.exe",
-        "sha256": "B2F64F5A5BB0507B35DEC145B12AAD9CA58BF03FFEE9C5F15B8E0E2496C79B58",
-        "fileSize": 249005664
+        "version": "1.1.688",
+        "packageUrl": "/updates/download/desktop/tradeplan-pc-setup-v1.1.688.exe",
+        "fileName": "tradeplan-pc-setup-v1.1.688.exe",
+        "sha256": "A898265608DEBF4141E9708FB4641B4B69A84F19F6546E44F9C9FB93BA49E8A0",
+        "fileSize": 249009760
       },
       {
         "audience": "administrator",
         "format": "msi",
-        "version": "1.1.687",
-        "packageUrl": "/updates/download/desktop/tradeplan-pc-admin-v1.1.687.msi",
-        "fileName": "tradeplan-pc-admin-v1.1.687.msi",
-        "sha256": "B44D0FB6C67FDA180F6FB7358275FA76F170CF8C5D577F187FD50293FF9CC9DC",
-        "fileSize": 186601472
+        "version": "1.1.688",
+        "packageUrl": "/updates/download/desktop/tradeplan-pc-admin-v1.1.688.msi",
+        "fileName": "tradeplan-pc-admin-v1.1.688.msi",
+        "sha256": "2490FE7D5D44DF9653B33E0D072D3AED74B680AB6164940A634222DF6B060AF9",
+        "fileSize": 186605568
       }
     ]
   },
@@ -43,6 +43,6 @@
     "sha256": "FFB75EE0AC7F1C5B7FD75AD8C29B31E0F635ED7E6799CC6C44FE9E43C601D642",
     "fileSize": 41424314,
     "notes": "모바일 상세탭/첨부 보기/내부 업데이트 확인 기능 반영",
-    "releasedAtUtc": "2026-07-15T05:08:11.0492039Z"
+    "releasedAtUtc": "2026-07-15T07:01:40.8642678Z"
   }
 }
