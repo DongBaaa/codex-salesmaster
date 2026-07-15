@@ -462,7 +462,56 @@
 
         <DockPanel Margin="10">
                     <Border DockPanel.Dock="Top" Background="#1A2B4A" Padding="10" CornerRadius="6" Margin="0,0,0,8">
-                        <WrapPanel>
+                        <DockPanel LastChildFill="True">
+                            <Border DockPanel.Dock="Right"
+                                    BorderBrush="#3E5875"
+                                    BorderThickness="1,0,0,0"
+                                    Padding="12,0,0,0"
+                                    Margin="12,0,0,0">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="112"/>
+                                        <ColumnDefinition Width="112"/>
+                                        <ColumnDefinition Width="112"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+
+                                    <Button Grid.Row="0" Grid.Column="0"
+                                            Content="판매작성"
+                                            Style="{StaticResource TradePlanEditButtonStyle}"
+                                            Click="SalesToolbarButton_Click"
+                                            Margin="0,0,6,0"/>
+                                    <Button Grid.Row="0" Grid.Column="1"
+                                            Content="구매작성"
+                                            Style="{StaticResource TradePlanEditButtonStyle}"
+                                            Click="PurchaseToolbarButton_Click"
+                                            Margin="0,0,6,0"/>
+                                    <Button Grid.Row="0" Grid.Column="2"
+                                            Content="견적/발주"
+                                            Style="{StaticResource TradePlanSecondaryButtonStyle}"
+                                            Click="ProcurementToolbarButton_Click"/>
+                                    <Button Grid.Row="1" Grid.Column="0"
+                                            Content="수금 입력"
+                                            Style="{StaticResource TradePlanEditButtonStyle}"
+                                            Click="PaymentEntryButton_Click"
+                                            Margin="0,6,6,0"/>
+                                    <Button Grid.Row="1" Grid.Column="1"
+                                            Content="전표 인쇄[F9]"
+                                            Style="{StaticResource TradePlanPrintButtonStyle}"
+                                            Command="{Binding PrintStatementCommand}"
+                                            Margin="0,6,6,0"/>
+                                    <Button Grid.Row="1" Grid.Column="2"
+                                            Content="삭제"
+                                            Style="{StaticResource TradePlanDangerButtonStyle}"
+                                            Command="{Binding DeleteInvoiceCommand}"
+                                            Margin="0,6,0,0"/>
+                                </Grid>
+                            </Border>
+
+                            <WrapPanel VerticalAlignment="Center">
                             <TextBlock Text="유형" VerticalAlignment="Center" Margin="0,0,6,0"/>
                             <ComboBox ItemsSource="{Binding VoucherTypeFilterOptions}" SelectedItem="{Binding SelectedVoucherTypeFilter}" Width="100" Margin="0,0,10,0"/>
 
@@ -481,15 +530,8 @@
                             <Button Content="즐겨찾기 이동" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding OpenFavoriteInvoiceCommand}" Margin="0,0,6,0"/>
                             <Button Content="즐겨찾기 추가/해제" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding ToggleInvoiceFavoriteCommand}" Margin="0,0,6,0"/>
 
-                            <Rectangle Width="1" Height="22" Fill="#3E5875" Margin="8,0,12,0" VerticalAlignment="Center"/>
-
-                            <Button Content="판매작성" Style="{StaticResource TradePlanEditButtonStyle}" Click="SalesToolbarButton_Click" Margin="0,0,6,0"/>
-                            <Button Content="구매작성" Style="{StaticResource TradePlanEditButtonStyle}" Click="PurchaseToolbarButton_Click" Margin="0,0,6,0"/>
-                            <Button Content="견적/발주" Style="{StaticResource TradePlanSecondaryButtonStyle}" Click="ProcurementToolbarButton_Click" Margin="0,0,6,0"/>
-                            <Button Content="삭제" Style="{StaticResource TradePlanDangerButtonStyle}" Command="{Binding DeleteInvoiceCommand}" Margin="0,0,6,0"/>
-                            <Button Content="수금 입력" Style="{StaticResource TradePlanEditButtonStyle}" Click="PaymentEntryButton_Click" Margin="0,0,6,0"/>
-                            <Button Content="전표 인쇄[F9]" Style="{StaticResource TradePlanPrintButtonStyle}" Command="{Binding PrintStatementCommand}"/>
-                        </WrapPanel>
+                            </WrapPanel>
+                        </DockPanel>
                     </Border>
 
                     <Grid>

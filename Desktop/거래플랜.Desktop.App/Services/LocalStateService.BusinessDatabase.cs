@@ -30,6 +30,16 @@ public sealed partial class LocalStateService
         "InvoiceFavorites.Ids"
     ];
 
+    internal async Task ClearAdministrativeBusinessCacheRevisionSettingsAsync(CancellationToken ct = default)
+    {
+        var settings = await _db.Settings
+            .IgnoreQueryFilters()
+            .Where(setting => setting.Key.StartsWith(SyncSettingKeys.AdministrativeBusinessCacheRevisionPrefix))
+            .ToListAsync(ct);
+        if (settings.Count > 0)
+            _db.Settings.RemoveRange(settings);
+    }
+
     public async Task<bool> HasPendingSyncChangesAsync(CancellationToken ct = default)
     {
         if (_db.ChangeTracker.Entries<ILocalSyncEntity>().Any(entry => entry.Entity.IsDirty))
@@ -198,6 +208,8 @@ public sealed partial class LocalStateService
                 _db.Settings.Remove(setting);
         }
 
+        await ClearAdministrativeBusinessCacheRevisionSettingsAsync(ct);
+
         await _db.SaveChangesAsync(ct);
         _db.ChangeTracker.Clear();
     }
@@ -246,6 +258,8 @@ public sealed partial class LocalStateService
             if (setting is not null)
                 _db.Settings.Remove(setting);
         }
+
+        await ClearAdministrativeBusinessCacheRevisionSettingsAsync(ct);
 
         await _db.SaveChangesAsync(ct);
     }

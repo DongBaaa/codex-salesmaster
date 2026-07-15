@@ -73,11 +73,26 @@ internal static class Program
                     ItemId = Guid.NewGuid(),
                     DisplayItemName = "사무기기 렌탈대금",
                     BillingLineMode = "개별",
-                    Quantity = 1m,
-                    UnitPrice = 742000m,
-                    Amount = 742000m,
+                    IndividualGroupingMode = RentalBillingTemplateItemModel.IndividualGroupingByModel,
+                    Quantity = 3m,
+                    UnitPrice = 240000m,
+                    Amount = 720000m,
                     IncludedAssetIds = db.RentalAssets.IgnoreQueryFilters()
-                        .Where(asset => asset.BillingProfileId == individualProfileId)
+                        .Where(asset => asset.BillingProfileId == individualProfileId && asset.ItemName == "리코 IMC 2010")
+                        .Select(asset => asset.Id)
+                        .ToList()
+                },
+                new RentalBillingTemplateItemModel
+                {
+                    ItemId = Guid.NewGuid(),
+                    DisplayItemName = "사무기기 렌탈대금",
+                    BillingLineMode = "개별",
+                    IndividualGroupingMode = RentalBillingTemplateItemModel.IndividualGroupingByModel,
+                    Quantity = 1m,
+                    UnitPrice = 22000m,
+                    Amount = 22000m,
+                    IncludedAssetIds = db.RentalAssets.IgnoreQueryFilters()
+                        .Where(asset => asset.BillingProfileId == individualProfileId && asset.ItemName == "SL-M2670FN")
                         .Select(asset => asset.Id)
                         .ToList()
                 }
@@ -90,8 +105,8 @@ internal static class Program
         var individualScenario = VerifyIndividualScenario(db, local, rental, userSession, individualProfileId, referenceDate);
 
         var januaryBoundaryScenario = VerifyJanuaryBoundaryScenarios(db, local, rental, adminSession);
-        var customerResolutionScenario = VerifyCustomerResolutionFallbackScenario(db, local, rental, adminSession, userSession);
-        var singleCandidateAutoLinkScenario = VerifySingleCandidateAutoLinkScenario(db, local, rental, adminSession, userSession);
+        var customerAssetLinkScenario = VerifyExplicitCustomerAssetLinkScenario(db, local, rental, adminSession, userSession);
+        var singleAssetLinkScenario = VerifyExplicitSingleAssetLinkScenario(db, local, rental, adminSession, userSession);
         var legacyLinkedAssetFallbackScenario = VerifyLegacyLinkedAssetFallbackScenario(db, local, rental, adminSession, userSession);
 
         var output = new
@@ -99,8 +114,8 @@ internal static class Program
             Grouped = groupedScenario,
             Individual = individualScenario,
             JanuaryBoundary = januaryBoundaryScenario,
-            CustomerResolutionFallback = customerResolutionScenario,
-            SingleCandidateAutoLink = singleCandidateAutoLinkScenario,
+            CustomerAssetLink = customerAssetLinkScenario,
+            SingleAssetLink = singleAssetLinkScenario,
             LegacyLinkedAssetFallback = legacyLinkedAssetFallbackScenario
         };
 
@@ -197,7 +212,7 @@ internal static class Program
         Ensure(activeInvoiceCount == 1, $"개별 청구 전표가 {activeInvoiceCount}건 생성되었습니다.");
 
         var lines = invoice!.Lines.OrderBy(line => line.ItemNameOriginal).ThenBy(line => line.SpecificationOriginal).ToList();
-        Ensure(lines.Count == 12, $"개별 청구 라인 수가 12건이 아닙니다. 실제 {lines.Count}건");
+        Ensure(lines.Count == 6, $"개별 청구 모델별 합산 라인 수가 6건이 아닙니다. 실제 {lines.Count}건");
 
         foreach (var month in new[] { 6, 7, 8 })
         {
@@ -205,10 +220,11 @@ internal static class Program
                 string.Equals(current.ItemNameOriginal, $"사무기기 렌탈대금[{month}월]", StringComparison.Ordinal) &&
                 string.Equals(current.SpecificationOriginal, "리코 IMC 2010", StringComparison.Ordinal))
                 .ToList();
-            Ensure(imcLines.Count == 3, $"개별 청구 {month}월 IMC 2010 라인 수가 3건이 아닙니다. 실제: {imcLines.Count}");
-            Ensure(imcLines.All(line => line.Quantity == 1m), $"개별 청구 {month}월 IMC 2010 수량은 장비별 1이어야 합니다.");
-            Ensure(imcLines.All(line => line.UnitPrice == 240000m), $"개별 청구 {month}월 IMC 2010 단가가 240000원이 아닙니다.");
-            Ensure(imcLines.Sum(line => line.LineAmount) == 720000m, $"개별 청구 {month}월 IMC 2010 합계가 720000원이 아닙니다. 실제: {imcLines.Sum(line => line.LineAmount)}");
+            var imcLine = imcLines.SingleOrDefault();
+            Ensure(imcLine is not null, $"개별 청구 {month}월 IMC 2010 모델 합산 라인을 찾지 못했습니다. 실제: {imcLines.Count}");
+            Ensure(imcLine!.Quantity == 3m, $"개별 청구 {month}월 IMC 2010 합산 수량이 3이 아닙니다. 실제: {imcLine.Quantity}");
+            Ensure(imcLine.UnitPrice == 240000m, $"개별 청구 {month}월 IMC 2010 단가가 240000원이 아닙니다.");
+            Ensure(imcLine.LineAmount == 720000m, $"개별 청구 {month}월 IMC 2010 합계가 720000원이 아닙니다. 실제: {imcLine.LineAmount}");
 
             var samsungLine = lines.SingleOrDefault(current =>
                 string.Equals(current.ItemNameOriginal, $"사무기기 렌탈대금[{month}월]", StringComparison.Ordinal) &&
@@ -391,7 +407,7 @@ internal static class Program
         };
     }
 
-    private static object VerifyCustomerResolutionFallbackScenario(
+    private static object VerifyExplicitCustomerAssetLinkScenario(
         LocalDbContext db,
         LocalStateService local,
         RentalStateService rental,
@@ -415,7 +431,7 @@ internal static class Program
         var customerSave = local.UpsertCustomerAsync(customer, adminSession).GetAwaiter().GetResult();
         Ensure(customerSave.Success, customerSave.Message);
 
-        SeedResolutionCandidateAssets(db, customer.Id);
+        var assetIds = SeedResolutionCandidateAssets(db, customer.Id);
 
         var profile = new LocalRentalBillingProfile
         {
@@ -447,7 +463,7 @@ internal static class Program
                     Quantity = 1m,
                     UnitPrice = 150000m,
                     Amount = 150000m,
-                    IncludedAssetIds = new List<Guid>()
+                    IncludedAssetIds = assetIds
                 }
             })
         };
@@ -456,25 +472,25 @@ internal static class Program
         Ensure(profileSave.Success, profileSave.Message);
 
         var start = rental.StartBillingAsync(profile.Id, new DateOnly(2026, 3, 31), userSession).GetAwaiter().GetResult();
-        Ensure(start.Success, $"강한 키(CustomerId) 기반 자동 연결 청구는 성공해야 합니다. 실제 메시지: {start.Message}");
-        Ensure(start.RelatedEntityId != Guid.Empty, "강한 키(CustomerId) 기반 자동 연결 전표 ID가 반환되지 않았습니다.");
+        Ensure(start.Success, $"CustomerId와 명시적 자산 연결 기반 청구는 성공해야 합니다. 실제 메시지: {start.Message}");
+        Ensure(start.RelatedEntityId != Guid.Empty, "명시적 자산 연결 전표 ID가 반환되지 않았습니다.");
 
         var invoice = local.GetInvoiceAsync(start.RelatedEntityId).GetAwaiter().GetResult();
-        Ensure(invoice is not null, "강한 키(CustomerId) 기반 자동 연결 전표를 다시 불러오지 못했습니다.");
-        Ensure(invoice!.Lines.Count == 1, $"강한 키(CustomerId) 기반 자동 연결 전표 라인 수가 1건이 아닙니다. 실제: {invoice.Lines.Count}건");
+        Ensure(invoice is not null, "명시적 자산 연결 전표를 다시 불러오지 못했습니다.");
+        Ensure(invoice!.Lines.Count == 1, $"명시적 자산 연결 전표 라인 수가 1건이 아닙니다. 실제: {invoice.Lines.Count}건");
 
         var persistedProfile = db.RentalBillingProfiles.IgnoreQueryFilters().First(current => current.Id == profile.Id);
-        Ensure(persistedProfile.CustomerId == customer.Id, "강한 키(CustomerId) 기반 저장 후 CustomerId 가 유지되지 않았습니다.");
+        Ensure(persistedProfile.CustomerId == customer.Id, "명시적 자산 연결 저장 후 CustomerId 가 유지되지 않았습니다.");
 
         var persistedItems = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(persistedProfile.BillingTemplateJson ?? "[]", JsonOptions) ?? new List<RentalBillingTemplateItemModel>();
-        Ensure(persistedItems.Count == 1, "강한 키(CustomerId) 기반 자동 연결 후 저장된 청구항목 수가 잘못되었습니다.");
-        Ensure(persistedItems[0].IncludedAssetIds.Count == 2, $"강한 키(CustomerId) 기반 자동 연결 후 IncludedAssetIds 수가 2가 아닙니다. 실제: {persistedItems[0].IncludedAssetIds.Count}");
+        Ensure(persistedItems.Count == 1, "명시적 자산 연결 후 저장된 청구항목 수가 잘못되었습니다.");
+        Ensure(persistedItems[0].IncludedAssetIds.Count == 2, $"명시적 자산 연결 후 IncludedAssetIds 수가 2가 아닙니다. 실제: {persistedItems[0].IncludedAssetIds.Count}");
 
         var linkedAssets = db.RentalAssets.IgnoreQueryFilters()
             .Where(current => current.BillingProfileId == profile.Id)
             .OrderBy(current => current.ManagementNumber)
             .ToList();
-        Ensure(linkedAssets.Count == 2, $"강한 키(CustomerId) 기반 자동 연결 후 연결 자산 수가 2가 아닙니다. 실제: {linkedAssets.Count}");
+        Ensure(linkedAssets.Count == 2, $"명시적 자산 연결 후 연결 자산 수가 2가 아닙니다. 실제: {linkedAssets.Count}");
 
         return new
         {
@@ -485,7 +501,7 @@ internal static class Program
         };
     }
 
-    private static object VerifySingleCandidateAutoLinkScenario(
+    private static object VerifyExplicitSingleAssetLinkScenario(
         LocalDbContext db,
         LocalStateService local,
         RentalStateService rental,
@@ -531,7 +547,7 @@ internal static class Program
                     Quantity = 1m,
                     UnitPrice = 150000m,
                     Amount = 150000m,
-                    IncludedAssetIds = new List<Guid>()
+                    IncludedAssetIds = new List<Guid> { assetId }
                 }
             },
             billingAdvanceMode: "후불",
@@ -541,23 +557,23 @@ internal static class Program
         Ensure(profileSave.Success, profileSave.Message);
 
         var start = rental.StartBillingAsync(profileId, new DateOnly(2026, 3, 31), userSession).GetAwaiter().GetResult();
-        Ensure(start.Success, $"단일 후보 자동 연결 청구는 성공해야 합니다. 실제: {start.Message}");
-        Ensure(start.RelatedEntityId != Guid.Empty, "단일 후보 자동 연결 전표 ID가 반환되지 않았습니다.");
+        Ensure(start.Success, $"단일 자산 명시 연결 청구는 성공해야 합니다. 실제: {start.Message}");
+        Ensure(start.RelatedEntityId != Guid.Empty, "단일 자산 명시 연결 전표 ID가 반환되지 않았습니다.");
 
         var invoice = local.GetInvoiceAsync(start.RelatedEntityId).GetAwaiter().GetResult();
-        Ensure(invoice is not null, "단일 후보 자동 연결 전표를 다시 불러오지 못했습니다.");
+        Ensure(invoice is not null, "단일 자산 명시 연결 전표를 다시 불러오지 못했습니다.");
         var line = invoice!.Lines.Single();
-        Ensure(invoice.Lines.Count == 1, $"단일 후보 자동 연결 전표 라인 수가 1건이 아닙니다. 실제: {invoice.Lines.Count}건");
-        Ensure(string.Equals(line.SpecificationOriginal, "IMC2010", StringComparison.Ordinal), $"단일 후보 자동 연결 대표 규격이 잘못되었습니다. 실제: {line.SpecificationOriginal}");
+        Ensure(invoice.Lines.Count == 1, $"단일 자산 명시 연결 전표 라인 수가 1건이 아닙니다. 실제: {invoice.Lines.Count}건");
+        Ensure(string.Equals(line.SpecificationOriginal, "IMC2010", StringComparison.Ordinal), $"단일 자산 명시 연결 대표 규격이 잘못되었습니다. 실제: {line.SpecificationOriginal}");
 
         var persistedProfile = db.RentalBillingProfiles.IgnoreQueryFilters().First(current => current.Id == profileId);
         var persistedItems = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(persistedProfile.BillingTemplateJson ?? "[]", JsonOptions) ?? new List<RentalBillingTemplateItemModel>();
-        Ensure(persistedItems.Count == 1, "단일 후보 자동 연결 후 저장된 청구항목 수가 잘못되었습니다.");
-        Ensure(persistedItems[0].IncludedAssetIds.Count == 1, $"단일 후보 자동 연결 후 IncludedAssetIds 수가 1이 아닙니다. 실제: {persistedItems[0].IncludedAssetIds.Count}");
-        Ensure(persistedItems[0].IncludedAssetIds[0] == assetId, "단일 후보 자동 연결 후 잘못된 자산이 저장되었습니다.");
+        Ensure(persistedItems.Count == 1, "단일 자산 명시 연결 후 저장된 청구항목 수가 잘못되었습니다.");
+        Ensure(persistedItems[0].IncludedAssetIds.Count == 1, $"단일 자산 명시 연결 후 IncludedAssetIds 수가 1이 아닙니다. 실제: {persistedItems[0].IncludedAssetIds.Count}");
+        Ensure(persistedItems[0].IncludedAssetIds[0] == assetId, "단일 자산 명시 연결 후 잘못된 자산이 저장되었습니다.");
 
         var persistedAsset = db.RentalAssets.IgnoreQueryFilters().First(current => current.Id == assetId);
-        Ensure(persistedAsset.BillingProfileId == profileId, "단일 후보 자동 연결 후 자산 BillingProfileId 가 프로필에 연결되지 않았습니다.");
+        Ensure(persistedAsset.BillingProfileId == profileId, "단일 자산 명시 연결 후 자산 BillingProfileId 가 프로필에 연결되지 않았습니다.");
 
         return new
         {
@@ -682,13 +698,14 @@ internal static class Program
         return result.EntityId;
     }
 
-    private static void SeedResolutionCandidateAssets(LocalDbContext db, Guid customerId)
+    private static List<Guid> SeedResolutionCandidateAssets(LocalDbContext db, Guid customerId)
     {
         var now = DateTime.UtcNow;
+        var assetIds = new List<Guid> { Guid.NewGuid(), Guid.NewGuid() };
         db.RentalAssets.AddRange(
             new LocalRentalAsset
             {
-                Id = Guid.NewGuid(),
+                Id = assetIds[0],
                 CustomerId = customerId,
                 BillingProfileId = null,
                 AssetKey = "USENET|C-001",
@@ -709,7 +726,7 @@ internal static class Program
             },
             new LocalRentalAsset
             {
-                Id = Guid.NewGuid(),
+                Id = assetIds[1],
                 CustomerId = customerId,
                 BillingProfileId = null,
                 AssetKey = "USENET|C-002",
@@ -730,6 +747,7 @@ internal static class Program
             });
 
         db.SaveChanges();
+        return assetIds;
     }
 
     private static Guid SeedSingleCandidateAsset(LocalDbContext db, Guid customerId)

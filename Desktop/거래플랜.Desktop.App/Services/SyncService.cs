@@ -442,20 +442,55 @@ public sealed class SyncService : IDisposable
                          .Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 ct.ThrowIfCancellationRequested();
+                var businessCacheStartedAtUtc = DateTime.UtcNow;
 
                 try
                 {
                     using var pullTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     pullTimeoutCts.CancelAfter(AdministrativeBusinessCachePullTimeout);
 
-                    var pull = await _api.PullAsync(0, businessDatabaseName, pullTimeoutCts.Token);
+                    var revisionSettingKey = SyncSettingKeys.BuildAdministrativeBusinessCacheRevisionKey(businessDatabaseName);
+                    var sinceRevision = await GetAdministrativeBusinessCacheRevisionAsync(revisionSettingKey, ct);
+                    var pull = await _api.PullAsync(
+                        sinceRevision,
+                        businessDatabaseName,
+                        rentalAdministrationOnly: true,
+                        pullTimeoutCts.Token);
                     if (pull is null)
                         continue;
 
+                    if (pull.CurrentServerRevision < sinceRevision)
+                    {
+                        AppLogger.Warn(
+                            "SYNC",
+                            $"관리자 업체 캐시 revision이 서버보다 앞서 전체 재조회합니다: db={businessDatabaseName}, local={sinceRevision:N0}, server={pull.CurrentServerRevision:N0}");
+                        sinceRevision = 0;
+                        pull = await _api.PullAsync(
+                            sinceRevision,
+                            businessDatabaseName,
+                            rentalAdministrationOnly: true,
+                            pullTimeoutCts.Token);
+                        if (pull is null)
+                            continue;
+                    }
+
                     using (_local.SuppressSyncDispatch())
                     {
-                        await ApplyPullAsync(pull, 0L, ct, updateSyncRevision: false);
+                        await ApplyPullAsync(pull, sinceRevision, ct, updateSyncRevision: false);
                     }
+
+                    await TrySetSettingSafeAsync(
+                        revisionSettingKey,
+                        Math.Max(0L, pull.CurrentServerRevision).ToString(CultureInfo.InvariantCulture),
+                        CancellationToken.None);
+
+                    OperationTiming.LogIfSlow(
+                        "SYNC",
+                        "관리자 업체 렌탈 캐시 병합",
+                        DateTime.UtcNow - businessCacheStartedAtUtc,
+                        detail: $"db={businessDatabaseName}, since={sinceRevision:N0}, current={pull.CurrentServerRevision:N0}",
+                        infoThreshold: TimeSpan.FromMilliseconds(400),
+                        warningThreshold: TimeSpan.FromSeconds(2));
 
                     _db.ChangeTracker.Clear();
                     mergedBusinessDatabaseCount++;
@@ -480,6 +515,16 @@ public sealed class SyncService : IDisposable
         {
             _administrativeBusinessCacheRefreshLock.Release();
         }
+    }
+
+    private async Task<long> GetAdministrativeBusinessCacheRevisionAsync(
+        string revisionSettingKey,
+        CancellationToken ct)
+    {
+        var raw = await _local.GetSettingAsync(revisionSettingKey, ct);
+        return long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var revision) && revision > 0
+            ? revision
+            : 0L;
     }
 
     private Task<bool>? GetCurrentRunningSyncTask()

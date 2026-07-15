@@ -1,6 +1,8 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
+using System.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using System.Globalization;
 using System.Text.RegularExpressions;
 
@@ -10,6 +12,8 @@ public static partial class LocalDbInitializer
 {
     private const string FallbackUtcText = "1970-01-01T00:00:00Z";
     private const string YeonsuOfficeIdSettingKey = "SystemOffice.YeonsuOfficeId";
+    private const string SchemaMaintenanceVersionSettingKey = "LocalDb.SchemaMaintenanceVersion";
+    private const string SchemaMaintenanceVersion = "2026-07-15.1";
     private const string LegacyLinkedGeneralSettlementCleanupKey = "Migration.CleanupLegacyLinkedGeneralSettlements.v1";
     private const string NormalizeSelectionOptionSystemDefaultsStepKey = "Migration.NormalizeSelectionOptionSystemDefaults.v1";
     private const string CustomerCategoryMaintenanceStepKey = "Migration.CustomerCategoryMaintenance.v1";
@@ -54,6 +58,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
     private static readonly Regex SqlIdentifierPattern = new(
         "^[A-Za-z0-9_]+$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly AsyncLocal<Dictionary<string, HashSet<string>>?> ActiveSchemaColumnCache = new();
     private static readonly CanonicalOfficeDefinition[] CanonicalOffices =
     [
         new(OfficeCodeCatalog.Usenet, OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet), true, OfficeCodeCatalog.UsenetMainWarehouse, "유즈넷 창고"),
@@ -63,9 +68,55 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
 
     public static async Task InitializeAsync(LocalDbContext db)
     {
+        var connectionWasAlreadyOpen = db.Database.GetDbConnection().State == ConnectionState.Open;
+        var previousSchemaColumnCache = ActiveSchemaColumnCache.Value;
+        ActiveSchemaColumnCache.Value = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        if (!connectionWasAlreadyOpen)
+            await db.Database.OpenConnectionAsync();
+
+        try
+        {
+            await InitializeCoreAsync(db);
+        }
+        finally
+        {
+            ActiveSchemaColumnCache.Value = previousSchemaColumnCache;
+            if (!connectionWasAlreadyOpen)
+                await db.Database.CloseConnectionAsync();
+        }
+    }
+
+    private static async Task InitializeCoreAsync(LocalDbContext db)
+    {
+        var stepStartedAtUtc = DateTime.UtcNow;
         await db.Database.EnsureCreatedAsync();
-        await MigrateColumnsAsync(db);
+        LogInitializationStep("EnsureCreated", stepStartedAtUtc);
+
+        var requiresSchemaMaintenance = !await HasSettingValueAsync(
+            db,
+            SchemaMaintenanceVersionSettingKey,
+            SchemaMaintenanceVersion);
+        if (requiresSchemaMaintenance)
+        {
+            stepStartedAtUtc = DateTime.UtcNow;
+            await MigrateColumnsAsync(db);
+            LogInitializationStep("스키마 보강", stepStartedAtUtc);
+        }
+
+        stepStartedAtUtc = DateTime.UtcNow;
         await EnsureSyncOutboxTableAsync(db);
+        LogInitializationStep("동기화 outbox 확인", stepStartedAtUtc);
+
+        stepStartedAtUtc = DateTime.UtcNow;
+
+        // 시작 정비 단계는 동일한 Settings 행을 반복 확인하므로 한 번만 읽어 추적 캐시에 둔다.
+        // 이후 HasSettingValueAsync/UpsertSettingAsync는 Local 컬렉션을 우선 사용한다.
+        await db.Settings.IgnoreQueryFilters().LoadAsync();
+        if (requiresSchemaMaintenance)
+        {
+            await UpsertSettingAsync(db, SchemaMaintenanceVersionSettingKey, SchemaMaintenanceVersion);
+            await db.SaveChangesAsync();
+        }
 
         if (!db.CustomerCategories.Any())
         {
@@ -114,14 +165,19 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             async () => await NormalizeSelectionOptionSystemDefaultsAsync(db));
         await SeedOfficeAndWarehouseAsync(db);
         await SeedCompanyProfilesAsync(db);
-        await NormalizeCompanyProfilesAsync(db);
         await RunStartupMaintenanceStepAsync(
             db,
             NormalizeCompanyProfileAssignmentSettingsStepKey,
             async () => await NormalizeCompanyProfileAssignmentSettingsAsync(db));
         await SeedRentalDefaultsAsync(db);
-        await NormalizeRentalOfficeDataAsync(db);
-        await NormalizeRentalAssetOfficeOwnershipAsync(db);
+        await RunStartupMaintenanceStepAsync(
+            db,
+            NormalizeRentalOfficeDataStepKey,
+            async () => await NormalizeRentalOfficeDataAsync(db));
+        await RunStartupMaintenanceStepAsync(
+            db,
+            NormalizeRentalAssetOfficeOwnershipStepKey,
+            async () => await NormalizeRentalAssetOfficeOwnershipAsync(db));
         await RunStartupMaintenanceStepAsync(
             db,
             DropLegacyRentalAssignedUsernameIndexesStepKey,
@@ -197,7 +253,16 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         await db.SaveChangesAsync();
         await EnsureUniqueDefaultCompanyProfileIndexAsync(db);
         await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"UX_ItemCategoryOptions_Name_Active\" ON \"ItemCategoryOptions\" (\"Name\") WHERE COALESCE(TRIM(\"Name\"), '') <> '' AND COALESCE(\"IsDeleted\", 0) = 0;");
+        LogInitializationStep("기본값 및 정합성 유지", stepStartedAtUtc);
     }
+
+    private static void LogInitializationStep(string stepName, DateTime startedAtUtc)
+        => OperationTiming.LogIfSlow(
+            "LOCALDB",
+            stepName,
+            DateTime.UtcNow - startedAtUtc,
+            infoThreshold: TimeSpan.FromMilliseconds(100),
+            warningThreshold: TimeSpan.FromSeconds(2));
 
     private static void LogSchemaStepFailure(string stepName, Exception ex)
     {
@@ -2218,9 +2283,11 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             {
                 var renameSql = "ALTER TABLE " + quotedTableName + " RENAME COLUMN " + quotedOldColumnName + " TO " + quotedNewColumnName + ";";
                 await db.Database.ExecuteSqlRawAsync(renameSql);
+                InvalidateSchemaColumnCache(tableName);
             }
             catch (Exception ex)
             {
+                InvalidateSchemaColumnCache(tableName);
                 LogSchemaStepFailure($"{nameof(EnsureRenamedTextColumnAsync)}:rename:{tableName}.{oldColumnName}->{newColumnName}", ex);
             }
 
@@ -2259,6 +2326,10 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         if (!IsSafeSqlIdentifier(tableName) || !IsSafeSqlIdentifier(columnName))
             return false;
 
+        var schemaColumnCache = ActiveSchemaColumnCache.Value;
+        if (schemaColumnCache is not null && schemaColumnCache.TryGetValue(tableName, out var cachedColumns))
+            return cachedColumns.Contains(columnName);
+
         var connection = db.Database.GetDbConnection();
         var shouldClose = connection.State != System.Data.ConnectionState.Open;
 
@@ -2270,13 +2341,17 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             await using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA table_info(" + QuoteSqlIdentifier(tableName) + ");";
             await using var reader = await command.ExecuteReaderAsync();
+            var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             while (await reader.ReadAsync())
             {
-                if (string.Equals(reader["name"]?.ToString(), columnName, StringComparison.OrdinalIgnoreCase))
-                    return true;
+                var currentColumnName = reader["name"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(currentColumnName))
+                    columns.Add(currentColumnName);
             }
 
-            return false;
+            if (schemaColumnCache is not null)
+                schemaColumnCache[tableName] = columns;
+            return columns.Contains(columnName);
         }
         finally
         {
@@ -2297,6 +2372,8 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         {
             var dropSql = "ALTER TABLE " + QuoteSqlIdentifier(tableName) + " DROP COLUMN " + QuoteSqlIdentifier(columnName) + ";";
             await db.Database.ExecuteSqlRawAsync(dropSql);
+            if (ActiveSchemaColumnCache.Value?.TryGetValue(tableName, out var columns) == true)
+                columns.Remove(columnName);
         }
         catch (Exception ex)
         {
@@ -2318,9 +2395,12 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         {
             var sql = "ALTER TABLE " + QuoteSqlIdentifier(table) + " ADD COLUMN " + QuoteSqlIdentifier(column) + " " + definition;
             await db.Database.ExecuteSqlRawAsync(sql);
+            if (ActiveSchemaColumnCache.Value?.TryGetValue(table, out var columns) == true)
+                columns.Add(column);
         }
         catch (Exception ex)
         {
+            InvalidateSchemaColumnCache(table);
             if (await WaitForColumnAvailabilityAsync(db, table, column))
                 return;
 
@@ -2346,6 +2426,9 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
 
     private static bool IsSafeSqlIdentifier(string value)
         => !string.IsNullOrWhiteSpace(value) && SqlIdentifierPattern.IsMatch(value);
+
+    private static void InvalidateSchemaColumnCache(string tableName)
+        => ActiveSchemaColumnCache.Value?.Remove(tableName);
 
     private static string QuoteSqlIdentifier(string value)
         => "\"" + value + "\"";

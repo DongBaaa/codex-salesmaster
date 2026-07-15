@@ -330,13 +330,27 @@ public sealed class ErpApiClient
         long sinceRevision,
         string? businessDatabaseNameOverride,
         CancellationToken ct = default)
+        => await PullAsync(
+            sinceRevision,
+            businessDatabaseNameOverride,
+            rentalAdministrationOnly: false,
+            ct);
+
+    public async Task<SyncPullResponse?> PullAsync(
+        long sinceRevision,
+        string? businessDatabaseNameOverride,
+        bool rentalAdministrationOnly,
+        CancellationToken ct = default)
     {
         return await ExecuteWithRetryAsync(
             operationName: "동기화 다운로드(sync/pull)",
             sendAsync: async token =>
             {
                 SetAuthHeader(includeBusinessDatabaseHeader: true, businessDatabaseNameOverride);
-                return await _http.GetAsync($"sync/pull?sinceRev={sinceRevision}", token);
+                var rentalAdministrationQuery = rentalAdministrationOnly
+                    ? "&rentalAdministrationOnly=true"
+                    : string.Empty;
+                return await _http.GetAsync($"sync/pull?sinceRev={sinceRevision}{rentalAdministrationQuery}", token);
             },
             readAsync: static (resp, token) => ReadRequiredJsonAsync<SyncPullResponse>(
                 resp,

@@ -118,9 +118,11 @@ internal static class Program
         var proofDirectory = Path.Combine(AppContext.BaseDirectory, "runtime", "isolated-payment-transfer-scenario", "proofs");
         Directory.CreateDirectory(proofDirectory);
         var sampleFile = Path.Combine(proofDirectory, "payment-proof-sample.pdf");
-        File.WriteAllText(sampleFile, "sample proof file");
+        File.WriteAllText(sampleFile, "%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF");
 
         var attachmentSave = local.SaveTransactionAttachmentAsync(advanceDepositTransaction.Id, sampleFile, "입금확인증", "입금 확인 메모", adminSession).GetAwaiter().GetResult();
+        if (!attachmentSave.Success)
+            throw new InvalidOperationException($"수금 증빙 저장 실패: {attachmentSave.Message}");
         var attachmentList = local.GetTransactionAttachmentsAsync(advanceDepositTransaction.Id, adminSession).GetAwaiter().GetResult();
         var attachment = attachmentList.First();
         var verifyResult = local.UpdateTransactionAttachmentVerificationAsync(attachment.Id, "확인완료", "관리자 확인", adminSession).GetAwaiter().GetResult();
@@ -400,7 +402,12 @@ internal static class Program
             TenantCode = tenantCode,
             OfficeCode = officeCode,
             ScopeType = scopeType ?? TenantScopeCatalog.ScopeOfficeOnly,
-            Permissions = new List<string>()
+            Permissions = new List<string>
+            {
+                AppPermissionNames.CustomerEdit,
+                AppPermissionNames.PaymentEdit,
+                AppPermissionNames.DeliveryEdit
+            }
         });
         return session;
     }

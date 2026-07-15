@@ -14639,6 +14639,205 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Pull_RentalAdministrationOnly_LoadsReferencedItemsAndSkipsInventoryPayload()
+    {
+        var referencedItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Rental referenced item",
+            NameMatchKey = "RENTALREFERENCEDITEM",
+            ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset
+        };
+        var unrelatedItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Unrelated inventory item",
+            NameMatchKey = "UNRELATEDINVENTORYITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock
+        };
+        var lateReferencedItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Late rental referenced item",
+            NameMatchKey = "LATERENTALREFERENCEDITEM",
+            ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset
+        };
+        var rentalAssetId = Guid.NewGuid();
+        var customerId = Guid.NewGuid();
+        var rentalProfileId = Guid.NewGuid();
+        var rentalRunId = Guid.NewGuid();
+        var linkedInvoiceId = Guid.NewGuid();
+        var unrelatedInvoiceId = Guid.NewGuid();
+        var linkedPaymentId = Guid.NewGuid();
+        var unrelatedPaymentId = Guid.NewGuid();
+        var linkedTransactionId = Guid.NewGuid();
+        var unrelatedTransactionId = Guid.NewGuid();
+
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Rental administration customer",
+            NameMatchKey = "RENTALADMINISTRATIONCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        _dbContext.Items.AddRange(referencedItem, unrelatedItem, lateReferencedItem);
+        _dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = rentalAssetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            AssetKey = $"rental-admin-{Guid.NewGuid():N}",
+            ManagementId = "RENTAL-ADMIN-ITEM-001",
+            ManagementNumber = "RENTAL-ADMIN-001",
+            ItemId = referencedItem.Id,
+            ItemName = referencedItem.NameOriginal,
+            AssetStatus = "임대진행중"
+        });
+        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = unrelatedItem.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 5m,
+            UpdatedAtUtc = DateTime.UtcNow,
+            Revision = 50
+        });
+        _dbContext.Invoices.AddRange(
+            new Invoice
+            {
+                Id = linkedInvoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "RENTAL-ADMIN-LINKED",
+                VersionGroupId = linkedInvoiceId,
+                VoucherType = VoucherType.Sales,
+                LinkedRentalBillingProfileId = rentalProfileId,
+                LinkedRentalBillingRunId = rentalRunId,
+                Lines =
+                [
+                    new InvoiceLine
+                    {
+                        Id = Guid.NewGuid(),
+                        ItemId = referencedItem.Id,
+                        ItemNameOriginal = referencedItem.NameOriginal,
+                        Quantity = 1m,
+                        UnitPrice = 10_000m,
+                        LineAmount = 10_000m
+                    }
+                ]
+            },
+            new Invoice
+            {
+                Id = unrelatedInvoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceNumber = "RENTAL-ADMIN-UNRELATED",
+                VersionGroupId = unrelatedInvoiceId,
+                VoucherType = VoucherType.Sales,
+                Lines =
+                [
+                    new InvoiceLine
+                    {
+                        Id = Guid.NewGuid(),
+                        ItemId = unrelatedItem.Id,
+                        ItemNameOriginal = unrelatedItem.NameOriginal,
+                        Quantity = 1m,
+                        UnitPrice = 20_000m,
+                        LineAmount = 20_000m
+                    }
+                ]
+            });
+        _dbContext.Payments.AddRange(
+            new Payment { Id = linkedPaymentId, InvoiceId = linkedInvoiceId, Amount = 10_000m },
+            new Payment { Id = unrelatedPaymentId, InvoiceId = unrelatedInvoiceId, Amount = 20_000m });
+        _dbContext.Transactions.AddRange(
+            new TransactionRecord
+            {
+                Id = linkedTransactionId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                LinkedInvoiceId = linkedInvoiceId,
+                LinkedRentalBillingProfileId = rentalProfileId,
+                LinkedRentalBillingRunId = rentalRunId,
+                TransactionKind = "Rental settlement"
+            },
+            new TransactionRecord
+            {
+                Id = unrelatedTransactionId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                LinkedInvoiceId = unrelatedInvoiceId,
+                TransactionKind = "Ordinary sale"
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Pull(0, CancellationToken.None, rentalAdministrationOnly: true);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPullResponse>(ok.Value);
+
+        Assert.Contains(result.Items, item => item.Id == referencedItem.Id);
+        Assert.DoesNotContain(result.Items, item => item.Id == unrelatedItem.Id);
+        Assert.DoesNotContain(result.Items, item => item.Id == lateReferencedItem.Id);
+        Assert.Empty(result.ItemWarehouseStocks);
+        Assert.Empty(result.InventoryTransfers);
+        Assert.Empty(result.TransactionAttachments);
+        Assert.Contains(result.Invoices, invoice => invoice.Id == linkedInvoiceId);
+        Assert.DoesNotContain(result.Invoices, invoice => invoice.Id == unrelatedInvoiceId);
+        Assert.Contains(result.Payments, payment => payment.Id == linkedPaymentId);
+        Assert.DoesNotContain(result.Payments, payment => payment.Id == unrelatedPaymentId);
+        Assert.Contains(result.Transactions, transaction => transaction.Id == linkedTransactionId);
+        Assert.DoesNotContain(result.Transactions, transaction => transaction.Id == unrelatedTransactionId);
+
+        var firstRevision = result.CurrentServerRevision;
+        var rentalAsset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(asset => asset.Id == rentalAssetId);
+        rentalAsset.ItemId = lateReferencedItem.Id;
+        rentalAsset.ItemName = lateReferencedItem.NameOriginal;
+        var unrelatedInvoice = await _dbContext.Invoices.IgnoreQueryFilters()
+            .SingleAsync(invoice => invoice.Id == unrelatedInvoiceId);
+        unrelatedInvoice.Memo = "Changed after the rental cache checkpoint";
+        var unrelatedPayment = await _dbContext.Payments.IgnoreQueryFilters()
+            .SingleAsync(payment => payment.Id == unrelatedPaymentId);
+        unrelatedPayment.Note = "Changed after the rental cache checkpoint";
+        var unrelatedTransaction = await _dbContext.Transactions.IgnoreQueryFilters()
+            .SingleAsync(transaction => transaction.Id == unrelatedTransactionId);
+        unrelatedTransaction.Memo = "Changed after the rental cache checkpoint";
+        await _dbContext.SaveChangesAsync();
+
+        var incrementalResponse = await _controller.Pull(
+            firstRevision,
+            CancellationToken.None,
+            rentalAdministrationOnly: true);
+        var incrementalOk = Assert.IsType<OkObjectResult>(incrementalResponse.Result);
+        var incrementalResult = Assert.IsType<SyncPullResponse>(incrementalOk.Value);
+        Assert.Contains(incrementalResult.Items, item => item.Id == lateReferencedItem.Id);
+        Assert.Contains(incrementalResult.Invoices, invoice => invoice.Id == unrelatedInvoiceId);
+        Assert.Contains(incrementalResult.Payments, payment => payment.Id == unrelatedPaymentId);
+        Assert.Contains(incrementalResult.Transactions, transaction => transaction.Id == unrelatedTransactionId);
+    }
+
+    [Fact]
     public async Task Push_RejectsStaleItemWarehouseStockExpectedRevision()
     {
         var itemId = Guid.NewGuid();

@@ -105,6 +105,9 @@ public sealed class LocalDbInitializerSchemaIdempotencyTests
             await LocalDbInitializer.InitializeAsync(secondDb);
 
             Assert.True(await secondDb.Settings.AsNoTracking().AnyAsync(setting => setting.Key == "Theme"));
+            Assert.True(await secondDb.Settings.AsNoTracking().AnyAsync(setting => setting.Key == "LocalDb.SchemaMaintenanceVersion" && setting.Value == "2026-07-15.1"));
+            Assert.True(await secondDb.Settings.AsNoTracking().AnyAsync(setting => setting.Key == "Migration.NormalizeRentalOfficeData.v1" && setting.Value == "1"));
+            Assert.True(await secondDb.Settings.AsNoTracking().AnyAsync(setting => setting.Key == "Migration.NormalizeRentalAssetOfficeOwnership.v1" && setting.Value == "1"));
             Assert.DoesNotContain(interceptor.NonQueryCommands, IsAlterTableAddColumnCommand);
         }
         finally

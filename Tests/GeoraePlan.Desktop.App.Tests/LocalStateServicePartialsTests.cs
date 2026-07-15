@@ -3433,7 +3433,7 @@ public sealed class LocalStateServicePartialsTests
         Assert.Contains("Grid.Row=\"3\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Content=\"{Binding ConfirmButtonLabel}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("IsDefault=\"True\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("청구관리 화면에서 저장합니다.", xaml, StringComparison.Ordinal);
+        Assert.Contains("선택한 장비를 추가하면 현재 거래처에 연결되고", xaml, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -105,52 +105,91 @@ public sealed class SyncController : ControllerBase
 
     [HttpGet("pull")]
     [ProducesResponseType(typeof(SyncPullResponse), StatusCodes.Status200OK)]
-    public async Task<ActionResult<SyncPullResponse>> Pull([FromQuery] long sinceRev, CancellationToken cancellationToken)
+    public async Task<ActionResult<SyncPullResponse>> Pull(
+        [FromQuery] long sinceRev,
+        CancellationToken cancellationToken,
+        [FromQuery] bool rentalAdministrationOnly = false)
     {
-        var readableRentalAssetIds = await _officeScopeService
-            .ApplyRentalAssetScope(_dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking())
+        var readableRentalAssets = _officeScopeService
+            .ApplyRentalAssetScope(_dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking());
+        var readableRentalAssetIds = await readableRentalAssets
             .Select(asset => asset.Id)
             .ToListAsync(cancellationToken);
         var readableRentalAssignmentHistories = _officeScopeService
             .ApplyRentalAssignmentHistoryScope(_dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().AsNoTracking());
+        var rentalAdministrationItemIds = rentalAdministrationOnly
+            ? await LoadRentalAdministrationItemIdsAsync(readableRentalAssets, cancellationToken)
+            : [];
 
         var response = new SyncPullResponse
         {
-            CompanyProfiles = await _officeScopeService.ApplyCompanyProfileScope(_dbContext.CompanyProfiles.IgnoreQueryFilters().AsNoTracking())
-                .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
-            Units = DeduplicatePulledUnits(await _dbContext.Units.IgnoreQueryFilters().AsNoTracking()
-                .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken)),
-            CustomerCategories = await _dbContext.CustomerCategories.IgnoreQueryFilters().AsNoTracking()
-                .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
-            PriceGradeOptions = await _dbContext.PriceGradeOptions.IgnoreQueryFilters().AsNoTracking()
-                .Where(x => x.Revision > sinceRev).OrderBy(x => x.SortOrder).ThenBy(x => x.Name).Select(x => x.ToDto()).ToListAsync(cancellationToken),
-            TradeTypeOptions = await _dbContext.TradeTypeOptions.IgnoreQueryFilters().AsNoTracking()
-                .Where(x => x.Revision > sinceRev).OrderBy(x => x.SortOrder).ThenBy(x => x.Name).Select(x => x.ToDto()).ToListAsync(cancellationToken),
-            ItemCategoryOptions = await _dbContext.ItemCategoryOptions.IgnoreQueryFilters().AsNoTracking()
-                .Where(x => x.Revision > sinceRev).OrderBy(x => x.SortOrder).ThenBy(x => x.Name).Select(x => x.ToDto()).ToListAsync(cancellationToken),
-            CustomerMasters = await _officeScopeService.ApplyCustomerMasterScope(_dbContext.CustomerMasters.IgnoreQueryFilters().AsNoTracking())
-                .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            CompanyProfiles = rentalAdministrationOnly
+                ? []
+                : await _officeScopeService.ApplyCompanyProfileScope(_dbContext.CompanyProfiles.IgnoreQueryFilters().AsNoTracking())
+                    .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            Units = rentalAdministrationOnly
+                ? []
+                : DeduplicatePulledUnits(await _dbContext.Units.IgnoreQueryFilters().AsNoTracking()
+                    .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken)),
+            CustomerCategories = rentalAdministrationOnly
+                ? []
+                : await _dbContext.CustomerCategories.IgnoreQueryFilters().AsNoTracking()
+                    .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            PriceGradeOptions = rentalAdministrationOnly
+                ? []
+                : await _dbContext.PriceGradeOptions.IgnoreQueryFilters().AsNoTracking()
+                    .Where(x => x.Revision > sinceRev).OrderBy(x => x.SortOrder).ThenBy(x => x.Name).Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            TradeTypeOptions = rentalAdministrationOnly
+                ? []
+                : await _dbContext.TradeTypeOptions.IgnoreQueryFilters().AsNoTracking()
+                    .Where(x => x.Revision > sinceRev).OrderBy(x => x.SortOrder).ThenBy(x => x.Name).Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            ItemCategoryOptions = rentalAdministrationOnly
+                ? []
+                : await _dbContext.ItemCategoryOptions.IgnoreQueryFilters().AsNoTracking()
+                    .Where(x => x.Revision > sinceRev).OrderBy(x => x.SortOrder).ThenBy(x => x.Name).Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            CustomerMasters = rentalAdministrationOnly
+                ? []
+                : await _officeScopeService.ApplyCustomerMasterScope(_dbContext.CustomerMasters.IgnoreQueryFilters().AsNoTracking())
+                    .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
             Customers = await _officeScopeService.ApplySyncCustomerScope(_dbContext.Customers.IgnoreQueryFilters().AsNoTracking())
                 .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
-            CustomerContracts = await _officeScopeService.ApplyCustomerContractScope(_dbContext.CustomerContracts.IgnoreQueryFilters().AsNoTracking().Include(x => x.Customer))
-                .Where(x => x.Revision > sinceRev).Select(x => x.ToDto(false)).ToListAsync(cancellationToken),
+            CustomerContracts = rentalAdministrationOnly
+                ? []
+                : await _officeScopeService.ApplyCustomerContractScope(_dbContext.CustomerContracts.IgnoreQueryFilters().AsNoTracking().Include(x => x.Customer))
+                    .Where(x => x.Revision > sinceRev).Select(x => x.ToDto(false)).ToListAsync(cancellationToken),
             Items = await _officeScopeService.ApplySyncItemScope(_dbContext.Items.IgnoreQueryFilters().AsNoTracking())
-                .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
-            ItemPriceGrades = await _officeScopeService.ApplyItemPriceGradeScope(_dbContext.ItemPriceGrades.IgnoreQueryFilters().AsNoTracking().Include(x => x.Item))
-                .Where(x => x.Revision > sinceRev).OrderBy(x => x.ItemId).ThenBy(x => x.PriceGradeName)
+                .Where(x => rentalAdministrationOnly
+                    ? rentalAdministrationItemIds.Contains(x.Id)
+                    : x.Revision > sinceRev)
                 .Select(x => x.ToDto()).ToListAsync(cancellationToken),
-            ItemWarehouseStocks = await _officeScopeService.ApplyItemWarehouseStockScope(_dbContext.ItemWarehouseStocks.AsNoTracking())
-                .OrderBy(x => x.ItemId).ThenBy(x => x.WarehouseCode)
-                .Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            ItemPriceGrades = rentalAdministrationOnly
+                ? []
+                : await _officeScopeService.ApplyItemPriceGradeScope(_dbContext.ItemPriceGrades.IgnoreQueryFilters().AsNoTracking().Include(x => x.Item))
+                    .Where(x => x.Revision > sinceRev).OrderBy(x => x.ItemId).ThenBy(x => x.PriceGradeName)
+                    .Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            ItemWarehouseStocks = rentalAdministrationOnly
+                ? []
+                : await _officeScopeService.ApplyItemWarehouseStockScope(_dbContext.ItemWarehouseStocks.AsNoTracking())
+                    .OrderBy(x => x.ItemId).ThenBy(x => x.WarehouseCode)
+                    .Select(x => x.ToDto()).ToListAsync(cancellationToken),
             Transactions = await _officeScopeService.ApplyTransactionScope(_dbContext.Transactions.IgnoreQueryFilters().AsNoTracking())
-                .Where(x => x.Revision > sinceRev).OrderBy(x => x.TransactionDate).ThenBy(x => x.CreatedAtUtc)
+                .Where(x => x.Revision > sinceRev &&
+                    (!rentalAdministrationOnly ||
+                     sinceRev > 0 ||
+                     x.LinkedRentalBillingProfileId.HasValue ||
+                     x.LinkedRentalBillingRunId.HasValue))
+                .OrderBy(x => x.TransactionDate).ThenBy(x => x.CreatedAtUtc)
                 .Select(x => x.ToDto()).ToListAsync(cancellationToken),
-            TransactionAttachments = await _officeScopeService.ApplyTransactionAttachmentScope(_dbContext.TransactionAttachments.IgnoreQueryFilters().AsNoTracking().Include(x => x.Transaction))
-                .Where(x => x.Revision > sinceRev).OrderBy(x => x.UploadedAtUtc).ThenBy(x => x.SortOrder)
-                .Select(x => x.ToDto(true)).ToListAsync(cancellationToken),
-            InventoryTransfers = await _officeScopeService.ApplyInventoryTransferScope(_dbContext.InventoryTransfers.IgnoreQueryFilters().AsNoTracking().Include(x => x.Lines))
-                .Where(x => x.Revision > sinceRev).OrderBy(x => x.TransferDate).ThenBy(x => x.CreatedAtUtc)
-                .Select(x => x.ToDto()).ToListAsync(cancellationToken),
+            TransactionAttachments = rentalAdministrationOnly
+                ? []
+                : await _officeScopeService.ApplyTransactionAttachmentScope(_dbContext.TransactionAttachments.IgnoreQueryFilters().AsNoTracking().Include(x => x.Transaction))
+                    .Where(x => x.Revision > sinceRev).OrderBy(x => x.UploadedAtUtc).ThenBy(x => x.SortOrder)
+                    .Select(x => x.ToDto(true)).ToListAsync(cancellationToken),
+            InventoryTransfers = rentalAdministrationOnly
+                ? []
+                : await _officeScopeService.ApplyInventoryTransferScope(_dbContext.InventoryTransfers.IgnoreQueryFilters().AsNoTracking().Include(x => x.Lines))
+                    .Where(x => x.Revision > sinceRev).OrderBy(x => x.TransferDate).ThenBy(x => x.CreatedAtUtc)
+                    .Select(x => x.ToDto()).ToListAsync(cancellationToken),
             RentalManagementCompanies = await _officeScopeService.ApplyRentalManagementCompanyScope(_dbContext.RentalManagementCompanies.IgnoreQueryFilters().AsNoTracking())
                 .Where(x => x.Revision > sinceRev).OrderBy(x => x.Code).Select(x => x.ToDto()).ToListAsync(cancellationToken),
             RentalBillingProfiles = await _officeScopeService.ApplyRentalBillingProfileScope(_dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking())
@@ -171,10 +210,20 @@ public sealed class SyncController : ControllerBase
                 .Where(x => x.Revision > sinceRev).OrderBy(x => x.ScheduledDate).ThenBy(x => x.BillingYearMonth)
                 .Select(x => x.ToDto()).ToListAsync(cancellationToken),
             Invoices = await _officeScopeService.ApplySyncInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().Include(x => x.Customer).Include(x => x.Lines).Include(x => x.Payments).AsNoTracking())
-                .Where(x => x.Revision > sinceRev).OrderBy(x => x.CreatedAtUtc)
+                .Where(x => x.Revision > sinceRev &&
+                    (!rentalAdministrationOnly ||
+                     sinceRev > 0 ||
+                     x.LinkedRentalBillingProfileId.HasValue ||
+                     x.LinkedRentalBillingRunId.HasValue))
+                .OrderBy(x => x.CreatedAtUtc)
                 .Select(x => x.ToDto()).ToListAsync(cancellationToken),
             Payments = await _officeScopeService.ApplyPaymentScope(_dbContext.Payments.IgnoreQueryFilters().Include(x => x.Invoice).ThenInclude(invoice => invoice!.Customer).AsNoTracking())
-                .Where(x => x.Revision > sinceRev).Select(x => x.ToDto()).ToListAsync(cancellationToken),
+                .Where(x => x.Revision > sinceRev &&
+                    (!rentalAdministrationOnly ||
+                     sinceRev > 0 ||
+                     (x.Invoice != null &&
+                      (x.Invoice.LinkedRentalBillingProfileId.HasValue || x.Invoice.LinkedRentalBillingRunId.HasValue))))
+                .Select(x => x.ToDto()).ToListAsync(cancellationToken),
             PurgeRecords = (await FilterSupersededPurgeRecordsAsync(
                     (await _dbContext.RecycleBinPurgeRecords
                         .AsNoTracking()
@@ -194,6 +243,31 @@ public sealed class SyncController : ControllerBase
 
         response.CurrentServerRevision = await GetCurrentRevisionAsync(cancellationToken);
         return Ok(response);
+    }
+
+    private async Task<List<Guid>> LoadRentalAdministrationItemIdsAsync(
+        IQueryable<RentalAsset> readableRentalAssets,
+        CancellationToken cancellationToken)
+    {
+        var rentalAssetItemIds = await readableRentalAssets
+            .Where(asset => asset.ItemId.HasValue && asset.ItemId.Value != Guid.Empty)
+            .Select(asset => asset.ItemId!.Value)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        var invoiceItemIds = await _officeScopeService
+            .ApplySyncInvoiceScope(_dbContext.Invoices.IgnoreQueryFilters().AsNoTracking())
+            .Where(invoice => invoice.LinkedRentalBillingProfileId.HasValue || invoice.LinkedRentalBillingRunId.HasValue)
+            .SelectMany(invoice => invoice.Lines)
+            .Where(line => line.ItemId.HasValue && line.ItemId.Value != Guid.Empty)
+            .Select(line => line.ItemId!.Value)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        return rentalAssetItemIds
+            .Concat(invoiceItemIds)
+            .Distinct()
+            .ToList();
     }
 
     private async Task RemoveUnreadableItemLinesFromPullResponseAsync(

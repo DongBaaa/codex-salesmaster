@@ -140,8 +140,8 @@ public sealed class MasterUiWiringGuardTests
             "전표 품명",
             "전표 품명 미리보기",
             "선택 장비를 현재 표시품목으로 이동",
-            "전표에 넣을 장비를 선택한 뒤 원하는 표시품목으로 이동하세요.",
-            "삭제하면 이 목록에서 빠지고 렌탈 자산연결 후보로 돌아갑니다.",
+            "이 목록은 현재 청구 프로필에 연결된 렌탈 자산입니다.",
+            "연결 해제해도 자산 자체는 삭제되지 않으며 렌탈 자산 추가 후보로 돌아갑니다.",
             "이 행은 거래처별 요약입니다.",
             "펼친 뒤 개별 프로필을 선택해 저장·삭제·장비연결·입금등록을 진행합니다.",
             "BillingAssetCoverageWarning",
@@ -630,7 +630,7 @@ public sealed class MasterUiWiringGuardTests
             "PurchaseVendor = source.PurchaseVendor",
             "BillingExclusionReason = source.BillingExclusionReason",
             "RentalEndDate = ToDateTime(source.RentalEndDate)",
-            "public string ConfirmButtonLabel => $\"선택 {SelectedCount:N0}대 반영\";",
+            "public string ConfirmButtonLabel => $\"선택 장비 {SelectedCount:N0}대 추가\";",
             "OnPropertyChanged(nameof(ConfirmButtonLabel));");
 
         AssertContainsAll(

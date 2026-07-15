@@ -707,7 +707,10 @@ public sealed class RentalBillingSpecificationTests
             RepresentativeAssetId = assetId
         };
         allowedTemplateItem.IncludedAssetIds.Add(assetId);
-        var allowed = new RentalBillingViewModel(null!, null!, CreateUserSession(AppPermissionNames.RentalProfileEdit));
+        var allowed = new RentalBillingViewModel(
+            null!,
+            null!,
+            CreateUserSession(AppPermissionNames.RentalProfileEdit, AppPermissionNames.RentalAssetEdit));
         allowed.TemplateItems.Add(allowedTemplateItem);
         SetPrivateField(allowed, "_selectedTemplateItem", allowedTemplateItem);
         SetPrivateField(allowed, "_selectedIncludedAsset", includedAsset);
@@ -722,7 +725,10 @@ public sealed class RentalBillingSpecificationTests
     public void RentalBillingViewModel_InternalCandidateAssetAddsToDisplayItemWithoutOverwritingEditedLine()
     {
         var assetId = Guid.Parse("14141414-1414-1414-1414-141414141414");
-        var vm = new RentalBillingViewModel(null!, null!, CreateUserSession(AppPermissionNames.RentalProfileEdit))
+        var vm = new RentalBillingViewModel(
+            null!,
+            null!,
+            CreateUserSession(AppPermissionNames.RentalProfileEdit, AppPermissionNames.RentalAssetEdit))
         {
             EditBillingType = "\uAC1C\uBCC4",
             EditCustomerName = "\uBBF8\uCD94\uD640\uAD6C \uC2DC\uC124\uAD00\uB9AC\uACF5\uB2E8"

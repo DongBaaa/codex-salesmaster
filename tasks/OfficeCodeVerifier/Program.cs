@@ -363,7 +363,7 @@ static async Task VerifyServerAsync(string runtimeDir, ServerVerificationResult 
     {
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var currentUser = scope.ServiceProvider.GetRequiredService<ICurrentUserContext>();
-        var controller = new UsersController(db, currentUser);
+        var controller = new UsersController(db, currentUser, new OfficeScopeService(currentUser, db));
 
         var users = await db.Users.IgnoreQueryFilters().OrderBy(x => x.Username).ToListAsync();
         result.SeededUsers = users.Select(user => new UserOfficeRow(user.Username, user.OfficeCode)).ToList();

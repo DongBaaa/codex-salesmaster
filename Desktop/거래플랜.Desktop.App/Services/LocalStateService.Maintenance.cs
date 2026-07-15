@@ -107,6 +107,9 @@ public sealed partial class LocalStateService
                 await DeleteSettingAsync(key, ct);
             }
 
+            await ClearAdministrativeBusinessCacheRevisionSettingsAsync(ct);
+            await _db.SaveChangesAsync(ct);
+
             await MarkServerMirrorRefreshRequiredAsync(ct);
         }
 
