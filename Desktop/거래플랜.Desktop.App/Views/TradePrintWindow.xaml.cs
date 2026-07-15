@@ -200,7 +200,7 @@ public partial class TradePrintWindow : Window
         }
     }
 
-    private void OnRefreshPrintersClick(object sender, RoutedEventArgs e)
+    private async void OnRefreshPrintersClick(object sender, RoutedEventArgs e)
     {
         if (_printerRefreshProvider is null)
         {
@@ -215,7 +215,7 @@ public partial class TradePrintWindow : Window
 
         try
         {
-            var snapshot = _printerRefreshProvider();
+            var snapshot = await Task.Run(_printerRefreshProvider);
             var printQueues = snapshot.PrintQueues ?? Array.Empty<PrintQueue>();
             var printerCount = PopulatePrinters(printQueues, snapshot.DefaultPrintQueue, selectedQueueName);
             SetStatus(

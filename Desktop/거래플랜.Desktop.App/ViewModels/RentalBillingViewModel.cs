@@ -30,6 +30,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private readonly SessionState _session;
     private readonly ErpApiClient? _api;
     private readonly UiDebouncer _searchDebouncer = new();
+    private readonly SemaphoreSlim _filterReloadGate = new(1, 1);
     private CancellationTokenSource? _filterReloadCts;
     private CancellationTokenSource? _candidateAssetsLoadCts;
     private CancellationTokenSource? _includedAssetHistoryLoadCts;
@@ -631,8 +632,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         LogRentalBillingViewModelLoadStep("Rental billing draft restore", stepStopwatch);
 
         stepStopwatch.Restart();
-        StartInitialRowsLoad();
-        LogRentalBillingViewModelLoadStep("Rental billing initial rows load queued", stepStopwatch);
+        await ReloadAsync();
+        LogRentalBillingViewModelLoadStep("Rental billing initial rows load", stepStopwatch);
+        StartDeferredInitialMaintenance();
 
         OperationTiming.LogIfSlow(
             "UI",
@@ -656,34 +658,28 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         UnsubscribeBillingRowSelectionHandlers();
     }
 
-    private void StartInitialRowsLoad()
+    private void StartDeferredInitialMaintenance()
     {
         if (_isDisposed)
             return;
 
         UiTaskHelper.Forget(
-            LoadInitialRowsThenDeferredMaintenanceAsync(),
+            RunDeferredInitialMaintenanceWithTimingAsync(),
             "RENTAL",
-            "렌탈 청구 초기 목록 및 후속 보정",
-            ex => StatusMessage = $"렌탈 청구 목록을 불러오지 못했습니다. {ex.Message}");
+            "렌탈 청구 후속 보정",
+            ex => StatusMessage = $"렌탈 청구 후속 보정을 완료하지 못했습니다. {ex.Message}");
     }
 
-    private async Task LoadInitialRowsThenDeferredMaintenanceAsync()
+    private async Task RunDeferredInitialMaintenanceWithTimingAsync()
     {
-        var totalStopwatch = Stopwatch.StartNew();
-        var stepStopwatch = Stopwatch.StartNew();
-
-        await ReloadAsync();
-        LogRentalBillingViewModelLoadStep("Rental billing initial rows load", stepStopwatch);
-
-        stepStopwatch.Restart();
+        var stopwatch = Stopwatch.StartNew();
         await RunDeferredInitialMaintenanceAsync();
-        LogRentalBillingViewModelLoadStep("Rental billing deferred maintenance", stepStopwatch);
+        LogRentalBillingViewModelLoadStep("Rental billing deferred maintenance", stopwatch);
 
         OperationTiming.LogIfSlow(
             "UI",
-            "Rental billing initial rows/deferred maintenance",
-            totalStopwatch.Elapsed,
+            "Rental billing deferred maintenance",
+            stopwatch.Elapsed,
             $"rows={Rows.Count:N0}, selected={SelectedRow is not null}",
             infoThreshold: TimeSpan.FromMilliseconds(600),
             warningThreshold: TimeSpan.FromSeconds(2));
@@ -784,12 +780,25 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         _filterReloadCts = cts;
         try
         {
-            await ReloadCoreAsync(cts.Token);
+            await RunSerializedReloadCoreAsync(cts.Token);
         }
         finally
         {
             if (ReferenceEquals(_filterReloadCts, cts))
                 _filterReloadCts = null;
+        }
+    }
+
+    private async Task RunSerializedReloadCoreAsync(CancellationToken ct)
+    {
+        await _filterReloadGate.WaitAsync(ct);
+        try
+        {
+            await ReloadCoreAsync(ct);
+        }
+        finally
+        {
+            _filterReloadGate.Release();
         }
     }
 
@@ -823,7 +832,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             try
             {
                 ct.ThrowIfCancellationRequested();
-                var rows = await _rental.GetBillingRowsAsync(new RentalBillingFilter
+                var filter = new RentalBillingFilter
                 {
                     SearchText = SearchText,
                     OfficeCode = ResolveSelectedOfficeFilterCode(),
@@ -834,7 +843,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                     ExpandedCustomerGroupKeys = _expandedCustomerGroupKeys.ToList(),
                     IncludeHistoryRows = false,
                     ReferenceDate = ReferenceDate
-                }, _session, ct);
+                };
+                var rows = await Task.Run(
+                    () => _rental.GetBillingRowsAsync(filter, _session, ct),
+                    ct);
 
                 ct.ThrowIfCancellationRequested();
                 if (_isDisposed)
@@ -6133,7 +6145,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         try
         {
             _pendingFilterReloadSignature = string.Empty;
-            await ReloadCoreAsync(cts.Token);
+            await RunSerializedReloadCoreAsync(cts.Token);
         }
         finally
         {

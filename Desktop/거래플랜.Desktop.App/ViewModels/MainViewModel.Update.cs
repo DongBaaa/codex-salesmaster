@@ -196,7 +196,7 @@ public sealed partial class MainViewModel
                 DesktopUpdateStatusText = "업데이트 도우미를 실행했습니다. 거래플랜이 종료된 뒤 새 버전으로 다시 열립니다.";
             });
 
-            BackgroundDesktopUpdateService.StartUpdate(package, _preparedDesktopUpdatePackagePath);
+            await BackgroundDesktopUpdateService.StartUpdateAsync(package, _preparedDesktopUpdatePackagePath);
             Application.Current?.Dispatcher.BeginInvoke(new Action(App.RequestShutdownForUpdate), DispatcherPriority.Send);
         }
         catch (OperationCanceledException)

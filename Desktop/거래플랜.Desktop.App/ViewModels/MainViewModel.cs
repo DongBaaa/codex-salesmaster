@@ -409,19 +409,22 @@ public sealed partial class MainViewModel : ObservableObject
     private async Task<T> RunIsolatedSyncAsync<T>(Func<SyncService, Task<T>> operation)
     {
         if (_serviceScopeFactory is null)
-            return await operation(_sync);
+            return await Task.Run(() => operation(_sync));
 
-        using var scope = _serviceScopeFactory.CreateScope();
-        var sync = scope.ServiceProvider.GetRequiredService<SyncService>();
-        sync.SyncStatusChanged += HandleSyncStatusChanged;
-        try
+        return await Task.Run(async () =>
         {
-            return await operation(sync);
-        }
-        finally
-        {
-            sync.SyncStatusChanged -= HandleSyncStatusChanged;
-        }
+            using var scope = _serviceScopeFactory.CreateScope();
+            var sync = scope.ServiceProvider.GetRequiredService<SyncService>();
+            sync.SyncStatusChanged += HandleSyncStatusChanged;
+            try
+            {
+                return await operation(sync).ConfigureAwait(false);
+            }
+            finally
+            {
+                sync.SyncStatusChanged -= HandleSyncStatusChanged;
+            }
+        });
     }
 
     private async Task ApplySyncStatusAsync(string status)
@@ -545,10 +548,15 @@ public sealed partial class MainViewModel : ObservableObject
             if (syncOk && dirtyAfter == 0)
             {
                 var refreshOk = true;
+                var currentBusinessScopeRefreshAttempted = false;
                 if (shouldRefreshCurrentBusinessScope && await _local.IsServerMirrorRefreshRequiredAsync())
+                {
+                    currentBusinessScopeRefreshAttempted = true;
                     refreshOk = await RunIsolatedSyncAsync(sync => sync.RefreshCurrentBusinessScopeFromServerAsync());
+                }
 
-                await ReloadAfterPassiveSyncAsync();
+                if (currentBusinessScopeRefreshAttempted)
+                    await ReloadAfterPassiveSyncAsync();
                 hasVisiblePrimaryWorkCache = await _local.HasVisiblePrimaryWorkCacheAsync(_session);
 
                 if (initialDataLoadRequired && !hasVisiblePrimaryWorkCache)

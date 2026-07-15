@@ -357,7 +357,10 @@ public sealed class DesktopAppUpdateService
         }
     }
 
-    public void StartUpdate(AppUpdatePackageDto package, string? preparedPackagePath = null)
+    public Task StartUpdateAsync(AppUpdatePackageDto package, string? preparedPackagePath = null)
+        => Task.Run(() => StartUpdateCoreAsync(package, preparedPackagePath));
+
+    private async Task StartUpdateCoreAsync(AppUpdatePackageDto package, string? preparedPackagePath)
     {
         if (package is null)
             throw new ArgumentNullException(nameof(package));
@@ -371,7 +374,8 @@ public sealed class DesktopAppUpdateService
             throw new InvalidOperationException("업데이트 패키지 주소를 절대 경로로 해석하지 못했습니다.");
 
         var packageUri = ValidatePackageUri(packageUrl, _api.GetBaseUri());
-        var preparedPackageFullPath = ValidatePreparedPackagePath(preparedPackagePath, package);
+        var preparedPackageFullPath = await ValidatePreparedPackagePathAsync(preparedPackagePath, package)
+            .ConfigureAwait(false);
 
         var updaterPath = ResolveUpdaterPath();
         if (string.IsNullOrWhiteSpace(updaterPath))
@@ -444,7 +448,9 @@ public sealed class DesktopAppUpdateService
         }
     }
 
-    private static string? ValidatePreparedPackagePath(string? preparedPackagePath, AppUpdatePackageDto package)
+    private static async Task<string?> ValidatePreparedPackagePathAsync(
+        string? preparedPackagePath,
+        AppUpdatePackageDto package)
     {
         if (string.IsNullOrWhiteSpace(preparedPackagePath))
             return null;
@@ -456,7 +462,7 @@ public sealed class DesktopAppUpdateService
         if (!string.Equals(Path.GetExtension(fullPath), ".zip", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("미리 다운로드한 업데이트 패키지 형식이 올바르지 않습니다.");
 
-        VerifySha256Async(fullPath, package.Sha256, CancellationToken.None).GetAwaiter().GetResult();
+        await VerifySha256Async(fullPath, package.Sha256, CancellationToken.None).ConfigureAwait(false);
         return fullPath;
     }
 

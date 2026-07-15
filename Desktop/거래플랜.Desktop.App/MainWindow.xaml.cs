@@ -17,6 +17,9 @@ namespace 거래플랜.Desktop.App;
 
 public partial class MainWindow : Window
 {
+    private static readonly TimeSpan RealtimeRefreshMinInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan PassiveIntegrityScanMinInterval = TimeSpan.FromMinutes(5);
+
     private readonly MainViewModel _vm;
     private readonly LocalStateService _local;
     private readonly RentalStateService _rental;
@@ -39,6 +42,7 @@ public partial class MainWindow : Window
     private bool _isInitialized;
     private bool _runtimeServicesStarted;
     private DateTime _lastCentralRefreshUtc = DateTime.MinValue;
+    private DateTime _lastPassiveIntegrityScanUtc = DateTime.MinValue;
     private long _lastPassiveServerRevisionHint;
     private int _passiveSyncFailureCount;
     private long _nextPassiveSyncRetryUtcTicks;
@@ -279,19 +283,22 @@ public partial class MainWindow : Window
         _vm.ApplyExternalSyncStatus(status);
     }
 
-    private async Task<bool> RunIsolatedSyncAsync(Func<SyncService, Task<bool>> operation)
+    private async Task<T> RunIsolatedSyncAsync<T>(Func<SyncService, Task<T>> operation)
     {
-        using var scope = _serviceScopeFactory.CreateScope();
-        var sync = scope.ServiceProvider.GetRequiredService<SyncService>();
-        sync.SyncStatusChanged += HandleRuntimeSyncStatusChanged;
-        try
+        return await Task.Run(async () =>
         {
-            return await operation(sync);
-        }
-        finally
-        {
-            sync.SyncStatusChanged -= HandleRuntimeSyncStatusChanged;
-        }
+            using var scope = _serviceScopeFactory.CreateScope();
+            var sync = scope.ServiceProvider.GetRequiredService<SyncService>();
+            sync.SyncStatusChanged += HandleRuntimeSyncStatusChanged;
+            try
+            {
+                return await operation(sync).ConfigureAwait(false);
+            }
+            finally
+            {
+                sync.SyncStatusChanged -= HandleRuntimeSyncStatusChanged;
+            }
+        }).ConfigureAwait(true);
     }
 
     private void StartRealtimeRevisionMonitor()
@@ -370,7 +377,7 @@ public partial class MainWindow : Window
                     () => UiTaskHelper.Forget(
                         RunPassiveSyncRefreshAsync(
                             "실시간 변경 감지",
-                            TimeSpan.Zero,
+                            RealtimeRefreshMinInterval,
                             requireServerRevisionChange: false,
                             observedServerRevision: status.CurrentServerRevision),
                         "SYNC",
@@ -735,8 +742,12 @@ public partial class MainWindow : Window
             if (!pendingServerRevision.HasValue)
                 return;
 
-            var syncOk = await RunIsolatedSyncAsync(sync => sync.TrySyncAsync());
-            if (!syncOk)
+            var syncOutcome = await RunIsolatedSyncAsync(async sync =>
+            {
+                var succeeded = await sync.TrySyncAsync();
+                return new PassiveSyncOutcome(succeeded, sync.LastPullChangeCount);
+            });
+            if (!syncOutcome.Succeeded)
             {
                 RecordPassiveSyncFailure(reason);
                 return;
@@ -752,9 +763,21 @@ public partial class MainWindow : Window
                 _lastPassiveServerRevisionHint = Math.Max(_lastPassiveServerRevisionHint, Math.Max(pendingServerRevision.Value, lastSyncRevision));
             }
 
-            await _vm.ReloadAfterPassiveSyncAsync();
-            AppLogger.Info("SYNC", $"{reason} 후 경량 재동기화 완료");
-            await RunDataIntegrityScanAndPromptAsync($"{reason} 후 동기화", showPrompt: false);
+            if (syncOutcome.PulledChangeCount > 0)
+            {
+                await _vm.ReloadAfterPassiveSyncAsync();
+                AppLogger.Info("SYNC", $"{reason} 후 서버 변경 {syncOutcome.PulledChangeCount:N0}건을 화면에 반영했습니다.");
+            }
+            else
+            {
+                AppLogger.Info("SYNC", $"{reason} 후 현재 업체 DB 변경이 없어 화면 전체 재조회를 생략했습니다.");
+            }
+
+            if (DateTime.UtcNow - _lastPassiveIntegrityScanUtc >= PassiveIntegrityScanMinInterval)
+            {
+                _lastPassiveIntegrityScanUtc = DateTime.UtcNow;
+                await RunDataIntegrityScanAndPromptAsync($"{reason} 후 동기화", showPrompt: false);
+            }
         }
         catch (Exception ex)
         {
@@ -771,6 +794,8 @@ public partial class MainWindow : Window
             _centralRefreshInProgress = false;
         }
     }
+
+    private readonly record struct PassiveSyncOutcome(bool Succeeded, int PulledChangeCount);
 
     private TimeSpan GetRemainingPassiveSyncRetryDelay()
     {
@@ -930,18 +955,12 @@ public partial class MainWindow : Window
         await OpenDataIntegrityIssueWindowAsync(summary.Code, ownerOverride, scan);
     }
 
-    private async Task OpenDataIntegrityIssueWindowAsync(
+    private Task OpenDataIntegrityIssueWindowAsync(
         string? initialCode,
         Window? ownerOverride = null,
         DataIntegrityScanResult? initialScanResult = null)
     {
         var vm = new DataIntegrityIssueViewModel(_dataIntegrity, _session, initialCode, initialScanResult);
-        await OperationTiming.MeasureAsync(
-            "UI",
-            "운영 점검 상세 창 초기화",
-            () => vm.LoadAsync(),
-            warningThreshold: TimeSpan.FromSeconds(2));
-
         var win = new DataIntegrityIssueWindow(vm)
         {
             Owner = ownerOverride ?? this
@@ -972,7 +991,12 @@ public partial class MainWindow : Window
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning));
         };
-        WindowShowHelper.ShowModeless(win);
+        ShowModelessWithDeferredLoad(
+            win,
+            () => vm.LoadAsync(),
+            "운영 점검 상세",
+            "운영 점검 데이터를 불러오지 못했습니다.");
+        return Task.CompletedTask;
     }
 
     private async Task MergeDataIntegrityDuplicateAsync(
@@ -1506,19 +1530,18 @@ public partial class MainWindow : Window
 
     private async Task OpenPeriodLedgerWindowAsync()
     {
+        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new PeriodLedgerViewModel(
             _local,
             new PeriodLedgerAggregationService(_local),
             new PeriodLedgerExcelExportService(),
             _session);
-
-        await OperationTiming.MeasureAsync(
-            "UI",
-            "기간별 집계 창 초기화",
-            () => vm.InitializeAsync(),
-            warningThreshold: TimeSpan.FromSeconds(2));
         var win = new PeriodLedgerWindow(vm) { Owner = this };
-        WindowShowHelper.ShowModeless(win);
+        ShowModelessWithDeferredLoad(
+            win,
+            () => vm.InitializeAsync(),
+            "기간별 집계",
+            "기간별 집계 데이터를 불러오지 못했습니다.");
     }
 
     private void YeonsuDeliveryButton_Click(object sender, RoutedEventArgs e)
@@ -1602,7 +1625,7 @@ public partial class MainWindow : Window
         await OpenNewInvoiceWindowAsync(거래플랜.Shared.Contracts.VoucherType.Procurement, preselectSelectedCustomer);
     }
 
-    private async Task OpenNewInvoiceWindowAsync(
+    private Task OpenNewInvoiceWindowAsync(
         VoucherType voucherType,
         bool preselectSelectedCustomer,
         Data.LocalCustomer? preselectCustomerOverride = null,
@@ -1610,22 +1633,6 @@ public partial class MainWindow : Window
         Func<Task>? afterClosedAsync = null)
     {
         var vm = new SalesViewModel(_local, _print, _invoicePrintService, _session, voucherType);
-        await OperationTiming.MeasureAsync(
-            "UI",
-            $"{voucherType} 전표 창 초기화",
-            () => vm.LoadAsync(),
-            warningThreshold: TimeSpan.FromSeconds(2));
-        vm.NewInvoice();
-
-        var preselectCustomer = preselectCustomerOverride ?? _vm.SelectedCustomerFilter;
-        if (preselectSelectedCustomer &&
-            preselectCustomer is not null &&
-            vm.CanSelectCustomer(preselectCustomer))
-        {
-            vm.SetCustomer(preselectCustomer);
-            vm.MarkCurrentStateAsPristine();
-        }
-
         var win = new SalesWindow(vm) { Owner = ownerOverride ?? this };
         win.Closed += SalesWindow_Closed;
         if (afterClosedAsync is not null)
@@ -1636,7 +1643,25 @@ public partial class MainWindow : Window
                 "거래내역 조회 새창을 다시 불러오는 중 오류가 발생했습니다.");
         }
 
-        WindowShowHelper.ShowModeless(win);
+        ShowModelessWithDeferredLoad(
+            win,
+            async () =>
+            {
+                await vm.LoadAsync();
+                vm.NewInvoice();
+
+                var preselectCustomer = preselectCustomerOverride ?? _vm.SelectedCustomerFilter;
+                if (preselectSelectedCustomer &&
+                    preselectCustomer is not null &&
+                    vm.CanSelectCustomer(preselectCustomer))
+                {
+                    vm.SetCustomer(preselectCustomer);
+                    vm.MarkCurrentStateAsPristine();
+                }
+            },
+            $"{voucherType} 전표 작성",
+            "전표 작성 데이터를 불러오지 못했습니다.");
+        return Task.CompletedTask;
     }
 
     private async Task OpenInvoiceWindowAsync(
@@ -1724,8 +1749,7 @@ public partial class MainWindow : Window
         Func<Task>? afterClosedAsync = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
-        var latestInvoice = await _local.GetLatestInvoiceVersionAsync(invoice.Id, _session) ?? invoice;
-        var entryType = latestInvoice.VoucherType switch
+        var entryType = invoice.VoucherType switch
         {
             VoucherType.Purchase => VoucherType.Purchase,
             VoucherType.Procurement => VoucherType.Procurement,
@@ -1733,17 +1757,6 @@ public partial class MainWindow : Window
         };
 
         var vm = new SalesViewModel(_local, _print, _invoicePrintService, _session, entryType);
-        await OperationTiming.MeasureAsync(
-            "UI",
-            $"{entryType} 전표 편집 창 초기화",
-            () => vm.LoadAsync(),
-            warningThreshold: TimeSpan.FromSeconds(2));
-        await OperationTiming.MeasureAsync(
-            "UI",
-            $"{entryType} 전표 상세 로드",
-            () => vm.LoadInvoiceAsync(latestInvoice),
-            warningThreshold: TimeSpan.FromSeconds(2));
-
         var win = new SalesWindow(vm) { Owner = ownerOverride ?? this };
         win.Closed += SalesWindow_Closed;
         if (afterClosedAsync is not null)
@@ -1753,7 +1766,16 @@ public partial class MainWindow : Window
                 "거래내역 조회 새창 재조회",
                 "전표 편집 후 거래내역 조회 새창을 다시 불러오는 중 오류가 발생했습니다.");
         }
-        WindowShowHelper.ShowModeless(win);
+        ShowModelessWithDeferredLoad(
+            win,
+            async () =>
+            {
+                var latestInvoice = await _local.GetLatestInvoiceVersionAsync(invoice.Id, _session) ?? invoice;
+                await vm.LoadAsync();
+                await vm.LoadInvoiceAsync(latestInvoice);
+            },
+            $"{entryType} 전표 편집",
+            "전표 상세 데이터를 불러오지 못했습니다.");
     }
 
     private async Task OpenCustomerEditorAsync(
@@ -1783,12 +1805,6 @@ public partial class MainWindow : Window
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new CustomerEditViewModel(_local, _session, _api);
-        await OperationTiming.MeasureAsync(
-            "UI",
-            "거래처 등록/수정 창 초기화",
-            () => vm.LoadAsync(customer),
-            warningThreshold: TimeSpan.FromSeconds(2));
-
         var win = new CustomerEditWindow(vm) { Owner = ownerOverride ?? this };
         win.Closed += (_, _) => RunUiAsync(
             async () =>
@@ -1799,7 +1815,11 @@ public partial class MainWindow : Window
             },
             "거래처 등록/수정 후 거래처 목록 새로고침",
             "거래처 등록/수정 후 목록을 다시 불러오는 중 오류가 발생했습니다.");
-        WindowShowHelper.ShowModeless(win);
+        ShowModelessWithDeferredLoad(
+            win,
+            () => vm.LoadAsync(customer),
+            "거래처 등록/수정",
+            "거래처 데이터를 불러오지 못했습니다.");
     }
 
     private Task OpenInventoryWindowAsync()
@@ -1809,13 +1829,12 @@ public partial class MainWindow : Window
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new InventoryViewModel(_local, _session);
-        await OperationTiming.MeasureAsync(
-            "UI",
-            "품목/재고 관리 창 초기화",
-            () => targetItemId.HasValue ? vm.LoadAndSelectItemAsync(targetItemId.Value) : vm.LoadAsync(),
-            warningThreshold: TimeSpan.FromSeconds(2));
         var win = new InventoryWindow(vm) { Owner = ownerOverride ?? this };
-        WindowShowHelper.ShowModeless(win);
+        ShowModelessWithDeferredLoad(
+            win,
+            () => targetItemId.HasValue ? vm.LoadAndSelectItemAsync(targetItemId.Value) : vm.LoadAsync(),
+            "품목/재고 관리",
+            "품목/재고 데이터를 불러오지 못했습니다.");
     }
 
     private Task OpenPaymentPopupAsync()
@@ -1827,100 +1846,9 @@ public partial class MainWindow : Window
         Func<Task>? afterPaymentChangedAsync = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
-        var transaction = await _local.GetTransactionAsync(transactionId, _session);
-        if (transaction is null)
-        {
-            MessageBox.Show(
-                ownerOverride ?? this,
-                "수정할 수금/지급 내역을 찾을 수 없습니다.",
-                "수금/지급",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            return;
-        }
-
-        var preselect = await _local.GetCustomerAsync(transaction.CustomerId, _session);
         var vm = new PaymentViewModel(_local, _session);
-        await OperationTiming.MeasureAsync(
-            "UI",
-            "수금/지급 창 초기화",
-            () => vm.LoadAsync(preselect),
-            warningThreshold: TimeSpan.FromSeconds(2));
-        await vm.LoadTransactionForEditingAsync(transaction.Id);
-
         var win = new PaymentWindow(vm) { Owner = ownerOverride ?? this };
-        void RefreshAfterPaymentChange()
-            => RunUiAsync(
-                async () =>
-                {
-                    await _vm.RefreshAfterFinancialTransactionChangedAsync(transaction.CustomerId);
-                    if (afterPaymentChangedAsync is not null)
-                        await afterPaymentChangedAsync();
-                },
-                "수금/지급 후 거래내역 재조회",
-                "수금/지급 후 거래내역을 다시 불러오는 중 오류가 발생했습니다.");
-
-        EventHandler paymentTransactionsChanged = (_, _) => RefreshAfterPaymentChange();
-        vm.TransactionsChanged += paymentTransactionsChanged;
-        win.Closed += (_, _) =>
-        {
-            vm.TransactionsChanged -= paymentTransactionsChanged;
-            RefreshAfterPaymentChange();
-        };
-        WindowShowHelper.ShowModeless(win);
-    }
-
-    private async Task OpenPaymentPopupAsync(
-        Guid? targetInvoiceId,
-        Window? ownerOverride,
-        Data.LocalCustomer? preselectCustomerOverride = null,
-        Func<Task>? afterPaymentChangedAsync = null)
-    {
-        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
-        var vm = new PaymentViewModel(_local, _session);
-
-        Data.LocalInvoice? targetInvoice = null;
-        Data.LocalCustomer? preselect = preselectCustomerOverride ?? _vm.SelectedCustomerFilter;
-        if (targetInvoiceId.HasValue)
-        {
-            targetInvoice = await _local.GetLatestInvoiceVersionAsync(targetInvoiceId.Value, _session);
-            if (targetInvoice is null)
-            {
-                MessageBox.Show(
-                    ownerOverride ?? this,
-                    "전표를 찾을 수 없어 수금/지급 창을 열 수 없습니다.",
-                    "운영 점검",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
-                return;
-            }
-
-            preselect = await _local.GetCustomerAsync(targetInvoice.CustomerId, _session);
-        }
-        else if (preselect is null && _vm.SelectedInvoiceRow is not null)
-        {
-            if (_vm.SelectedInvoiceRow.IsTransactionRow)
-            {
-                preselect = await _local.GetCustomerAsync(_vm.SelectedInvoiceRow.CustomerId, _session);
-            }
-            else
-            {
-                var invoice = await _vm.GetLatestSelectedInvoiceAsync();
-                if (invoice is not null)
-                    preselect = await _local.GetCustomerAsync(invoice.CustomerId, _session);
-            }
-        }
-
-        var refreshCustomerId = preselect?.Id ?? targetInvoice?.CustomerId;
-        await OperationTiming.MeasureAsync(
-            "UI",
-            "수금/지급 창 초기화",
-            () => vm.LoadAsync(preselect),
-            warningThreshold: TimeSpan.FromSeconds(2));
-        if (targetInvoice is not null)
-            await vm.ConfigureForInvoiceAsync(targetInvoice);
-
-        var win = new PaymentWindow(vm) { Owner = ownerOverride ?? this };
+        Guid? refreshCustomerId = null;
         void RefreshAfterPaymentChange()
             => RunUiAsync(
                 async () =>
@@ -1939,40 +1867,112 @@ public partial class MainWindow : Window
             vm.TransactionsChanged -= paymentTransactionsChanged;
             RefreshAfterPaymentChange();
         };
-        WindowShowHelper.ShowModeless(win);
+        ShowModelessWithDeferredLoad(
+            win,
+            async () =>
+            {
+                var transaction = await _local.GetTransactionAsync(transactionId, _session)
+                                  ?? throw new InvalidOperationException("수정할 수금/지급 내역을 찾을 수 없습니다.");
+                refreshCustomerId = transaction.CustomerId;
+                var preselect = await _local.GetCustomerAsync(transaction.CustomerId, _session);
+                await vm.LoadAsync(preselect);
+                await vm.LoadTransactionForEditingAsync(transaction.Id);
+            },
+            "수금/지급",
+            "수금/지급 내역을 불러오지 못했습니다.");
+    }
+
+    private async Task OpenPaymentPopupAsync(
+        Guid? targetInvoiceId,
+        Window? ownerOverride,
+        Data.LocalCustomer? preselectCustomerOverride = null,
+        Func<Task>? afterPaymentChangedAsync = null)
+    {
+        await FlushPendingChangesBeforeNavigationAsync("화면 전환");
+        var vm = new PaymentViewModel(_local, _session);
+        var win = new PaymentWindow(vm) { Owner = ownerOverride ?? this };
+        Guid? refreshCustomerId = null;
+        void RefreshAfterPaymentChange()
+            => RunUiAsync(
+                async () =>
+                {
+                    await _vm.RefreshAfterFinancialTransactionChangedAsync(refreshCustomerId);
+                    if (afterPaymentChangedAsync is not null)
+                        await afterPaymentChangedAsync();
+                },
+                "수금/지급 후 거래내역 재조회",
+                "수금/지급 후 거래내역을 다시 불러오는 중 오류가 발생했습니다.");
+
+        EventHandler paymentTransactionsChanged = (_, _) => RefreshAfterPaymentChange();
+        vm.TransactionsChanged += paymentTransactionsChanged;
+        win.Closed += (_, _) =>
+        {
+            vm.TransactionsChanged -= paymentTransactionsChanged;
+            RefreshAfterPaymentChange();
+        };
+        ShowModelessWithDeferredLoad(
+            win,
+            async () =>
+            {
+                Data.LocalInvoice? targetInvoice = null;
+                Data.LocalCustomer? preselect = preselectCustomerOverride ?? _vm.SelectedCustomerFilter;
+                if (targetInvoiceId.HasValue)
+                {
+                    targetInvoice = await _local.GetLatestInvoiceVersionAsync(targetInvoiceId.Value, _session)
+                                    ?? throw new InvalidOperationException("전표를 찾을 수 없어 수금/지급 창을 열 수 없습니다.");
+                    preselect = await _local.GetCustomerAsync(targetInvoice.CustomerId, _session);
+                }
+                else if (preselect is null && _vm.SelectedInvoiceRow is not null)
+                {
+                    if (_vm.SelectedInvoiceRow.IsTransactionRow)
+                    {
+                        preselect = await _local.GetCustomerAsync(_vm.SelectedInvoiceRow.CustomerId, _session);
+                    }
+                    else
+                    {
+                        var invoice = await _vm.GetLatestSelectedInvoiceAsync();
+                        if (invoice is not null)
+                            preselect = await _local.GetCustomerAsync(invoice.CustomerId, _session);
+                    }
+                }
+
+                refreshCustomerId = preselect?.Id ?? targetInvoice?.CustomerId;
+                await vm.LoadAsync(preselect);
+                if (targetInvoice is not null)
+                    await vm.ConfigureForInvoiceAsync(targetInvoice);
+            },
+            "수금/지급",
+            "수금/지급 데이터를 불러오지 못했습니다.");
     }
 
     private async Task OpenYeonsuDeliveryWindowAsync()
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new YeonsuDeliveryViewModel(_local, _session);
-        await OperationTiming.MeasureAsync(
-            "UI",
-            "매입/매출 장부 창 초기화",
-            () => vm.InitializeAsync(),
-            warningThreshold: TimeSpan.FromSeconds(2));
         var win = new YeonsuDeliveryWindow(vm, _local, _print, _invoicePrintService, _session)
         {
             Owner = this
         };
-        WindowShowHelper.ShowModeless(win);
+        ShowModelessWithDeferredLoad(
+            win,
+            () => vm.InitializeAsync(),
+            "매입/매출 장부",
+            "매입/매출 장부 데이터를 불러오지 못했습니다.");
     }
 
     private async Task OpenSyncDiagnosticsWindowAsync(Window? ownerOverride = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var diagnosticsViewModel = new SyncDiagnosticsViewModel(_diagnostics, _sync, _api, _local, _rental, _session);
-        await OperationTiming.MeasureAsync(
-            "UI",
-            "동기화 진단 창 초기화",
-            () => diagnosticsViewModel.LoadAsync(),
-            warningThreshold: TimeSpan.FromSeconds(2));
-
         var window = new SyncDiagnosticsWindow(diagnosticsViewModel)
         {
             Owner = ownerOverride ?? this
         };
-        WindowShowHelper.ShowModeless(window);
+        ShowModelessWithDeferredLoad(
+            window,
+            () => diagnosticsViewModel.LoadAsync(),
+            "동기화 진단",
+            "동기화 진단 데이터를 불러오지 못했습니다.");
     }
 
     private async Task OpenEnvironmentSettingsWindowAsync(EnvironmentSettingsInitialTab initialTab = EnvironmentSettingsInitialTab.General)
@@ -1993,11 +1993,6 @@ public partial class MainWindow : Window
                 _rentalDocuments,
                 _invoicePrintService,
                 async () => await _vm.ReloadForBusinessDatabaseChangeAsync());
-            await OperationTiming.MeasureAsync(
-                "UI",
-                "환경설정 창 초기화",
-                () => vm.InitializeAsync(),
-                warningThreshold: TimeSpan.FromSeconds(2));
             var win = new EnvironmentSettingsWindow(vm, initialTab)
             {
                 Owner = this
@@ -2012,7 +2007,11 @@ public partial class MainWindow : Window
                     "환경설정 닫기 후 전표 목록 새로고침",
                     "환경설정 닫기 후 전표 목록을 다시 불러오는 중 오류가 발생했습니다.");
             };
-            WindowShowHelper.ShowModeless(win);
+            ShowModelessWithDeferredLoad(
+                win,
+                () => vm.InitializeAsync(),
+                "환경설정",
+                "환경설정 데이터를 불러오지 못했습니다.");
         }
         catch (Exception ex)
         {
@@ -2029,11 +2028,6 @@ public partial class MainWindow : Window
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new CustomerManagementViewModel(_local, _session);
-        await OperationTiming.MeasureAsync(
-            "UI",
-            "거래처 관리 창 초기화",
-            () => vm.InitializeAsync(),
-            warningThreshold: TimeSpan.FromSeconds(2));
         var win = new CustomerManagementWindow(vm, _local, _session, _api)
         {
             Owner = this
@@ -2042,19 +2036,17 @@ public partial class MainWindow : Window
             () => _vm.RefreshCustomersCommand.ExecuteAsync(null),
             "거래처 관리 닫기 후 거래처 목록 새로고침",
             "거래처 관리 닫기 후 거래처 목록을 다시 불러오는 중 오류가 발생했습니다.");
-        WindowShowHelper.ShowModeless(win);
+        ShowModelessWithDeferredLoad(
+            win,
+            () => vm.InitializeAsync(),
+            "거래처 관리",
+            "거래처 관리 데이터를 불러오지 못했습니다.");
     }
 
     private async Task OpenRentalCustomerOnboardingAsync()
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var onboardingViewModel = new RentalCustomerOnboardingViewModel(_rental, _local, _session);
-        await OperationTiming.MeasureAsync(
-            "UI",
-            "신규 렌탈 거래처 등록 창 초기화",
-            () => onboardingViewModel.LoadAsync(),
-            warningThreshold: TimeSpan.FromSeconds(2));
-
         var onboardingWindow = new RentalCustomerOnboardingWindow(onboardingViewModel)
         {
             Owner = this
@@ -2074,7 +2066,11 @@ public partial class MainWindow : Window
                 "신규 렌탈 거래처 등록 후 메인 새로고침",
                 "신규 렌탈 거래처 등록 후 메인 화면을 다시 불러오는 중 오류가 발생했습니다.");
         };
-        WindowShowHelper.ShowModeless(onboardingWindow);
+        ShowModelessWithDeferredLoad(
+            onboardingWindow,
+            () => onboardingViewModel.LoadAsync(),
+            "신규 렌탈 거래처 등록",
+            "렌탈 거래처 데이터를 불러오지 못했습니다.");
     }
 
     private async Task OpenRentalDashboardWindowAsync()
@@ -2289,7 +2285,7 @@ public partial class MainWindow : Window
                 return;
 
             await _local.SetSettingAsync("Update.LastPromptedDesktopVersion", result.LatestVersion, CancellationToken.None);
-            _updateService.StartUpdate(result.Package);
+            await _updateService.StartUpdateAsync(result.Package);
             _vm.SyncStatus = $"업데이트 {result.LatestVersion} 설치를 시작했습니다.";
             Application.Current?.Dispatcher.BeginInvoke(
                 new Action(App.RequestShutdownForUpdate),

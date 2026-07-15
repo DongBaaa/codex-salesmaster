@@ -85,9 +85,18 @@ public sealed partial class RentalSettingsViewModel : ObservableObject
             return;
         }
 
-        var result = await _rental.ImportBillingWorkbookAsync(BillingWorkbookPath, _session);
-        StatusMessage = $"렌탈 청구 가져오기 완료: {result.Summary}";
-        await ReloadAsync();
+        IsBusy = true;
+        StatusMessage = "렌탈 청구 엑셀을 읽고 반영하는 중입니다.";
+        try
+        {
+            var result = await Task.Run(() => _rental.ImportBillingWorkbookAsync(BillingWorkbookPath, _session));
+            StatusMessage = $"렌탈 청구 가져오기 완료: {result.Summary}";
+            await ReloadAsync();
+        }
+        finally
+        {
+            IsBusy = false;
+        }
     }
 
     [RelayCommand]
@@ -99,9 +108,18 @@ public sealed partial class RentalSettingsViewModel : ObservableObject
             return;
         }
 
-        var result = await _rental.ImportAssetWorkbookAsync(AssetWorkbookPath, _session);
-        StatusMessage = $"렌탈 자산 가져오기 완료: {result.Summary}";
-        await ReloadAsync();
+        IsBusy = true;
+        StatusMessage = "렌탈 자산 엑셀을 읽고 반영하는 중입니다.";
+        try
+        {
+            var result = await Task.Run(() => _rental.ImportAssetWorkbookAsync(AssetWorkbookPath, _session));
+            StatusMessage = $"렌탈 자산 가져오기 완료: {result.Summary}";
+            await ReloadAsync();
+        }
+        finally
+        {
+            IsBusy = false;
+        }
     }
 
     [RelayCommand]

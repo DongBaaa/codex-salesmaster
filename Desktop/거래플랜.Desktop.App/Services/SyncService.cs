@@ -111,6 +111,12 @@ public sealed class SyncService : IDisposable
            && _lastSyncCompletedUtc != DateTime.MinValue
            && DateTime.UtcNow - _lastSyncCompletedUtc < window;
 
+    /// <summary>
+    /// 가장 최근 동기화에서 현재 로컬 화면에 다시 반영할 서버 변경 건수입니다.
+    /// 서버의 전역 revision만 증가하고 현재 업체 DB에 내려온 변경이 없는 경우에는 0입니다.
+    /// </summary>
+    public int LastPullChangeCount { get; private set; }
+
     public bool HasActiveOrQueuedSync
     {
         get
@@ -646,6 +652,7 @@ public sealed class SyncService : IDisposable
     {
         try
         {
+            LastPullChangeCount = 0;
             _lastSyncStartedUtc = DateTime.UtcNow;
             SetStatus("동기화 중...");
             AppLogger.Info("SYNC", "동기화 시작");
@@ -5792,6 +5799,8 @@ public sealed class SyncService : IDisposable
         if (pull is null)
             throw new HttpRequestException("서버 응답이 비어 있어 동기화 다운로드를 완료하지 못했습니다.");
 
+        LastPullChangeCount = CountPullChanges(pull);
+
         try
         {
             _db.ChangeTracker.Clear();
@@ -5888,6 +5897,31 @@ public sealed class SyncService : IDisposable
         if (updateSyncRevision && pull.LatestRevision > sinceRev)
             await TrySetSettingSafeAsync("LastSyncRevision", pull.LatestRevision.ToString(), ct);
     }
+
+    private static int CountPullChanges(SyncPullResponse pull)
+        => pull.CompanyProfiles.Count
+           + pull.Units.Count
+           + pull.CustomerCategories.Count
+           + pull.PriceGradeOptions.Count
+           + pull.TradeTypeOptions.Count
+           + pull.ItemCategoryOptions.Count
+           + pull.CustomerMasters.Count
+           + pull.Customers.Count
+           + pull.CustomerContracts.Count
+           + pull.Items.Count
+           + pull.ItemPriceGrades.Count
+           + pull.ItemWarehouseStocks.Count
+           + pull.Transactions.Count
+           + pull.TransactionAttachments.Count
+           + pull.InventoryTransfers.Count
+           + pull.RentalManagementCompanies.Count
+           + pull.RentalBillingProfiles.Count
+           + pull.RentalAssets.Count
+           + pull.RentalAssetAssignmentHistories.Count
+           + pull.RentalBillingLogs.Count
+           + pull.Invoices.Count
+           + pull.Payments.Count
+           + pull.PurgeRecords.Count;
 
     private async Task UpsertPulledCompanyProfilesAsync(
         IReadOnlyList<CompanyProfileDto> dtos,
@@ -8264,6 +8298,8 @@ public sealed class SyncService : IDisposable
             if (pull is null)
                 return false;
 
+            LastPullChangeCount = Math.Max(1, CountPullChanges(pull));
+
             try
             {
                 _db.ChangeTracker.Clear();
@@ -8367,6 +8403,8 @@ public sealed class SyncService : IDisposable
             var pull = await _api.PullAsync(0, ct);
             if (pull is null)
                 return false;
+
+            LastPullChangeCount = Math.Max(1, CountPullChanges(pull));
 
             try
             {

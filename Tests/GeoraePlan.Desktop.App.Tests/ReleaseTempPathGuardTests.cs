@@ -506,13 +506,13 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("? CreateUpdaterRequestMetadataFile(stagedUpdaterPath, packageUri)", source, StringComparison.Ordinal);
         Assert.Contains(": null;", source, StringComparison.Ordinal);
         Assert.Contains("TryDeleteSensitiveFile(requestMetadataPath);", source, StringComparison.Ordinal);
-        var startUpdateStart = source.IndexOf("public void StartUpdate", StringComparison.Ordinal);
-        var startUpdateEnd = source.IndexOf("private static string? ValidatePreparedPackagePath", StringComparison.Ordinal);
+        var startUpdateStart = source.IndexOf("private async Task StartUpdateCoreAsync", StringComparison.Ordinal);
+        var startUpdateEnd = source.IndexOf("private static async Task<string?> ValidatePreparedPackagePathAsync", StringComparison.Ordinal);
         Assert.True(startUpdateStart >= 0 && startUpdateEnd > startUpdateStart);
         var startUpdateSource = source[startUpdateStart..startUpdateEnd];
         AssertInOrder(
             startUpdateSource,
-            "var preparedPackageFullPath = ValidatePreparedPackagePath(preparedPackagePath, package);",
+            "var preparedPackageFullPath = await ValidatePreparedPackagePathAsync(preparedPackagePath, package)",
             "var stagedUpdaterPath = StageUpdaterForExecution(updaterPath);",
             "EnsureSufficientDiskSpace(package.FileSize, installRoot);",
             "TryCleanupStaleUpdateArtifacts();",

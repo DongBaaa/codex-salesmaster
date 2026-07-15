@@ -23,18 +23,18 @@ public static class TradePrintExecutor
     private const double PdfPointPerDeviceIndependentPixel = 72d / 96d;
     private const double PdfRenderDpi = 144d;
 
-    private static readonly EnumeratedPrintQueueTypes[][] InstalledPrinterQueueTypeGroups =
+    private static readonly EnumeratedPrintQueueTypes[] InstalledPrinterQueueTypes =
     [
-        [EnumeratedPrintQueueTypes.Local],
-        [EnumeratedPrintQueueTypes.Connections],
-        [EnumeratedPrintQueueTypes.Shared],
-        [EnumeratedPrintQueueTypes.DirectPrinting],
-        [EnumeratedPrintQueueTypes.PushedMachineConnection],
-        [EnumeratedPrintQueueTypes.PushedUserConnection],
-        [EnumeratedPrintQueueTypes.WorkOffline],
-        [EnumeratedPrintQueueTypes.Queued],
-        [EnumeratedPrintQueueTypes.PublishedInDirectoryServices],
-        [EnumeratedPrintQueueTypes.Fax]
+        EnumeratedPrintQueueTypes.Local,
+        EnumeratedPrintQueueTypes.Connections,
+        EnumeratedPrintQueueTypes.Shared,
+        EnumeratedPrintQueueTypes.DirectPrinting,
+        EnumeratedPrintQueueTypes.PushedMachineConnection,
+        EnumeratedPrintQueueTypes.PushedUserConnection,
+        EnumeratedPrintQueueTypes.WorkOffline,
+        EnumeratedPrintQueueTypes.Queued,
+        EnumeratedPrintQueueTypes.PublishedInDirectoryServices,
+        EnumeratedPrintQueueTypes.Fax
     ];
 
     public static bool TryPrintDocument(
@@ -222,26 +222,12 @@ public static class TradePrintExecutor
 
         try
         {
-            foreach (var queue in printServer.GetPrintQueues())
+            foreach (var queue in printServer.GetPrintQueues(InstalledPrinterQueueTypes))
                 AddQueue(queue);
         }
         catch (PrintSystemException ex)
         {
             AppLogger.Warn("PRINT", $"프린터 전체 목록 확인 실패: {ex.Message}");
-        }
-
-        foreach (var queueTypes in InstalledPrinterQueueTypeGroups)
-        {
-            try
-            {
-                foreach (var queue in printServer.GetPrintQueues(queueTypes))
-                    AddQueue(queue);
-            }
-            catch (PrintSystemException ex)
-            {
-                var typeNames = string.Join(", ", queueTypes.Select(static type => type.ToString()));
-                AppLogger.Warn("PRINT", $"프린터 목록 확인 실패({typeNames}): {ex.Message}");
-            }
         }
 
         try

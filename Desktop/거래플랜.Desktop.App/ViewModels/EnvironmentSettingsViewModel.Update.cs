@@ -123,7 +123,7 @@ public sealed partial class EnvironmentSettingsViewModel
                 StatusMessage = readiness.Message;
             }
 
-            _updateService.StartUpdate(_pendingDesktopUpdate);
+            await _updateService.StartUpdateAsync(_pendingDesktopUpdate);
             UpdateStatusText = $"업데이트 {_pendingDesktopUpdate.Version} 설치를 시작했습니다.";
             StatusMessage = "업데이트 도우미를 실행했습니다. 저장 후 앱을 다시 시작합니다.";
             Application.Current?.Dispatcher.BeginInvoke(

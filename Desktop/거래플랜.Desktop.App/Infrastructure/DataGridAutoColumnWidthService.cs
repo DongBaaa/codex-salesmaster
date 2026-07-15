@@ -11,6 +11,7 @@ namespace 거래플랜.Desktop.App.Infrastructure;
 
 public static class DataGridAutoColumnWidthService
 {
+    private const int MaxAutoFitSampleCount = 100;
     private static bool _registered;
 
     private static readonly DependencyProperty IsRegisteredProperty =
@@ -156,7 +157,7 @@ public static class DataGridAutoColumnWidthService
             return;
 
         grid.MinColumnWidth = Math.Max(grid.MinColumnWidth, 48);
-        grid.EnableColumnVirtualization = false;
+        grid.EnableColumnVirtualization = true;
         ScrollViewer.SetHorizontalScrollBarVisibility(grid, ScrollBarVisibility.Auto);
 
         foreach (var column in grid.Columns)
@@ -190,16 +191,49 @@ public static class DataGridAutoColumnWidthService
             return Math.Max(desiredWidth, ResolveFiniteColumnWidth(column));
         }
 
+        string? widestCandidate = null;
+        var widestCandidateUnits = 0d;
+        var sampledItemCount = 0;
         foreach (var item in EnumerateItems(grid))
         {
+            if (sampledItemCount++ >= MaxAutoFitSampleCount)
+                break;
+
             var text = ResolveBindingText(item, binding);
             if (string.IsNullOrEmpty(text))
                 continue;
 
-            desiredWidth = Math.Max(desiredWidth, MeasureText(grid, text, grid.FontWeight) + 28);
+            var estimatedUnits = EstimateTextWidthUnits(text);
+            if (widestCandidate is not null && estimatedUnits <= widestCandidateUnits)
+                continue;
+
+            widestCandidate = text;
+            widestCandidateUnits = estimatedUnits;
         }
 
+        if (widestCandidate is not null)
+            desiredWidth = Math.Max(desiredWidth, MeasureText(grid, widestCandidate, grid.FontWeight) + 28);
+
         return Math.Max(desiredWidth, minimumWidth);
+    }
+
+    private static double EstimateTextWidthUnits(string text)
+    {
+        var units = 0d;
+        foreach (var character in text)
+        {
+            units += character switch
+            {
+                _ when char.IsWhiteSpace(character) => 0.5d,
+                _ when character >= '\u2E80' => 1.9d,
+                _ when char.IsUpper(character) => 1.1d,
+                _ when char.IsDigit(character) => 1d,
+                _ when char.IsPunctuation(character) => 0.7d,
+                _ => 0.9d
+            };
+        }
+
+        return units;
     }
 
     private static IEnumerable<object?> EnumerateItems(DataGrid grid)

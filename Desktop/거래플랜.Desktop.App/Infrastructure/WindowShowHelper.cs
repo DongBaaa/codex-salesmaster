@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Threading;
 using 거래플랜.Desktop.App.Services;
 
@@ -26,6 +27,20 @@ internal static class WindowShowHelper
         ArgumentNullException.ThrowIfNull(loadAsync);
 
         var loadStarted = false;
+        var wasEnabled = window.IsEnabled;
+        var previousCursor = window.Cursor;
+
+        void ApplyDeferredLoadState()
+        {
+            window.IsEnabled = false;
+            window.Cursor = Cursors.Wait;
+        }
+
+        void RestoreDeferredLoadState()
+        {
+            window.IsEnabled = wasEnabled;
+            window.Cursor = previousCursor;
+        }
 
         async Task StartLoadAsync()
         {
@@ -35,6 +50,13 @@ internal static class WindowShowHelper
             loadStarted = true;
             try
             {
+                await window.Dispatcher.InvokeAsync(
+                    static () => { },
+                    DispatcherPriority.ApplicationIdle);
+
+                if (!window.IsLoaded || !window.IsVisible)
+                    return;
+
                 await OperationTiming.MeasureAsync(
                     "UI",
                     $"{windowTitle} 초기화",
@@ -56,6 +78,10 @@ internal static class WindowShowHelper
                 if (window.IsLoaded)
                     window.Close();
             }
+            finally
+            {
+                RestoreDeferredLoadState();
+            }
         }
 
         if (closedAsync is not null)
@@ -71,8 +97,9 @@ internal static class WindowShowHelper
             };
         }
 
-        _ = StartLoadAsync();
         ShowModeless(window);
+        ApplyDeferredLoadState();
+        _ = StartLoadAsync();
     }
 
     public static void ActivateWhenReady(Window window)

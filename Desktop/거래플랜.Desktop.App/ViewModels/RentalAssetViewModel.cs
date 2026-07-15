@@ -29,6 +29,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private readonly UiDebouncer _searchDebouncer = new();
     private readonly UiDebouncer _editAutoSaveDebouncer = new();
     private readonly SemaphoreSlim _autoSaveGate = new(1, 1);
+    private readonly SemaphoreSlim _filterReloadGate = new(1, 1);
     private CancellationTokenSource? _filterReloadCts;
     private CancellationTokenSource? _assignmentHistoryLoadCts;
     private CancellationTokenSource? _selectedAssetDetailLoadCts;
@@ -213,8 +214,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         LogRentalAssetViewModelLoadStep("Rental asset edit reset", stepStopwatch);
 
         stepStopwatch.Restart();
-        StartInitialRowsLoad();
-        LogRentalAssetViewModelLoadStep("Rental asset rows initial load queued", stepStopwatch);
+        await ReloadAsync();
+        LogRentalAssetViewModelLoadStep("Rental asset rows initial load", stepStopwatch);
 
         OperationTiming.LogIfSlow(
             "UI",
@@ -236,18 +237,6 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         CancelSelectedAssetDetailLoad();
         _searchDebouncer.Dispose();
         _editAutoSaveDebouncer.Dispose();
-    }
-
-    private void StartInitialRowsLoad()
-    {
-        if (_isDisposed)
-            return;
-
-        UiTaskHelper.Forget(
-            ReloadAsync(),
-            "RENTAL",
-            "렌탈 자산 초기 목록 백그라운드 조회",
-            ex => StatusMessage = $"렌탈 자산 목록을 불러오지 못했습니다. {ex.Message}");
     }
 
     public async Task LoadAndSelectAssetAsync(Guid assetId)
@@ -459,12 +448,25 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         _filterReloadCts = cts;
         try
         {
-            await ReloadCoreAsync(cts.Token);
+            await RunSerializedReloadCoreAsync(cts.Token);
         }
         finally
         {
             if (ReferenceEquals(_filterReloadCts, cts))
                 _filterReloadCts = null;
+        }
+    }
+
+    private async Task RunSerializedReloadCoreAsync(CancellationToken ct)
+    {
+        await _filterReloadGate.WaitAsync(ct);
+        try
+        {
+            await ReloadCoreAsync(ct);
+        }
+        finally
+        {
+            _filterReloadGate.Release();
         }
     }
 
@@ -493,7 +495,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             {
                 ct.ThrowIfCancellationRequested();
                 var resultLimit = ResolveAssetListResultLimit(SearchText);
-                var rows = await _rental.GetAssetRowsAsync(new RentalAssetFilter
+                var filter = new RentalAssetFilter
                 {
                     SearchText = SearchText,
                     ItemCategoryNames = GetSelectedFilterValues(ItemCategoryFilterOptions),
@@ -501,7 +503,10 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                     AssetStatuses = GetSelectedFilterValues(StatusFilterOptions),
                     PinnedAssetId = selectedRowId,
                     MaxResults = resultLimit
-                }, _session, ct);
+                };
+                var rows = await Task.Run(
+                    () => _rental.GetAssetRowsAsync(filter, _session, ct),
+                    ct);
 
                 ct.ThrowIfCancellationRequested();
                 if (_isDisposed)
@@ -2054,7 +2059,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                     return;
 
                 _pendingFilterReloadSignature = string.Empty;
-                await ReloadCoreAsync(cts.Token);
+                await RunSerializedReloadCoreAsync(cts.Token);
             },
             ex =>
             {

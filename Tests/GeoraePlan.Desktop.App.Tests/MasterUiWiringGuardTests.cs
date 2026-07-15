@@ -680,7 +680,6 @@ public sealed class MasterUiWiringGuardTests
             mainWindow,
             "private void ShowModelessWithDeferredLoad(",
             "WindowShowHelper.ShowModelessWithDeferredLoad",
-            "WindowShowHelper.ShowModeless(win);",
             "ShowModelessWithDeferredLoad(",
             "(invoiceId, owner) => OpenInvoiceWindowAsync(invoiceId, owner),",
             "() => _vm.LoadInvoiceListCommand.ExecuteAsync(null))",

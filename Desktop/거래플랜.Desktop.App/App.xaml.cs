@@ -368,27 +368,7 @@ public partial class App : Application
 
 
 
-            await OperationTiming.MeasureAsync(
-
-                "APP",
-
-                "로컬 DB 초기화 및 버전 정비",
-
-                async () =>
-
-                {
-
-                    await using var scope = _services.CreateAsyncScope();
-
-                    var db = scope.ServiceProvider.GetRequiredService<LocalDbContext>();
-
-                    await LocalDbInitializer.InitializeAsync(db);
-
-                    await RunVersionChangeMaintenanceAsync(scope.ServiceProvider);
-
-                },
-
-                warningThreshold: TimeSpan.FromSeconds(4));
+            await RunPreLoginInitializationAsync();
 
 
 
@@ -692,6 +672,43 @@ public partial class App : Application
 
         }
 
+    }
+
+
+
+    private async Task RunPreLoginInitializationAsync()
+    {
+        if (_services is null)
+            throw new InvalidOperationException("서비스 초기화가 완료되지 않았습니다.");
+
+        var loadingWindow = new StartupLoadingWindow();
+        loadingWindow.Show();
+
+        // 창을 먼저 그린 뒤 SQLite 정비를 전용 스레드에서 실행한다.
+        // Microsoft.Data.Sqlite의 일부 async 호출은 내부적으로 동기 실행되므로
+        // UI 스레드에서 직접 기다리면 Windows가 앱을 '응답 없음'으로 표시할 수 있다.
+        await loadingWindow.Dispatcher.InvokeAsync(
+            static () => { },
+            DispatcherPriority.ApplicationIdle);
+
+        try
+        {
+            await OperationTiming.MeasureAsync(
+                "APP",
+                "로컬 DB 초기화 및 버전 정비",
+                () => Task.Run(async () =>
+                {
+                    await using var scope = _services.CreateAsyncScope();
+                    var db = scope.ServiceProvider.GetRequiredService<LocalDbContext>();
+                    await LocalDbInitializer.InitializeAsync(db);
+                    await RunVersionChangeMaintenanceAsync(scope.ServiceProvider);
+                }),
+                warningThreshold: TimeSpan.FromSeconds(4));
+        }
+        finally
+        {
+            loadingWindow.Complete();
+        }
     }
 
 
@@ -1606,38 +1623,64 @@ public partial class App : Application
 
         {
 
-            try
-
-            {
-
-                await mainVm.ReloadAfterPassiveSyncAsync();
-
-            }
-
-            catch (Exception ex)
-
-            {
-
-                AppLogger.Warn("APP", $"로그인 후 동기화 완료 뒤 메인 목록 재조회 실패: {ex.Message}");
-
-            }
-
-
-
-            await RunStartupIntegrityCheckAsync(
-
+            var integrityStatus = await RunPostLoginIntegrityChecksInBackgroundAsync(
                 serviceProvider,
+                integrityPromptReason);
 
-                showUserAlert: false,
-
-                updateStatus: message => mainVm.SyncStatus = message);
-
-
-
-            await mainWin.RunDataIntegrityScanAndPromptAsync(integrityPromptReason, showPrompt: false);
+            if (!string.IsNullOrWhiteSpace(integrityStatus) && mainWin.IsLoaded)
+            {
+                await mainWin.Dispatcher.InvokeAsync(
+                    () => mainVm.SyncStatus = integrityStatus,
+                    DispatcherPriority.Background);
+            }
 
         }
 
+    }
+
+
+
+    private static Task<string?> RunPostLoginIntegrityChecksInBackgroundAsync(
+        IServiceProvider serviceProvider,
+        string integrityPromptReason)
+    {
+        var scopeFactory = serviceProvider.GetRequiredService<IServiceScopeFactory>();
+        return Task.Run(async () =>
+        {
+            await using var integrityScope = scopeFactory.CreateAsyncScope();
+            var scopedProvider = integrityScope.ServiceProvider;
+            string? statusMessage = null;
+
+            await RunStartupIntegrityCheckAsync(
+                scopedProvider,
+                showUserAlert: false,
+                updateStatus: message => statusMessage = message);
+
+            try
+            {
+                var session = scopedProvider.GetRequiredService<SessionState>();
+                var dataIntegrity = scopedProvider.GetRequiredService<DataIntegrityIssueService>();
+                var result = await OperationTiming.MeasureAsync(
+                    "INTEGRITY",
+                    $"{integrityPromptReason} 운영 점검",
+                    () => dataIntegrity.ScanAsync(session),
+                    warningThreshold: TimeSpan.FromSeconds(3));
+
+                if (result.HasIssues && result.HasPassiveStartupNoticeIssues)
+                {
+                    statusMessage = "운영 점검 알림: 확인할 항목이 있습니다. 목록 조회와 업무는 계속 가능하며, 상세 내용은 동기화 진단에서 확인하세요.";
+                    AppLogger.Warn(
+                        "INTEGRITY",
+                        $"{integrityPromptReason} 운영 점검 알림을 상태바로 전환했습니다. issues={result.Issues.Count:N0}");
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Warn("INTEGRITY", $"{integrityPromptReason} 운영 점검 실패: {ex.Message}");
+            }
+
+            return statusMessage;
+        });
     }
 
 

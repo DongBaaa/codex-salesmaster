@@ -660,6 +660,7 @@ internal static class Program
 
         var viewModel = new RentalBillingViewModel(rental, local, userSession);
         viewModel.LoadAsync().GetAwaiter().GetResult();
+        viewModel.ReloadCommand.ExecuteAsync(null).GetAwaiter().GetResult();
         var row = viewModel.Rows.FirstOrDefault(current => current.Source.Id == profileId);
         Ensure(row is not null, "기존 연결 장비 백필 프로필을 화면 목록에서 찾지 못했습니다.");
         viewModel.SelectedRow = row;

@@ -3457,9 +3457,11 @@ public sealed class LocalStateServicePartialsTests
 
         Assert.DoesNotContain("CleanupLegacyAssignedUsernamesAsync", loadBody, StringComparison.Ordinal);
         Assert.DoesNotContain("RepairBillingInvoicePeriodLinksAsync", loadBody, StringComparison.Ordinal);
-        Assert.Contains("StartInitialRowsLoad();", loadBody, StringComparison.Ordinal);
-        Assert.Contains("LoadInitialRowsThenDeferredMaintenanceAsync()", source, StringComparison.Ordinal);
-        Assert.Contains("await ReloadAsync();", source, StringComparison.Ordinal);
+        var initialRowsIndex = loadBody.IndexOf("await ReloadAsync();", StringComparison.Ordinal);
+        var deferredMaintenanceIndex = loadBody.IndexOf("StartDeferredInitialMaintenance();", StringComparison.Ordinal);
+        Assert.True(initialRowsIndex >= 0, "LoadAsync must await the initial rows without blocking the UI thread.");
+        Assert.True(deferredMaintenanceIndex > initialRowsIndex, "Deferred maintenance must start after the initial rows are ready.");
+        Assert.Contains("RunDeferredInitialMaintenanceWithTimingAsync()", source, StringComparison.Ordinal);
         Assert.Contains("await RunDeferredInitialMaintenanceAsync();", source, StringComparison.Ordinal);
     }
 
