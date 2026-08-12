@@ -2966,6 +2966,33 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void AndroidSmoke_LoginInputsAreBoundToPasswordRoleAndFocusedBeforeTyping()
+    {
+        foreach (var scriptName in new[]
+                 {
+                     "Invoke-GeoraePlanAndroidSmoke.ps1",
+                     "Invoke-GeoraePlanAndroidWriteE2E.ps1",
+                     "Invoke-GeoraePlanAndroidPaymentE2E.ps1"
+                 })
+        {
+            var source = File.ReadAllText(Path.Combine(
+                FindRepositoryRoot(),
+                "tools",
+                "mobile",
+                scriptName));
+
+            Assert.Contains("function Get-LoginEditTextNode", source, StringComparison.Ordinal);
+            Assert.Contains("[bool]$IsPassword", source, StringComparison.Ordinal);
+            Assert.Contains("password=`\"$expectedPassword`\"", source, StringComparison.Ordinal);
+            Assert.Contains("focused=`\"true`\"", source, StringComparison.Ordinal);
+            Assert.Contains("login field focus not confirmed", source, StringComparison.Ordinal);
+            Assert.Contains("-IsPassword $false", source, StringComparison.Ordinal);
+            Assert.Contains("-IsPassword $true", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("-Point $passwordPoint", source, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void AndroidSmoke_WaitsForBackNavigationAndFailsOnTargetAppAnr()
     {
         var source = File.ReadAllText(Path.Combine(

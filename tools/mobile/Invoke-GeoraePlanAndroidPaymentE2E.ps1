@@ -638,6 +638,56 @@ function Get-NodeCenterByText {
     return $null
 }
 
+function Get-LoginEditTextNode {
+    param(
+        [string]$Content,
+        [bool]$IsPassword,
+        [switch]$RequireFocused
+    )
+
+    $expectedPassword = if ($IsPassword) { 'true' } else { 'false' }
+    $candidates = @()
+    foreach ($match in [regex]::Matches($Content, '<node\b[^>]*>')) {
+        $node = $match.Value
+        if ($node -notmatch 'class="android\.widget\.EditText"') {
+            continue
+        }
+        if ($node -notmatch "password=`"$expectedPassword`"") {
+            continue
+        }
+        if ($RequireFocused -and $node -notmatch "focused=`"true`"") {
+            continue
+        }
+        if ($node -notmatch 'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"') {
+            continue
+        }
+
+        $x1 = [int]$Matches[1]
+        $y1 = [int]$Matches[2]
+        $x2 = [int]$Matches[3]
+        $y2 = [int]$Matches[4]
+        $textMatch = [regex]::Match($node, 'text="([^"]*)"')
+        $hintMatch = [regex]::Match($node, 'hint="([^"]*)"')
+        $candidates += [pscustomobject]@{
+            Point = [pscustomobject]@{
+                X = [int](($x1 + $x2) / 2)
+                Y = [int](($y1 + $y2) / 2)
+            }
+            Text = if ($textMatch.Success) { $textMatch.Groups[1].Value } else { '' }
+            Hint = if ($hintMatch.Success) { $hintMatch.Groups[1].Value } else { '' }
+        }
+    }
+
+    if ($candidates.Count -gt 1) {
+        throw "multiple login fields matched password role: $expectedPassword"
+    }
+    if ($candidates.Count -eq 1) {
+        return $candidates[0]
+    }
+
+    return $null
+}
+
 
 function Get-NodeCenterByAttribute {
     param(
@@ -945,24 +995,34 @@ function Set-LoginTextField {
         [string]$EvidenceDirectory,
         [string]$Timestamp,
         [string]$FieldName,
-        [object]$Point,
+        [bool]$IsPassword,
         [string]$Value,
         [switch]$VerifyPlainText
     )
 
-    if (-not $Point) {
-        throw "login field not found: $FieldName"
-    }
-
     $lastDump = $null
+    $focusWasConfirmed = $false
     for ($attempt = 1; $attempt -le 3; $attempt++) {
-        Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $Point.X -Y $Point.Y
+        $safeFieldName = $FieldName -replace '[^a-zA-Z0-9_-]', '-'
+        $beforeDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-login-$safeFieldName-before$attempt"
+        $fieldNode = Get-LoginEditTextNode -Content $beforeDump.Content -IsPassword $IsPassword
+        if (-not $fieldNode) {
+            throw "login field not found: $FieldName"
+        }
+
+        Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $fieldNode.Point.X -Y $fieldNode.Point.Y
         Start-Sleep -Milliseconds 700
+        $focusDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-login-$safeFieldName-focus$attempt"
+        $focusedNode = Get-LoginEditTextNode -Content $focusDump.Content -IsPassword $IsPassword -RequireFocused
+        if (-not $focusedNode) {
+            continue
+        }
+
+        $focusWasConfirmed = $true
         Clear-AndroidTextField -AdbPath $AdbPath -DeviceId $DeviceId
         Set-AndroidText -AdbPath $AdbPath -DeviceId $DeviceId -Text $Value
         Start-Sleep -Milliseconds 700
 
-        $safeFieldName = $FieldName -replace '[^a-zA-Z0-9_-]', '-'
         $lastDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-login-$safeFieldName-attempt$attempt"
         if ($lastDump.Content.Contains("isn't responding")) {
             for ($waitAttempt = 1; $waitAttempt -le 12; $waitAttempt++) {
@@ -974,27 +1034,23 @@ function Set-LoginTextField {
                 }
             }
 
-            $Point = Get-NodeCenterByText -Content $lastDump.Content -Text $FieldName -ClassName 'android.widget.EditText'
-            if ($Point) {
-                continue
-            }
+            continue
         }
 
-        if (-not $VerifyPlainText -or $lastDump.Content.Contains("text=`"$Value`"")) {
+        $typedNode = Get-LoginEditTextNode -Content $lastDump.Content -IsPassword $IsPassword
+        $valueConfirmed = $typedNode -and (
+            ($VerifyPlainText -and $typedNode.Text -eq $Value) -or
+            ($IsPassword -and $typedNode.Text.Length -eq $Value.Length -and $typedNode.Text -ne $typedNode.Hint)
+        )
+        if ($valueConfirmed) {
             return $lastDump
         }
-
-        $Point = Get-NodeCenterByText -Content $lastDump.Content -Text $FieldName -ClassName 'android.widget.EditText'
-        if (-not $Point) {
-            break
-        }
     }
 
-    if ($VerifyPlainText) {
-        throw "login field value not confirmed: $FieldName"
+    if (-not $focusWasConfirmed) {
+        throw "login field focus not confirmed: $FieldName"
     }
-
-    return $lastDump
+    throw "login field value not confirmed: $FieldName"
 }
 
 function New-TestAttachmentPdf {
@@ -2338,21 +2394,13 @@ try {
         }
     }
     if ($dump.Content.Contains('계정 로그인') -or ($dump.Content.Contains('로그인') -and $dump.Content.Contains('비밀번호'))) {
-        $userPoint = Get-NodeCenterByText -Content $dump.Content -Text '아이디' -ClassName 'android.widget.EditText'
-        $passwordPoint = Get-NodeCenterByText -Content $dump.Content -Text '비밀번호' -ClassName 'android.widget.EditText'
         $loginButtonPoint = Get-NodeCenterByText -Content $dump.Content -Text '로그인' -ClassName 'android.widget.Button'
 
-        if ($userPoint) {
-            $dump = Set-LoginTextField -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Timestamp "$voucherSlug-$timestamp" -FieldName '아이디' -Point $userPoint -Value $Username -VerifyPlainText
-            Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'shell', 'input', 'keyevent', 'KEYCODE_ESCAPE') | Out-Null
-            Start-Sleep -Seconds 1
-            $dump = Wait-UiReadyForLoginOrHome -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$voucherSlug-$timestamp-login-username-entered" -TimeoutSeconds 90
-            $passwordPoint = Get-NodeCenterByText -Content $dump.Content -Text '비밀번호' -ClassName 'android.widget.EditText'
-        }
-        if (-not $passwordPoint) {
-            throw '로그인 화면에서 비밀번호 입력칸을 찾지 못했습니다.'
-        }
-        $dump = Set-LoginTextField -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Timestamp "$voucherSlug-$timestamp" -FieldName '비밀번호' -Point $passwordPoint -Value $Password
+        $dump = Set-LoginTextField -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Timestamp "$voucherSlug-$timestamp" -FieldName '아이디' -IsPassword $false -Value $Username -VerifyPlainText
+        Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'shell', 'input', 'keyevent', 'KEYCODE_ESCAPE') | Out-Null
+        Start-Sleep -Seconds 1
+        $dump = Wait-UiReadyForLoginOrHome -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$voucherSlug-$timestamp-login-username-entered" -TimeoutSeconds 90
+        $dump = Set-LoginTextField -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Timestamp "$voucherSlug-$timestamp" -FieldName '비밀번호' -IsPassword $true -Value $Password
         Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'shell', 'input', 'keyevent', 'KEYCODE_ESCAPE') | Out-Null
         Start-Sleep -Seconds 1
         $dump = Wait-UiReadyForLoginOrHome -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$voucherSlug-$timestamp-login-password-entered" -TimeoutSeconds 90
